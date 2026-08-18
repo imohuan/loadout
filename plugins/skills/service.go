@@ -75,6 +75,9 @@ func (s *Service) SubscribeUpdate() (<-chan UpdateEvent, error) {
 	return s.updater.Subscribe()
 }
 
+// RepoDir 返回技能仓库目录（所有技能真实文件所在，~/.loadout/skills）。
+func (s *Service) RepoDir() string { return s.repoDir }
+
 // defaultPlatformDirs 返回内置平台 → 技能目录映射（以用户主目录展开）。
 // 目前内置 codex / claudecode / opencode，后续可扩展。
 func defaultPlatformDirs() map[string]string {

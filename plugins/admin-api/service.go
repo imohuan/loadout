@@ -182,6 +182,11 @@ func (s *Service) Routes() []plugin.RouteSpec {
 		{Method: http.MethodGet, Pattern: "GET /api/settings", Auth: plugin.AuthSession, Handler: s.session(s.handleSettingsGet)},
 		{Method: http.MethodPut, Pattern: "PUT /api/settings", Auth: plugin.AuthSession, Handler: s.session(s.handleSettingsPut)},
 		{Method: http.MethodPost, Pattern: "POST /api/change-password", Auth: plugin.AuthSession, Handler: s.session(s.handleChangePassword)},
+
+		// 配置导入导出（设置页）
+		{Method: http.MethodPost, Pattern: "POST /api/config/export", Auth: plugin.AuthSession, Handler: s.session(s.handleConfigExport)},
+		{Method: http.MethodPost, Pattern: "POST /api/config/import/preview", Auth: plugin.AuthSession, Handler: s.session(s.handleConfigImportPreview)},
+		{Method: http.MethodPost, Pattern: "POST /api/config/import", Auth: plugin.AuthSession, Handler: s.session(s.handleConfigImport)},
 	}
 }
 

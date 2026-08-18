@@ -3,9 +3,11 @@ import { computed, reactive, ref, watch } from 'vue'
 import {
   RiAddLine,
   RiDeleteBinLine,
+  RiDownload2Line,
   RiKey2Line,
   RiRefreshLine,
   RiSettings3Line,
+  RiUpload2Line,
 } from '@remixicon/vue'
 import { useManagementApi } from '@/composables/useManagementApi'
 import { useListLoader } from '@/composables/useListLoader'
@@ -14,6 +16,8 @@ import { useConfirm } from '@/composables/useConfirm'
 import PageHeader from '@/components/PageHeader.vue'
 import LoadingBlock from '@/components/LoadingBlock.vue'
 import EmptyState from '@/components/EmptyState.vue'
+import ConfigExportDialog from '@/components/config-transfer/ConfigExportDialog.vue'
+import ConfigImportDialog from '@/components/config-transfer/ConfigImportDialog.vue'
 
 const api = useManagementApi()
 const { data: keys, loading: keysLoading, refresh: refreshKeys } = useListLoader(api.keys)
@@ -30,6 +34,8 @@ const {
 const { pending, run } = useAsyncTask()
 const { confirmDialog } = useConfirm()
 const keyDialog = ref(false)
+const exportDialog = ref(false)
+const importDialog = ref(false)
 const activeTab = ref('runtime')
 const newKey = ref('')
 const skForm = reactive({ name: '', models: '' })
@@ -81,28 +87,38 @@ async function changePassword() {
 
 <template>
   <div class="space-y-6">
-    <PageHeader title="设置" description="集中管理运行时默认值、模型密钥和插件状态。"><template #actions><Button variant="outline"
-          :disabled="loading || pending" @click="refresh">
-          <RiRefreshLine size="16" />刷新
-        </Button><Button v-if="activeTab === 'credentials'" :disabled="loading || pending" @click="keyDialog = true">
-          <RiAddLine size="16" />创建模型 API 密钥
-        </Button></template></PageHeader>
+    <PageHeader title="设置" description="集中管理运行时默认值、模型密钥和插件状态。"
+      ><template #actions
+        ><Button variant="outline" :disabled="loading || pending" @click="refresh">
+          <RiRefreshLine size="16" />刷新 </Button
+        ><Button
+          v-if="activeTab === 'credentials'"
+          :disabled="loading || pending"
+          @click="keyDialog = true"
+        >
+          <RiAddLine size="16" />创建模型 API 密钥 </Button
+        ><Button variant="outline" :disabled="pending" @click="exportDialog = true">
+          <RiDownload2Line size="16" />导出配置 </Button
+        ><Button :disabled="pending" @click="importDialog = true">
+          <RiUpload2Line size="16" />导入配置
+        </Button></template
+      ></PageHeader
+    >
     <LoadingBlock v-if="loading" />
     <template v-else>
       <Alert v-if="newKey">
         <AlertTitle>新密钥仅显示一次</AlertTitle>
-        <AlertDescription class="mt-2 flex flex-wrap items-center gap-2"><code
-            class="max-w-full break-all rounded bg-muted px-2 py-1 text-xs select-all">{{ newKey }}</code><Button size="sm"
-            variant="outline" @click="newKey = ''">关闭</Button></AlertDescription>
+        <AlertDescription class="mt-2 flex flex-wrap items-center gap-2"
+          ><code class="max-w-full break-all rounded bg-muted px-2 py-1 text-xs select-all">{{
+            newKey
+          }}</code
+          ><Button size="sm" variant="outline" @click="newKey = ''">关闭</Button></AlertDescription
+        >
       </Alert>
       <Tabs v-model="activeTab" class="space-y-4">
         <TabsList class="inline-flex h-auto w-fit max-w-full flex-wrap justify-start gap-1">
-          <TabsTrigger value="runtime">
-            <RiSettings3Line size="16" />运行设置
-          </TabsTrigger>
-          <TabsTrigger value="credentials">
-            <RiKey2Line size="16" />模型密钥
-          </TabsTrigger>
+          <TabsTrigger value="runtime"> <RiSettings3Line size="16" />运行设置 </TabsTrigger>
+          <TabsTrigger value="credentials"> <RiKey2Line size="16" />模型密钥 </TabsTrigger>
           <TabsTrigger value="plugins">插件</TabsTrigger>
         </TabsList>
         <TabsContent value="runtime" class="grid gap-4 lg:grid-cols-2">
@@ -113,12 +129,20 @@ async function changePassword() {
             <CardContent>
               <form class="space-y-3" @submit.prevent="saveSettings">
                 <div class="space-y-1">
-                  <Label for="default-model">默认模型</Label><Input id="default-model" v-model="settingsForm.default_model"
-                    placeholder="deepseek-chat" />
+                  <Label for="default-model">默认模型</Label
+                  ><Input
+                    id="default-model"
+                    v-model="settingsForm.default_model"
+                    placeholder="deepseek-chat"
+                  />
                 </div>
                 <div class="space-y-1">
-                  <Label for="active-preset">当前预设</Label><Input id="active-preset" v-model="settingsForm.active_preset"
-                    placeholder="编程向" />
+                  <Label for="active-preset">当前预设</Label
+                  ><Input
+                    id="active-preset"
+                    v-model="settingsForm.active_preset"
+                    placeholder="编程向"
+                  />
                 </div>
                 <Button type="submit" :disabled="pending">保存设置</Button>
               </form>
@@ -131,12 +155,12 @@ async function changePassword() {
             <CardContent>
               <form class="space-y-3" @submit.prevent="changePassword">
                 <div class="space-y-1">
-                  <Label for="old-password">旧密码</Label><Input id="old-password" v-model="passwordForm.old"
-                    type="password" required />
+                  <Label for="old-password">旧密码</Label
+                  ><Input id="old-password" v-model="passwordForm.old" type="password" required />
                 </div>
                 <div class="space-y-1">
-                  <Label for="new-password">新密码</Label><Input id="new-password" v-model="passwordForm.new"
-                    type="password" required />
+                  <Label for="new-password">新密码</Label
+                  ><Input id="new-password" v-model="passwordForm.new" type="password" required />
                 </div>
                 <Button type="submit" :disabled="pending">修改密码</Button>
               </form>
@@ -169,10 +193,15 @@ async function changePassword() {
                         }}</TableCell>
                         <TableCell class="text-right">
                           <Tooltip>
-                            <TooltipTrigger as-child><Button variant="ghost" size="icon" aria-label="删除密钥"
-                                @click="removeSkKey(key.id)">
-                                <RiDeleteBinLine size="16" />
-                              </Button></TooltipTrigger>
+                            <TooltipTrigger as-child
+                              ><Button
+                                variant="ghost"
+                                size="icon"
+                                aria-label="删除密钥"
+                                @click="removeSkKey(key.id)"
+                              >
+                                <RiDeleteBinLine size="16" /> </Button
+                            ></TooltipTrigger>
                             <TooltipContent>删除密钥</TooltipContent>
                           </Tooltip>
                         </TableCell>
@@ -180,7 +209,11 @@ async function changePassword() {
                     </TableBody>
                   </Table>
                 </div>
-                <EmptyState v-else title="没有模型 API 密钥" description="创建密钥后可供 OpenAI 兼容接口调用。" />
+                <EmptyState
+                  v-else
+                  title="没有模型 API 密钥"
+                  description="创建密钥后可供 OpenAI 兼容接口调用。"
+                />
               </CardContent>
             </Card>
           </TooltipProvider>
@@ -188,7 +221,9 @@ async function changePassword() {
         <TabsContent value="plugins">
           <Card class="rounded-md">
             <CardHeader>
-              <CardTitle class="text-base">插件自检（{{ plugins?.plugins.length || 0 }} 个）</CardTitle>
+              <CardTitle class="text-base"
+                >插件自检（{{ plugins?.plugins.length || 0 }} 个）</CardTitle
+              >
               <CardDescription>展示插件注册的检查项和问题。</CardDescription>
             </CardHeader>
             <CardContent class="p-0">
@@ -201,23 +236,32 @@ async function changePassword() {
                       <TableHead>结果</TableHead>
                     </TableRow>
                   </TableHeader>
-                  <TableBody><template v-for="plugin in plugins.plugins" :key="plugin.plugin">
+                  <TableBody
+                    ><template v-for="plugin in plugins.plugins" :key="plugin.plugin">
                       <TableRow v-for="check in plugin.checks" :key="check.name">
                         <TableCell class="font-medium">{{ plugin.plugin }}</TableCell>
                         <TableCell>{{ check.name }}</TableCell>
                         <TableCell>
                           <div v-if="check.issues.length" class="space-y-1">
-                            <Badge v-for="issue in check.issues" :key="issue.message"
-                              :variant="issue.level === 'error' ? 'destructive' : 'secondary'">{{ issue.level }}: {{
-                              issue.message }}</Badge>
+                            <Badge
+                              v-for="issue in check.issues"
+                              :key="issue.message"
+                              :variant="issue.level === 'error' ? 'destructive' : 'secondary'"
+                              >{{ issue.level }}: {{ issue.message }}</Badge
+                            >
                           </div>
                           <Badge v-else>通过</Badge>
                         </TableCell>
                       </TableRow>
-                    </template></TableBody>
+                    </template></TableBody
+                  >
                 </Table>
               </div>
-              <EmptyState v-else title="暂无插件信息" description="后端装配插件后会显示自检结果。" />
+              <EmptyState
+                v-else
+                title="暂无插件信息"
+                description="后端装配插件后会显示自检结果。"
+              />
             </CardContent>
           </Card>
         </TabsContent>
@@ -231,15 +275,23 @@ async function changePassword() {
         </DialogHeader>
         <form class="space-y-3" @submit.prevent="createSkKey">
           <div class="space-y-1">
-            <Label for="sk-name">名称</Label><Input id="sk-name" v-model="skForm.name" required placeholder="本机调用" />
+            <Label for="sk-name">名称</Label
+            ><Input id="sk-name" v-model="skForm.name" required placeholder="本机调用" />
           </div>
           <div class="space-y-1">
-            <Label for="sk-models">允许模型</Label><Input id="sk-models" v-model="skForm.models" placeholder="逗号或空格分隔" />
+            <Label for="sk-models">允许模型</Label
+            ><Input id="sk-models" v-model="skForm.models" placeholder="逗号或空格分隔" />
           </div>
-          <DialogFooter><Button type="submit" :disabled="pending">创建密钥</Button><Button type="button" variant="outline"
-              @click="keyDialog = false">取消</Button></DialogFooter>
+          <DialogFooter
+            ><Button type="submit" :disabled="pending">创建密钥</Button
+            ><Button type="button" variant="outline" @click="keyDialog = false"
+              >取消</Button
+            ></DialogFooter
+          >
         </form>
       </DialogContent>
     </Dialog>
+    <ConfigExportDialog :open="exportDialog" @update:open="exportDialog = $event" />
+    <ConfigImportDialog :open="importDialog" @update:open="importDialog = $event" />
   </div>
 </template>
