@@ -61,13 +61,15 @@ func TestSignAndParseToken(t *testing.T) {
 		t.Error("IssuedAt 不应为 nil")
 	}
 
-	// 篡改签名：改最后一个字符（确保与原字符不同）。
-	last := token[len(token)-1]
+	// 篡改签名：改签名段首个字符（6 位均有效，必然破坏校验）。
+	// 注意不能改末尾字符——base64url 无填充的末字符存在冗余位，
+	// 若替换字符与原字符仅冗余位不同，解码字节不变、校验仍会通过（flaky）。
+	dot := strings.LastIndex(token, ".")
 	repl := byte('a')
-	if last == repl {
+	if token[dot+1] == repl {
 		repl = 'b'
 	}
-	tampered := token[:len(token)-1] + string(repl)
+	tampered := token[:dot+1] + string(repl) + token[dot+2:]
 	if _, err := ParseToken(secret, tampered); err == nil {
 		t.Error("篡改后的 token 应解析失败")
 	}
