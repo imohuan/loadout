@@ -3,12 +3,12 @@ package app
 
 import (
 	"embed"
-	"os"
 	"runtime"
 
 	"proxyui/backend"
 	"proxyui/backend/server"
 	"proxyui/backend/singleton"
+	"proxyui/icons"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
@@ -25,8 +25,8 @@ func Run(assets embed.FS) {
 
 	svc := server.New()
 
-	// 从 wails.json 配置中读取任务栏图标
-	appIcon, _ := os.ReadFile(config.App.Custom.Icons.Taskbar)
+	// 图标直接用 embed 的 appicon.ico（不受运行 cwd 影响；从 dist/ 启动也能命中）
+	appIcon := icons.AppIcon
 
 	app := application.New(application.Options{
 		Name:        config.App.Name,
@@ -62,11 +62,12 @@ func Run(assets embed.FS) {
 	// 开发阶段自动打开 DevTools，生产构建时建议注释掉
 	win.OpenDevTools()
 
-	// Windows 下通过 WM_SETICON 设置任务栏和 Alt+Tab 图标
-	// application.Options.Icon 在 Windows 上只影响 system tray
+	// Wails v3 窗口图标：application.Options.Icon 在 v3 alpha 上不完全生效，
+	// 且 Wails 内部 setIcon 只设 ICON_BIG（不设 ICON_SMALL），而注册窗口类时
+	// IconSm = IDI_APPLICATION（系统默认占位）→ 标题栏左侧小图标是浅色方块。
+	// 我们补 ICON_SMALL：用 Wails v3 默认窗口类名 WailsWebviewWindow 找 HWND。
 	if runtime.GOOS == "windows" {
-		wndClass := config.App.Name + "Wnd"
-		setWindowIconAfterCreate(wndClass, config.App.Custom.Window.Title, appIcon)
+		setWindowIconAfterCreate("WailsWebviewWindow", config.App.Custom.Window.Title, appIcon)
 	}
 
 	// 阻塞直到窗口关闭

@@ -70,14 +70,14 @@ func init() {
 
 // setDefaults 设置默认配置（wails.json 不存在或读取失败时使用）。
 func setDefaults() {
-	App = AppConfig{
-		Name:        "MyApp",
-		Description: "Wails v3 Desktop App",
-		Custom: CustomConfig{
-			Window: WindowConfig{
-				Title: "MyApp", Width: 1100, Height: 720,
-				MinWidth: 900, MinHeight: 600, Frameless: true,
-			},
+		App = AppConfig{
+			Name:        "Loadout",
+			Description: "Loadout Desktop",
+			Custom: CustomConfig{
+				Window: WindowConfig{
+					Title: "Loadout", Width: 1100, Height: 720,
+					MinWidth: 900, MinHeight: 600, Frameless: false,
+				},
 			Server: ServerConfig{Port: 8866},
 			Icons: IconsConfig{
 				Exe:      "icons/appicon.ico",

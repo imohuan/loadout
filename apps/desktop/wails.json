@@ -1,15 +1,15 @@
 {
-  "name": "myapp",
-  "description": "Wails v3 desktop app template",
+  "name": "loadout",
+  "description": "Loadout Desktop",
   "author": {},
   "custom": {
     "window": {
-      "title": "MyApp",
+      "title": "Loadout",
       "width": 1100,
       "height": 720,
       "minWidth": 900,
       "minHeight": 600,
-      "frameless": true
+      "frameless": false
     },
     "server": {
       "port": 8866

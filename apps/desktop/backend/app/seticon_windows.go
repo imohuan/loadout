@@ -1,8 +1,14 @@
 //go:build windows
 
-// Package app Windows 任务栏/Alt+Tab 图标设置（WM_SETICON）。
-// Wails v3 的 application.Options.Icon 在 Windows 上只影响 system tray，
-// 需要额外通过 Win32 API 设置任务栏和 Alt+Tab 图标。
+// Package app Windows 任务栏/Alt+Tab/标题栏图标设置（WM_SETICON）。
+//
+// Wails v3 alpha 的 webview_window_windows.setIcon 只设 ICON_BIG（Alt+Tab 大图标），
+// 而 application.init() 注册窗口类时 IconSm = IDI_APPLICATION（系统默认占位），
+// 导致窗口标题栏左侧小图标 + 任务栏小图标一直是浅色方块。
+// 本文件补 ICON_SMALL（+ 重复 ICON_BIG 兜底），用 Wails v3 默认窗口类名
+// "WailsWebviewWindow" 找 HWND。
+// application.Options.Icon 在 Wails v3 上不直接驱动 webview2 窗口图标（issue #3487），
+// 所以传 embed 的 appicon.ico bytes（icons.AppIcon）作为图标源。
 package app
 
 import (
