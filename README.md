@@ -43,6 +43,57 @@ go build -o loadout ./apps/server
 └── admin-password   # 首启随机密码（改密后自动删除）
 ```
 
+## 部署（Release 产物 / 云端）
+
+打 tag 发版后（`git tag v0.1.0 && git push origin v0.1.0`），GitHub Actions 自动产出并上传到 [Releases](https://github.com/imohuan/loadout/releases)：
+
+| 产物 | 用途 |
+|---|---|
+| `loadout-server-linux-amd64.tar.gz` | **Linux 无 UI 纯服务版**（单二进制 + systemd 单元），适合云服务器部署 |
+| `loadout-desktop-windows-amd64.exe` | Windows 桌面版（内嵌服务端，双击即用） |
+
+### Linux 一键部署脚本（推荐）
+
+```bash
+curl -sL https://raw.githubusercontent.com/imohuan/loadout/main/scripts/deploy-loadout.sh -o deploy-loadout.sh
+bash deploy-loadout.sh                 # 默认 v0.1.0，端口 18000
+# bash deploy-loadout.sh v0.2.0 8080   # 指定版本与端口
+```
+
+脚本自动完成：下载产物 → 解压 → 安装到 `/usr/local/bin/loadout` → 生成 systemd 单元（`/etc/systemd/system/loadout.service`）→ 建 `loadout` 运行用户 → 开机自启并启动。
+
+### 手动部署
+
+```bash
+cd /opt/services/loadout
+curl -L -o loadout.tar.gz https://github.com/imohuan/loadout/releases/download/v0.1.0/loadout-server-linux-amd64.tar.gz
+tar -xzf loadout.tar.gz
+
+sudo cp loadout-server/loadout /usr/local/bin/
+sudo cp loadout-server/loadout.service /etc/systemd/system/
+sudo useradd -r -m loadout
+# 改端口/数据目录：vim /etc/systemd/system/loadout.service
+sudo chown -R loadout:loadout /opt/services/loadout
+sudo systemctl daemon-reload && sudo systemctl enable --now loadout
+```
+
+### 部署要点
+
+- **端口**：默认 `:18000`（避免与常见 3000/8080 冲突）。部署前先 `ss -tlnp` 确认端口没被占用；如需改端口，编辑 `loadout.service` 的 `LOADOUT_SERVER_ADDR` 后 `systemctl daemon-reload && systemctl restart loadout`。
+- **数据目录**：`/opt/services/loadout`（可用 `LOADOUT_HOME_DIR` 环境变量改）。
+- **首启密码**：首次启动自动生成随机管理员密码，位置 `$LOADOUT_HOME_DIR/admin-password`，账号 `admin`。
+- **验证**：`curl http://localhost:<端口>`；浏览器访问 `http://服务器IP:<端口>` 进管理后台（云服务器安全组需放行端口）。
+- **运维**：`systemctl status loadout` / `restart` / `journalctl -u loadout -f`。
+
+### 快速试跑（不装 systemd）
+
+```bash
+cd /opt/services/loadout
+LOADOUT_HOME_DIR=/opt/services/loadout \
+LOADOUT_SERVER_ADDR=:18000 \
+./loadout-server/loadout
+```
+
 ## 配置
 
 程序级配置在 `core/config/config.go`，全部支持**环境变量优先、默认值兜底**（前缀 `LOADOUT_`）：
@@ -86,8 +137,8 @@ go test ./...
 # 静态检查
 go vet ./...
 
-# 前端（可选，构建后覆盖 web/dist）
-cd web && npm install && npm run build
+# 前端（可选，构建后覆盖 frontend/dist）
+cd frontend && pnpm install && pnpm run build
 ```
 
 ## 目录结构
@@ -96,7 +147,8 @@ cd web && npm install && npm run build
 core/       # 核心框架（config/plugin/logger/store/auth/linkfs/mcpkit，零业务逻辑）
 plugins/    # 业务插件（gateway-keys/admin-auth/admin-api/model-gateway/vision/mcp-hub/skills）
 apps/server # Linux 入口（单二进制 + go:embed 前端）
-web/        # Vue 3 + Vite 管理后台
+frontend/   # Vue 3 + Vite 管理后台
+apps/desktop # Windows 桌面端（Wails v3）
 testkit/    # 测试基建（fake-llm / fake-mcp）
 scripts/    # 构建脚本
 ```
