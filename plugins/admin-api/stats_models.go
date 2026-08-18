@@ -81,18 +81,29 @@ func (s *Service) handleStatsModels(w http.ResponseWriter, r *http.Request) {
 			days = n
 		}
 	}
-	logs, err := listRouteRequests(r.Context(), s.sqlDB, days)
+	// tz 可由前端按浏览器时区传入（如 "Asia/Shanghai"）；缺省用服务器本地时区，
+	// 保证 "今天 00:00" 与用户视角一致——避免 UTC 0:00–8:00（GMT+8 区）的请求被算成"昨天"。
+	loc := time.Local
+	if v := r.URL.Query().Get("tz"); v != "" {
+		if l, err := time.LoadLocation(v); err == nil {
+			loc = l
+		}
+	}
+	now := time.Now().In(loc)
+	logs, err := listRouteRequests(r.Context(), s.sqlDB, days, loc, now)
 	if err != nil {
 		s.writeServerError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, aggregateModelStats(logs, days))
+	writeJSON(w, http.StatusOK, aggregateModelStats(logs, days, loc, now))
 }
 
 // listRouteRequests 拉取最近 days 天（含今天）的 route_requests 全量，按 started_at 升序。
-func listRouteRequests(ctx context.Context, database *sql.DB, days int) ([]contracts.RouteRequestView, error) {
-	start := time.Now().UTC().AddDate(0, 0, -(days - 1))
-	cutoff := time.Date(start.Year(), start.Month(), start.Day(), 0, 0, 0, 0, time.UTC)
+// cutoff 按 loc 内的"今天 00:00 - (days-1) 天"算，转 UTC 后传给 SQL——保证同一天边界
+// 与前端日历一致：0:00–8:00（GMT+8 区）的请求仍然归到本地"今天"而不是 UTC 昨天。
+func listRouteRequests(ctx context.Context, database *sql.DB, days int, loc *time.Location, now time.Time) ([]contracts.RouteRequestView, error) {
+	startLocal := dayStart(now, loc).AddDate(0, 0, -(days - 1))
+	cutoff := startLocal.UTC()
 	rows, err := database.QueryContext(ctx, `SELECT request_id, requested_model, COALESCE(virtual_model, ''), started_at, finished_at, result, COALESCE(final_model, ''), COALESCE(final_channel_id, ''), COALESCE(http_status, 0), COALESCE(duration_ms, 0), error_message, COALESCE(stream, 0), COALESCE(prompt_tokens, 0), COALESCE(completion_tokens, 0), COALESCE(cached_tokens, 0) FROM route_requests WHERE started_at >= ? ORDER BY started_at`, cutoff.Format(time.RFC3339Nano))
 	if err != nil {
 		return nil, err
@@ -139,7 +150,9 @@ func scanRouteRequest(sc routeRequestScanner) (contracts.RouteRequestView, error
 
 // aggregateModelStats 把 route_requests 日志聚合为模型维度统计（纯函数，便于单测）。
 // days 用于 trend 补满（缺日期全 0）；calendar 不补 0，只含当日有请求的日子。
-func aggregateModelStats(logs []contracts.RouteRequestView, days int) *ModelStats {
+// loc 用于 day key 格式化与 trend 序列生成，使"今天"边界与用户视角一致；now 由 caller
+// 注入（handler 传 time.Now()，测试传固定值），便于断言不依赖墙钟。
+func aggregateModelStats(logs []contracts.RouteRequestView, days int, loc *time.Location, now time.Time) *ModelStats {
 	out := &ModelStats{
 		Summary:   ModelSummary{},
 		HitRate:   HitRate{},
@@ -149,7 +162,7 @@ func aggregateModelStats(logs []contracts.RouteRequestView, days int) *ModelStat
 	}
 	n := len(logs)
 	if n == 0 {
-		out.Trend = fillTrend(nil, days)
+		out.Trend = fillTrend(nil, days, loc, now)
 		return out
 	}
 
@@ -172,7 +185,7 @@ func aggregateModelStats(logs []contracts.RouteRequestView, days int) *ModelStat
 			durationSum += row.Duration.Milliseconds()
 		}
 
-		date := row.StartedAt.UTC().Format("2006-01-02")
+		date := row.StartedAt.In(loc).Format("2006-01-02")
 		day := trend[date]
 		if day == nil {
 			day = &ModelTrendDay{Date: date}
@@ -219,17 +232,18 @@ func aggregateModelStats(logs []contracts.RouteRequestView, days int) *ModelStat
 		Output: 0,
 		Total:  ratio(cached, prompt+completion),
 	}
-	out.Trend = fillTrend(trend, days)
+	out.Trend = fillTrend(trend, days, loc, now)
 	out.Calendar = sortCalendar(calendar)
 	out.ModelDist = sortModelDist(dist)
 	return out
 }
 
 // fillTrend 生成最近 days 天的日期序列，缺日期全 0（保证折线图横轴连续）。
-func fillTrend(seen map[string]*ModelTrendDay, days int) []ModelTrendDay {
+// 起点 = loc 内"今天 00:00 - (days-1) 天"，终点 = loc 内"今天 00:00"，
+// 使 X 轴末日始终是 loc 视角的"今天"，与日历组件 isToday 高亮一致。
+func fillTrend(seen map[string]*ModelTrendDay, days int, loc *time.Location, now time.Time) []ModelTrendDay {
+	start := dayStart(now, loc).AddDate(0, 0, -(days - 1))
 	out := make([]ModelTrendDay, 0, days)
-	start := time.Now().UTC().AddDate(0, 0, -(days - 1))
-	start = time.Date(start.Year(), start.Month(), start.Day(), 0, 0, 0, 0, time.UTC)
 	for i := 0; i < days; i++ {
 		date := start.AddDate(0, 0, i).Format("2006-01-02")
 		if day, ok := seen[date]; ok {
@@ -239,6 +253,12 @@ func fillTrend(seen map[string]*ModelTrendDay, days int) []ModelTrendDay {
 		}
 	}
 	return out
+}
+
+// dayStart 返回 t 所在时区"当天 00:00:00"的 time.Time（loc 内零点）。
+func dayStart(t time.Time, loc *time.Location) time.Time {
+	in := t.In(loc)
+	return time.Date(in.Year(), in.Month(), in.Day(), 0, 0, 0, 0, loc)
 }
 
 // sortCalendar 按日期升序输出日历点，不补 0（前端热力图只看有数据的日子）。

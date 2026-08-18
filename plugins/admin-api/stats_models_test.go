@@ -23,6 +23,10 @@ func mkView(result, finalModel string, duration time.Duration, prompt, completio
 	}
 }
 
+// fixedNowUTC 全部测试共用固定基准时间（UTC 2026-08-15 06:00），
+// 避免依赖墙钟，便于断言 date key / trend 终点。
+var fixedNowUTC = time.Date(2026, 8, 15, 6, 0, 0, 0, time.UTC)
+
 func almostEqual(a, b float64) bool { return math.Abs(a-b) < 1e-9 }
 
 // TestAggregateModelStatsEmpty 空数据：summary 全 0、success_rate=0、hit_rate 全 0、
@@ -33,7 +37,7 @@ func TestAggregateModelStatsEmpty(t *testing.T) {
 		"empty": {},
 	} {
 		t.Run(name, func(t *testing.T) {
-			out := aggregateModelStats(logs, 30)
+			out := aggregateModelStats(logs, 30, time.UTC, fixedNowUTC)
 			s := out.Summary
 			if s.Requests != 0 || s.PromptTokens != 0 || s.CompletionTokens != 0 ||
 				s.CachedTokens != 0 || s.TotalTokens != 0 || s.Failed != 0 {
@@ -66,7 +70,7 @@ func TestAggregateModelStatsEmpty(t *testing.T) {
 // TestAggregateModelStatsBasic 基本聚合：success + 非 success、不同日期、不同 final_model、
 // 有 cached_tokens → 校验 summary、hit_rate、model_dist 排序。
 func TestAggregateModelStatsBasic(t *testing.T) {
-	now := time.Now().UTC()
+	now := fixedNowUTC
 	yesterday := now.AddDate(0, 0, -1)
 	logs := []contracts.RouteRequestView{
 		mkView("success", "gpt-4o", 120*time.Millisecond, 1000, 200, 400, now),
@@ -74,7 +78,7 @@ func TestAggregateModelStatsBasic(t *testing.T) {
 		mkView("success", "gpt-4o", 60*time.Millisecond, 100, 0, 0, now),
 	}
 
-	out := aggregateModelStats(logs, 30)
+	out := aggregateModelStats(logs, 30, time.UTC, now)
 
 	s := out.Summary
 	if s.Requests != 3 || s.PromptTokens != 1600 || s.CompletionTokens != 300 ||
@@ -125,10 +129,10 @@ func TestAggregateModelStatsBasic(t *testing.T) {
 // （但有 cached_tokens>0）→ hit_rate 各值不 panic、返回 0 或合理值。
 func TestAggregateModelStatsDenominatorZero(t *testing.T) {
 	logs := []contracts.RouteRequestView{
-		mkView("success", "gpt-4o", 100*time.Millisecond, 0, 0, 100, time.Now().UTC()),
+		mkView("success", "gpt-4o", 100*time.Millisecond, 0, 0, 100, fixedNowUTC),
 	}
 
-	out := aggregateModelStats(logs, 30)
+	out := aggregateModelStats(logs, 30, time.UTC, fixedNowUTC)
 
 	if out.HitRate.Input != 0 || out.HitRate.Output != 0 || out.HitRate.Total != 0 {
 		t.Fatalf("分母为 0 时 hit_rate 应全 0，got %+v", out.HitRate)
@@ -144,7 +148,7 @@ func TestAggregateModelStatsDenominatorZero(t *testing.T) {
 // TestAggregateModelStatsFinalModelFallback final_model 空兜底：
 // FinalModel="" 但有 RequestedModel → model_dist 用 requested_model；都空 → unknown。
 func TestAggregateModelStatsFinalModelFallback(t *testing.T) {
-	now := time.Now().UTC()
+	now := fixedNowUTC
 	logs := []contracts.RouteRequestView{
 		{RequestID: "r1", RequestedModel: "gpt-4o", StartedAt: now, Result: "success",
 			Duration: contracts.DurationMS(10 * time.Millisecond), PromptTokens: 100, CompletionTokens: 10},
@@ -152,7 +156,7 @@ func TestAggregateModelStatsFinalModelFallback(t *testing.T) {
 			Duration: contracts.DurationMS(10 * time.Millisecond), PromptTokens: 50, CompletionTokens: 5},
 	}
 
-	out := aggregateModelStats(logs, 30)
+	out := aggregateModelStats(logs, 30, time.UTC, now)
 
 	if len(out.ModelDist) != 2 {
 		t.Fatalf("model_dist 应有 2 项，got %+v", out.ModelDist)
@@ -167,11 +171,12 @@ func TestAggregateModelStatsFinalModelFallback(t *testing.T) {
 
 // TestAggregateModelStatsTrendFill trend 补满：只有 1 天数据，days=30 → trend 长度 30，其余天全 0。
 func TestAggregateModelStatsTrendFill(t *testing.T) {
+	now := fixedNowUTC
 	logs := []contracts.RouteRequestView{
-		mkView("success", "gpt-4o", 100*time.Millisecond, 100, 20, 30, time.Now().UTC()),
+		mkView("success", "gpt-4o", 100*time.Millisecond, 100, 20, 30, now),
 	}
 
-	out := aggregateModelStats(logs, 30)
+	out := aggregateModelStats(logs, 30, time.UTC, now)
 
 	if len(out.Trend) != 30 {
 		t.Fatalf("trend 长度应为 30，got %d", len(out.Trend))
@@ -193,25 +198,81 @@ func TestAggregateModelStatsTrendFill(t *testing.T) {
 	}
 }
 
+// TestAggregateModelStatsLocalDayKey 跨时区归类：UTC 18 日 18:00 = 北京时间 19 日 02:00，
+// 应当按 location=Asia/Shanghai 归到 2026-08-19，不应归到 2026-08-18。
+// 复现 bug：原实现硬编 UTC，导致 0:00–8:00（GMT+8）的请求都被算到前一天。
+func TestAggregateModelStatsLocalDayKey(t *testing.T) {
+	shanghai, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Skipf("本机没有 Asia/Shanghai 时区数据，跳过：%v", err)
+	}
+
+	// now 固定在 UTC 2026-08-18 18:00 = 北京时间 2026-08-19 02:00 CST，
+	// 让"今天"在 shanghai 下是 2026-08-19，避免依赖墙钟。
+	nowUTC := time.Date(2026, 8, 18, 18, 0, 0, 0, time.UTC)
+	nowInShanghai := nowUTC.In(shanghai) // 2026-08-19 02:00 CST
+
+	// 4 条请求，UTC 时间都在 2026-08-18 16:00–18:30 区间；
+	// 对应北京时间 2026-08-19 00:00–02:30，全部应当归到 2026-08-19。
+	mkUTC := func(h, m int) time.Time {
+		return time.Date(2026, 8, 18, h, m, 0, 0, time.UTC)
+	}
+	logs := []contracts.RouteRequestView{
+		mkView("success", "gpt-5.6-luna", 1*time.Second, 1000, 200, 0, mkUTC(16, 0)),
+		mkView("success", "gpt-5.6-luna", 1*time.Second, 500, 100, 0, mkUTC(16, 30)),
+		mkView("success", "doubao-seed", 1*time.Second, 1500, 300, 0, mkUTC(17, 30)),
+		mkView("success", "doubao-seed", 1*time.Second, 297, 82, 0, mkUTC(18, 30)),
+	}
+
+	out := aggregateModelStats(logs, 30, shanghai, nowInShanghai)
+
+	if len(out.Calendar) != 1 {
+		t.Fatalf("calendar 应只有 1 天（本地 2026-08-19），got %+v", out.Calendar)
+	}
+	if got := out.Calendar[0]; got.Date != "2026-08-19" || got.Tokens != 3979 {
+		t.Fatalf("calendar[0] 应为 2026-08-19 / 3979 tokens，got %+v", got)
+	}
+
+	if len(out.Trend) != 30 {
+		t.Fatalf("trend 长度应为 30，got %d", len(out.Trend))
+	}
+	last := out.Trend[len(out.Trend)-1]
+	if last.Date != "2026-08-19" || last.TotalTokens != 3979 {
+		t.Fatalf("trend 最后一天应为 2026-08-19 / 3979 tokens，got %+v", last)
+	}
+}
+
+// TestAggregateModelStatsTrendFillEmpty 时区不影响空数据下的 trend 长度。
+func TestAggregateModelStatsTrendFillEmpty(t *testing.T) {
+	shanghai, _ := time.LoadLocation("Asia/Shanghai")
+	if shanghai == nil {
+		t.Skip("缺 Asia/Shanghai 时区数据，跳过")
+	}
+	out := aggregateModelStats(nil, 30, shanghai, fixedNowUTC)
+	if len(out.Trend) != 30 {
+		t.Fatalf("trend 应补满 30，got %d", len(out.Trend))
+	}
+}
+
 // TestAggregateModelStatsAvgDurationExcludesRunning 平均耗时：
 // 含 result="running" 的记录不计入均值；全 running → 返回 0。
 func TestAggregateModelStatsAvgDurationExcludesRunning(t *testing.T) {
 	t.Run("mixed", func(t *testing.T) {
-		now := time.Now().UTC()
+		now := fixedNowUTC
 		logs := []contracts.RouteRequestView{
 			mkView("success", "gpt-4o", 100*time.Millisecond, 100, 10, 0, now),
 			mkView("running", "gpt-4o", 500*time.Millisecond, 200, 20, 0, now),
 		}
-		out := aggregateModelStats(logs, 30)
+		out := aggregateModelStats(logs, 30, time.UTC, now)
 		if !almostEqual(out.Summary.AvgDurationMS, 100) {
 			t.Fatalf("running 记录不应计入均值，应为 100，got %v", out.Summary.AvgDurationMS)
 		}
 	})
 	t.Run("all-running", func(t *testing.T) {
 		logs := []contracts.RouteRequestView{
-			mkView("running", "gpt-4o", 500*time.Millisecond, 100, 10, 0, time.Now().UTC()),
+			mkView("running", "gpt-4o", 500*time.Millisecond, 100, 10, 0, fixedNowUTC),
 		}
-		out := aggregateModelStats(logs, 30)
+		out := aggregateModelStats(logs, 30, time.UTC, fixedNowUTC)
 		if out.Summary.AvgDurationMS != 0 {
 			t.Fatalf("全 running 时均值应为 0，got %v", out.Summary.AvgDurationMS)
 		}

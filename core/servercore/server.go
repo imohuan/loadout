@@ -23,12 +23,12 @@ import (
 	"loadout/core/logger"
 	"loadout/core/plugin"
 	"loadout/core/store"
+	"loadout/frontend"
 	"loadout/plugins"
 	adminapi "loadout/plugins/admin-api"
 	adminauth "loadout/plugins/admin-auth"
 	gatewaykeys "loadout/plugins/gateway-keys"
 	mcphub "loadout/plugins/mcp-hub"
-	"loadout/web"
 )
 
 // newLogger 从 config 构建日志器（SourceRoot = 工作目录，用于裁出仓库相对路径）。
@@ -118,7 +118,7 @@ func assemble(lg *slog.Logger, st *store.Store) (*plugin.Assembly, http.Handler,
 	mux.Handle("/mcp/", keys.MCPKeyMiddleware(mcpHandler))
 
 	// 管理后台静态资源（其余路径，公开；数据走 /api/* 的 session 认证）。
-	dist, err := fs.Sub(web.Dist, "dist")
+	dist, err := fs.Sub(frontend.Dist, "dist")
 	if err != nil {
 		return nil, nil, err
 	}

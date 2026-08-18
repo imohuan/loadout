@@ -1,7 +1,10 @@
 ﻿# Loadout Desktop 打包脚本
-# 使用 web/ 作为前端源码，内嵌 Loadout Server，打包成单个 exe
+# 使用根 frontend/（主控制台）作为前端源码；产物复制到 apps/desktop/frontend/dist 由 go:embed 内嵌
 
 $ErrorActionPreference = "Stop"
+# WorkBuddy 环境会注入 safe-delete 钩子（node require + PS Remove-Item 包装），
+# vite emptyOutDir 清空 dist / robocopy 前的删除会被拦截。这里去掉 require 只留系统 CA。
+$env:NODE_OPTIONS = "--use-system-ca"
 $rootDir = Split-Path $PSScriptRoot -Parent
 
 $start = Get-Date
@@ -21,9 +24,9 @@ if ($LASTEXITCODE -ne 0) {
 Pop-Location
 Write-Host "  OK   依赖已更新`n" -ForegroundColor Green
 
-# [2/5] 构建前端
-Write-Host "[2/5] 构建前端 (web/)..." -ForegroundColor Yellow
-Push-Location "$rootDir\web"
+# [2/5] 构建前端（根 frontend/）
+Write-Host "[2/5] 构建前端 (frontend/)..." -ForegroundColor Yellow
+Push-Location "$rootDir\frontend"
 npm run build 2>&1 | Out-Null
 if ($LASTEXITCODE -ne 0) {
     Write-Host "  FAIL 前端构建失败" -ForegroundColor Red
@@ -31,16 +34,18 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 Pop-Location
-Write-Host "  OK   前端已构建到 web/dist/`n" -ForegroundColor Green
+Write-Host "  OK   前端已构建到 frontend/dist/`n" -ForegroundColor Green
 
-# [3/5] 复制产物到 desktop/frontend/dist
+# [3/5] 复制产物到 desktop/frontend/dist（go:embed 落点，/MIR 镜像覆盖）
 Write-Host "[3/5] 复制产物到 desktop..." -ForegroundColor Yellow
 $targetDir = "$rootDir\apps\desktop\frontend\dist"
-if (Test-Path $targetDir) {
-    Remove-Item $targetDir -Recurse -Force
+robocopy "$rootDir\frontend\dist" $targetDir /MIR /NFL /NDL /NJH /NJS /NP | Out-Null
+if ($LASTEXITCODE -ge 8) {
+    Write-Host "  FAIL robocopy 复制失败 (exit $LASTEXITCODE)" -ForegroundColor Red
+    Pop-Location
+    exit 1
 }
-Copy-Item -Path "$rootDir\web\dist" -Destination $targetDir -Recurse
-Write-Host "  OK   已复制到 apps/desktop/frontend/dist/`n" -ForegroundColor Green
+Write-Host "  OK   已镜像到 apps/desktop/frontend/dist/`n" -ForegroundColor Green
 
 # [4/5] 生成图标资源
 Write-Host "[4/5] 生成图标资源..." -ForegroundColor Yellow

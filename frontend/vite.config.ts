@@ -7,7 +7,7 @@ import tailwindcss from '@tailwindcss/vite'
 export default defineConfig({
   plugins: [vue(), tailwindcss()],
   build: {
-    outDir: '../web/dist',
+    outDir: 'dist',
     emptyOutDir: true,
   },
   resolve: {

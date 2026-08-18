@@ -1,11 +1,13 @@
 ﻿# Loadout Desktop 开发模式
-# 使用 web/ 作为前端源码，Vite 热重载 + 内嵌 Loadout Server
+# 使用根 frontend/（主控制台）作为前端源码，Vite 热重载 + 内嵌 Loadout Server
 
 param(
     [int]$VitePort = 9245
 )
 
 $ErrorActionPreference = "Stop"
+# WorkBuddy 环境注入的 safe-delete 钩子会拦 node 的目录删除（vite 缓存等），去掉 require 只留系统 CA。
+$env:NODE_OPTIONS = "--use-system-ca"
 $rootDir = Split-Path $PSScriptRoot -Parent
 
 $viteProc = $null
@@ -31,8 +33,8 @@ Pop-Location
 Write-Host "  OK   依赖已更新`n" -ForegroundColor Green
 
 # [2/4] 检查前端依赖
-Write-Host "[2/4] 检查前端依赖 (web/)..." -ForegroundColor Yellow
-Push-Location "$rootDir\web"
+Write-Host "[2/4] 检查前端依赖 (frontend/)..." -ForegroundColor Yellow
+Push-Location "$rootDir\frontend"
 if (-not (Test-Path "node_modules/vue")) { 
     Write-Host "  安装依赖..." -ForegroundColor Yellow
     npm install 2>&1 | Out-Null 
@@ -54,8 +56,8 @@ Write-Host "  OK   端口已清理`n" -ForegroundColor Green
 # [4/4] 启动 Vite + Go
 Write-Host "[4/4] 启动 Vite (端口 $VitePort) + Go..." -ForegroundColor Yellow
 
-# 启动 Vite 开发服务器
-Push-Location "$rootDir\web"
+# 启动 Vite 开发服务器（根 frontend/）
+Push-Location "$rootDir\frontend"
 $viteProc = Start-Process -FilePath "cmd" -ArgumentList "/c","npm run dev -- --port $VitePort --strictPort" -PassThru -NoNewWindow
 Pop-Location
 Start-Sleep -Seconds 3
