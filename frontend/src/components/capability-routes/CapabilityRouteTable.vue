@@ -23,6 +23,12 @@ function channelName(channels: Channel[], id?: string) {
 function viaLabel(channels: Channel[], via: { via_model: string; channel_id?: string }) {
   return via.via_model + (via.channel_id ? ` @${channelName(channels, via.channel_id)}` : '')
 }
+// 目标渠道展示：`*` = 通用（全匹配）；空 = 全渠道；否则渠道名列表。
+function channelScopeLabel(channels: Channel[], ids?: string[]) {
+  if (!ids || !ids.length) return '全渠道'
+  if (ids.includes('*')) return '通用（全匹配）'
+  return ids.map((id) => channels.find((c) => c.id === id)?.name || id).join('、')
+}
 </script>
 
 <template>
@@ -39,6 +45,7 @@ function viaLabel(channels: Channel[], via: { via_model: string; channel_id?: st
               <TableRow>
                 <TableHead>目标模型</TableHead>
                 <TableHead class="w-16 text-center">数量</TableHead>
+                <TableHead>渠道</TableHead>
                 <TableHead>能力</TableHead>
                 <TableHead>路由方式</TableHead>
                 <TableHead>视觉候选</TableHead>
@@ -46,7 +53,16 @@ function viaLabel(channels: Channel[], via: { via_model: string; channel_id?: st
               </TableRow>
             </TableHeader>
             <TableBody>
-              <TableRow v-for="route in routes" :key="(route.models || []).join(',') + ':' + route.capability">
+              <TableRow
+                v-for="route in routes"
+                :key="
+                  (route.models || []).join(',') +
+                  ':' +
+                  (route.channel_ids || []).join(',') +
+                  ':' +
+                  route.capability
+                "
+              >
                 <TableCell class="max-w-md text-sm text-muted-foreground">
                   <div
                     class="whitespace-pre-wrap break-words [display:-webkit-box] [-webkit-line-clamp:2] [-webkit-box-orient:vertical] overflow-hidden"
@@ -57,6 +73,14 @@ function viaLabel(channels: Channel[], via: { via_model: string; channel_id?: st
                 </TableCell>
                 <TableCell class="text-center tabular-nums">
                   <div class="min-w-[100px]">{{ route.models?.length || 0 }}</div>
+                </TableCell>
+                <TableCell class="max-w-xs text-sm text-muted-foreground">
+                  <div
+                    class="whitespace-pre-wrap break-words [display:-webkit-box] [-webkit-line-clamp:2] [-webkit-box-orient:vertical] overflow-hidden"
+                    :title="channelScopeLabel(channels, route.channel_ids)"
+                  >
+                    {{ channelScopeLabel(channels, route.channel_ids) }}
+                  </div>
                 </TableCell>
                 <TableCell>
                   <Badge variant="outline">{{ route.capability }}</Badge>

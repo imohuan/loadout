@@ -19,13 +19,18 @@ const props = defineProps<{
 const emit = defineEmits<{ save: [value: CapabilityRoute]; cancel: [] }>()
 const open = defineModel<boolean>('open', { required: true })
 
+// 通用全匹配渠道：路由对所有渠道生效（与模型 `*` 通配同语义）。
+const ALL_CHANNELS = '*'
+
 const form = reactive<{
   models: string[]
+  channel_ids: string[]
   capability: string
   route: string
   viaOptions: ViaOption[]
 }>({
   models: [],
+  channel_ids: [],
   capability: 'vision',
   route: 'proxy',
   viaOptions: [{ via_model: '', channel_id: '' }],
@@ -46,6 +51,9 @@ function modelsForChannel(channelId: string): string[] {
   }
   return allModels.value
 }
+function channelName(id: string) {
+  return props.channels.find((c) => c.id === id)?.name || id
+}
 
 // 视觉候选每行的下拉开关与搜索词（必须在 watch 前声明，immediate 回调会用到）。
 const viaOpen = reactive<boolean[]>([false])
@@ -56,6 +64,7 @@ watch(
   (route) => {
     Object.assign(form, {
       models: route?.models ? [...route.models] : [],
+      channel_ids: route?.channel_ids?.length ? [...route.channel_ids] : [],
       capability: route?.capability || 'vision',
       route: route?.route || 'proxy',
       viaOptions: route?.via_options?.length
@@ -74,6 +83,38 @@ watch(
   },
   { immediate: true },
 )
+
+// ===== 目标渠道（多选；`*` = 通用全匹配，与具体渠道互斥；空 = 全渠道，兼容旧数据）=====
+const channelOpen = ref(false)
+const isAllChannels = computed(() => form.channel_ids.includes(ALL_CHANNELS))
+function toggleChannel(id: string) {
+  if (id === ALL_CHANNELS) {
+    // 通用全匹配独占：选中则清空具体渠道，再次点击回到空（仍为全渠道）。
+    form.channel_ids = isAllChannels.value ? [] : [ALL_CHANNELS]
+    return
+  }
+  // 选具体渠道时移除 `*`（从全匹配切到限定渠道）。
+  const next = form.channel_ids.filter((c) => c !== ALL_CHANNELS)
+  const i = next.indexOf(id)
+  if (i >= 0) next.splice(i, 1)
+  else next.push(id)
+  form.channel_ids = next
+}
+const channelTriggerLabel = computed(() => {
+  if (isAllChannels.value || !form.channel_ids.length) return '通用（全匹配）'
+  const names = form.channel_ids.map((id) => channelName(id)).join('、')
+  return `已选 ${form.channel_ids.length} 个渠道：${names}`
+})
+// 目标模型候选：按所选渠道过滤（通用/空 = 全渠道模型并集）。
+const candidateModels = computed(() => {
+  if (isAllChannels.value || !form.channel_ids.length) return allModels.value
+  const set = new Set<string>()
+  for (const id of form.channel_ids) {
+    const ch = props.channels.find((c) => c.id === id)
+    for (const model of ch?.models || []) set.add(model)
+  }
+  return [...set].sort()
+})
 
 // ===== 目标模型（下拉多选 + 搜索 + 自定义）=====
 const targetOpen = ref(false)
@@ -94,11 +135,11 @@ function onTargetSearchEnter() {
   if (!targetSearch.value.trim()) return
   addCustomModel()
 }
-// 目标模型下拉内的过滤列表（tag 网格用）。
+// 目标模型下拉内的过滤列表（tag 网格用，基于渠道过滤后的候选）。
 const filteredModels = computed(() => {
   const q = targetSearch.value.trim().toLowerCase()
-  if (!q) return allModels.value
-  return allModels.value.filter((m) => m.toLowerCase().includes(q))
+  if (!q) return candidateModels.value
+  return candidateModels.value.filter((m) => m.toLowerCase().includes(q))
 })
 
 // ===== 视觉候选（下拉单选 + 搜索 + 自定义）=====
@@ -163,8 +204,13 @@ function submit() {
           .map((o) => ({ via_model: o.via_model.trim(), channel_id: o.channel_id || '' }))
           .filter((o) => o.via_model)
       : []
+  // channel_ids 规范化：含 `*` 时独占（通用全匹配），其余去重。
+  const channel_ids = isAllChannels.value
+    ? [ALL_CHANNELS]
+    : [...new Set(form.channel_ids)]
   emit('save', {
     models: [...form.models],
+    channel_ids,
     capability: form.capability,
     route: form.route,
     via_options: viaOptions,
@@ -182,6 +228,66 @@ function submit() {
         </DialogDescription>
       </DialogHeader>
       <form class="space-y-4" @submit.prevent="submit">
+        <div class="space-y-2">
+          <Label>目标渠道</Label>
+          <Popover v-model:open="channelOpen">
+            <PopoverTrigger as-child>
+              <Button type="button" variant="outline" class="w-full justify-between font-normal">
+                <span class="truncate text-muted-foreground">{{ channelTriggerLabel }}</span>
+                <RiSearchLine class="size-4 shrink-0 opacity-50" />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent class="w-[var(--reka-popper-anchor-width)] p-2" align="start">
+              <div class="space-y-2">
+                <div
+                  class="flex max-h-56 flex-wrap gap-1.5 overflow-y-auto rounded-md border border-border p-2"
+                >
+                  <Button
+                    type="button"
+                    size="sm"
+                    :variant="isAllChannels ? 'default' : 'outline'"
+                    @click="toggleChannel(ALL_CHANNELS)"
+                    >通用（全匹配）</Button
+                  >
+                  <Button
+                    v-for="channel in channels"
+                    :key="channel.id"
+                    type="button"
+                    size="sm"
+                    :variant="
+                      !isAllChannels && form.channel_ids.includes(channel.id)
+                        ? 'default'
+                        : 'outline'
+                    "
+                    @click="toggleChannel(channel.id)"
+                    >{{ channel.name }}</Button
+                  >
+                </div>
+                <p class="text-xs text-muted-foreground">
+                  通用（全匹配）= 路由对所有渠道生效；也可多选/单选具体渠道，仅这些渠道上的目标模型命中。
+                </p>
+              </div>
+            </PopoverContent>
+          </Popover>
+          <div v-if="form.channel_ids.length" class="flex flex-wrap gap-1.5">
+            <Badge
+              v-for="id in form.channel_ids"
+              :key="id"
+              variant="secondary"
+              class="gap-1 py-0 pr-1"
+            >
+              {{ id === ALL_CHANNELS ? '通用（全匹配）' : channelName(id) }}
+              <button
+                type="button"
+                class="rounded-full p-0.5 hover:bg-muted hover:text-destructive"
+                aria-label="移除"
+                @click="toggleChannel(id)"
+              >
+                <RiCloseLine size="12" />
+              </button>
+            </Badge>
+          </div>
+        </div>
         <div class="space-y-2">
           <Label>目标模型</Label>
           <Popover v-model:open="targetOpen">
@@ -246,7 +352,8 @@ function submit() {
             </Badge>
           </div>
           <p class="text-xs text-muted-foreground">
-            支持 <code class="font-mono">*</code> 通配与前缀匹配；未命中默认原生透传。
+            支持 <code class="font-mono">*</code> 通配与前缀匹配；候选随目标渠道过滤（通用/空 = 全部渠道模型）。
+            未命中默认原生透传。
           </p>
         </div>
         <div class="grid gap-4 sm:grid-cols-2">

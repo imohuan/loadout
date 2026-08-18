@@ -788,10 +788,11 @@ func (s *Service) handleCapabilityRoutesReplace(w http.ResponseWriter, r *http.R
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-// handleCapabilityRouteDelete 按 capability + models（数组精确匹配）定位并删除一条能力路由。
+// handleCapabilityRouteDelete 按 capability + models + channel_ids（数组精确匹配）定位并删除一条能力路由。
 func (s *Service) handleCapabilityRouteDelete(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Models     []string `json:"models"`
+		ChannelIDs []string `json:"channel_ids"`
 		Capability string   `json:"capability"`
 	}
 	if !decodeJSON(w, r, &req) {
@@ -805,7 +806,9 @@ func (s *Service) handleCapabilityRouteDelete(w http.ResponseWriter, r *http.Req
 	out := items[:0]
 	found := false
 	for _, it := range items {
-		if it.Capability == req.Capability && equalStrings(it.Models, req.Models) {
+		if it.Capability == req.Capability &&
+			equalStrings(it.Models, req.Models) &&
+			equalStrings(it.ChannelIDs, req.ChannelIDs) {
 			found = true
 			continue
 		}

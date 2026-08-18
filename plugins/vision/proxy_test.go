@@ -184,3 +184,55 @@ func TestHandleProxyBeforeUpstreamResponses(t *testing.T) {
 		t.Fatalf("描述文本未写入: %s", got)
 	}
 }
+
+// TestHandleProxyBeforeUpstreamChannelScoped 渠道约束：路由绑定 ch-b，
+// 请求 __current_channel=ch-a（或未知）时不命中（body 原样透传），=ch-b 时命中并改写。
+func TestHandleProxyBeforeUpstreamChannelScoped(t *testing.T) {
+	fake, url := fakellm.New()
+	defer fake.Close()
+	fake.SetResponse(`{"choices":[{"message":{"role":"assistant","content":"视觉描述"}}]}`)
+
+	svc, st := newTestService(t)
+	seedChannels(t, svc, []types.Channel{
+		{ID: "v", Name: "视觉", BaseURL: url + "/v1", Enabled: true, Models: []string{"qwen-vl-max"}},
+	})
+	if err := st.Write(types.FileCapabilityRoutes, []types.CapabilityRoute{
+		{Models: []string{"deepseek-chat"}, ChannelIDs: []string{"ch-b"}, Capability: "vision", Route: types.RouteProxy, ViaOptions: []types.ViaOption{{ViaModel: "qwen-vl-max"}}},
+	}); err != nil {
+		t.Fatalf("写能力路由失败: %v", err)
+	}
+
+	body := `{"model":"deepseek-chat","messages":[{"role":"user","content":[{"type":"text","text":"看"},{"type":"image_url","image_url":{"url":"http://img/a.png"}}]}]}`
+
+	// 渠道未知（普通请求，无 __current_channel）：约束路由不命中，原样透传。
+	unknown, err := svc.HandleProxyBeforeUpstream(proxyPipe("chat/completions", "deepseek-chat", body))
+	if err != nil {
+		t.Fatalf("渠道未知不应报错: %v", err)
+	}
+	if got := string(unknown.(*modelgateway.ProxyPipeline).Request.Body); got != body {
+		t.Fatalf("渠道未知应原样透传: %s", got)
+	}
+
+	// 非命中渠道 ch-a：不命中，原样透传。
+	pipeA := proxyPipe("chat/completions", "deepseek-chat", body)
+	pipeA.Metadata = map[string]any{"__current_channel": "ch-a"}
+	other, err := svc.HandleProxyBeforeUpstream(pipeA)
+	if err != nil {
+		t.Fatalf("非命中渠道不应报错: %v", err)
+	}
+	if got := string(other.(*modelgateway.ProxyPipeline).Request.Body); got != body {
+		t.Fatalf("ch-a 应原样透传: %s", got)
+	}
+
+	// 命中渠道 ch-b：图片替换为视觉描述。
+	pipeB := proxyPipe("chat/completions", "deepseek-chat", body)
+	pipeB.Metadata = map[string]any{"__current_channel": "ch-b"}
+	hit, err := svc.HandleProxyBeforeUpstream(pipeB)
+	if err != nil {
+		t.Fatalf("命中渠道处理出错: %v", err)
+	}
+	got := string(hit.(*modelgateway.ProxyPipeline).Request.Body)
+	if strings.Contains(got, "image_url") || !strings.Contains(got, "视觉描述") {
+		t.Fatalf("ch-b 应命中并改写 body: %s", got)
+	}
+}

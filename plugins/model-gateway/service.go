@@ -47,9 +47,10 @@ func (s *Service) SetRoutingServices(database *sql.DB, health contracts.ModelHea
 	}
 }
 
-// RouteCapability 查能力路由：给定 model + capability，返回命中条目；
+// RouteCapability 查能力路由：给定 model + capability + 请求渠道，返回命中条目；
+// channelID 为请求当前渠道（空 = 未知，仅全渠道/通配路由命中）。
 // 未命中返回 nil（视为 native 透传）。
-func (s *Service) RouteCapability(model, capability string) (*types.CapabilityRoute, error) {
+func (s *Service) RouteCapability(model, capability, channelID string) (*types.CapabilityRoute, error) {
 	var routes []types.CapabilityRoute
 	if err := s.st.Read(types.FileCapabilityRoutes, &routes); err != nil {
 		if errors.Is(err, store.ErrNotExist) {
@@ -58,7 +59,9 @@ func (s *Service) RouteCapability(model, capability string) (*types.CapabilityRo
 		return nil, fmt.Errorf("modelgateway: 读取能力路由表失败: %w", err)
 	}
 	for i := range routes {
-		if routes[i].Capability == capability && types.MatchModels(routes[i].Models, model) {
+		if routes[i].Capability == capability &&
+			types.MatchModels(routes[i].Models, model) &&
+			types.MatchChannel(routes[i].ChannelIDs, channelID) {
 			return &routes[i], nil
 		}
 	}

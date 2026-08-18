@@ -37,9 +37,28 @@ async function refresh() {
   await Promise.all([refreshRoutes(), refreshChannels()])
 }
 
-// 路由唯一键：capability + models 精确匹配（数组顺序敏感）。
+// 路由唯一键：capability + models + channel_ids 精确匹配（数组顺序敏感）。
 function key(route: CapabilityRoute) {
-  return route.capability + '|' + (route.models || []).join(',')
+  return (
+    route.capability +
+    '|' +
+    (route.models || []).join(',') +
+    '|' +
+    (route.channel_ids || []).join(',')
+  )
+}
+
+// 渠道展示：`*` = 通用（全匹配）；空 = 全渠道；否则渠道名列表。
+function channelScopeLabel(route: CapabilityRoute) {
+  const ids = route.channel_ids || []
+  if (!ids.length) return '全渠道'
+  if (ids.includes('*')) return '通用（全匹配）'
+  return ids
+    .map((id) => channels.value?.find((c) => c.id === id)?.name || id)
+    .join('、')
+}
+function routeTitle(route: CapabilityRoute) {
+  return `${route.models.join(',')}（${channelScopeLabel(route)}）× ${route.capability}`
 }
 
 function openAdd() {
@@ -56,7 +75,7 @@ async function save(value: CapabilityRoute) {
     (item) => key(item) === key(value) && key(item) !== editingKey,
   )
   if (duplicate) {
-    toast.error(`路由「${value.models.join(',')} × ${value.capability}」已存在`)
+    toast.error(`路由「${routeTitle(value)}」已存在`)
     return
   }
   await run(async () => {
@@ -71,7 +90,7 @@ async function save(value: CapabilityRoute) {
   }, '能力路由已保存')
 }
 async function remove(value: CapabilityRoute) {
-  if (!(await confirmDialog(`删除路由「${value.models.join(',')} × ${value.capability}」？`))) return
+  if (!(await confirmDialog(`删除路由「${routeTitle(value)}」？`))) return
   await run(async () => {
     await routeService.replaceAll(
       (routes.value || []).filter((item) => key(item) !== key(value)),

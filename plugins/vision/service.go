@@ -57,8 +57,11 @@ func (s *Service) DetectImages(messages []modelgateway.ChatMessage) []string {
 	return images
 }
 
-// DecideRoute 查能力路由表：model 的 vision 能力。未命中返回 nil（视为 native 透传）。
-func (s *Service) DecideRoute(model string) (*types.CapabilityRoute, error) {
+// DecideRoute 查能力路由表：model + channelID 的 vision 能力。未命中返回 nil（视为 native 透传）。
+// channelID 为请求当前渠道（pipe.Metadata["__current_channel"]，聚合模型指定渠道后已设置；
+// 普通请求渠道未知传空串）。路由未绑定渠道（channel_ids 为空）= 全渠道命中，行为与旧版一致；
+// 绑定渠道后仅请求渠道命中集合内才生效，避免同名模型跨渠道误伤。
+func (s *Service) DecideRoute(model, channelID string) (*types.CapabilityRoute, error) {
 	var routes []types.CapabilityRoute
 	if err := s.st.Read(types.FileCapabilityRoutes, &routes); err != nil {
 		if errors.Is(err, store.ErrNotExist) {
@@ -67,7 +70,9 @@ func (s *Service) DecideRoute(model string) (*types.CapabilityRoute, error) {
 		return nil, fmt.Errorf("vision: 读取能力路由表失败: %w", err)
 	}
 	for i := range routes {
-		if routes[i].Capability == capabilityName && types.MatchModels(routes[i].Models, model) {
+		if routes[i].Capability == capabilityName &&
+			types.MatchModels(routes[i].Models, model) &&
+			types.MatchChannel(routes[i].ChannelIDs, channelID) {
 			return &routes[i], nil
 		}
 	}
@@ -176,7 +181,8 @@ func (s *Service) HandleBeforeUpstream(payload any) (any, error) {
 		model = pipe.Request.Model
 	}
 	s.lg.Info("检测到图片", "model", model, "图片数", len(images))
-	route, err := s.DecideRoute(model)
+	channelID, _ := pipe.Metadata["__current_channel"].(string)
+	route, err := s.DecideRoute(model, channelID)
 	if err != nil {
 		return nil, visionError(err.Error())
 	}

@@ -109,15 +109,41 @@ func MatchModels(models []string, model string) bool {
 	return false
 }
 
+// MatchChannel 判断 channelID 是否命中渠道约束列表：
+//   - 空列表 或 列表含 `*` = 全渠道（不约束，任何渠道都命中）；
+//   - 列表非空且不含 `*` 时，channelID 为空（请求渠道未知）不命中，须精确匹配列表内 id。
+//
+// `*` 与模型通配语义一致，由前端"通用（全匹配）"选项写入。
+func MatchChannel(channelIDs []string, channelID string) bool {
+	if len(channelIDs) == 0 {
+		return true
+	}
+	for _, id := range channelIDs {
+		if id == "*" {
+			return true
+		}
+	}
+	if channelID == "" {
+		return false
+	}
+	for _, id := range channelIDs {
+		if id == channelID {
+			return true
+		}
+	}
+	return false
+}
+
 // ViaOption 视觉兜底候选：视觉模型 + 可选渠道，按数组顺序从上到下依次请求（failover）。
 type ViaOption struct {
 	ViaModel  string `json:"via_model"`            // 视觉模型名
 	ChannelID string `json:"channel_id,omitempty"` // 渠道 id；空 = 按 via_model 自动路由（走 /v1/models 探测兜底）
 }
 
-// CapabilityRoute 能力路由表条目：目标模型（可多个/通配符）× 能力 矩阵。
+// CapabilityRoute 能力路由表条目：目标模型（可多个/通配符）× 渠道 × 能力 矩阵。
 type CapabilityRoute struct {
 	Models     []string    `json:"models"`                // 目标模型列表，支持 `*` 通配与 `prefix*` 前缀匹配
+	ChannelIDs []string    `json:"channel_ids,omitempty"` // 目标模型绑定的渠道列表（可多选）；空 = 全渠道生效
 	Capability string      `json:"capability"`            // 能力，如 vision
 	Route      string      `json:"route"`                 // native / proxy / error
 	ViaOptions []ViaOption `json:"via_options,omitempty"` // proxy 时的视觉候选，顺序即兜底优先级

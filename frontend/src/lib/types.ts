@@ -132,6 +132,7 @@ export interface ViaOption {
 
 export interface CapabilityRoute {
   models: string[] // 目标模型列表，支持 * 通配与 prefix* 前缀匹配
+  channel_ids?: string[] // 目标模型绑定的渠道列表（多选）；空 = 全渠道；含 "*" = 通用全匹配（任何渠道生效）
   capability: string // 能力，如 vision
   route: 'native' | 'proxy' | 'error' | string // 路由方式：原生透传 / 附加代理 / 拒绝
   via_options?: ViaOption[] // proxy 时的候选，顺序即兜底优先级

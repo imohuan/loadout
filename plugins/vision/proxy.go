@@ -225,7 +225,10 @@ func (s *Service) HandleProxyBeforeUpstream(payload any) (any, error) {
 
 	model := pipe.Request.Model
 	s.lg.Info("检测到图片", "path", pipe.Request.Path, "model", model, "图片数", len(images))
-	route, err := s.DecideRoute(model)
+	// 渠道约束：aggregate 先于本插件执行并写入 __current_channel（聚合模型指定渠道）；
+	// 普通请求渠道未知（空），仅全渠道路由命中。
+	channelID, _ := pipe.Metadata["__current_channel"].(string)
+	route, err := s.DecideRoute(model, channelID)
 	if err != nil {
 		return nil, visionError(err.Error())
 	}

@@ -59,10 +59,11 @@
 | GET | `/api/capability-routes` | 路由表列表 |
 | POST | `/api/capability-routes` | 追加一条 |
 | PUT | `/api/capability-routes` | 整体替换 |
-| DELETE | `/api/capability-routes` | body `{models, capability}` 定位删除 |
+| DELETE | `/api/capability-routes` | body `{models, channel_ids, capability}` 定位删除 |
 
-> `CapabilityRoute` 结构：`{models: []string, capability: "vision", route: "native|proxy|error", via_options: [{via_model, channel_id?}]}`。
+> `CapabilityRoute` 结构：`{models: []string, channel_ids?: []string, capability: "vision", route: "native|proxy|error", via_options: [{via_model, channel_id?}]}`。
 > `models` 支持 `*` 通配与 `prefix*` 前缀匹配；`via_options` 是 proxy 时的视觉候选（顺序即兜底优先级）。
+> `channel_ids` 为目标模型绑定的渠道（多选）：空 = 全渠道；含 `*` = 通用全匹配（任何渠道生效）；否则仅这些渠道上的目标模型命中路由。请求渠道取自聚合模型指定的 `__current_channel`，普通请求渠道未知时仅全渠道/通配路由命中。
 
 ### MCP 服务器
 | 方法 | 路径 | 说明 |

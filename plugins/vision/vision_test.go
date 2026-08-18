@@ -86,18 +86,22 @@ func TestDetectImages(t *testing.T) {
 	}
 }
 
-// TestDecideRoute 验证写 capability_routes.json 后命中，未命中返回 nil。
+// TestDecideRoute 验证写 capability_routes.json 后命中，未命中返回 nil；渠道约束按请求渠道过滤。
 func TestDecideRoute(t *testing.T) {
 	svc, st := newTestService(t)
 	routes := []types.CapabilityRoute{
 		{Models: []string{"deepseek-chat"}, Capability: "vision", Route: types.RouteProxy, ViaOptions: []types.ViaOption{{ViaModel: "qwen-vl-max"}}},
 		{Models: []string{"gpt-4o"}, Capability: "vision", Route: types.RouteNative},
+		// 渠道约束：仅 ch-b 命中；ch-a / 未知渠道不命中。
+		{Models: []string{"gpt-5"}, ChannelIDs: []string{"ch-b"}, Capability: "vision", Route: types.RouteProxy, ViaOptions: []types.ViaOption{{ViaModel: "qwen-vl-max"}}},
+		// 通用全匹配：* 对任何渠道（含未知）命中。
+		{Models: []string{"claude-x"}, ChannelIDs: []string{"*"}, Capability: "vision", Route: types.RouteProxy, ViaOptions: []types.ViaOption{{ViaModel: "qwen-vl-max"}}},
 	}
 	if err := st.Write(types.FileCapabilityRoutes, routes); err != nil {
 		t.Fatalf("写能力路由表失败: %v", err)
 	}
 
-	hit, err := svc.DecideRoute("deepseek-chat")
+	hit, err := svc.DecideRoute("deepseek-chat", "")
 	if err != nil {
 		t.Fatalf("DecideRoute 出错: %v", err)
 	}
@@ -105,7 +109,7 @@ func TestDecideRoute(t *testing.T) {
 		t.Fatalf("应命中 proxy 路由: %+v", hit)
 	}
 
-	native, err := svc.DecideRoute("gpt-4o")
+	native, err := svc.DecideRoute("gpt-4o", "")
 	if err != nil {
 		t.Fatalf("DecideRoute 出错: %v", err)
 	}
@@ -113,12 +117,51 @@ func TestDecideRoute(t *testing.T) {
 		t.Fatalf("应命中 native 路由: %+v", native)
 	}
 
-	miss, err := svc.DecideRoute("claude-x")
+	miss, err := svc.DecideRoute("unknown-model", "")
 	if err != nil {
 		t.Fatalf("未命中不应报错: %v", err)
 	}
 	if miss != nil {
 		t.Fatalf("未命中应返回 nil，实际 %+v", miss)
+	}
+
+	// 渠道约束：命中渠道命中，非命中渠道与未知渠道不命中。
+	chHit, err := svc.DecideRoute("gpt-5", "ch-b")
+	if err != nil {
+		t.Fatalf("DecideRoute 出错: %v", err)
+	}
+	if chHit == nil || chHit.Route != types.RouteProxy {
+		t.Fatalf("ch-b 上的 gpt-5 应命中约束路由: %+v", chHit)
+	}
+	chMiss, err := svc.DecideRoute("gpt-5", "ch-a")
+	if err != nil {
+		t.Fatalf("DecideRoute 出错: %v", err)
+	}
+	if chMiss != nil {
+		t.Fatalf("ch-a 上的 gpt-5 不应命中 ch-b 约束路由，实际 %+v", chMiss)
+	}
+	unknownMiss, err := svc.DecideRoute("gpt-5", "")
+	if err != nil {
+		t.Fatalf("DecideRoute 出错: %v", err)
+	}
+	if unknownMiss != nil {
+		t.Fatalf("渠道未知不应命中约束路由，实际 %+v", unknownMiss)
+	}
+
+	// 通用全匹配：* 对任何渠道（含未知）命中。
+	starHit, err := svc.DecideRoute("claude-x", "")
+	if err != nil {
+		t.Fatalf("DecideRoute 出错: %v", err)
+	}
+	if starHit == nil || starHit.Route != types.RouteProxy {
+		t.Fatalf("claude-x 应命中 * 全匹配渠道路由: %+v", starHit)
+	}
+	starHitCh, err := svc.DecideRoute("claude-x", "ch-z")
+	if err != nil {
+		t.Fatalf("DecideRoute 出错: %v", err)
+	}
+	if starHitCh == nil {
+		t.Fatalf("claude-x 在任意渠道应命中 * 路由")
 	}
 }
 

@@ -81,14 +81,18 @@ func TestRouteCapability(t *testing.T) {
 	svc, st := newTestService(t)
 	routes := []types.CapabilityRoute{
 		{Models: []string{"deepseek-chat"}, Capability: "vision", Route: types.RouteProxy, ViaOptions: []types.ViaOption{{ViaModel: "qwen-vl-max"}}},
-		{Models: []string{"gpt-4o"}, Capability: "vision", Route: types.RouteNative},
+		{Models: []string{"gpt-4o-mini"}, Capability: "vision", Route: types.RouteNative},
 		{Models: []string{"deepseek-*"}, Capability: "vision", Route: types.RouteError},
+		// 渠道约束：仅 ch-b 上的 gpt-4o 命中 native；ch-a 上的 gpt-4o 不命中（全渠道无约束路由时）。
+		{Models: []string{"gpt-4o"}, ChannelIDs: []string{"ch-b"}, Capability: "vision", Route: types.RouteNative},
+		// 通用全匹配：* 渠道对任何渠道（含未知渠道）都命中。
+		{Models: []string{"claude-3"}, ChannelIDs: []string{"*"}, Capability: "vision", Route: types.RouteProxy},
 	}
 	if err := st.Write(types.FileCapabilityRoutes, routes); err != nil {
 		t.Fatalf("写能力路由表失败: %v", err)
 	}
 
-	hit, err := svc.RouteCapability("deepseek-chat", "vision")
+	hit, err := svc.RouteCapability("deepseek-chat", "vision", "")
 	if err != nil {
 		t.Fatalf("RouteCapability 出错: %v", err)
 	}
@@ -97,7 +101,7 @@ func TestRouteCapability(t *testing.T) {
 	}
 
 	// 通配符前缀匹配
-	wild, err := svc.RouteCapability("deepseek-v4-flash", "vision")
+	wild, err := svc.RouteCapability("deepseek-v4-flash", "vision", "")
 	if err != nil {
 		t.Fatalf("RouteCapability 出错: %v", err)
 	}
@@ -105,18 +109,58 @@ func TestRouteCapability(t *testing.T) {
 		t.Fatalf("deepseek-v4-flash 应命中 deepseek-* 通配: %+v", wild)
 	}
 
-	miss, err := svc.RouteCapability("deepseek-chat", "tts")
+	miss, err := svc.RouteCapability("deepseek-chat", "tts", "")
 	if err != nil {
 		t.Fatalf("未命中不应报错: %v", err)
 	}
 	if miss != nil {
 		t.Fatalf("未命中应返回 nil，实际 %+v", miss)
 	}
+
+	// 渠道约束：命中渠道命中，非命中渠道不命中。
+	chHit, err := svc.RouteCapability("gpt-4o", "vision", "ch-b")
+	if err != nil {
+		t.Fatalf("RouteCapability 出错: %v", err)
+	}
+	if chHit == nil || chHit.Route != types.RouteNative {
+		t.Fatalf("ch-b 上的 gpt-4o 应命中渠道约束路由: %+v", chHit)
+	}
+	chMiss, err := svc.RouteCapability("gpt-4o", "vision", "ch-a")
+	if err != nil {
+		t.Fatalf("RouteCapability 出错: %v", err)
+	}
+	if chMiss != nil {
+		t.Fatalf("ch-a 上的 gpt-4o 不应命中 ch-b 约束路由，实际 %+v", chMiss)
+	}
+	// 渠道未知（空）时约束路由不命中，避免误伤。
+	unknownMiss, err := svc.RouteCapability("gpt-4o", "vision", "")
+	if err != nil {
+		t.Fatalf("RouteCapability 出错: %v", err)
+	}
+	if unknownMiss != nil {
+		t.Fatalf("渠道未知不应命中约束路由，实际 %+v", unknownMiss)
+	}
+
+	// 通用全匹配：任何渠道（含未知）都命中。
+	starHit, err := svc.RouteCapability("claude-3", "vision", "")
+	if err != nil {
+		t.Fatalf("RouteCapability 出错: %v", err)
+	}
+	if starHit == nil || starHit.Route != types.RouteProxy {
+		t.Fatalf("claude-3 应命中 * 全匹配渠道路由: %+v", starHit)
+	}
+	starHitCh, err := svc.RouteCapability("claude-3", "vision", "ch-z")
+	if err != nil {
+		t.Fatalf("RouteCapability 出错: %v", err)
+	}
+	if starHitCh == nil {
+		t.Fatalf("claude-3 在任意渠道应命中 * 路由")
+	}
 }
 
 func TestRouteCapabilityNoFile(t *testing.T) {
 	svc, _ := newTestService(t)
-	got, err := svc.RouteCapability("m", "c")
+	got, err := svc.RouteCapability("m", "c", "")
 	if err != nil {
 		t.Fatalf("无路由表不应报错: %v", err)
 	}
