@@ -28,6 +28,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -650,7 +651,7 @@ func (s *Service) applyExtraFile(ctx context.Context, key, name, file string, da
 		result.Count = jsonArrayCount(data)
 		return result, err
 	case "skills_list":
-		// 技能真实文件已随包导入，清单与磁盘一致，直接写回（append 合并保留本地条目）。
+		// 技能真实文件已随包导入，清单与磁盘一致，直接写回（append 按 name 去重保留本地条目）。
 		var values []types.Skill
 		if err := json.Unmarshal(data, &values); err != nil {
 			return result, fmt.Errorf("admin-api: 解析 %s 失败: %w", file, err)
@@ -661,15 +662,7 @@ func (s *Service) applyExtraFile(ctx context.Context, key, name, file string, da
 			if err := s.readJSONOrEmpty(types.FileSkills, &existing); err != nil {
 				return result, err
 			}
-			byName := map[string]bool{}
-			for _, sk := range values {
-				byName[sk.Name] = true
-			}
-			for _, sk := range existing {
-				if !byName[sk.Name] {
-					values = append(values, sk)
-				}
-			}
+			values = dedupeBy(append(values, existing...), func(sk types.Skill) string { return sk.Name })
 		}
 		if err := s.st.Write(types.FileSkills, values); err != nil {
 			return result, err
@@ -796,6 +789,7 @@ func (s *Service) importAggregates(ctx context.Context, data []byte, mode string
 }
 
 // importCapabilityRoutes 导入能力路由（JSON 文件，无 DB 依赖）。
+// append 模式以 (models+capability+channel_ids) 为键去重，导入条目优先。
 func (s *Service) importCapabilityRoutes(data []byte, mode string) (int, error) {
 	var values []types.CapabilityRoute
 	if err := json.Unmarshal(data, &values); err != nil {
@@ -806,7 +800,7 @@ func (s *Service) importCapabilityRoutes(data []byte, mode string) (int, error) 
 		if err := s.readJSONOrEmpty(types.FileCapabilityRoutes, &existing); err != nil {
 			return 0, err
 		}
-		values = append(existing, values...)
+		values = dedupeBy(append(values, existing...), capabilityRouteKey)
 	}
 	if err := s.st.Write(types.FileCapabilityRoutes, values); err != nil {
 		return 0, err
@@ -814,7 +808,16 @@ func (s *Service) importCapabilityRoutes(data []byte, mode string) (int, error) 
 	return len(values), nil
 }
 
-// importMCPServers 导入 MCP 服务器列表（按 id 去重合并）。
+// capabilityRouteKey 能力路由的去重键：models + capability + channel_ids（顺序无关）。
+func capabilityRouteKey(r types.CapabilityRoute) string {
+	models := append([]string(nil), r.Models...)
+	channels := append([]string(nil), r.ChannelIDs...)
+	sort.Strings(models)
+	sort.Strings(channels)
+	return strings.Join(models, ",") + "\x00" + r.Capability + "\x00" + strings.Join(channels, ",")
+}
+
+// importMCPServers 导入 MCP 服务器列表（按 id 去重合并，导入条目优先）。
 func (s *Service) importMCPServers(data []byte, mode string) (int, error) {
 	var values []types.MCPServer
 	if err := json.Unmarshal(data, &values); err != nil {
@@ -825,15 +828,7 @@ func (s *Service) importMCPServers(data []byte, mode string) (int, error) {
 		if err := s.readJSONOrEmpty(types.FileMCPServers, &existing); err != nil {
 			return 0, err
 		}
-		byID := map[string]bool{}
-		for _, srv := range values {
-			byID[srv.ID] = true
-		}
-		for _, srv := range existing {
-			if !byID[srv.ID] {
-				values = append(values, srv)
-			}
-		}
+		values = dedupeBy(append(values, existing...), func(srv types.MCPServer) string { return srv.ID })
 	}
 	if err := s.st.Write(types.FileMCPServers, values); err != nil {
 		return 0, err
@@ -841,7 +836,7 @@ func (s *Service) importMCPServers(data []byte, mode string) (int, error) {
 	return len(values), nil
 }
 
-// importGroups 导入 MCP 分组（按 name 去重合并）。
+// importGroups 导入 MCP 分组（按 name 去重合并，导入条目优先）。
 func (s *Service) importGroups(data []byte, mode string) (int, error) {
 	var values []types.Group
 	if err := json.Unmarshal(data, &values); err != nil {
@@ -852,15 +847,7 @@ func (s *Service) importGroups(data []byte, mode string) (int, error) {
 		if err := s.readJSONOrEmpty(types.FileGroups, &existing); err != nil {
 			return 0, err
 		}
-		byName := map[string]bool{}
-		for _, g := range values {
-			byName[g.Name] = true
-		}
-		for _, g := range existing {
-			if !byName[g.Name] {
-				values = append(values, g)
-			}
-		}
+		values = dedupeBy(append(values, existing...), func(g types.Group) string { return g.Name })
 	}
 	if err := s.st.Write(types.FileGroups, values); err != nil {
 		return 0, err
@@ -868,7 +855,7 @@ func (s *Service) importGroups(data []byte, mode string) (int, error) {
 	return len(values), nil
 }
 
-// importToolsState 导入工具开关（按 server_id+tool_name 去重合并）。
+// importToolsState 导入工具开关（按 server_id+tool_name 去重合并，导入条目优先）。
 func (s *Service) importToolsState(data []byte, mode string) (int, error) {
 	var values []types.ToolState
 	if err := json.Unmarshal(data, &values); err != nil {
@@ -879,15 +866,9 @@ func (s *Service) importToolsState(data []byte, mode string) (int, error) {
 		if err := s.readJSONOrEmpty(types.FileToolsState, &existing); err != nil {
 			return 0, err
 		}
-		seen := map[string]bool{}
-		for _, ts := range values {
-			seen[ts.ServerID+"\x00"+ts.ToolName] = true
-		}
-		for _, ts := range existing {
-			if !seen[ts.ServerID+"\x00"+ts.ToolName] {
-				values = append(values, ts)
-			}
-		}
+		values = dedupeBy(append(values, existing...), func(ts types.ToolState) string {
+			return ts.ServerID + "\x00" + ts.ToolName
+		})
 	}
 	if err := s.st.Write(types.FileToolsState, values); err != nil {
 		return 0, err
@@ -895,7 +876,7 @@ func (s *Service) importToolsState(data []byte, mode string) (int, error) {
 	return len(values), nil
 }
 
-// importPresets 导入技能预设（按 name 去重合并）。
+// importPresets 导入技能预设（按 name 去重合并，导入条目优先）。
 func (s *Service) importPresets(data []byte, mode string) (int, error) {
 	var values []types.Preset
 	if err := json.Unmarshal(data, &values); err != nil {
@@ -906,20 +887,28 @@ func (s *Service) importPresets(data []byte, mode string) (int, error) {
 		if err := s.readJSONOrEmpty(types.FilePresets, &existing); err != nil {
 			return 0, err
 		}
-		byName := map[string]bool{}
-		for _, p := range values {
-			byName[p.Name] = true
-		}
-		for _, p := range existing {
-			if !byName[p.Name] {
-				values = append(values, p)
-			}
-		}
+		values = dedupeBy(append(values, existing...), func(p types.Preset) string { return p.Name })
 	}
 	if err := s.st.Write(types.FilePresets, values); err != nil {
 		return 0, err
 	}
 	return len(values), nil
+}
+
+// dedupeBy 按键函数去重，保留首个出现（输入顺序稳定）。
+// 用于追加合并：先导入条目后现有条目，因此同键时导入条目优先。
+func dedupeBy[T any](items []T, key func(T) string) []T {
+	seen := map[string]bool{}
+	out := items[:0]
+	for _, item := range items {
+		k := key(item)
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		out = append(out, item)
+	}
+	return out
 }
 
 // importSkillsFiles 把 zip 内 skills/<技能名>/... 的真实文件写入技能仓库目录。

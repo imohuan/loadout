@@ -444,6 +444,17 @@ func TestConfigImportAppendMerge(t *testing.T) {
 	// 本地独有的技能（append 应保留）。
 	writeSkillFile(t, repoDir, "local-skill", "SKILL.md", []byte("---\nname: local-skill\n---\n"))
 
+	// 本地同键能力路由（与导入包 vision/* 路由同 key，append 应合并去重且导入优先）。
+	var localRoutes []types.CapabilityRoute
+	if err := st.Read(types.FileCapabilityRoutes, &localRoutes); err != nil {
+		t.Fatalf("read capability routes: %v", err)
+	}
+	if err := st.Write(types.FileCapabilityRoutes, append(localRoutes, types.CapabilityRoute{
+		Models: []string{"*"}, Capability: "vision", Route: "error",
+	})); err != nil {
+		t.Fatalf("seed local route: %v", err)
+	}
+
 	// 导出来源数据（与目标同实例即可，合并语义看结果）。
 	data := exportAll(t, svc)
 	importReq := multipartWithFile(t, "file", "loadout-config.zip", data,
@@ -496,5 +507,17 @@ func TestConfigImportAppendMerge(t *testing.T) {
 	}
 	if !strings.Contains(string(skillMD), "git 工具") {
 		t.Fatalf("append 后 git-tools 内容不符: %s", skillMD)
+	}
+
+	// 能力路由 append 去重：同键（models+capability+channel_ids）仅保留导入条目，不产生重复。
+	var afterRoutes []types.CapabilityRoute
+	if err := st.Read(types.FileCapabilityRoutes, &afterRoutes); err != nil {
+		t.Fatalf("read capability routes after: %v", err)
+	}
+	if len(afterRoutes) != 1 {
+		t.Fatalf("append 后能力路由应去重为 1 条，实际 %d: %+v", len(afterRoutes), afterRoutes)
+	}
+	if afterRoutes[0].Route != "proxy" {
+		t.Fatalf("同键能力路由应以导入条目为准（proxy），实际 %s", afterRoutes[0].Route)
 	}
 }
