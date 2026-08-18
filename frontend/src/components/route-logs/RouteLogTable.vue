@@ -1,0 +1,231 @@
+<script setup lang="ts">
+import { ref } from 'vue'
+import { RiArrowDownSLine, RiArrowRightSLine } from '@remixicon/vue'
+import type { Channel, RouteLog } from '@/lib/types'
+import { formatDate, formatDuration } from '@/lib/format'
+import StatusBadge from '@/components/StatusBadge.vue'
+import EmptyState from '@/components/EmptyState.vue'
+
+defineProps<{ logs: RouteLog[]; channels: Channel[]; loadingDetail?: string }>()
+const emit = defineEmits<{ expand: [log: RouteLog] }>()
+const expanded = ref(new Set<string>())
+function channelName(channels: Channel[], id?: string) {
+  return id ? channels.find((channel) => channel.id === id)?.name || id : '-'
+}
+function toggle(log: RouteLog) {
+  expanded.value.has(log.request_id)
+    ? expanded.value.delete(log.request_id)
+    : (expanded.value.add(log.request_id), emit('expand', log))
+}
+
+// action 历史值兼容：后端已切换为中文，但旧库仍可能存着英文枚举
+const ACTION_LABELS: Record<string, { label: string; tone: string }> = {
+  首次尝试: { label: '首次尝试', tone: 'bg-blue-500/15 text-blue-700 dark:text-blue-300 border-blue-500/20' },
+  切换渠道: { label: '切换渠道', tone: 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/20' },
+  切换模型: { label: '切换模型', tone: 'bg-violet-500/15 text-violet-700 dark:text-violet-300 border-violet-500/20' },
+  // 兼容老数据
+  initial: { label: '首次尝试', tone: 'bg-blue-500/15 text-blue-700 dark:text-blue-300 border-blue-500/20' },
+  switch_channel: { label: '切换渠道', tone: 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/20' },
+  switch_model: { label: '切换模型', tone: 'bg-violet-500/15 text-violet-700 dark:text-violet-300 border-violet-500/20' },
+}
+function actionLabel(action?: string) {
+  return ACTION_LABELS[action || '']?.label || action || '-'
+}
+function actionTone(action?: string) {
+  return ACTION_LABELS[action || '']?.tone || ''
+}
+
+// 给 result 加更直观的颜色（不动 StatusBadge 全局默认）
+const RESULT_TONES: Record<string, string> = {
+  success: 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/20',
+  failed: 'bg-red-500/15 text-red-700 dark:text-red-300 border-red-500/20',
+  running: 'bg-blue-500/15 text-blue-700 dark:text-blue-300 border-blue-500/20',
+  skipped: 'bg-slate-500/15 text-slate-700 dark:text-slate-300 border-slate-500/20',
+}
+function resultTone(result?: string) {
+  return RESULT_TONES[result || ''] || ''
+}
+
+// 流速 t/s：completion_tokens / 秒。duration_ms<=0 或 tokens 缺失 → 返回空。
+function streamTps(x: { duration_ms?: number; completion_tokens?: number }) {
+  const ms = x.duration_ms ?? 0
+  const tokens = x.completion_tokens ?? 0
+  if (ms <= 0 || tokens <= 0) return ''
+  const tps = tokens / (ms / 1000)
+  if (!Number.isFinite(tps) || tps <= 0) return ''
+  if (tps >= 100) return Math.round(tps).toString()
+  return tps.toFixed(1)
+}
+function hasTokens(x: { prompt_tokens?: number; completion_tokens?: number; cached_tokens?: number }) {
+  return Boolean(x.prompt_tokens || x.completion_tokens || x.cached_tokens)
+}
+// 千分位格式化 tokens，超过 999 用 k/M 缩写，避免横向撑开。
+function formatTokens(value?: number) {
+  const n = value ?? 0
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+  if (n >= 10_000) return `${(n / 1000).toFixed(1)}k`
+  if (n >= 1000) return n.toLocaleString('en-US')
+  return String(n)
+}
+</script>
+
+<template>
+  <Card class="rounded-md"
+    ><CardHeader class="flex flex-row items-start justify-between gap-3 space-y-0"
+      ><div>
+        <CardTitle class="text-base">请求记录</CardTitle
+        ><CardDescription
+          >展开一条请求可查看每一次真实上游尝试和被跳过的候选。</CardDescription
+        >
+      </div>
+      <slot name="actions" />
+    </CardHeader><CardContent class="p-0"
+      ><div v-if="logs.length" class="overflow-x-auto"
+        ><Table
+          ><TableHeader
+            ><TableRow
+              ><TableHead class="w-10"></TableHead><TableHead>时间</TableHead
+              ><TableHead>请求模型</TableHead><TableHead>最终目标</TableHead
+              ><TableHead>结果</TableHead><TableHead>流</TableHead
+              ><TableHead>Tokens</TableHead><TableHead>耗时</TableHead></TableRow
+            ></TableHeader
+          ><TableBody
+            ><template v-for="log in logs" :key="log.request_id"
+              ><TableRow class="cursor-pointer" @click="toggle(log)"
+                ><TableCell
+                  ><component
+                    :is="expanded.has(log.request_id) ? RiArrowDownSLine : RiArrowRightSLine"
+                    size="18"
+                    class="text-muted-foreground" /></TableCell
+                ><TableCell class="whitespace-nowrap text-xs text-muted-foreground">{{
+                  formatDate(log.started_at)
+                }}</TableCell
+                ><TableCell
+                  ><p class="font-mono text-xs font-medium">{{ log.requested_model }}</p>
+                  <p class="mt-1 max-w-40 truncate font-mono text-[11px] text-muted-foreground">
+                    {{ log.request_id }}
+                  </p></TableCell
+                ><TableCell class="text-sm"
+                  ><span class="font-mono">{{ log.final_model || '-' }}</span
+                  ><span v-if="log.final_channel_id" class="text-muted-foreground">
+                    @ {{ channelName(channels, log.final_channel_id) }}</span
+                  ></TableCell
+                ><TableCell
+                  ><StatusBadge :status="log.result" :class="resultTone(log.result)" /></TableCell
+                ><TableCell class="whitespace-nowrap text-xs"
+                  ><span
+                    v-if="log.stream"
+                    class="inline-flex items-center gap-1 rounded border border-sky-500/30 bg-sky-500/10 px-1.5 py-0.5 text-[10px] font-medium text-sky-700 dark:text-sky-300"
+                    >流<template v-if="streamTps(log)"
+                      ><span class="opacity-60">·</span><span class="tabular-nums">{{
+                        streamTps(log)
+                      }}</span
+                      ><span class="opacity-60">t/s</span></template
+                    ></span
+                  ><span
+                    v-else-if="hasTokens(log)"
+                    class="inline-flex items-center rounded border border-slate-500/30 bg-slate-500/10 px-1.5 py-0.5 text-[10px] font-medium text-slate-700 dark:text-slate-300"
+                    >非流</span
+                  ><span v-else class="text-muted-foreground">-</span></TableCell
+                ><TableCell class="whitespace-nowrap text-xs tabular-nums"
+                  ><template v-if="hasTokens(log)"
+                    ><span class="font-medium text-foreground"
+                      >{{ formatTokens(log.prompt_tokens) }} /
+                      {{ formatTokens(log.completion_tokens) }}</span
+                    ><span
+                      v-if="log.cached_tokens && log.cached_tokens > 0"
+                      class="ml-1 text-[10px] text-violet-600 dark:text-violet-300"
+                      >缓存 ↓ {{ formatTokens(log.cached_tokens) }}</span
+                    ></template
+                  ><span v-else class="text-muted-foreground">-</span></TableCell
+                ><TableCell class="whitespace-nowrap tabular-nums text-sm">{{
+                  formatDuration(log.duration_ms)
+                }}</TableCell
+                ></TableRow
+              ><TableRow v-if="expanded.has(log.request_id)"
+                ><TableCell colspan="8" class="bg-muted/30 p-4"
+                  ><div
+                    v-if="loadingDetail === log.request_id"
+                    class="text-sm text-muted-foreground"
+                  >
+                    正在加载时间线...
+                  </div>
+                  <div v-else class="min-w-0 space-y-2 break-words">
+                    <p
+                      v-if="log.error_message"
+                      class="break-all whitespace-pre-wrap text-sm text-destructive"
+                    >
+                      {{ log.error_message }}
+                    </p>
+                    <ol v-if="log.attempts?.length" class="space-y-2 border-l border-border pl-4">
+                      <li
+                        v-for="attempt in log.attempts"
+                        :key="attempt.step_no"
+                        class="relative text-sm"
+                      >
+                        <span
+                          class="absolute -left-[21px] top-1.5 size-2 rounded-full bg-primary"
+                        ></span>
+                        <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
+                          <span class="font-medium tabular-nums">{{ attempt.step_no }}.</span
+                          ><span class="font-mono text-xs">{{ attempt.model }}</span
+                          ><span class="text-muted-foreground"
+                            >@ {{ channelName(channels, attempt.channel_id) }}</span
+                          ><Badge
+                            variant="outline"
+                            :class="['shrink-0 border', actionTone(attempt.action)]"
+                            >{{ actionLabel(attempt.action) }}</Badge
+                          ><StatusBadge
+                            :status="attempt.result"
+                            :class="resultTone(attempt.result)" /><span
+                            class="text-xs text-muted-foreground"
+                            >{{ formatDuration(attempt.duration_ms) }}</span
+                          ><span
+                            v-if="attempt.stream"
+                            class="inline-flex items-center gap-1 rounded border border-sky-500/30 bg-sky-500/10 px-1.5 py-0.5 text-[10px] font-medium text-sky-700 dark:text-sky-300"
+                            >流<template v-if="streamTps(attempt)"
+                              ><span class="opacity-60">·</span><span class="tabular-nums">{{
+                                streamTps(attempt)
+                              }}</span
+                              ><span class="opacity-60">t/s</span></template
+                            ></span
+                          ><span
+                            v-else-if="hasTokens(attempt)"
+                            class="inline-flex items-center gap-1 rounded border border-slate-500/30 bg-slate-500/10 px-1.5 py-0.5 text-[10px] font-medium text-slate-700 dark:text-slate-300"
+                            >非流</span
+                          ><span
+                            v-if="hasTokens(attempt)"
+                            class="inline-flex flex-row items-center gap-1 rounded border border-violet-500/30 bg-violet-500/10 px-1.5 py-0.5 text-[10px] font-medium text-violet-700 dark:text-violet-300"
+                            ><span class="tabular-nums"
+                              >{{ formatTokens(attempt.prompt_tokens) }} /
+                              {{ formatTokens(attempt.completion_tokens) }}</span
+                            ><span
+                              v-if="attempt.cached_tokens && attempt.cached_tokens > 0"
+                              class="text-[9px] font-normal opacity-80"
+                              >缓存 ↓ {{ formatTokens(attempt.cached_tokens) }}</span
+                            ></span
+                          >
+                        </div>
+                        <p
+                          v-if="attempt.error_message"
+                          class="mt-1 break-all whitespace-pre-wrap text-xs text-muted-foreground"
+                        >
+                          {{ attempt.failure_class ? `${attempt.failure_class}: ` : ''
+                          }}{{ attempt.error_message }}
+                        </p>
+                      </li>
+                    </ol>
+                    <p v-else class="text-sm text-muted-foreground">暂无步骤详情。</p>
+                  </div></TableCell
+                ></TableRow
+              ></template
+            ></TableBody
+          ></Table
+        >
+      </div>
+      <EmptyState
+        v-else
+        title="没有符合条件的转发日志"
+        description="发生模型请求后，这里会按 request_id 展示完整路由过程。" /></CardContent
+    ></Card
+></template>

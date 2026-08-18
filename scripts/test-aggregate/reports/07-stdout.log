@@ -1,0 +1,82 @@
+
+=== 07 停服 + 综合报告 ===
+[INFO] 停止 PID 22960
+ ...
+
+================ 综合报告 ================
+
+--- 01-started ---
+{
+  "home": "C:\\Users\\ADMINI~1\\AppData\\Local\\Temp\\loadout-test-aggregate",
+  "port": 3100,
+  "pid": 22960
+}
+
+
+--- 02-login ---
+{
+  "status": 200,
+  "channels_count": 0
+}
+
+
+--- 03-seeded ---
+{
+  "aggregate_enabled": true,
+  "channel_id": "2f1dcbd06fa71394",
+  "api_key_unrestricted": "sk-890bec9440e3c667c99cf58db73c6fae396440e562cfc6c104474b6713179a67",
+  "api_key_restricted": "sk-8bc0a6e36eb48c7cdcc35f1e4019fae8c2924851786daa4ee3c60bbb5b8d5842",
+  "aggregate_name": "auto-demo"
+}
+
+
+--- 04-result ---
+{
+  "model_count": 1,
+  "has_auto_demo": true
+}
+
+
+--- 05-aggregates ---
+{
+  "data": [
+    {
+      "id": 1,
+      "name": "auto-demo",
+      "enabled": true,
+      "created_at": "2026-08-17T13:15:14.2021453Z",
+      "updated_at": "2026-08-17T13:15:14.2021453Z",
+      "targets": [
+        {
+          "position": 0,
+          "model": "claude-haiku-4-5-20251001",
+          "channel_id": "2f1dcbd06fa71394"
+        },
+        {
+          "position": 1,
+          "model": "claude-haiku-4-5-20251001",
+          "channel_id": "2f1dcbd06fa71394"
+        }
+      ]
+    }
+  ]
+}
+
+
+--- 06-chat-unrestricted ---
+{
+  "body": "{\"error\":{\"message\":\"所有模型均失败: 所有渠道均失败: Post \\\"http://127.0.0.1:19999/v1/chat/completions\\\": dial tcp 127.0.0.1:19999: connectex: No connection could be made because the target machine actively refused it.\",\"type\":\"no_available_channel\"}}\n",
+  "status": 502
+}
+
+
+--- 06-chat-restricted ---
+{
+  "body": "{\"error\":{\"message\":\"API key 无权访问模型 \\\"auto-demo\\\"\",\"type\":\"permission_error\"}}\n",
+  "status": 403
+}
+
+
+[INFO] 日志目录：C:\Users\ADMINI~1\AppData\Local\Temp\loadout-test-aggregate
+[INFO] 报告目录：D:\Code\Git\loadout\scripts\test-aggregate\reports
+[INFO] 清理命令：Remove-Item -Recurse -Force C:\Users\ADMINI~1\AppData\Local\Temp\loadout-test-aggregate

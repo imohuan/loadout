@@ -1,0 +1,293 @@
+// Package servercore 提供 Loadout Server 的核心启动逻辑，可被 apps/server 和 apps/desktop 复用。
+package servercore
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
+	"io/fs"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/signal"
+	"runtime/debug"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"loadout/core/config"
+	"loadout/core/db"
+	"loadout/core/logger"
+	"loadout/core/plugin"
+	"loadout/core/store"
+	"loadout/plugins"
+	adminapi "loadout/plugins/admin-api"
+	adminauth "loadout/plugins/admin-auth"
+	gatewaykeys "loadout/plugins/gateway-keys"
+	mcphub "loadout/plugins/mcp-hub"
+	"loadout/web"
+)
+
+// newLogger 从 config 构建日志器（SourceRoot = 工作目录，用于裁出仓库相对路径）。
+func newLogger() *slog.Logger {
+	root, _ := os.Getwd()
+	return logger.New(logger.Options{
+		Level:      config.LogLevel,
+		LogDir:     config.LogsDir,
+		Filename:   "loadout.log",
+		MaxSizeMB:  config.LogMaxSizeMB,
+		MaxBackups: config.LogMaxBackups,
+		MaxAgeDays: config.LogMaxAgeDays,
+		SourceRoot: root,
+		Console:    true,
+	})
+}
+
+// assemble 装配全部插件，返回装配产物与单端口路由。
+func assemble(lg *slog.Logger, st *store.Store) (*plugin.Assembly, http.Handler, error) {
+	database, err := db.OpenForStore(st)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := db.ImportJSON(context.Background(), database, st); err != nil {
+		_ = database.Close()
+		return nil, nil, err
+	}
+	asm, err := plugin.Load(plugins.All(), plugin.Options{
+		Logger: lg,
+		Services: map[string]any{
+			"store":       st,
+			"logger":      lg,
+			"http-client": &http.Client{Timeout: config.UpstreamTimeout},
+			"db":          database,
+		},
+	})
+	if err != nil {
+		_ = database.Close()
+		return nil, nil, err
+	}
+
+	keys := asm.Get("gateway-keys").(*gatewaykeys.Manager)
+	auth := asm.Get("admin-auth").(*adminauth.Service)
+	hub := asm.Get("mcp-hub").(*mcphub.Service)
+
+	// 注入已装配插件总数与自检结果提供者（概览/插件页展示）。
+	apiSvc := asm.Get("admin-api").(*adminapi.Service)
+	apiSvc.SetPluginCount(len(plugins.All()))
+	apiSvc.SetChecksProvider(func() []plugin.PluginCheck { return asm.ChecksByPlugin() })
+
+	// 首启流程：users.json 不存在时生成随机密码。
+	if _, err := auth.EnsureFirstRun(); err != nil {
+		asm.Unload()
+		_ = database.Close()
+		return nil, nil, err
+	}
+
+	mux := http.NewServeMux()
+
+	// 插件路由（按 Auth 类别挂认证中间件）。
+	for _, r := range asm.Routes {
+		if r.Pattern == "" {
+			continue
+		}
+		h := r.Handler
+		switch r.Auth {
+		case plugin.AuthSkKey:
+			h = keys.SkKeyMiddleware(h)
+		case plugin.AuthMCPHeader:
+			h = keys.MCPKeyMiddleware(h)
+		case plugin.AuthSession:
+			h = auth.SessionMiddleware(h)
+		}
+		mux.Handle(routePattern(r), h)
+	}
+
+	// MCP 端点：单一 /mcp/ 前缀 handler 动态分发，端点随配置增删实时生效。
+	// 单 MCP / 分组端点直接暴露工具；$smart 保留 3 工具入口，按 header 分组名动态解析视图。
+	// getServer 只在「新 session」时调用一次，因此重新连接总能拿到最新配置的工具视图。
+	mcpHandler := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
+		ep := r.URL.Path
+		if ep == "/mcp/$smart" {
+			return hub.SmartEndpointServer(r.Header.Get(config.SmartGroupHeader))
+		}
+		return hub.EndpointServerOrEmpty(ep)
+	}, nil)
+	mux.Handle("/mcp/", keys.MCPKeyMiddleware(mcpHandler))
+
+	// 管理后台静态资源（其余路径，公开；数据走 /api/* 的 session 认证）。
+	dist, err := fs.Sub(web.Dist, "dist")
+	if err != nil {
+		return nil, nil, err
+	}
+	mux.Handle("/", http.FileServer(http.FS(dist)))
+
+	return asm, requestIDMiddleware(lg, mux), nil
+}
+
+// Assemble is the testable startup path used by the server and desktop hosts.
+func Assemble(lg *slog.Logger, st *store.Store) (*plugin.Assembly, http.Handler, error) {
+	return assemble(lg, st)
+}
+
+// routePattern 归一化路由模式：RouteSpec.Pattern 若已含 "METHOD /path" 则直接用，
+// 否则用 Method + " " + Pattern 拼接（兼容两种写法）。
+func routePattern(r plugin.RouteSpec) string {
+	if r.Method != "" && !strings.HasPrefix(r.Pattern, r.Method+" ") {
+		return r.Method + " " + r.Pattern
+	}
+	return r.Pattern
+}
+
+// requestIDMiddleware 给每个请求生成 request_id，并在请求结束时统一记录访问日志；
+// 同时兜底 recover 处理 handler panic：记录错误与堆栈，未写出响应时补一个 500。
+func requestIDMiddleware(lg *slog.Logger, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id := newRequestID()
+		w.Header().Set("X-Request-Id", id)
+
+		start := time.Now()
+		rec := &statusRecorder{ResponseWriter: w}
+
+		defer func() {
+			// panic 兜底：记录 + 若尚未写响应则补 500，避免客户端拿空响应。
+			if p := recover(); p != nil {
+				lg.Error("请求处理 panic",
+					"request_id", id, "method", r.Method, "path", r.URL.Path,
+					"panic", fmt.Sprint(p), "stack", string(debug.Stack()))
+				if rec.status == 0 {
+					rec.Header().Set("Content-Type", "application/json; charset=utf-8")
+					rec.WriteHeader(http.StatusInternalServerError)
+					_, _ = rec.Write([]byte(`{"error":{"message":"服务器内部错误","type":"internal_error"}}`))
+				}
+			}
+
+			// 结束日志：按状态码分级，5xx 记 Error、4xx 记 Warn，方便按错误检索。
+			args := []any{
+				"request_id", id, "method", r.Method, "path", r.URL.Path,
+				"status", rec.status, "duration_ms", time.Since(start).Milliseconds(),
+			}
+			switch {
+			case rec.status >= 500:
+				lg.Error("请求结束", args...)
+			case rec.status >= 400:
+				lg.Warn("请求结束", args...)
+			default:
+				lg.Info("请求结束", args...)
+			}
+		}()
+
+		lg.Info("请求", "method", r.Method, "path", r.URL.Path, "request_id", id)
+		next.ServeHTTP(rec, r)
+	})
+}
+
+// statusRecorder 包装 http.ResponseWriter，捕获响应状态码与写入字节数，
+// 并透传 Flush 以支持 SSE 流式响应。
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+	bytes  int
+}
+
+// WriteHeader 记录首次写入的状态码。
+func (r *statusRecorder) WriteHeader(code int) {
+	if r.status == 0 {
+		r.status = code
+	}
+	r.ResponseWriter.WriteHeader(code)
+}
+
+// Write 记录写入字节数；若未显式 WriteHeader 则按 200 处理。
+func (r *statusRecorder) Write(b []byte) (int, error) {
+	if r.status == 0 {
+		r.status = http.StatusOK
+	}
+	n, err := r.ResponseWriter.Write(b)
+	r.bytes += n
+	return n, err
+}
+
+// Flush 透传底层 Flusher（SSE 流式转发需要）。
+func (r *statusRecorder) Flush() {
+	if f, ok := r.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// newRequestID 生成 16 位十六进制 request_id。
+func newRequestID() string {
+	b := make([]byte, 8)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b)
+}
+
+// Run 启动服务器：装配 → 自检日志 → 监听 → 优雅退出。
+func Run() error {
+	lg := newLogger()
+	// 替换全局默认 logger，保证任何 slog.Default() 都落到日志文件而非 stderr。
+	slog.SetDefault(lg)
+	lg.Info("启动", "app", config.AppName, "version", config.Version, "mode", config.RunMode)
+
+	st, err := store.New(config.DataDir)
+	if err != nil {
+		return err
+	}
+
+	asm, handler, err := assemble(lg, st)
+	if err != nil {
+		return err
+	}
+	defer asm.Unload()
+
+	// 打印插件自检结果。
+	for name, issues := range asm.Checks() {
+		for _, it := range issues {
+			lg.Info("自检", "check", name, "level", it.Level, "message", it.Message)
+		}
+	}
+
+	addr := listenAddr()
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: config.HTTPReadTimeout,
+		WriteTimeout:      config.UpstreamTimeout,
+	}
+
+	lg.Info("监听", "addr", addr)
+	errCh := make(chan error, 1)
+	go func() { errCh <- srv.ListenAndServe() }()
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	select {
+	case err := <-errCh:
+		return err
+	case sig := <-sigCh:
+		lg.Info("收到信号，退出", "signal", sig.String())
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return srv.Shutdown(ctx)
+	}
+}
+
+// listenAddr 按运行模式决定监听地址：server 监听全网卡，desktop 仅 127.0.0.1。
+func listenAddr() string {
+	if config.RunMode == "desktop" {
+		return "127.0.0.1" + portOnly(config.ServerAddr)
+	}
+	return config.ServerAddr
+}
+
+// portOnly 提取地址里的端口部分（":3000" 或 ":8080"）。
+func portOnly(addr string) string {
+	if i := strings.LastIndex(addr, ":"); i >= 0 {
+		return addr[i:]
+	}
+	return ":3000"
+}

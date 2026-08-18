@@ -1,0 +1,249 @@
+package routelog
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"strings"
+	"time"
+
+	"loadout/plugins/contracts"
+)
+
+// Service is a best-effort synchronous route-log store. Callers should log and
+// continue when any method returns an error.
+type Service struct {
+	db *sql.DB
+	lg *slog.Logger
+}
+
+func NewService(database *sql.DB, logger *slog.Logger) *Service {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &Service{db: database, lg: logger}
+}
+
+func (s *Service) Start(ctx context.Context, request contracts.RouteRequest) error {
+	// UPSERT：客户端重试时若复用同一 X-Request-Id，合并到同一条日志（保留首次 started_at），
+	// 避免一次业务请求被拆成多条记录。
+	_, err := s.db.ExecContext(ctx, `INSERT INTO route_requests(request_id, requested_model, virtual_model, started_at, result) VALUES (?, ?, NULLIF(?, ''), ?, 'running') ON CONFLICT(request_id) DO UPDATE SET result='running'`, request.RequestID, request.RequestedModel, request.VirtualModel, request.StartedAt.UTC().Format(time.RFC3339Nano))
+	return err
+}
+
+func (s *Service) Attempt(ctx context.Context, attempt contracts.RouteAttempt) (int64, error) {
+	metadata, err := safeMetadata(attempt.Metadata)
+	if err != nil {
+		return 0, err
+	}
+	result := attempt.Result
+	if result == "" {
+		result = "running"
+	}
+	action := attempt.Action
+	if action == "" {
+		action = "首次尝试"
+	}
+	var finished any
+	if attempt.FinishedAt != nil {
+		finished = attempt.FinishedAt.UTC().Format(time.RFC3339Nano)
+	}
+	resultRow, err := s.db.ExecContext(ctx, `INSERT INTO route_attempts(request_id, previous_attempt_id, step_no, action, model, channel_id, started_at, finished_at, result, failure_class, status_code, error_message, duration_ms, stream, prompt_tokens, completion_tokens, cached_tokens, metadata_json) VALUES (?, ?, ?, ?, ?, NULLIF(?, ''), ?, ?, ?, ?, NULLIF(?, 0), ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(request_id, step_no) DO UPDATE SET action=excluded.action, model=excluded.model, channel_id=excluded.channel_id, started_at=excluded.started_at, finished_at=excluded.finished_at, result=excluded.result, failure_class=excluded.failure_class, status_code=excluded.status_code, error_message=excluded.error_message, duration_ms=excluded.duration_ms, stream=excluded.stream, prompt_tokens=excluded.prompt_tokens, completion_tokens=excluded.completion_tokens, cached_tokens=excluded.cached_tokens, metadata_json=excluded.metadata_json`, attempt.RequestID, attempt.PreviousAttemptID, attempt.StepNo, action, attempt.Model, attempt.ChannelID, attempt.StartedAt.UTC().Format(time.RFC3339Nano), finished, result, attempt.FailureClass, attempt.StatusCode, redact(attempt.ErrorMessage), attempt.Duration.Milliseconds(), boolToInt(attempt.Stream), attempt.PromptTokens, attempt.CompletionTokens, attempt.CachedTokens, metadata)
+	if err != nil {
+		return 0, err
+	}
+	return resultRow.LastInsertId()
+}
+
+func (s *Service) Finish(ctx context.Context, finish contracts.RouteFinish) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE route_requests SET finished_at=?, result=?, final_model=NULLIF(?, ''), final_channel_id=NULLIF(?, ''), http_status=NULLIF(?, 0), duration_ms=?, error_message=?, stream=?, prompt_tokens=?, completion_tokens=?, cached_tokens=? WHERE request_id=?`, finish.FinishedAt.UTC().Format(time.RFC3339Nano), finish.Result, finish.FinalModel, finish.FinalChannelID, finish.HTTPStatus, finish.Duration.Milliseconds(), redact(finish.ErrorMessage), boolToInt(finish.Stream), finish.PromptTokens, finish.CompletionTokens, finish.CachedTokens, finish.RequestID)
+	return err
+}
+
+func (s *Service) List(ctx context.Context, filter contracts.RouteLogFilter) ([]contracts.RouteRequestView, error) {
+	query := `SELECT request_id, requested_model, COALESCE(virtual_model, ''), started_at, finished_at, result, COALESCE(final_model, ''), COALESCE(final_channel_id, ''), COALESCE(http_status, 0), COALESCE(duration_ms, 0), error_message, COALESCE(stream, 0), COALESCE(prompt_tokens, 0), COALESCE(completion_tokens, 0), COALESCE(cached_tokens, 0) FROM route_requests r WHERE 1=1`
+	args := []any{}
+	if filter.Model != "" {
+		query += ` AND (r.requested_model = ? OR r.final_model = ? OR EXISTS (SELECT 1 FROM route_attempts a WHERE a.request_id = r.request_id AND a.model = ?))`
+		args = append(args, filter.Model, filter.Model, filter.Model)
+	}
+	if filter.ChannelID != "" {
+		query += ` AND (r.final_channel_id = ? OR EXISTS (SELECT 1 FROM route_attempts a WHERE a.request_id = r.request_id AND a.channel_id = ?))`
+		args = append(args, filter.ChannelID, filter.ChannelID)
+	}
+	if filter.Result != "" {
+		query += ` AND r.result = ?`
+		args = append(args, filter.Result)
+	}
+	if filter.StartedAfter != nil {
+		query += ` AND r.started_at >= ?`
+		args = append(args, filter.StartedAfter.UTC().Format(time.RFC3339Nano))
+	}
+	if filter.StartedBefore != nil {
+		query += ` AND r.started_at <= ?`
+		args = append(args, filter.StartedBefore.UTC().Format(time.RFC3339Nano))
+	}
+	query += ` ORDER BY r.started_at DESC LIMIT ?`
+	limit := filter.Limit
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	args = append(args, limit)
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	// 初始化为空切片而非 nil，保证空列表 JSON 序列化为 [] 而不是 null
+	result := make([]contracts.RouteRequestView, 0)
+	for rows.Next() {
+		view, err := scanRequest(rows)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, view)
+	}
+	return result, rows.Err()
+}
+
+func (s *Service) Detail(ctx context.Context, requestID string) (contracts.RouteRequestView, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT request_id, requested_model, COALESCE(virtual_model, ''), started_at, finished_at, result, COALESCE(final_model, ''), COALESCE(final_channel_id, ''), COALESCE(http_status, 0), COALESCE(duration_ms, 0), error_message, COALESCE(stream, 0), COALESCE(prompt_tokens, 0), COALESCE(completion_tokens, 0), COALESCE(cached_tokens, 0) FROM route_requests WHERE request_id=?`, requestID)
+	view, err := scanRequest(row)
+	if err != nil {
+		return contracts.RouteRequestView{}, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id, request_id, previous_attempt_id, step_no, action, model, COALESCE(channel_id, ''), started_at, finished_at, result, failure_class, COALESCE(status_code, 0), error_message, COALESCE(duration_ms, 0), COALESCE(stream, 0), COALESCE(prompt_tokens, 0), COALESCE(completion_tokens, 0), COALESCE(cached_tokens, 0), metadata_json FROM route_attempts WHERE request_id=? ORDER BY step_no`, requestID)
+	if err != nil {
+		return contracts.RouteRequestView{}, err
+	}
+	defer rows.Close()
+	// 初始化为空切片，避免空 attempts JSON 序列化为 null
+	view.Attempts = make([]contracts.RouteAttempt, 0)
+	for rows.Next() {
+		var id int64
+		var attempt contracts.RouteAttempt
+		var previous sql.NullInt64
+		var started string
+		var finished sql.NullString
+		var duration int64
+		var stream int
+		var promptTokens, completionTokens, cachedTokens int
+		var metadata string
+		if err := rows.Scan(&id, &attempt.RequestID, &previous, &attempt.StepNo, &attempt.Action, &attempt.Model, &attempt.ChannelID, &started, &finished, &attempt.Result, &attempt.FailureClass, &attempt.StatusCode, &attempt.ErrorMessage, &duration, &stream, &promptTokens, &completionTokens, &cachedTokens, &metadata); err != nil {
+			return contracts.RouteRequestView{}, err
+		}
+		attempt.PreviousAttemptID = nullInt64(previous)
+		attempt.StartedAt, _ = time.Parse(time.RFC3339Nano, started)
+		if finished.Valid {
+			if parsed, err := time.Parse(time.RFC3339Nano, finished.String); err == nil {
+				attempt.FinishedAt = &parsed
+			}
+		}
+		attempt.Duration = contracts.DurationMS(time.Duration(duration) * time.Millisecond)
+		attempt.Stream = stream != 0
+		attempt.PromptTokens = promptTokens
+		attempt.CompletionTokens = completionTokens
+		attempt.CachedTokens = cachedTokens
+		_ = json.Unmarshal([]byte(metadata), &attempt.Metadata)
+		view.Attempts = append(view.Attempts, attempt)
+	}
+	return view, rows.Err()
+}
+
+// Clear 清空全部转发日志（route_attempts 由外键 ON DELETE CASCADE 级联删除）。
+// before 参数保留仅为兼容 contracts.RouteLog 接口，当前实现为全量清空。
+func (s *Service) Clear(ctx context.Context, _ time.Time) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM route_requests`)
+	return err
+}
+
+type scanner interface{ Scan(...any) error }
+
+func scanRequest(scanner scanner) (contracts.RouteRequestView, error) {
+	var view contracts.RouteRequestView
+	var started string
+	var finished sql.NullString
+	var duration int64
+	var stream int
+	var promptTokens, completionTokens, cachedTokens int
+	if err := scanner.Scan(&view.RequestID, &view.RequestedModel, &view.VirtualModel, &started, &finished, &view.Result, &view.FinalModel, &view.FinalChannelID, &view.HTTPStatus, &duration, &view.ErrorMessage, &stream, &promptTokens, &completionTokens, &cachedTokens); err != nil {
+		return view, err
+	}
+	view.StartedAt, _ = time.Parse(time.RFC3339Nano, started)
+	if finished.Valid {
+		if parsed, err := time.Parse(time.RFC3339Nano, finished.String); err == nil {
+			view.FinishedAt = &parsed
+		}
+	}
+	view.Duration = contracts.DurationMS(time.Duration(duration) * time.Millisecond)
+	view.Stream = stream != 0
+	view.PromptTokens = promptTokens
+	view.CompletionTokens = completionTokens
+	view.CachedTokens = cachedTokens
+	return view, nil
+}
+
+func nullInt64(value sql.NullInt64) *int64 {
+	if !value.Valid {
+		return nil
+	}
+	out := value.Int64
+	return &out
+}
+
+func safeMetadata(metadata map[string]any) (string, error) {
+	if metadata == nil {
+		return "{}", nil
+	}
+	if sensitive(metadata) {
+		return "", fmt.Errorf("route-log: sensitive metadata is forbidden")
+	}
+	encoded, err := json.Marshal(metadata)
+	if err != nil {
+		return "", err
+	}
+	if len(encoded) > 4096 {
+		return "", fmt.Errorf("route-log: metadata exceeds 4 KiB")
+	}
+	return string(encoded), nil
+}
+
+func sensitive(value any) bool {
+	switch current := value.(type) {
+	case map[string]any:
+		for key, child := range current {
+			lower := strings.ToLower(key)
+			if strings.Contains(lower, "authorization") || strings.Contains(lower, "api_key") || strings.Contains(lower, "request_body") || strings.Contains(lower, "response_body") {
+				return true
+			}
+			if sensitive(child) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range current {
+			if sensitive(child) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func redact(message string) string {
+	if len(message) > 1024 {
+		return message[:1024]
+	}
+	return strings.ReplaceAll(message, "sk-", "sk-***")
+}
+
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+var _ contracts.RouteLog = (*Service)(nil)

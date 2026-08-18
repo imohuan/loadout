@@ -1,0 +1,616 @@
+package adminapi
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
+	"strings"
+	"time"
+
+	"loadout/core/config"
+	"loadout/core/db"
+	"loadout/plugins/contracts"
+	"loadout/plugins/types"
+)
+
+type channelInput struct {
+	Name          string `json:"name"`
+	BaseURL       string `json:"base_url"`
+	APIKey        string `json:"api_key"`
+	Enabled       *bool  `json:"enabled"`
+	ManualEnabled *bool  `json:"manual_enabled"`
+	SyncBilling   bool   `json:"sync_billing"`
+}
+
+func channelAPI(channel db.Channel) types.Channel {
+	models := make([]string, 0, len(channel.Models))
+	detail := make([]types.ChannelModelDetail, 0, len(channel.Models))
+	for _, model := range channel.Models {
+		detail = append(detail, types.ChannelModelDetail{Model: model.Model, Source: model.Source, Enabled: model.Enabled})
+		if model.Enabled {
+			models = append(models, model.Model)
+		}
+	}
+	return types.Channel{ID: channel.ID, Name: channel.Name, BaseURL: channel.BaseURL, APIKeyCipher: channel.APIKeyCipher, Enabled: channel.ManualEnabled, ManualEnabled: channel.ManualEnabled, SyncBilling: channel.SyncBilling, Models: models, ModelsDetail: detail, ModelsError: channel.ModelsError, CreatedAt: channel.CreatedAt, UpdatedAt: channel.UpdatedAt}
+}
+
+func (s *Service) listDBChannels(ctx context.Context) ([]db.Channel, error) {
+	return s.routing.ListChannels(ctx)
+}
+
+func (s *Service) handleChannelsListDB(w http.ResponseWriter, r *http.Request) {
+	channels, err := s.listDBChannels(r.Context())
+	if err != nil {
+		s.writeServerError(w, err)
+		return
+	}
+	result := make([]types.Channel, 0, len(channels))
+	for _, channel := range channels {
+		result = append(result, channelAPI(channel))
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Service) handleChannelCreateDB(w http.ResponseWriter, r *http.Request) {
+	var input channelInput
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	if input.Name == "" || input.BaseURL == "" {
+		writeError(w, http.StatusBadRequest, "名称和地址必填")
+		return
+	}
+	cipher, err := s.st.Encrypt(input.APIKey)
+	if err != nil {
+		s.writeServerError(w, err)
+		return
+	}
+	id, err := newID()
+	if err != nil {
+		s.writeServerError(w, err)
+		return
+	}
+	manual := true
+	if input.ManualEnabled != nil {
+		manual = *input.ManualEnabled
+	} else if input.Enabled != nil {
+		manual = *input.Enabled
+	}
+	models, modelsError := probeChannelModels(input.BaseURL, input.APIKey)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	channel := db.Channel{ID: id, Name: input.Name, BaseURL: input.BaseURL, APIKeyCipher: cipher, ManualEnabled: manual, SyncBilling: input.SyncBilling, ModelsError: modelsError, CreatedAt: now, UpdatedAt: now}
+	for _, model := range models {
+		channel.Models = append(channel.Models, db.ChannelModel{Model: model, Source: "probe", Enabled: true, FirstSeenAt: now, LastSeenAt: now})
+	}
+	channels, err := s.listDBChannels(r.Context())
+	if err != nil {
+		s.writeServerError(w, err)
+		return
+	}
+	channels = append(channels, channel)
+	if err := s.routing.ReplaceChannels(r.Context(), channels); err != nil {
+		s.writeServerError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, channelAPI(channel))
+}
+
+func (s *Service) channelByID(ctx context.Context, id string) (db.Channel, int, error) {
+	channels, err := s.listDBChannels(ctx)
+	if err != nil {
+		return db.Channel{}, -1, err
+	}
+	for index, channel := range channels {
+		if channel.ID == id {
+			return channel, index, nil
+		}
+	}
+	return db.Channel{}, -1, errNotFound("channel")
+}
+
+func (s *Service) handleChannelUpdateDB(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var input channelInput
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	channels, err := s.listDBChannels(r.Context())
+	if err != nil {
+		s.writeServerError(w, err)
+		return
+	}
+	index := -1
+	for i := range channels {
+		if channels[i].ID == id {
+			index = i
+			break
+		}
+	}
+	if index < 0 {
+		writeError(w, http.StatusNotFound, "渠道不存在")
+		return
+	}
+	channel := &channels[index]
+	if input.Name != "" {
+		channel.Name = input.Name
+	}
+	if input.BaseURL != "" {
+		channel.BaseURL = input.BaseURL
+	}
+	if input.ManualEnabled != nil {
+		channel.ManualEnabled = *input.ManualEnabled
+	} else if input.Enabled != nil {
+		channel.ManualEnabled = *input.Enabled
+	}
+	channel.SyncBilling = input.SyncBilling
+	if input.APIKey != "" {
+		channel.APIKeyCipher, err = s.st.Encrypt(input.APIKey)
+		if err != nil {
+			s.writeServerError(w, err)
+			return
+		}
+	}
+	plain := input.APIKey
+	if plain == "" && channel.APIKeyCipher != "" {
+		plain, _ = s.st.Decrypt(channel.APIKeyCipher)
+	}
+	models, modelsError := probeChannelModels(channel.BaseURL, plain)
+	channel.ModelsError = modelsError
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	channel.UpdatedAt = now
+	values := make([]db.ChannelModel, 0, len(models))
+	for _, model := range models {
+		values = append(values, db.ChannelModel{Model: model, Source: "probe", Enabled: true, FirstSeenAt: now, LastSeenAt: now})
+	}
+	// 合并保留手动配置的模型（探测结果只替换 probe 来源，manual 不丢）。
+	channel.Models = mergeManualModels(channel.Models, values, now)
+	if err := s.routing.ReplaceChannels(r.Context(), channels); err != nil {
+		s.writeServerError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, channelAPI(*channel))
+}
+
+func (s *Service) handleChannelDeleteDB(w http.ResponseWriter, r *http.Request) {
+	channels, err := s.listDBChannels(r.Context())
+	if err != nil {
+		s.writeServerError(w, err)
+		return
+	}
+	id := r.PathValue("id")
+	found := false
+	out := channels[:0]
+	for _, channel := range channels {
+		if channel.ID == id {
+			found = true
+		} else {
+			out = append(out, channel)
+		}
+	}
+	if !found {
+		writeError(w, http.StatusNotFound, "渠道不存在")
+		return
+	}
+	if err := s.routing.ReplaceChannels(r.Context(), out); err != nil {
+		writeError(w, http.StatusConflict, "渠道仍被聚合目标引用，请先移除目标")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (s *Service) handleChannelRefreshModelsDB(w http.ResponseWriter, r *http.Request) {
+	channel, _, err := s.channelByID(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "渠道不存在")
+		return
+	}
+	key, _ := s.st.Decrypt(channel.APIKeyCipher)
+	models, modelsError := probeChannelModels(channel.BaseURL, key)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	values := make([]db.ChannelModel, 0, len(models))
+	for _, model := range models {
+		values = append(values, db.ChannelModel{Model: model, Source: "probe", Enabled: true, FirstSeenAt: now, LastSeenAt: now})
+	}
+	// 合并保留手动配置的模型（探测结果只替换 probe 来源，manual 不丢）。
+	values = mergeManualModels(channel.Models, values, now)
+	if err := s.routing.ReplaceChannelModels(r.Context(), channel.ID, values); err != nil {
+		s.writeServerError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"models": models, "models_error": modelsError})
+}
+
+// channelModelInput 渠道模型编辑项。
+type channelModelInput struct {
+	Model   string `json:"model"`
+	Enabled *bool  `json:"enabled"`
+}
+
+// handleChannelModelsReplaceDB 全量编辑渠道模型清单（添加/删除/禁用/启用一接口搞定）。
+// 现有模型的 source 保留（探测的仍为 probe），新增模型默认 source=manual。
+func (s *Service) handleChannelModelsReplaceDB(w http.ResponseWriter, r *http.Request) {
+	var input []channelModelInput
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	if len(input) == 0 {
+		writeError(w, http.StatusBadRequest, "模型清单不能为空")
+		return
+	}
+	channel, _, err := s.channelByID(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "渠道不存在")
+		return
+	}
+	existing := make(map[string]string, len(channel.Models))
+	for _, m := range channel.Models {
+		existing[m.Model] = m.Source
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	values := make([]db.ChannelModel, 0, len(input))
+	for _, in := range input {
+		if strings.TrimSpace(in.Model) == "" {
+			writeError(w, http.StatusBadRequest, "模型名不能为空")
+			return
+		}
+		source := existing[in.Model]
+		if source == "" {
+			source = "manual"
+		}
+		enabled := true
+		if in.Enabled != nil {
+			enabled = *in.Enabled
+		}
+		values = append(values, db.ChannelModel{Model: in.Model, Source: source, Enabled: enabled, FirstSeenAt: now, LastSeenAt: now})
+	}
+	if err := s.routing.ReplaceChannelModels(r.Context(), channel.ID, values); err != nil {
+		s.writeServerError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "models": values})
+}
+
+// mergeManualModels 合并渠道模型：保留 Source=manual 的现有模型，
+// 探测结果只补充新探测到的模型（probe 来源）。用于刷新/更新渠道时避免手动配置丢失。
+func mergeManualModels(existing []db.ChannelModel, probed []db.ChannelModel, now string) []db.ChannelModel {
+	probeNames := make(map[string]bool, len(probed))
+	for _, m := range probed {
+		probeNames[m.Model] = true
+	}
+	out := make([]db.ChannelModel, 0, len(probed)+len(existing))
+	out = append(out, probed...)
+	for _, m := range existing {
+		if m.Source == "manual" && !probeNames[m.Model] {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+func (s *Service) handleChannelMoveDB(w http.ResponseWriter, r *http.Request) {
+	channels, err := s.listDBChannels(r.Context())
+	if err != nil {
+		s.writeServerError(w, err)
+		return
+	}
+	index := -1
+	for i := range channels {
+		if channels[i].ID == r.PathValue("id") {
+			index = i
+			break
+		}
+	}
+	var body struct {
+		Direction string `json:"direction"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	target := index
+	if body.Direction == "up" {
+		target--
+	} else if body.Direction == "down" {
+		target++
+	} else {
+		writeError(w, http.StatusBadRequest, "方向必须是 up 或 down")
+		return
+	}
+	if index < 0 || target < 0 || target >= len(channels) {
+		writeError(w, http.StatusBadRequest, "无法移动：已在边界或渠道不存在")
+		return
+	}
+	channels[index], channels[target] = channels[target], channels[index]
+	if err := s.routing.ReplaceChannels(r.Context(), channels); err != nil {
+		s.writeServerError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, channels)
+}
+
+func (s *Service) handleChannelTestDB(w http.ResponseWriter, r *http.Request) {
+	// Reuse the tested request implementation by exposing a temporary JSON
+	// snapshot only in memory is unnecessary; this path mirrors its lookup and
+	// delegates to the same upstream request body logic.
+	var req struct {
+		ID     string `json:"id"`
+		Model  string `json:"model"`
+		Vision bool   `json:"vision"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	channel, _, err := s.channelByID(r.Context(), req.ID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "渠道不存在")
+		return
+	}
+	key, _ := s.st.Decrypt(channel.APIKeyCipher)
+	if req.Model == "" {
+		req.Model = "gpt-4o"
+	}
+	payload := map[string]any{"model": req.Model, "messages": []map[string]any{{"role": "user", "content": "ping"}}, "stream": false}
+	body, _ := json.Marshal(payload)
+	request, err := http.NewRequestWithContext(r.Context(), http.MethodPost, strings.TrimRight(channel.BaseURL, "/")+"/chat/completions", strings.NewReader(string(body)))
+	if err != nil {
+		s.writeServerError(w, err)
+		return
+	}
+	request.Header.Set("Content-Type", "application/json")
+	if key != "" {
+		request.Header.Set("Authorization", "Bearer "+key)
+	}
+	start := time.Now()
+	response, err := (&http.Client{Timeout: config.VisionTimeout}).Do(request)
+	latency := time.Since(start).Milliseconds()
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": err.Error(), "latency_ms": latency})
+		return
+	}
+	defer response.Body.Close()
+	data, _ := io.ReadAll(io.LimitReader(response.Body, 8192))
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "status": response.StatusCode, "latency_ms": latency, "body": string(data)})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "status": response.StatusCode, "latency_ms": latency, "reply": extractReply(data)})
+}
+
+func (s *Service) handleAggregatesListDB(w http.ResponseWriter, r *http.Request) {
+	values, err := s.routing.ListAggregates(r.Context())
+	if err != nil {
+		s.writeServerError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, values)
+}
+func (s *Service) handleAggregateCreateDB(w http.ResponseWriter, r *http.Request) {
+	var value db.Aggregate
+	if !decodeJSON(w, r, &value) {
+		return
+	}
+	// 新建聚合模型：前端未显式传 enabled（Go 零值 false）时，有目标即默认启用，
+	// 避免落库即禁用、导致 /v1/models 不暴露该虚拟模型。
+	if !value.Enabled && len(value.Targets) > 0 {
+		value.Enabled = true
+	}
+	values, err := s.routing.ListAggregates(r.Context())
+	if err != nil {
+		s.writeServerError(w, err)
+		return
+	}
+	values = append(values, value)
+	if err := s.routing.ReplaceAggregates(r.Context(), values); err != nil {
+		s.writeServerError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, value)
+}
+func (s *Service) handleAggregatesReplaceDB(w http.ResponseWriter, r *http.Request) {
+	var values []db.Aggregate
+	if !decodeJSON(w, r, &values) {
+		return
+	}
+	// 前端（尤其旧版本）可能漏发 enabled（Go 零值 false）：有目标即默认启用，
+	// 避免整体替换后虚拟模型被意外禁用、从 /v1/models 消失。
+	// 注：当前 UI 无「禁用聚合模型」开关，不存在显式 false 语义；将来若加禁用功能，
+	// 建议改用 *bool 或独立 PATCH 端点，避免零值歧义。
+	for i := range values {
+		if !values[i].Enabled && len(values[i].Targets) > 0 {
+			values[i].Enabled = true
+		}
+	}
+	if err := s.routing.ReplaceAggregates(r.Context(), values); err != nil {
+		s.writeServerError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, values)
+}
+func (s *Service) handleAggregateDeleteDB(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		Name string `json:"name"`
+	}
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	values, err := s.routing.ListAggregates(r.Context())
+	if err != nil {
+		s.writeServerError(w, err)
+		return
+	}
+	out := values[:0]
+	for _, value := range values {
+		if value.Name != input.Name {
+			out = append(out, value)
+		}
+	}
+	if err := s.routing.ReplaceAggregates(r.Context(), out); err != nil {
+		s.writeServerError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (s *Service) handleModelStatusList(w http.ResponseWriter, r *http.Request) {
+	if s.health == nil {
+		writeError(w, http.StatusServiceUnavailable, "model-health 未装配")
+		return
+	}
+	values, err := s.health.List(r.Context())
+	if err != nil {
+		s.writeServerError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, flattenStatus(values))
+}
+func (s *Service) handleModelStatusSet(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ManualEnabled bool `json:"manual_enabled"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	if err := s.health.SetModelEnabled(r.Context(), r.PathValue("channel_id"), r.PathValue("model"), body.ManualEnabled); err != nil {
+		s.writeServerError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+func (s *Service) handleChannelStatusSet(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ManualEnabled bool `json:"manual_enabled"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	if err := s.health.SetChannelEnabled(r.Context(), r.PathValue("channel_id"), body.ManualEnabled); err != nil {
+		s.writeServerError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+func (s *Service) handleModelStatusRecover(w http.ResponseWriter, r *http.Request) {
+	if err := s.health.RecoverModel(r.Context(), r.PathValue("channel_id"), r.PathValue("model")); err != nil {
+		s.writeServerError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+func (s *Service) handleChannelStatusRecover(w http.ResponseWriter, r *http.Request) {
+	if err := s.health.RecoverChannel(r.Context(), r.PathValue("channel_id")); err != nil {
+		s.writeServerError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+func (s *Service) handleModelStatusCheck(w http.ResponseWriter, r *http.Request) {
+	if err := s.health.CheckNow(r.Context(), false); err != nil {
+		s.writeServerError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+func (s *Service) handleModelStatusRecoverAll(w http.ResponseWriter, r *http.Request) {
+	if s.health == nil {
+		writeError(w, http.StatusServiceUnavailable, "model-health 未装配")
+		return
+	}
+	affected, err := s.health.RecoverAllModels(r.Context())
+	if err != nil {
+		s.writeServerError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "affected": affected})
+}
+func (s *Service) handleModelStatusRecoverAllChannel(w http.ResponseWriter, r *http.Request) {
+	if s.health == nil {
+		writeError(w, http.StatusServiceUnavailable, "model-health 未装配")
+		return
+	}
+	affected, err := s.health.RecoverAllModelsByChannel(r.Context(), r.PathValue("channel_id"))
+	if err != nil {
+		s.writeServerError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "affected": affected})
+}
+func (s *Service) handleModelStatusRecoverAllChannels(w http.ResponseWriter, r *http.Request) {
+	if s.health == nil {
+		writeError(w, http.StatusServiceUnavailable, "model-health 未装配")
+		return
+	}
+	affected, err := s.health.RecoverAllChannels(r.Context())
+	if err != nil {
+		s.writeServerError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "affected": affected})
+}
+
+func flattenStatus(values []contracts.ChannelStatus) []map[string]any {
+	result := make([]map[string]any, 0, len(values))
+	for _, value := range values {
+		models := make([]map[string]any, 0, len(value.Models))
+		for _, model := range value.Models {
+			models = append(models, map[string]any{
+				"model": model.Model, "manual_enabled": model.ManualEnabled,
+				"health_status": model.Health.HealthStatus, "effective_available": model.Health.EffectiveAvailable,
+				"reason": model.Health.Reason, "last_error": model.LastError, "fail_count": model.FailCount,
+				"last_success_at": model.LastSuccessAt, "disabled_until": model.DisabledUntil,
+			})
+		}
+		result = append(result, map[string]any{"channel": map[string]any{"id": value.ID, "name": value.Name, "base_url": value.BaseURL, "manual_enabled": value.ManualEnabled, "sync_billing": value.SyncBilling}, "manual_enabled": value.ManualEnabled, "health_status": value.Health.HealthStatus, "effective_available": value.Health.EffectiveAvailable, "reason": value.Health.Reason, "models": models})
+	}
+	return result
+}
+
+func (s *Service) handleRouteLogsList(w http.ResponseWriter, r *http.Request) {
+	if s.routeLog == nil {
+		writeError(w, http.StatusServiceUnavailable, "route-log 未装配")
+		return
+	}
+	filter := contracts.RouteLogFilter{Model: r.URL.Query().Get("model"), ChannelID: r.URL.Query().Get("channel_id"), Result: r.URL.Query().Get("result")}
+	if value := r.URL.Query().Get("from"); value != "" {
+		if parsed, err := time.Parse(time.RFC3339, value); err == nil {
+			filter.StartedAfter = &parsed
+		}
+	}
+	if value := r.URL.Query().Get("to"); value != "" {
+		if parsed, err := time.Parse(time.RFC3339, value); err == nil {
+			filter.StartedBefore = &parsed
+		}
+	}
+	values, err := s.routeLog.List(r.Context(), filter)
+	if err != nil {
+		s.writeServerError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, values)
+}
+func (s *Service) handleRouteLogDetail(w http.ResponseWriter, r *http.Request) {
+	if s.routeLog == nil {
+		writeError(w, http.StatusServiceUnavailable, "route-log 未装配")
+		return
+	}
+	value, err := s.routeLog.Detail(r.Context(), r.PathValue("request_id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "转发日志不存在")
+		return
+	}
+	writeJSON(w, http.StatusOK, value)
+}
+func (s *Service) handleRouteLogsClear(w http.ResponseWriter, r *http.Request) {
+	if s.routeLog == nil {
+		writeError(w, http.StatusServiceUnavailable, "route-log 未装配")
+		return
+	}
+	// 清空全部转发日志（route-log 的 Clear 当前为全量清空，参数无实际作用）
+	if err := s.routeLog.Clear(r.Context(), time.Time{}); err != nil {
+		s.writeServerError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func errNotFound(name string) error { return errors.New(name + " not found") }

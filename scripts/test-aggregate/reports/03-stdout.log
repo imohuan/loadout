@@ -1,0 +1,14 @@
+
+=== 03 灌入测试数据（幂等） ===
+[INFO] 清理旧 channels
+[INFO] 清空旧 aggregates（PUT []）
+[INFO] 清理旧 sk-keys
+[INFO] 创建 channel（不可达地址，仅占位）
+[ OK ] channel 已创建：id=2f1dcbd06fa71394
+[INFO] 创建聚合模型 auto-demo（enabled=true，2 targets，channel_id=2f1dcbd06fa71394）
+[ OK ] 聚合模型 auto-demo 已就位
+[INFO] 创建 sk-key（models=空，不限制）
+[ OK ] sk-key 前 12 位：sk-890bec944…
+[INFO] 创建 sk-key（models=[real-model]）
+[ OK ] 受限 sk-key 前 12 位：sk-8bc0a6e36…
+[INFO] 数据已就绪。下一步：04-probe-v1-models.ps1 验证 /v1/models
