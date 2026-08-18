@@ -6,6 +6,7 @@ build
 *.dll
 *.so
 *.dylib
+*.tgz
 
 # Go
 vendor/
