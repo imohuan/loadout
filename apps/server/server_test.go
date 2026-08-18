@@ -74,6 +74,37 @@ func TestStaticIndex(t *testing.T) {
 	}
 }
 
+// TestSPAFallback 验证 history 模式路由刷新返回 index.html，缺失静态资源仍 404。
+func TestSPAFallback(t *testing.T) {
+	ts, _ := newTestEnv(t)
+
+	// 前端路由（无扩展名）→ 200 + index.html。
+	for _, p := range []string{"/capability-routes", "/login", "/settings/profile"} {
+		resp, err := http.Get(ts.URL + p)
+		if err != nil {
+			t.Fatalf("GET %s 失败: %v", p, err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != 200 {
+			t.Fatalf("GET %s 状态码 = %d，期望 200", p, resp.StatusCode)
+		}
+		if !strings.Contains(string(body), "Loadout") {
+			t.Fatalf("GET %s 未返回 index.html: %q", p, string(body))
+		}
+	}
+
+	// 缺失的静态资源 → 404（不能回退成 HTML）。
+	resp, err := http.Get(ts.URL + "/assets/not-exist.js")
+	if err != nil {
+		t.Fatalf("GET 缺失资源失败: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 404 {
+		t.Fatalf("缺失资源状态码 = %d，期望 404", resp.StatusCode)
+	}
+}
+
 // TestAPIRequiresSession 验证管理 API 需登录。
 func TestAPIRequiresSession(t *testing.T) {
 	ts, _ := newTestEnv(t)

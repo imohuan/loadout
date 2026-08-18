@@ -242,23 +242,39 @@ function onOpenChange(value: boolean) {
                   {{ section.file }} · {{ section.count }} 条
                 </p>
               </div>
-              <div class="flex shrink-0 rounded-md border border-border p-0.5">
+              <!-- Tab-style switch: 选中=白底阴影，未选=透明灰字，与左侧 Tab 视觉一致 -->
+              <div
+                class="inline-flex h-7 shrink-0 items-center justify-center gap-0.5 rounded-lg bg-muted p-0.5 text-muted-foreground"
+                role="tablist"
+              >
                 <Button
                   type="button"
+                  role="tab"
+                  :aria-selected="modeOf(section) === 'overwrite'"
                   size="sm"
                   variant="ghost"
-                  class="h-6 px-2 text-xs"
-                  :class="modeOf(section) === 'overwrite' ? 'bg-muted' : ''"
+                  class="h-6 rounded-md px-2.5 text-xs font-medium transition-shadow"
+                  :class="
+                    modeOf(section) === 'overwrite'
+                      ? 'bg-background text-foreground shadow-sm'
+                      : 'hover:text-foreground'
+                  "
                   @click="setMode(section, 'overwrite')"
                 >
                   覆盖
                 </Button>
                 <Button
                   type="button"
+                  role="tab"
+                  :aria-selected="modeOf(section) === 'append'"
                   size="sm"
                   variant="ghost"
-                  class="h-6 px-2 text-xs"
-                  :class="modeOf(section) === 'append' ? 'bg-muted' : ''"
+                  class="h-6 rounded-md px-2.5 text-xs font-medium transition-shadow"
+                  :class="
+                    modeOf(section) === 'append'
+                      ? 'bg-background text-foreground shadow-sm'
+                      : 'hover:text-foreground'
+                  "
                   @click="setMode(section, 'append')"
                 >
                   追加

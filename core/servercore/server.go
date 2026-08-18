@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path"
 	"runtime/debug"
 	"strings"
 	"syscall"
@@ -118,13 +119,48 @@ func assemble(lg *slog.Logger, st *store.Store) (*plugin.Assembly, http.Handler,
 	mux.Handle("/mcp/", keys.MCPKeyMiddleware(mcpHandler))
 
 	// 管理后台静态资源（其余路径，公开；数据走 /api/* 的 session 认证）。
+	// 用 SPA fallback 包装：Vue Router 为 history 模式时，刷新前端路由
+	//（如 /capability-routes）不落盘，直接回退 index.html 由前端接管。
 	dist, err := fs.Sub(frontend.Dist, "dist")
 	if err != nil {
 		return nil, nil, err
 	}
-	mux.Handle("/", http.FileServer(http.FS(dist)))
+	mux.Handle("/", spaFileServer(dist))
 
 	return asm, requestIDMiddleware(lg, mux), nil
+}
+
+// spaFileServer 包装 http.FileServer，实现 SPA 单页回退：
+// dist 中真实存在的文件照常由 FileServer 服务；不存在的路径视为前端路由，
+// 回退 index.html 让 Vue Router（history 模式）接管。形如 assets/xxx.js 的
+// 缺失静态资源直接 404，避免把资源 404 当成 HTML 返回。
+func spaFileServer(dist fs.FS) http.Handler {
+	fileServer := http.FileServer(http.FS(dist))
+	index, err := fs.ReadFile(dist, "index.html")
+	if err != nil {
+		panic("dist 缺少 index.html: " + err.Error())
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		name := strings.TrimPrefix(path.Clean(r.URL.Path), "/")
+		// 根路径与真实存在的文件/目录走 FileServer（根路径自动解析 index.html）。
+		if name == "" || name == "." {
+			fileServer.ServeHTTP(w, r)
+			return
+		}
+		if _, err := fs.Stat(dist, name); err == nil {
+			fileServer.ServeHTTP(w, r)
+			return
+		}
+		// 缺失的资源文件（路径最后一段含扩展名）→ 404。
+		if strings.Contains(path.Base(name), ".") {
+			http.NotFound(w, r)
+			return
+		}
+		// 否则是前端路由 → 回退 index.html。
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(index)
+	})
 }
 
 // Assemble is the testable startup path used by the server and desktop hosts.
