@@ -504,3 +504,77 @@ func indexOf(s, sub string) int {
 	}
 	return -1
 }
+
+// TestProxyUnicodeEscape 验证客户端把中文转义成 \uXXXX 时（python json.dumps 默认行为），
+// 整体字节替换搜不到，必须降级到结构化替换命中。
+func TestProxyUnicodeEscape(t *testing.T) {
+	svc, st := newTestService(t)
+	seedRoute(t, st, types.CapabilityRoute{
+		Models: []string{"deepseek-chat"}, Capability: capabilityName, Route: types.RouteProxy,
+		Replacements: []types.SensitiveReplacement{{From: "你好", To: "给我讲一个笑话"}},
+	})
+	// 模拟 python json.dumps ensure_ascii=True：中文转成 \uXXXX 字面量。
+	pipe := &modelgateway.ProxyPipeline{
+		Request: &modelgateway.ProxyRequest{
+			Body:  []byte(`{"model":"deepseek-chat","messages":[{"role":"user","content":"\u4f60\u597d"}]}`),
+			Model: "deepseek-chat",
+		},
+		Metadata: map[string]any{},
+	}
+	out, err := runHook(svc, pipe)
+	if err != nil {
+		t.Fatalf("Hook 出错: %v", err)
+	}
+	if out == nil {
+		t.Fatal("应返回改写后的管线")
+	}
+	if !json.Valid(out.Request.Body) {
+		t.Fatalf("替换后 JSON 非法: %s", out.Request.Body)
+	}
+	body := string(out.Request.Body)
+	if contains(body, "给我讲一个笑话") {
+		t.Logf("替换成功: %s", body)
+	} else {
+		t.Fatalf("结构化替换未命中（body 里应有「给我讲一个笑话」）: %s", body)
+	}
+	// 原「你好」不应再以明文存在（\u4f60\u597d 或 你好 都不行）。
+	if contains(body, "你好") || contains(body, "\\u4f60\\u597d") {
+		t.Fatalf("敏感词仍存在: %s", body)
+	}
+}
+
+// TestProxyNestedText 验证嵌套字符串值（system prompt、tool 参数等任意位置）也会被替换。
+func TestProxyNestedText(t *testing.T) {
+	svc, st := newTestService(t)
+	seedRoute(t, st, types.CapabilityRoute{
+		Models: []string{"deepseek-chat"}, Capability: capabilityName, Route: types.RouteProxy,
+		Replacements: []types.SensitiveReplacement{{From: "违禁", To: "***"}},
+	})
+	pipe := proxyPipe(t, map[string]any{
+		"model": "deepseek-chat",
+		"messages": []any{
+			map[string]any{"role": "system", "content": "禁止说违禁内容"},
+			map[string]any{"role": "user", "content": []any{
+				map[string]any{"type": "text", "text": "这里也有违禁词"},
+				map[string]any{"type": "image_url", "image_url": map[string]string{"url": "http://a.com/x.png"}},
+			}},
+		},
+	})
+	out, err := runHook(svc, pipe)
+	if err != nil {
+		t.Fatalf("Hook 出错: %v", err)
+	}
+	body := string(out.Request.Body)
+	if contains(body, "违禁") {
+		t.Fatalf("嵌套文本未被替换: %s", body)
+	}
+	if !contains(body, "***") {
+		t.Fatalf("替换内容未写入: %s", body)
+	}
+	if !contains(body, "image_url") {
+		t.Fatalf("图片块不应丢失: %s", body)
+	}
+	if !json.Valid(out.Request.Body) {
+		t.Fatalf("替换后 JSON 非法: %s", body)
+	}
+}

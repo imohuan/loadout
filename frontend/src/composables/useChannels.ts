@@ -25,7 +25,7 @@ export interface ChannelGroup {
 }
 
 // normalizeBaseURL 去掉尾部斜杠：https://x/v1 与 https://x/v1/ 视为同一渠道组。
-function normalizeBaseURL(url: string) {
+export function normalizeBaseURL(url: string) {
   return url.replace(/\/+$/, '')
 }
 

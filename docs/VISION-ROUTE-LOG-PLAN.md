@@ -17,11 +17,30 @@
   - `plugins/model-gateway/proxy.go` 新增 `flushVisionAttempt`，在 `proxyBeginLog`（成功路径）与 `proxyRejectedLog`（视觉失败路径）的 Start 之后统一落库，`step_no=-1`、`action=视觉识别`，不与主链路 1..N 冲突。
 - **阶段三（前端）**：`frontend/src/components/route-logs/RouteLogTable.vue` 的 `ACTION_LABELS` 增加「视觉识别」（teal 色）。
 
-新增测试：`plugins/vision/proxy_test.go` `TestHandleProxyBeforeUpstreamStoresVisionLog`；`plugins/model-gateway/proxy_vision_log_test.go` `TestHandleProxyFlushVisionAttempt`（成功）/ `TestHandleProxyFlushVisionAttemptFailed`（失败拒绝路径）。
+新增测试：`plugins/vision/proxy_test.go` `TestHandleProxyBeforeUpstreamStoresVisionLog` / `TestAppendVisionLogNilMetadata`；`plugins/vision/proxy_vision_e2e_test.go` `TestVisionE2EFlushOnSuccess` / `TestVisionE2EFlushOnFail`；`plugins/model-gateway/proxy_vision_log_test.go` `TestHandleProxyFlushVisionAttempts`（成功）/ `TestHandleProxyFlushVisionAttemptsFailed`（失败拒绝路径）。
 
-**实现说明（与计划的两处差异）**：
+**实现说明（与计划的差异）**：
 1. vision 插件无需注入 `route-log` 服务——落库统一由 model-gateway 从 `pipe.Metadata` flush，vision 侧只暂存，插件零新增依赖。
-2. 视觉 attempt 的 `StartedAt` 取整个视觉识别（含 failover）的开始时间，`Duration` 为完整视觉阶段耗时。
+2. 视觉 attempt 的 `StartedAt` 取该候选尝试的单独起点（每次循环开始），`Duration` 为该候选耗时。
+
+**v2 增补（2026-08-20，生产反馈后）**：
+- 原实现只记最后一条视觉 attempt，多 via_option 时失败的中间尝试被吞掉（用户日志：doubao 失败被吞，只看到 qwen3 成功）。改为**切片暂存**：每次失败/成功都 append 一条。
+- 契约：`MetadataKeyVisionAttempt` 改名 `MetadataKeyVisionAttempts`（复数），载荷类型改为 `[]VisionAttemptLog`。
+- step_no 公式：切片位置 idx ∈ [0, n)，`step_no = -(n - idx)`。先尝试的候选 step_no 更小（如 n=2 时 -2, -1），`ORDER BY step_no ASC` 时按尝试顺序在前，主链路 1..N 在后。
+
+**v3 重构（2026-08-20，用户反馈日志时机）**：
+- 用户反馈：视觉识别完成（阻塞数十秒）后日志才出现，识别期间 UI 看不到。要求**访问时写占位、响应结束后更新状态**。
+- 重构为**两阶段直写**（废弃 v2 的 Metadata 暂存 + model-gateway flush 机制）：
+  - `route-log.Start` 的 UPSERT 增加 `requested_model`/`virtual_model` 更新，支持「hook 前占位 + hook 后补全虚拟模型」两次调用合并为一条。
+  - model-gateway `HandleProxy` 在 before-upstream hook **之前**调 `proxyBeginLog` 写占位 running（UI 识别期间即可轮询到）；删除 `flushVisionAttempts`。
+  - vision 插件**注入 route-log**（`SetRouteLog`），`HandleProxyBeforeUpstream` 识别开始写 `running` 占位 attempt（step_no=-(n-idx)），识别结束以同一 step_no 更新 `success`/`failed`。
+  - contracts 删除 `VisionAttemptLog` / `MetadataKeyVisionAttempts`（v2 机制废弃）。
+
+**v4 改造（2026-08-20，用户反馈序号 & 详情刷新）**：
+- 序号：v3 用负数 step_no 是为了"独立空间"防混淆，但用户视角应该是 1, 2, 3, 4, 5, 6, 7 连续递增。改为**单调递增正数空间**：
+  - 视觉 attempt `step_no = idx + 1`，循环结束把视觉最后 step 写入 `pipe.Metadata["__route_step"]`。
+  - 主链路 `proxyAttemptLog` 从 `__route_step + 1` 续接，**action 判断改用独立的 `__main_route_step` 计数器**（避免视觉 step 占用导致首次尝试被误判为「切换渠道」）。
+- 前端详情重试：`RouteLogsView.refreshActiveDetails` 之前只刷 running，终态不再刷详情——导致详情接口首次延迟/失败时 UI 长期不完整。增加 `shouldRefreshDetail` + `detailRetryCount` Map：终态 + attempts 空 → 最多重试 5 次，成功后清零。
 
 ---
 

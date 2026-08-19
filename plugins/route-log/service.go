@@ -29,7 +29,9 @@ func NewService(database *sql.DB, logger *slog.Logger) *Service {
 func (s *Service) Start(ctx context.Context, request contracts.RouteRequest) error {
 	// UPSERT：客户端重试时若复用同一 X-Request-Id，合并到同一条日志（保留首次 started_at），
 	// 避免一次业务请求被拆成多条记录。
-	_, err := s.db.ExecContext(ctx, `INSERT INTO route_requests(request_id, requested_model, virtual_model, started_at, result) VALUES (?, ?, NULLIF(?, ''), ?, 'running') ON CONFLICT(request_id) DO UPDATE SET result='running'`, request.RequestID, request.RequestedModel, request.VirtualModel, request.StartedAt.UTC().Format(time.RFC3339Nano))
+	// 冲突时同步更新 requested_model/virtual_model：model-gateway 在 before-upstream hook
+	// 之前先写占位（running，虚拟模型未知），hook 确定 __virtual_model 后再调一次补全。
+	_, err := s.db.ExecContext(ctx, `INSERT INTO route_requests(request_id, requested_model, virtual_model, started_at, result) VALUES (?, ?, NULLIF(?, ''), ?, 'running') ON CONFLICT(request_id) DO UPDATE SET result='running', requested_model=excluded.requested_model, virtual_model=excluded.virtual_model`, request.RequestID, request.RequestedModel, request.VirtualModel, request.StartedAt.UTC().Format(time.RFC3339Nano))
 	return err
 }
 

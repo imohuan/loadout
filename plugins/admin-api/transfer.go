@@ -33,7 +33,6 @@ import (
 	"time"
 
 	"loadout/core/db"
-	"loadout/core/store"
 	"loadout/plugins/types"
 )
 
@@ -359,17 +358,6 @@ func walkSkillDir(zw *zip.Writer, srcDir, zipPrefix string) error {
 		if _, err := w.Write(data); err != nil {
 			return fmt.Errorf("admin-api: 写入 zip 条目 %s 失败: %w", dst, err)
 		}
-	}
-	return nil
-}
-
-// readJSONOrEmpty 读 store JSON 文件；不存在时置零值不报错。
-func (s *Service) readJSONOrEmpty(name string, v any) error {
-	if err := s.st.Read(name, v); err != nil {
-		if errors.Is(err, store.ErrNotExist) {
-			return nil
-		}
-		return fmt.Errorf("admin-api: 读取 %s 失败: %w", name, err)
 	}
 	return nil
 }

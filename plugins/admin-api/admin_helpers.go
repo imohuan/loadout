@@ -17,6 +17,9 @@ func (s *Service) readCapabilityRoutes(ctx context.Context) ([]types.CapabilityR
 	if s.routing != nil {
 		routes, err := s.routing.ListCapabilityRoutes(ctx)
 		if err == nil {
+			if routes == nil {
+				routes = []types.CapabilityRoute{}
+			}
 			return routes, nil
 		}
 		s.lg.Warn("admin-api: 从 SQLite 读能力路由失败，回退 JSON", "err", err)
@@ -24,7 +27,7 @@ func (s *Service) readCapabilityRoutes(ctx context.Context) ([]types.CapabilityR
 	items, err := readSlice[types.CapabilityRoute](s.st, types.FileCapabilityRoutes)
 	if err != nil {
 		if errors.Is(err, store.ErrNotExist) {
-			return nil, nil
+			return []types.CapabilityRoute{}, nil
 		}
 		return nil, err
 	}
@@ -48,6 +51,9 @@ func (s *Service) readMCPServers(ctx context.Context) ([]types.MCPServer, error)
 	if s.routing != nil {
 		servers, err := s.routing.ListMCPServers(ctx)
 		if err == nil {
+			if servers == nil {
+				servers = []types.MCPServer{}
+			}
 			return servers, nil
 		}
 		s.lg.Warn("admin-api: 从 SQLite 读 MCP 服务器失败，回退 JSON", "err", err)
@@ -55,7 +61,7 @@ func (s *Service) readMCPServers(ctx context.Context) ([]types.MCPServer, error)
 	items, err := readSlice[types.MCPServer](s.st, types.FileMCPServers)
 	if err != nil {
 		if errors.Is(err, store.ErrNotExist) {
-			return nil, nil
+			return []types.MCPServer{}, nil
 		}
 		return nil, err
 	}
@@ -79,6 +85,9 @@ func (s *Service) readGroups(ctx context.Context) ([]types.Group, error) {
 	if s.routing != nil {
 		groups, err := s.routing.ListGroups(ctx)
 		if err == nil {
+			if groups == nil {
+				groups = []types.Group{}
+			}
 			return groups, nil
 		}
 		s.lg.Warn("admin-api: 从 SQLite 读分组失败，回退 JSON", "err", err)
@@ -86,7 +95,7 @@ func (s *Service) readGroups(ctx context.Context) ([]types.Group, error) {
 	items, err := readSlice[types.Group](s.st, types.FileGroups)
 	if err != nil {
 		if errors.Is(err, store.ErrNotExist) {
-			return nil, nil
+			return []types.Group{}, nil
 		}
 		return nil, err
 	}
@@ -110,6 +119,9 @@ func (s *Service) readToolStates(ctx context.Context) ([]types.ToolState, error)
 	if s.routing != nil {
 		states, err := s.routing.ListToolStates(ctx)
 		if err == nil {
+			if states == nil {
+				states = []types.ToolState{}
+			}
 			return states, nil
 		}
 		s.lg.Warn("admin-api: 从 SQLite 读工具开关失败，回退 JSON", "err", err)
@@ -117,7 +129,7 @@ func (s *Service) readToolStates(ctx context.Context) ([]types.ToolState, error)
 	items, err := readSlice[types.ToolState](s.st, types.FileToolsState)
 	if err != nil {
 		if errors.Is(err, store.ErrNotExist) {
-			return nil, nil
+			return []types.ToolState{}, nil
 		}
 		return nil, err
 	}
@@ -172,6 +184,9 @@ func (s *Service) readMCPKeys(ctx context.Context) ([]types.MCPKey, error) {
 	if s.routing != nil {
 		keys, err := s.routing.ListMCPKeys(ctx)
 		if err == nil {
+			if keys == nil {
+				keys = []types.MCPKey{}
+			}
 			return keys, nil
 		}
 		s.lg.Warn("admin-api: 从 SQLite 读 MCP key 失败，回退 JSON", "err", err)
@@ -179,7 +194,7 @@ func (s *Service) readMCPKeys(ctx context.Context) ([]types.MCPKey, error) {
 	items, err := readSlice[types.MCPKey](s.st, types.FileMCPKeys)
 	if err != nil {
 		if errors.Is(err, store.ErrNotExist) {
-			return nil, nil
+			return []types.MCPKey{}, nil
 		}
 		return nil, err
 	}

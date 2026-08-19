@@ -171,19 +171,3 @@ type RouteLog interface {
 	Detail(context.Context, string) (RouteRequestView, error)
 	Clear(context.Context, time.Time) error
 }
-
-// MetadataKeyVisionAttempt 是 ProxyPipeline.Metadata 中视觉识别日志的暂存键。
-// vision 插件在 proxy:before-upstream hook 内写入，model-gateway 在 route_requests
-// 建立（Start）之后统一 flush 到 route_attempts，避免先有子记录再有父记录。
-const MetadataKeyVisionAttempt = "__vision_attempt"
-
-// VisionAttemptLog 视觉识别的一次执行结果（暂存载荷）。
-type VisionAttemptLog struct {
-	ViaModel     string        // 实际使用的视觉模型（via_model）
-	ChannelID    string        // 实际成功的渠道 id；失败或缓存命中时为空
-	Result       string        // success / failed
-	StartedAt    time.Time     // 视觉识别开始时间
-	Duration     DurationMS    // 视觉识别耗时
-	ErrorMessage string        // 失败时的错误
-	ImageCount   int           // 检出图片数
-}

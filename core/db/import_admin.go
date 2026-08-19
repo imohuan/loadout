@@ -278,8 +278,7 @@ func importMCPKeys(ctx context.Context, tx *sql.Tx, values []types.MCPKey) error
 		return fmt.Errorf("db: clear mcp keys: %w", err)
 	}
 	for _, key := range values {
-		id := sha256Hex([]byte(key.Endpoint))
-		if _, err := tx.ExecContext(ctx, `INSERT INTO gateway_keys (id, kind, name, prefix, hash, models_json, enabled, created_at, endpoint, header_name) VALUES (?, 'mcp', '', '', ?, '[]', 1, '', ?, ?)`, id, key.Hash, key.Endpoint, key.HeaderName); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO gateway_keys (id, kind, name, prefix, hash, models_json, enabled, created_at, endpoint, header_name) VALUES (?, 'mcp', '', '', ?, '[]', 1, '', ?, ?)`, key.Endpoint, key.Hash, key.Endpoint, key.HeaderName); err != nil {
 			return fmt.Errorf("db: import mcp key %q: %w", key.Endpoint, err)
 		}
 	}

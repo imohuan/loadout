@@ -13,6 +13,7 @@ import (
 
 	"loadout/core/config"
 	"loadout/core/store"
+	"loadout/plugins"
 	fakellm "loadout/testkit/fake-llm"
 )
 
@@ -237,7 +238,7 @@ func doJSON(t *testing.T, ts *httptest.Server, cookie, method, path, body string
 	return resp, data
 }
 
-// TestOverviewPluginCount 验证概览页返回真实插件数量（10）。
+// TestOverviewPluginCount 验证概览页返回真实插件数量（plugins.All() 长度）。
 func TestOverviewPluginCount(t *testing.T) {
 	ts, pwd := newTestEnv(t)
 	cookie := loginCookie(t, ts, pwd)
@@ -250,8 +251,9 @@ func TestOverviewPluginCount(t *testing.T) {
 	if err := json.Unmarshal(data, &ov); err != nil {
 		t.Fatalf("解析 overview 失败: %v", err)
 	}
-	if n, ok := ov["plugins"].(float64); !ok || int(n) != 10 {
-		t.Fatalf("overview.plugins = %v，期望 10", ov["plugins"])
+	want := len(plugins.All())
+	if n, ok := ov["plugins"].(float64); !ok || int(n) != want {
+		t.Fatalf("overview.plugins = %v，期望 %d", ov["plugins"], want)
 	}
 }
 

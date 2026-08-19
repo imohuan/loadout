@@ -97,6 +97,7 @@ func newE2EGateway(t *testing.T, visSvc *Service) (*modelgateway.Service, *route
 	t.Cleanup(func() { _ = database.Close() })
 	rl := routelog.NewService(database, slog.Default())
 	mgw.SetRoutingServices(database, e2eHealth{}, rl)
+	visSvc.SetRouteLog(rl)
 
 	ectx.On(modelgateway.ProxyBeforeUpstream, visSvc.HandleProxyBeforeUpstream)
 	return mgw, rl, ectx
@@ -163,12 +164,12 @@ func TestVisionE2EFlushOnSuccess(t *testing.T) {
 	var visionSeen, mainSeen bool
 	for _, a := range detail.Attempts {
 		switch a.StepNo {
-		case -1:
+		case 1:
 			visionSeen = true
 			if a.Action != "视觉识别" || a.Model != "qwen-vl-max" || a.ChannelID != "vision" || a.Result != "success" {
 				t.Fatalf("视觉 attempt 内容不符: %+v", a)
 			}
-		case 1:
+		case 2:
 			mainSeen = true
 			if a.Action != "首次尝试" || a.Model != "deepseek-chat" {
 				t.Fatalf("主链路 attempt 不符: %+v", a)
@@ -229,7 +230,7 @@ func TestVisionE2EFlushOnFail(t *testing.T) {
 	}
 	var visionSeen bool
 	for _, a := range detail.Attempts {
-		if a.StepNo == -1 {
+		if a.StepNo == 1 {
 			visionSeen = true
 			if a.Action != "视觉识别" || a.Model != "qwen-vl-max" || a.Result != "failed" || a.ErrorMessage == "" {
 				t.Fatalf("视觉失败 attempt 内容不符: %+v", a)

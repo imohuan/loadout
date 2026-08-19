@@ -3,8 +3,10 @@ package vision
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"loadout/core/config"
 	"loadout/plugins/contracts"
@@ -126,6 +128,9 @@ func TestHandleProxyBeforeUpstreamChat(t *testing.T) {
 	if !strings.Contains(got, "这是一张猫的图片") {
 		t.Fatalf("描述文本未写入: %s", got)
 	}
+	if n := len(fake.Requests()); n != 1 {
+		t.Fatalf("单新图请求应识别 1 次，实际 %d 次", n)
+	}
 }
 
 // TestHandleProxyBeforeUpstreamChat 多图：只保留一份描述，其余图片块删除。
@@ -157,6 +162,7 @@ func TestHandleProxyBeforeUpstreamChatMultipleImages(t *testing.T) {
 		t.Fatalf("图片块应全部处理（1 替换 1 删除）: %s", got)
 	}
 }
+
 func TestHandleProxyBeforeUpstreamResponses(t *testing.T) {
 	svc, _ := newTestService(t)
 	fake, url := fakellm.New()
@@ -385,6 +391,9 @@ func TestHandleProxyStreamPrefixOnlyForNew(t *testing.T) {
 	if joined := strings.Join(oldDeltas, ""); strings.Contains(joined, visionStreamPrefix) {
 		t.Fatalf("纯历史图请求不应输出图片理解前缀: %q", joined)
 	}
+	if n := len(fake.Requests()); n != 0 {
+		t.Fatalf("纯历史图流式不应调用视觉模型，实际 %d 次", n)
+	}
 
 	// 新图 + 流式：输出前缀一次（视觉走流式，用 SSE 脚本回放）。
 	fake.SetSSEScript([]string{`data: {"choices":[{"delta":{"content":"描述文本"}}]}` + "\n\n", "data: [DONE]\n\n"})
@@ -434,10 +443,39 @@ func TestHandleProxyKeepModeUnchanged(t *testing.T) {
 	}
 }
 
-// TestHandleProxyBeforeUpstreamStoresVisionLog 验证成功路径把视觉识别结果暂存到
-// pipe.Metadata（__vision_attempt），供 model-gateway 在 route-log Start 后统一落库。
-func TestHandleProxyBeforeUpstreamStoresVisionLog(t *testing.T) {
+// mockVisionRouteLog 记录 route-log 调用，供视觉两阶段日志断言。
+type mockVisionRouteLog struct {
+	starts   []contracts.RouteRequest
+	attempts []contracts.RouteAttempt
+	finishs  []contracts.RouteFinish
+}
+
+func (m *mockVisionRouteLog) Start(ctx context.Context, r contracts.RouteRequest) error {
+	m.starts = append(m.starts, r)
+	return nil
+}
+func (m *mockVisionRouteLog) Attempt(ctx context.Context, a contracts.RouteAttempt) (int64, error) {
+	m.attempts = append(m.attempts, a)
+	return int64(len(m.attempts)), nil
+}
+func (m *mockVisionRouteLog) Finish(ctx context.Context, f contracts.RouteFinish) error {
+	m.finishs = append(m.finishs, f)
+	return nil
+}
+func (m *mockVisionRouteLog) List(ctx context.Context, f contracts.RouteLogFilter) ([]contracts.RouteRequestView, error) {
+	return nil, nil
+}
+func (m *mockVisionRouteLog) Detail(ctx context.Context, id string) (contracts.RouteRequestView, error) {
+	return contracts.RouteRequestView{}, nil
+}
+func (m *mockVisionRouteLog) Clear(ctx context.Context, t time.Time) error { return nil }
+
+// TestHandleProxyBeforeUpstreamVisionLogTwoPhase 验证两阶段写日志：识别开始写 running
+// 占位，识别结束更新为 success（同一 step_no，UPSERT 合并）。
+func TestHandleProxyBeforeUpstreamVisionLogTwoPhase(t *testing.T) {
 	svc, _ := newTestService(t)
+	log := &mockVisionRouteLog{}
+	svc.SetRouteLog(log)
 	fake, url := fakellm.New()
 	defer fake.Close()
 	fake.SetResponse(`{"choices":[{"message":{"role":"assistant","content":"这是一只猫"}}]}`)
@@ -451,30 +489,119 @@ func TestHandleProxyBeforeUpstreamStoresVisionLog(t *testing.T) {
 	}
 
 	body := `{"model":"deepseek-chat","messages":[{"role":"user","content":[{"type":"text","text":"看"},{"type":"image_url","image_url":{"url":"http://img/a.png"}}]}]}`
-	out, err := svc.HandleProxyBeforeUpstream(proxyPipe("chat/completions", "deepseek-chat", body))
-	if err != nil {
+	pipe := proxyPipe("chat/completions", "deepseek-chat", body)
+	pipe.RequestID = "req-vision-1"
+	if _, err := svc.HandleProxyBeforeUpstream(pipe); err != nil {
 		t.Fatalf("视觉处理出错: %v", err)
 	}
-	pipe := out.(*modelgateway.ProxyPipeline)
-	v, ok := pipe.Metadata[contracts.MetadataKeyVisionAttempt].(contracts.VisionAttemptLog)
-	if !ok {
-		t.Fatalf("缺少视觉日志暂存（__vision_attempt）: %+v", pipe.Metadata)
+	if len(log.attempts) != 2 {
+		t.Fatalf("应写 2 条 attempt（running + success），实际 %d: %+v", len(log.attempts), log.attempts)
 	}
-	if v.ViaModel != "qwen-vl-max" || v.Result != "success" || v.ChannelID != "v" || v.ImageCount != 1 {
-		t.Fatalf("视觉日志暂存内容不符: %+v", v)
+	first, second := log.attempts[0], log.attempts[1]
+	if first.RequestID != "req-vision-1" || first.StepNo != 1 || first.Action != "视觉识别" || first.Result != "running" {
+		t.Fatalf("占位 attempt 不符: %+v", first)
 	}
-	if v.Duration.Duration() <= 0 {
-		t.Fatalf("视觉耗时应为正: %v", v.Duration)
+	if second.RequestID != "req-vision-1" || second.StepNo != 1 || second.Result != "success" || second.Model != "qwen-vl-max" || second.ChannelID != "v" {
+		t.Fatalf("成功 attempt 不符: %+v", second)
+	}
+	if second.Duration.Duration() <= 0 {
+		t.Fatalf("成功 attempt 耗时应为正: %v", second.Duration)
 	}
 }
 
-// TestStoreVisionLogNilMetadata 防御：Metadata 为 nil 时 storeVisionLog 不 panic 且能暂存。
-func TestStoreVisionLogNilMetadata(t *testing.T) {
+// TestHandleProxyBeforeUpstreamVisionLogMultiCandidate 多 via_option：doubao 失败（404）
+// + qwen3 成功，验证 4 条 attempt——doubao: running→failed(step=-2)、qwen3: running→success(step=-1)。
+func TestHandleProxyBeforeUpstreamVisionLogMultiCandidate(t *testing.T) {
 	svc, _ := newTestService(t)
-	pipe := &modelgateway.ProxyPipeline{Request: &modelgateway.ProxyRequest{Model: "m"}}
-	svc.storeVisionLog(pipe, contracts.VisionAttemptLog{ViaModel: "qwen-vl-max", Result: "success"})
-	v, ok := pipe.Metadata[contracts.MetadataKeyVisionAttempt].(contracts.VisionAttemptLog)
-	if !ok || v.ViaModel != "qwen-vl-max" {
-		t.Fatalf("暂存失败: %+v", pipe.Metadata)
+	log := &mockVisionRouteLog{}
+	svc.SetRouteLog(log)
+
+	failLLM, failURL := fakellm.New()
+	defer failLLM.Close()
+	failLLM.SetError(http.StatusBadGateway, `{"error":{"message":"down","type":"upstream_error"}}`)
+	okLLM, okURL := fakellm.New()
+	defer okLLM.Close()
+	okLLM.SetResponse(`{"choices":[{"message":{"role":"assistant","content":"识别成功"}}]}`)
+
+	seedChannels(t, svc, []types.Channel{
+		{ID: "ch-doubao", Name: "豆包", BaseURL: failURL + "/v1", Enabled: true, Models: []string{"doubao-vision"}},
+		{ID: "ch-qwen", Name: "通义", BaseURL: okURL + "/v1", Enabled: true, Models: []string{"qwen3-vl"}},
+	})
+	if err := svc.repo.ReplaceCapabilityRoutes(context.Background(), []types.CapabilityRoute{
+		{Models: []string{"deepseek-chat"}, Capability: "vision", Route: types.RouteProxy, ViaOptions: []types.ViaOption{
+			{ViaModel: "doubao-vision", ChannelID: "ch-doubao"},
+			{ViaModel: "qwen3-vl", ChannelID: "ch-qwen"},
+		}},
+	}); err != nil {
+		t.Fatalf("写能力路由失败: %v", err)
+	}
+
+	body := `{"model":"deepseek-chat","messages":[{"role":"user","content":[{"type":"text","text":"看"},{"type":"image_url","image_url":{"url":"http://img/a.png"}}]}]}`
+	pipe := proxyPipe("chat/completions", "deepseek-chat", body)
+	pipe.RequestID = "req-vision-2"
+	out, err := svc.HandleProxyBeforeUpstream(pipe)
+	if err != nil {
+		t.Fatalf("qwen3 兜底成功不应报错: %v", err)
+	}
+	if !strings.Contains(string(out.(*modelgateway.ProxyPipeline).Request.Body), "识别成功") {
+		t.Fatalf("body 应包含 qwen3 描述: %s", string(out.(*modelgateway.ProxyPipeline).Request.Body))
+	}
+	if len(log.attempts) != 4 {
+		t.Fatalf("应写 4 条 attempt（2 候选 × running+终态），实际 %d: %+v", len(log.attempts), log.attempts)
+	}
+	// 顺序：doubao running(1) → doubao failed(1) → qwen running(2) → qwen success(2)
+	doubaoRunning, doubaoFailed := log.attempts[0], log.attempts[1]
+	qwenRunning, qwenSuccess := log.attempts[2], log.attempts[3]
+	if doubaoRunning.StepNo != 1 || doubaoRunning.Model != "doubao-vision" || doubaoRunning.Result != "running" {
+		t.Fatalf("doubao 占位不符: %+v", doubaoRunning)
+	}
+	if doubaoFailed.StepNo != 1 || doubaoFailed.Result != "failed" || doubaoFailed.ErrorMessage == "" {
+		t.Fatalf("doubao 失败更新不符: %+v", doubaoFailed)
+	}
+	if qwenRunning.StepNo != 2 || qwenRunning.Model != "qwen3-vl" || qwenRunning.Result != "running" {
+		t.Fatalf("qwen 占位不符: %+v", qwenRunning)
+	}
+	if qwenSuccess.StepNo != 2 || qwenSuccess.Result != "success" || qwenSuccess.ChannelID != "ch-qwen" {
+		t.Fatalf("qwen 成功更新不符: %+v", qwenSuccess)
+	}
+}
+
+// TestHandleProxyBeforeUpstreamPureHistoryNoStepPollution 纯历史旧图场景
+// （图片都在历史消息、最后一条 user 消息无图）：视觉不写 attempt（visionLogging=false），
+// pipe.Metadata["__route_step"] 不应被视觉循环占用，主链路保持从 step 1 开始。
+func TestHandleProxyBeforeUpstreamPureHistoryNoStepPollution(t *testing.T) {
+	svc, _ := newTestService(t)
+	log := &mockVisionRouteLog{}
+	svc.SetRouteLog(log)
+	fake, url := fakellm.New()
+	defer fake.Close()
+	fake.SetResponse(`{"choices":[{"message":{"role":"assistant","content":"历史图描述"}}]}`)
+	seedChannels(t, svc, []types.Channel{
+		{ID: "v", Name: "视觉", BaseURL: url + "/v1", Enabled: true, Models: []string{"qwen-vl-max"}},
+	})
+	if err := svc.repo.ReplaceCapabilityRoutes(context.Background(), []types.CapabilityRoute{
+		{Models: []string{"deepseek-chat"}, Capability: "vision", Route: types.RouteProxy, ViaOptions: []types.ViaOption{{ViaModel: "qwen-vl-max"}}},
+	}); err != nil {
+		t.Fatalf("写能力路由失败: %v", err)
+	}
+
+	// 最后一条 user 消息无图 → newGroup 空、图片全归历史组（oldGroups）。
+	body := `{"model":"deepseek-chat","messages":[
+		{"role":"user","content":[{"type":"text","text":"看图"},{"type":"image_url","image_url":{"url":"http://img/a.png"}}]},
+		{"role":"assistant","content":"描述"},
+		{"role":"user","content":[{"type":"text","text":"继续"}]}
+	]}`
+	pipe := proxyPipe("chat/completions", "deepseek-chat", body)
+	pipe.RequestID = "req-history-only"
+	out, err := svc.HandleProxyBeforeUpstream(pipe)
+	if err != nil {
+		t.Fatalf("纯历史旧图不应报错: %v", err)
+	}
+	if len(log.attempts) != 0 {
+		t.Fatalf("纯历史旧图不应写视觉 attempt，实际 %d: %+v", len(log.attempts), log.attempts)
+	}
+	// 视觉 step 空间未被占用：__route_step 不应存在（或保持 0），主链路从 1 开始。
+	if step, ok := out.(*modelgateway.ProxyPipeline).Metadata["__route_step"]; ok && step != 0 {
+		t.Fatalf("纯历史旧图不应占用 __route_step，实际 %v", step)
 	}
 }

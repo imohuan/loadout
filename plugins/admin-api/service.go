@@ -1052,7 +1052,7 @@ func (s *Service) handleMCPServerTest(w http.ResponseWriter, r *http.Request) {
 
 // handleMCPToolsList 聚合列出所有 enabled 上游 MCP 的工具（供分组挑选）。逐个连接，单个失败不中断整体。
 func (s *Service) handleMCPToolsList(w http.ResponseWriter, r *http.Request) {
-	servers, err := readSlice[types.MCPServer](s.st, types.FileMCPServers)
+	servers, err := s.readMCPServers(r.Context())
 	if err != nil {
 		s.writeServerError(w, err)
 		return
@@ -1111,7 +1111,7 @@ func (s *Service) listUpstreamTools(r *http.Request, srv types.MCPServer) ([]mcp
 }
 
 func (s *Service) findMCPServer(id string) (types.MCPServer, error) {
-	servers, err := readSlice[types.MCPServer](s.st, types.FileMCPServers)
+	servers, err := s.readMCPServers(context.Background())
 	if err != nil {
 		return types.MCPServer{}, err
 	}
@@ -1309,6 +1309,13 @@ func (s *Service) handleKeysList(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.writeServerError(w, err)
 		return
+	}
+	// 空列表统一输出 []，避免 nil slice 编码为 JSON null 导致前端 .length 崩溃。
+	if skKeys == nil {
+		skKeys = []types.APIKey{}
+	}
+	if mcpKeys == nil {
+		mcpKeys = []types.MCPKey{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"sk_keys":  skKeys,

@@ -112,8 +112,10 @@ export function useMcpManagement() {
   })
   // Update a single ref in place to keep Vue's v-for keys stable and avoid
   // re-mounting rows on refresh. This is the main lever for "lossless refresh".
+  // `?? []` guards against backends that encode empty tables as JSON `null`
+  // (Go nil slices), which would otherwise blow up `.length` in templates.
   function assignList<T>(target: { value: T[] }, next: T[]) {
-    target.value = next
+    target.value = next ?? []
   }
   async function refreshKeys() {
     try {

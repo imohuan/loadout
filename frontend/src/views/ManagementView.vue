@@ -174,7 +174,7 @@ async function changePassword() {
                 <CardTitle class="text-base">模型 API 密钥</CardTitle>
               </CardHeader>
               <CardContent class="p-0">
-                <div v-if="keys?.sk_keys.length" class="overflow-x-auto">
+                <div v-if="keys?.sk_keys?.length" class="overflow-x-auto">
                   <Table>
                     <TableHeader>
                       <TableRow>
@@ -185,7 +185,7 @@ async function changePassword() {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      <TableRow v-for="key in keys.sk_keys" :key="key.id">
+                      <TableRow v-for="key in keys?.sk_keys || []" :key="key.id">
                         <TableCell>{{ key.name }}</TableCell>
                         <TableCell class="font-mono text-xs">{{ key.prefix }}</TableCell>
                         <TableCell class="text-sm text-muted-foreground">{{
@@ -222,12 +222,12 @@ async function changePassword() {
           <Card class="rounded-md">
             <CardHeader>
               <CardTitle class="text-base"
-                >插件自检（{{ plugins?.plugins.length || 0 }} 个）</CardTitle
+                >插件自检（{{ plugins?.plugins?.length || 0 }} 个）</CardTitle
               >
               <CardDescription>展示插件注册的检查项和问题。</CardDescription>
             </CardHeader>
             <CardContent class="p-0">
-              <div v-if="plugins?.plugins.length" class="overflow-x-auto">
+              <div v-if="plugins?.plugins?.length" class="overflow-x-auto">
                 <Table>
                   <TableHeader>
                     <TableRow>
@@ -237,7 +237,7 @@ async function changePassword() {
                     </TableRow>
                   </TableHeader>
                   <TableBody
-                    ><template v-for="plugin in plugins.plugins" :key="plugin.plugin">
+                    ><template v-for="plugin in plugins?.plugins || []" :key="plugin.plugin">
                       <TableRow v-for="check in plugin.checks" :key="check.name">
                         <TableCell class="font-medium">{{ plugin.plugin }}</TableCell>
                         <TableCell>{{ check.name }}</TableCell>

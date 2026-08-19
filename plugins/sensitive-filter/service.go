@@ -95,9 +95,15 @@ func (s *Service) HandleProxyBeforeUpstream(payload any) (any, error) {
 		// 防御：DecideRoute 现为 fail-open，正常不会走到这里。
 		return nil, sensitiveError(err.Error())
 	}
-	if route == nil || route.Route == types.RouteNative {
+	if route == nil {
+		s.lg.Debug("sensitive-filter: 未命中路由，原样透传", "model", model, "channel_id", channelID, "path", pipe.Request.Path)
 		return payload, nil
 	}
+	if route.Route == types.RouteNative {
+		s.lg.Debug("sensitive-filter: native 路由，原样透传", "model", model, "channel_id", channelID, "path", pipe.Request.Path)
+		return payload, nil
+	}
+	s.lg.Info("sensitive-filter: 命中路由", "model", model, "channel_id", channelID, "path", pipe.Request.Path, "route", route.Route, "rules", len(route.Replacements))
 
 	text := string(pipe.Request.Body)
 	switch route.Route {
@@ -112,23 +118,32 @@ func (s *Service) HandleProxyBeforeUpstream(payload any) (any, error) {
 		}
 		return payload, nil
 	case types.RouteProxy:
+		before := len(text)
 		replaced, err := replaceAll(text, route.Replacements)
 		if err != nil {
 			return nil, sensitiveError(err.Error())
 		}
-		if !json.Valid([]byte(replaced)) {
-			// 整体替换破坏了 JSON（如替换词含引号/换行）→ 降级：只替换 messages 下的文本，
-			// 循环所有消息的文本字段逐一替换，绝不报错拒绝请求。
-			s.lg.Warn("敏感词整体替换破坏 JSON，降级为逐条替换 messages 文本",
-				"model", model, "channel_id", channelID, "path", pipe.Request.Path)
-			fallback, ferr := replaceMessagesText(pipe.Request.Body, route.Replacements)
-			if ferr != nil {
-				return nil, sensitiveError(ferr.Error())
-			}
+		after := len(replaced)
+		jsonOK := json.Valid([]byte(replaced))
+		if jsonOK && after != before {
+			s.lg.Info("sensitive-filter: 整体替换完成", "model", model, "before_bytes", before, "after_bytes", after, "rules_applied", len(route.Replacements))
+			pipe.Request.Body = []byte(replaced)
+			return pipe, nil
+		}
+		// 整体替换未命中（客户端常把中文转义成 \uXXXX，字节级搜索不到）或破坏了 JSON
+		// → 降级：解析 JSON 结构，对真实字符串值逐一替换，绝不报错拒绝请求。
+		s.lg.Warn("敏感词整体替换未命中或破坏 JSON，降级为结构化替换",
+			"model", model, "channel_id", channelID, "path", pipe.Request.Path, "before_bytes", before, "after_bytes", after, "json_valid", jsonOK)
+		fallback, ferr := replaceMessagesText(pipe.Request.Body, route.Replacements)
+		if ferr != nil {
+			return nil, sensitiveError(ferr.Error())
+		}
+		if string(fallback) != string(pipe.Request.Body) {
+			s.lg.Info("sensitive-filter: 结构化替换完成", "model", model, "before_bytes", before, "after_bytes", len(fallback))
 			pipe.Request.Body = fallback
 			return pipe, nil
 		}
-		pipe.Request.Body = []byte(replaced)
+		s.lg.Info("sensitive-filter: 结构化替换也未命中", "model", model, "before_bytes", before, "rules_count", len(route.Replacements))
 		return pipe, nil
 	default:
 		return payload, nil
@@ -196,11 +211,41 @@ func replaceMessagesText(body []byte, rules []types.SensitiveReplacement) ([]byt
 			}
 		}
 	}
+	// 兜底：递归遍历整棵 JSON，把所有字符串值按规则替换
+	// （覆盖 content 为其他结构、system prompt、tool call 参数等场景）。
+	replaceStringValues(root, rules)
 	out, err := json.Marshal(root)
 	if err != nil {
 		return nil, fmt.Errorf("sensitive-filter: 重序列化请求体失败: %w", err)
 	}
 	return out, nil
+}
+
+// replaceStringValues 递归遍历 JSON 树，对所有字符串值执行替换。
+// 覆盖分段 content、嵌套对象、数组元素等任意位置的文本。
+func replaceStringValues(v any, rules []types.SensitiveReplacement) {
+	switch val := v.(type) {
+	case map[string]any:
+		for k, item := range val {
+			if s, ok := item.(string); ok {
+				if replaced, err := replaceAll(s, rules); err == nil && replaced != s {
+					val[k] = replaced
+				}
+				continue
+			}
+			replaceStringValues(item, rules)
+		}
+	case []any:
+		for i, item := range val {
+			if s, ok := item.(string); ok {
+				if replaced, err := replaceAll(s, rules); err == nil && replaced != s {
+					val[i] = replaced
+				}
+				continue
+			}
+			replaceStringValues(item, rules)
+		}
+	}
 }
 
 // containsAny 判断 text 是否命中任一规则（error 模式用）。

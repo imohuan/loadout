@@ -20,6 +20,7 @@ const emit = defineEmits<{
   toggleKey: [channel: Channel]
   refreshKey: [channel: Channel]
   editKey: [channel: Channel]
+  moveKey: [channel: Channel, direction: 'up' | 'down']
   removeKey: [channel: Channel]
   refreshGroup: [baseUrl: string]
   moveGroup: [baseUrl: string, direction: 'up' | 'down']
@@ -206,7 +207,7 @@ function modelCountLabel(channel: Channel) {
                       </div>
                       <div v-if="group.keys.length" class="divide-y rounded-md border bg-background">
                         <div
-                          v-for="key in group.keys"
+                          v-for="(key, keyIndex) in group.keys"
                           :key="key.id"
                           class="flex flex-col gap-3 px-3 py-3 sm:flex-row sm:items-center sm:justify-between"
                         >
@@ -235,6 +236,32 @@ function modelCountLabel(channel: Channel) {
                             <Button variant="ghost" size="sm" :disabled="pending" @click="emit('editKey', key)">
                               <RiEditLine size="16" />编辑
                             </Button>
+                            <TooltipProvider>
+                              <Tooltip>
+                                <TooltipTrigger as-child>
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    aria-label="上移 Key"
+                                    :disabled="pending || keyIndex === 0"
+                                    @click="emit('moveKey', key, 'up')"
+                                    ><RiArrowUpLine size="16" /></Button>
+                                </TooltipTrigger>
+                                <TooltipContent>上移 Key</TooltipContent>
+                              </Tooltip>
+                              <Tooltip>
+                                <TooltipTrigger as-child>
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    aria-label="下移 Key"
+                                    :disabled="pending || keyIndex === group.keys.length - 1"
+                                    @click="emit('moveKey', key, 'down')"
+                                    ><RiArrowDownLine size="16" /></Button>
+                                </TooltipTrigger>
+                                <TooltipContent>下移 Key</TooltipContent>
+                              </Tooltip>
+                            </TooltipProvider>
                             <Tooltip>
                               <TooltipTrigger as-child>
                                 <Button

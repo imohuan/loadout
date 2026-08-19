@@ -93,30 +93,26 @@ function submitJump() {
         class="mx-0 w-auto flex-none"
       >
         <PaginationContent v-slot="{ items }">
-          <PaginationItem>
-            <PaginationFirst as-child>
-              <Button
-                variant="ghost"
-                size="icon"
-                :disabled="page === 1 || disabled"
-                aria-label="首页"
-              >
-                <RiSkipLeftLine />
-              </Button>
-            </PaginationFirst>
-          </PaginationItem>
-          <PaginationItem>
-            <PaginationPrevious as-child>
-              <Button
-                variant="ghost"
-                size="icon"
-                :disabled="page === 1 || disabled"
-                aria-label="上一页"
-              >
-                <RiArrowLeftLine />
-              </Button>
-            </PaginationPrevious>
-          </PaginationItem>
+          <PaginationFirst as-child>
+            <Button
+              variant="ghost"
+              size="icon"
+              :disabled="page === 1 || disabled"
+              aria-label="首页"
+            >
+              <RiSkipLeftLine />
+            </Button>
+          </PaginationFirst>
+          <PaginationPrevious as-child>
+            <Button
+              variant="ghost"
+              size="icon"
+              :disabled="page === 1 || disabled"
+              aria-label="上一页"
+            >
+              <RiArrowLeftLine />
+            </Button>
+          </PaginationPrevious>
           <template v-for="(item, index) in items" :key="index">
             <PaginationItem
               v-if="item.type === 'page'"
@@ -127,30 +123,26 @@ function submitJump() {
             </PaginationItem>
             <PaginationEllipsis v-else />
           </template>
-          <PaginationItem>
-            <PaginationNext as-child>
-              <Button
-                variant="ghost"
-                size="icon"
-                :disabled="page === pageCount || disabled"
-                aria-label="下一页"
-              >
-                <RiArrowRightLine />
-              </Button>
-            </PaginationNext>
-          </PaginationItem>
-          <PaginationItem>
-            <PaginationLast as-child>
-              <Button
-                variant="ghost"
-                size="icon"
-                :disabled="page === pageCount || disabled"
-                aria-label="末页"
-              >
-                <RiSkipRightLine />
-              </Button>
-            </PaginationLast>
-          </PaginationItem>
+          <PaginationNext as-child>
+            <Button
+              variant="ghost"
+              size="icon"
+              :disabled="page === pageCount || disabled"
+              aria-label="下一页"
+            >
+              <RiArrowRightLine />
+            </Button>
+          </PaginationNext>
+          <PaginationLast as-child>
+            <Button
+              variant="ghost"
+              size="icon"
+              :disabled="page === pageCount || disabled"
+              aria-label="末页"
+            >
+              <RiSkipRightLine />
+            </Button>
+          </PaginationLast>
         </PaginationContent>
       </Pagination>
 

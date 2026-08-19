@@ -384,8 +384,9 @@ func TestHandleProxyRejectedBeforeUpstreamWritesLog(t *testing.T) {
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("状态码应为 503，实际 %d: %s", rec.Code, rec.Body.String())
 	}
-	if len(log.starts) != 1 {
-		t.Fatalf("应写入 1 条 start，实际 %d", len(log.starts))
+	// Start 两次：hook 之前写占位（running）+ proxyRejectedLog 幂等补全（UPSERT 合并为同一条）。
+	if len(log.starts) != 2 {
+		t.Fatalf("应写入 2 条 start（占位 + 补全），实际 %d", len(log.starts))
 	}
 	if len(log.finishs) != 1 {
 		t.Fatalf("应写入 1 条 finish，实际 %d", len(log.finishs))
@@ -399,11 +400,12 @@ func TestHandleProxyRejectedBeforeUpstreamWritesLog(t *testing.T) {
 	if !strings.Contains(log.finishs[0].ErrorMessage, "所有目标当前不可用") {
 		t.Fatalf("finish error_message 应包含拒绝原因，实际 %q", log.finishs[0].ErrorMessage)
 	}
-	if log.starts[0].RequestedModel != "auto-demo" {
-		t.Fatalf("start requested_model 应为 auto-demo，实际 %q", log.starts[0].RequestedModel)
+	// 虚拟模型在 hook 之后的第二次 Start（补全）里带出；占位 start 是原始模型。
+	if log.starts[1].RequestedModel != "auto-demo" {
+		t.Fatalf("补全 start requested_model 应为 auto-demo，实际 %q", log.starts[1].RequestedModel)
 	}
-	if log.starts[0].VirtualModel != "auto-demo" {
-		t.Fatalf("start virtual_model 应为 auto-demo，实际 %q", log.starts[0].VirtualModel)
+	if log.starts[1].VirtualModel != "auto-demo" {
+		t.Fatalf("补全 start virtual_model 应为 auto-demo，实际 %q", log.starts[1].VirtualModel)
 	}
 	// 不可用时把"最后一个候选目标"写入 final_model/final_channel_id，与"最后真实尝试"语义一致
 	if log.finishs[0].FinalModel != "model-z" {

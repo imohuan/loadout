@@ -21,6 +21,7 @@ import (
 	"loadout/core/db"
 	"loadout/core/plugin"
 	"loadout/core/store"
+	"loadout/plugins/contracts"
 	modelgateway "loadout/plugins/model-gateway"
 )
 
@@ -32,12 +33,12 @@ func New() plugin.Plugin {
 	return &visionPlugin{}
 }
 
-// Manifest 返回插件清单：依赖 store/db/logger，提供 vision 服务。
+// Manifest 返回插件清单：依赖 store/db/logger/route-log，提供 vision 服务。
 func (p *visionPlugin) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name:    "vision",
 		Version: "0.1.0",
-		Inject:  []string{"store", "db", "logger"},
+		Inject:  []string{"store", "db", "logger", "route-log"},
 		Provide: []string{"vision"},
 	}
 }
@@ -52,12 +53,17 @@ func (p *visionPlugin) Apply(ctx plugin.Context) error {
 	if !ok || database == nil {
 		return fmt.Errorf("vision: missing db service")
 	}
+	routeLog, ok := ctx.Get("route-log").(contracts.RouteLog)
+	if !ok {
+		return fmt.Errorf("vision: missing route-log service")
+	}
 	repo, err := db.NewRepository(database)
 	if err != nil {
 		return fmt.Errorf("vision: 初始化渠道仓储失败: %w", err)
 	}
 
 	svc := NewService(st, repo, lg)
+	svc.SetRouteLog(routeLog)
 	ctx.Set("vision", svc)
 	ctx.On(modelgateway.ProxyBeforeUpstream, svc.HandleProxyBeforeUpstream)
 	ctx.On(modelgateway.EventBeforeUpstream, svc.HandleBeforeUpstream)

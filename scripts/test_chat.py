@@ -14,8 +14,6 @@
 与 test_vision.py 的区别：本脚本只发文字、不附带图片，
 不依赖视觉路由（vision=proxy），可对普通文本模型直接发起对话测试。
 所有参数都带默认值 —— 只要配好 key，就能「直接运行」。
-python scripts/test_chat.py --api-key sk-bd0c4180494c89b4deb16d02d556fb2b0fc63ab66cef4de2e0c07166c0f94e86 --prompt "你好" --model hy3
-python scripts/test_chat.py --base-url https://imohuan.shop --api-key sk-f8582a7d35f6dd0b80cff10990324a586f6ba3a01b7a1798390836a20b951259 --prompt "你好" --model hy3
 """
 
 import argparse

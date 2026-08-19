@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"loadout/core/config"
-	"loadout/plugins/contracts"
 	modelgateway "loadout/plugins/model-gateway"
 	"loadout/plugins/types"
 )
@@ -303,16 +302,28 @@ func (s *Service) HandleProxyBeforeUpstream(payload any) (any, error) {
 		options = []types.ViaOption{{ViaModel: config.DefaultVisionModel}}
 	}
 	// 分级：新图（最后一条 user 消息）完整识别；历史旧图只读缓存/占位符（不联网）。
+	normalizeVisionHistoryMode(s.lg)
 	newGroup, oldGroups := splitProxyGroups(messages, images, hits)
+	// 仅当有新图需要识别（newGroup.hits>0）时才写视觉日志；纯历史旧图不记录，
+	// 也不占用 step 空间（主链路保持从 1 开始）。
+	visionLogging := len(newGroup.hits) > 0
 	var lastErr error
-	visionStarted := time.Now()
-	lastViaModel := ""
-	for _, opt := range options {
+	visionStep := 0 // 视觉 attempt 已使用的最大 step_no（与主链路共享单调递增空间）
+	for idx, opt := range options {
 		viaModel := opt.ViaModel
 		if viaModel == "" {
 			viaModel = config.DefaultVisionModel
 		}
-		lastViaModel = viaModel
+		attemptStart := time.Now()
+		// 视觉 attempt 与主链路共享同一单调递增 step 空间（1, 2, 3...），按发生顺序排列。
+		// 视觉循环结束后把视觉最后 step 写入 pipe.Metadata["__route_step"]，主链路
+		// 从该值 +1 续接，保证全请求 step 连续且唯一。
+		stepNo := idx + 1
+		if visionLogging {
+			visionStep = stepNo
+			// 两阶段占位：识别开始即写 running，UI 在识别期间（可能数十秒）就能看到。
+			s.visionAttempt(context.Background(), pipe.RequestID, stepNo, viaModel, attemptStart, 0, "running", "", "", len(newGroup.images))
+		}
 		// 旧图组先解析（只读缓存/占位符；key 与 Describe 一致，首轮缓存第二轮可命中）。
 		for i := range oldGroups {
 			oldGroups[i].text = s.resolveHistoryImages(oldGroups[i].images, viaModel)
@@ -343,6 +354,10 @@ func (s *Service) HandleProxyBeforeUpstream(payload any) (any, error) {
 			if err != nil {
 				lastErr = err
 				s.lg.Warn("视觉候选失败，尝试下一个", "via_model", viaModel, "err", err)
+				// 更新占位为 failed：让前端看到「尝试了 doubao 失败、然后 qwen3 成功」全貌。
+				if visionLogging {
+					s.visionAttempt(context.Background(), pipe.RequestID, stepNo, viaModel, attemptStart, time.Since(attemptStart), "failed", "", err.Error(), len(newGroup.images))
+				}
 				continue
 			}
 		}
@@ -358,41 +373,21 @@ func (s *Service) HandleProxyBeforeUpstream(payload any) (any, error) {
 			return nil, visionError(fmt.Sprintf("改写请求体失败: %v", err))
 		}
 		pipe.Request.Body = body
-		// 视觉识别成功（实际调用了视觉模型或缓存命中）：暂存执行结果，
-		// 由 model-gateway 在 route-log Start 后统一落库。纯历史旧图场景不记录。
-		if len(newGroup.hits) > 0 {
-			s.storeVisionLog(pipe, contracts.VisionAttemptLog{
-				ViaModel:   viaModel,
-				ChannelID:  chID,
-				Result:     "success",
-				StartedAt:  visionStarted,
-				Duration:   contracts.DurationMS(time.Since(visionStarted)),
-				ImageCount: len(images),
-			})
+		// 识别成功：更新占位为 success（缓存命中时 chID 为空）。
+		if visionLogging {
+			s.visionAttempt(context.Background(), pipe.RequestID, stepNo, viaModel, attemptStart, time.Since(attemptStart), "success", chID, "", len(newGroup.images))
+			// 视觉最后 step 写入 Metadata，主链路从 visionStep+1 续接。
+			if pipe.Metadata != nil {
+				pipe.Metadata["__route_step"] = visionStep
+			}
 		}
 		return pipe, nil
 	}
-	// 全部候选失败：暂存失败结果，主链路将走 proxyRejectedLog 记录。
-	s.storeVisionLog(pipe, contracts.VisionAttemptLog{
-		ViaModel:     lastViaModel,
-		Result:       "failed",
-		StartedAt:    visionStarted,
-		Duration:     contracts.DurationMS(time.Since(visionStarted)),
-		ErrorMessage: fmt.Sprint(lastErr),
-		ImageCount:   len(images),
-	})
+	// 循环结束：全部候选失败场景。仅在视觉写了 attempt 时把最后 step 写入（主链路续接）；
+	// 纯历史旧图（visionLogging=false）不写，主链路保持从 1 开始。
+	if visionLogging && pipe.Metadata != nil {
+		pipe.Metadata["__route_step"] = visionStep
+	}
+	// 全部候选失败：每条候选的 running→failed 已在循环内更新，无需汇总记录。
 	return nil, visionError(fmt.Sprintf("视觉能力调用失败: %v", lastErr))
-}
-
-// storeVisionLog 把视觉识别结果暂存到 pipe.Metadata。
-// model-gateway 在 route_requests 建立（Start）后统一 flush 到 route_attempts，
-// 避免先有子记录（attempt）再有父记录（request）。
-func (s *Service) storeVisionLog(pipe *modelgateway.ProxyPipeline, v contracts.VisionAttemptLog) {
-	if pipe == nil {
-		return
-	}
-	if pipe.Metadata == nil {
-		pipe.Metadata = map[string]any{}
-	}
-	pipe.Metadata[contracts.MetadataKeyVisionAttempt] = v
 }

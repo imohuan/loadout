@@ -20,6 +20,7 @@ import (
 	"loadout/core/config"
 	"loadout/core/db"
 	"loadout/core/store"
+	"loadout/plugins/contracts"
 	modelgateway "loadout/plugins/model-gateway"
 	"loadout/plugins/types"
 )
@@ -34,17 +35,62 @@ const historyPlaceholder = "[图片]"
 // 自然失效重建，避免新旧描述风格混用（旧缓存是自由文本，新输出是结构化板块）。
 const visionCacheVersion = "v2"
 
+// visionCacheKey 计算图片组在 Describe 与 resolveHistoryImages 中共用的缓存 key。
+// 两处必须保持单一来源，勿单独改格式（首轮新图写入、第二轮旧图命中的前提）。
+func visionCacheKey(images []string, viaModel string) string {
+	return md5Hex(strings.Join(images, "\n") + "|" + viaModel + "|" + visionCacheVersion)
+}
+
+// normalizeVisionHistoryMode 校验 VisionHistoryMode 非法值回退 cache（config 层透传，
+// 读取处校验；非法值静默按 cache 行为会掩盖配置拼写错误，故显式告警）。
+func normalizeVisionHistoryMode(lg *slog.Logger) {
+	if m := config.VisionHistoryMode; m != "cache" && m != "placeholder" && m != "keep" {
+		lg.Warn("VisionHistoryMode 非法值，回退 cache", "mode", m)
+		config.VisionHistoryMode = "cache"
+	}
+}
+
 // Service 视觉能力适配器：检出图片、查能力路由、调视觉模型、改写 messages。
 type Service struct {
 	st       *store.Store
 	lg       *slog.Logger
-	repo     *db.Repository // 渠道数据源（SQLite，与主路由一致；旧 channels.json 文件路径已废弃）
-	cacheDir string         // 描述缓存目录（config.VisionCacheDir）
+	repo     *db.Repository     // 渠道数据源（SQLite，与主路由一致；旧 channels.json 文件路径已废弃）
+	cacheDir string             // 描述缓存目录（config.VisionCacheDir）
+	routeLog contracts.RouteLog // route-log 服务（nil 时跳过视觉日志，测试/旧管线安全）
 }
 
 // NewService 创建视觉能力适配器。
 func NewService(st *store.Store, repo *db.Repository, lg *slog.Logger) *Service {
 	return &Service{st: st, lg: lg, repo: repo, cacheDir: config.VisionCacheDir}
+}
+
+// SetRouteLog 注入 route-log 服务（model-gateway 先于本插件装配时提供）。
+func (s *Service) SetRouteLog(rl contracts.RouteLog) { s.routeLog = rl }
+
+// visionAttempt 写一条视觉识别 attempt 到 route-log（两阶段）：
+// 识别开始调一次（Result=running 占位），识别结束以同一 step_no 再调一次更新状态。
+// stepNo 为正整数（1, 2, ...），与主链路共享同一单调递增 step 空间；视觉循环结束后
+// pipe.Metadata["__route_step"] 会设到视觉最后 step，主链路后续从 step+1 续接。
+// routeLog 为 nil（测试/旧管线）或 stepNo 非正时静默跳过。
+func (s *Service) visionAttempt(ctx context.Context, requestID string, stepNo int, model string, startedAt time.Time, dur time.Duration, result, channelID, errMsg string, imageCount int) {
+	if s.routeLog == nil || requestID == "" || stepNo <= 0 {
+		return
+	}
+	if _, err := s.routeLog.Attempt(ctx, contracts.RouteAttempt{
+		RequestID:    requestID,
+		StepNo:       stepNo,
+		Action:       "视觉识别",
+		Model:        model,
+		ChannelID:    channelID,
+		StartedAt:    startedAt,
+		FinishedAt:   pointerTime(startedAt.Add(dur)),
+		Result:       result,
+		ErrorMessage: errMsg,
+		Duration:     contracts.DurationMS(dur),
+		Metadata:     map[string]any{"capability": "vision", "image_count": imageCount},
+	}); err != nil {
+		s.lg.Warn("route log vision attempt failed", "err", err)
+	}
 }
 
 // DetectImages 检出 messages 里所有图片（image_url，含 URL 与 base64 data URI）。
@@ -109,7 +155,7 @@ func (s *Service) Describe(ctx context.Context, images []string, viaModel, chann
 		ctx = context.Background()
 	}
 
-	key := md5Hex(strings.Join(images, "\n") + "|" + viaModel + "|" + visionCacheVersion)
+	key := visionCacheKey(images, viaModel)
 	if config.VisionCacheEnabled {
 		if text, ok := s.readCache(key); ok {
 			if streamWriter != nil {
@@ -154,13 +200,12 @@ func (s *Service) Describe(ctx context.Context, images []string, viaModel, chann
 }
 
 // resolveHistoryImages 解析一组历史图片：缓存命中返回描述，miss 返回占位符。
-// 只读缓存，绝不触发视觉模型调用；缓存 key 与 Describe 完全一致，
-// 保证「第一轮新图写入的缓存，第二轮旧图能命中」。勿单独改 key 格式。
+// 只读缓存，绝不触发视觉模型调用；缓存 key 与 Describe 共用 visionCacheKey。
 func (s *Service) resolveHistoryImages(images []string, viaModel string) string {
 	if config.VisionHistoryMode == "placeholder" {
 		return historyPlaceholder
 	}
-	key := md5Hex(strings.Join(images, "\n") + "|" + viaModel + "|" + visionCacheVersion)
+	key := visionCacheKey(images, viaModel)
 	if config.VisionCacheEnabled {
 		if text, ok := s.readCache(key); ok {
 			return text
@@ -530,6 +575,9 @@ func md5Hex(s string) string {
 	sum := md5.Sum([]byte(s))
 	return hex.EncodeToString(sum[:])
 }
+
+// pointerTime 返回 time.Time 的指针（RouteAttempt.FinishedAt 需要）。
+func pointerTime(t time.Time) *time.Time { return &t }
 
 // chatMessage 视觉请求里的一条消息。
 type chatMessage struct {

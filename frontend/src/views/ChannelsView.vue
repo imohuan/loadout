@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { RiAddLine, RiRefreshLine } from '@remixicon/vue'
-import { useChannels, groupChannelsByBaseURL } from '@/composables/useChannels'
+import { useChannels, groupChannelsByBaseURL, normalizeBaseURL } from '@/composables/useChannels'
 import { useListLoader } from '@/composables/useListLoader'
 import { useAsyncTask } from '@/composables/useAsyncTask'
 import { useConfirm } from '@/composables/useConfirm'
@@ -64,7 +64,10 @@ async function save(input: ChannelInput) {
   }, '渠道已保存')
 }
 function groupKeys(baseUrl: string): Channel[] {
-  return (data.value || []).filter((ch) => ch.base_url === baseUrl)
+  // baseUrl 来自 ChannelTable 已 normalize 的组标识；channel.base_url 原样存储，
+  // 按归一化后的字符串比较，兼容尾斜杠差异。
+  const target = normalizeBaseURL(baseUrl)
+  return (data.value || []).filter((ch) => normalizeBaseURL(ch.base_url) === target)
 }
 async function toggleKey(channel: Channel) {
   const enabled = channel.manual_enabled ?? channel.enabled ?? true
@@ -113,6 +116,24 @@ async function moveGroup(baseUrl: string, direction: 'up' | 'down') {
     await refresh()
   })
 }
+// 组内 Key 上下移动：调整单 key 在组内的 position（影响该渠道下多 key 的 failover 顺序）。
+async function moveKey(channel: Channel, direction: 'up' | 'down') {
+  const channels = data.value || []
+  const keys = groupKeys(channel.base_url)
+  const idxInGroup = keys.findIndex((k) => k.id === channel.id)
+  const target = direction === 'up' ? idxInGroup - 1 : idxInGroup + 1
+  if (idxInGroup < 0 || target < 0 || target >= keys.length) return
+  const targetKey = keys[target]
+  const i = channels.findIndex((c) => c.id === channel.id)
+  const j = channels.findIndex((c) => c.id === targetKey.id)
+  if (i < 0 || j < 0) return
+  const next = [...channels]
+  ;[next[i], next[j]] = [next[j], next[i]]
+  await run(async () => {
+    await service.reorder(next.map((c) => c.id))
+    await refresh()
+  })
+}
 </script>
 
 <template>
@@ -140,6 +161,7 @@ async function moveGroup(baseUrl: string, direction: 'up' | 'down') {
       @toggle-key="toggleKey"
       @refresh-key="refreshKey"
       @edit-key="openEdit"
+      @move-key="moveKey"
       @remove-key="removeKey"
       @refresh-group="refreshGroup"
       @move-group="moveGroup"

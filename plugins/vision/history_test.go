@@ -1,10 +1,36 @@
 package vision
 
 import (
+	"log/slog"
 	"testing"
 
 	"loadout/core/config"
 )
+
+// TestNormalizeVisionHistoryMode 非法值回退 cache，合法值不变。
+func TestNormalizeVisionHistoryMode(t *testing.T) {
+	old := config.VisionHistoryMode
+	defer func() { config.VisionHistoryMode = old }()
+
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"cache", "cache"},
+		{"placeholder", "placeholder"},
+		{"keep", "keep"},
+		{"bogus", "cache"},
+		{"", "cache"},
+		{"KEEP", "cache"}, // 大小写敏感，视为非法
+	}
+	for _, c := range cases {
+		config.VisionHistoryMode = c.in
+		normalizeVisionHistoryMode(slog.Default())
+		if config.VisionHistoryMode != c.want {
+			t.Fatalf("normalize(%q) 应回退/保持 %q，实际 %q", c.in, c.want, config.VisionHistoryMode)
+		}
+	}
+}
 
 // TestResolveHistoryImagesCacheHit 缓存命中返回描述文本（只读，不触发视觉模型）。
 func TestResolveHistoryImagesCacheHit(t *testing.T) {

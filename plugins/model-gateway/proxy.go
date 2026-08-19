@@ -73,6 +73,11 @@ func (s *Service) HandleProxy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// 先写占位日志（running）：before-upstream hook（视觉识别可能耗时数秒~数十秒）
+	// 期间 UI 就能看到这条记录，识别/转发完成后由各阶段更新状态。
+	started := time.Now()
+	s.proxyBeginLog(r, pipe)
+
 	// 输入 hook：插件可改 Body/Path/Query/Header/Model。
 	out, err := s.ctx.Waterfall(ProxyBeforeUpstream, pipe)
 	if err != nil {
@@ -96,7 +101,8 @@ func (s *Service) HandleProxy(w http.ResponseWriter, r *http.Request) {
 	if pipe.Metadata == nil {
 		pipe.Metadata = map[string]any{}
 	}
-	started := time.Now()
+	// hook 可能设置了 __virtual_model：二次 Start（UPSERT）补全虚拟模型名，
+	// 不新增记录（同一 request_id 合并）。
 	s.proxyBeginLog(r, pipe)
 
 	// 转发（proxyForward 负责写出最终响应：成功透传或最终失败原样透传上游错误）。
@@ -508,7 +514,8 @@ func openAIBaseURL(baseURL string) string {
 
 // ---- proxy 版路由日志（与旧 HandleChat 的 route-log 语义一致，最后统一合并） ----
 
-// proxyBeginLog 转发开始时写一条 start 日志。
+// proxyBeginLog 写/更新一条请求日志（Start 为 UPSERT，可重复调用：
+// 首次在 before-upstream hook 之前写占位 running，hook 之后二次调用补全虚拟模型名）。
 func (s *Service) proxyBeginLog(r *http.Request, pipe *ProxyPipeline) {
 	if s.routeLog == nil || pipe.Request == nil {
 		return
@@ -520,42 +527,14 @@ func (s *Service) proxyBeginLog(r *http.Request, pipe *ProxyPipeline) {
 	}
 	if err := s.routeLog.Start(r.Context(), contracts.RouteRequest{RequestID: pipe.RequestID, RequestedModel: requested, VirtualModel: virtual, StartedAt: time.Now()}); err != nil {
 		s.lg.Warn("route log start failed", "err", err)
-		return
-	}
-	// 视觉识别结果（成功）在此 flush：视觉 hook 先于 proxyBeginLog 执行，
-	// 只能暂存到 Metadata，待父记录建立后再落库。
-	s.flushVisionAttempt(r.Context(), pipe)
-}
-
-// flushVisionAttempt 在 route_requests 建立后，把 vision 插件暂存的视觉识别结果
-// 写入 route_attempts：step_no 用 -1（独立于主链路 1..N 序号空间，排序时天然在前），
-// action 固定「视觉识别」，不参与主链路的首次/切换判断。
-func (s *Service) flushVisionAttempt(ctx context.Context, pipe *ProxyPipeline) {
-	if s.routeLog == nil || pipe == nil || pipe.Metadata == nil {
-		return
-	}
-	v, ok := pipe.Metadata[contracts.MetadataKeyVisionAttempt].(contracts.VisionAttemptLog)
-	if !ok {
-		return
-	}
-	if _, err := s.routeLog.Attempt(ctx, contracts.RouteAttempt{
-		RequestID:    pipe.RequestID,
-		StepNo:       -1,
-		Action:       "视觉识别",
-		Model:        v.ViaModel,
-		ChannelID:    v.ChannelID,
-		StartedAt:    v.StartedAt,
-		FinishedAt:   pointer(v.StartedAt.Add(v.Duration.Duration())),
-		Result:       v.Result,
-		ErrorMessage: v.ErrorMessage,
-		Duration:     v.Duration,
-		Metadata:     map[string]any{"capability": "vision", "image_count": v.ImageCount},
-	}); err != nil {
-		s.lg.Warn("route log vision attempt failed", "err", err)
 	}
 }
 
 // proxyAttemptLog 记录一次渠道尝试（成功/失败/跳过）。
+// step_no 共享单调递增空间：视觉 hook 写视觉 attempt 时会更新 pipe.Metadata["__route_step"]
+// 到视觉最后 step，本函数从该值 +1 续接，保证视觉 + 主链路 step 连续（1, 2, 3, ...）。
+// action 判断改用独立的「主链路步数」计数器（__main_route_step），不被视觉 step 占用
+// 干扰——避免视觉写完后主链路首次尝试被误判为「切换渠道」。
 func (s *Service) proxyAttemptLog(r *http.Request, pipe *ProxyPipeline, model, channelID string, started time.Time, result, failureClass string, statusCode int, stream bool, usage contracts.TokenUsage, err error) {
 	if s.routeLog == nil {
 		return
@@ -563,12 +542,15 @@ func (s *Service) proxyAttemptLog(r *http.Request, pipe *ProxyPipeline, model, c
 	step, _ := pipe.Metadata["__route_step"].(int)
 	step++
 	pipe.Metadata["__route_step"] = step
+	// 主链路内部步数（不计视觉），用于独立判断「首次尝试 vs 切换渠道/模型」。
+	mainStep, _ := pipe.Metadata["__main_route_step"].(int)
+	pipe.Metadata["__main_route_step"] = mainStep + 1
 	action := "首次尝试"
-	if step > 1 {
+	if mainStep > 0 {
 		action = "切换渠道"
-	}
-	if pipe.Metadata["__virtual_model"] != nil && step > 1 {
-		action = "切换模型"
+		if pipe.Metadata["__virtual_model"] != nil {
+			action = "切换模型"
+		}
 	}
 	message := ""
 	if err != nil {
@@ -647,12 +629,11 @@ func (s *Service) proxyRejectedLog(r *http.Request, pipe *ProxyPipeline, err err
 		requested = virtual
 	}
 	stream := pipe.Request != nil && pipe.Request.Stream
+	// 占位日志已在 hook 之前写入（HandleProxy），此处 Start 为幂等 UPSERT（补虚拟模型）。
 	if sErr := s.routeLog.Start(r.Context(), contracts.RouteRequest{RequestID: pipe.RequestID, RequestedModel: requested, VirtualModel: virtual, StartedAt: time.Now()}); sErr != nil {
 		s.lg.Warn("route log start failed", "err", sErr)
 		return
 	}
-	// 视觉识别失败（vision hook 返回错误）时，暂存结果在此 flush。
-	s.flushVisionAttempt(r.Context(), pipe)
 	var lastTarget types.AggregateTarget
 	if pipe.Metadata != nil {
 		if targets, ok := pipe.Metadata["__aggregate_targets"].([]types.AggregateTarget); ok && len(targets) > 0 {

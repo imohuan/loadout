@@ -33,6 +33,23 @@ const detailsMap = reactive(new Map<string, RouteLog>())
 const expandedIds = reactive(new Set<string>())
 const loadingDetail = ref('')
 
+// 终态日志的详情重试次数：第一次拉详情可能因请求刚完成/写入中而 attempts 为空，
+// 后续轮询继续重试最多 RETRY_MAX 次，避免 UI 长期显示不完整。
+const detailRetryCount = reactive(new Map<string, number>())
+const DETAIL_RETRY_MAX = 5
+function shouldRefreshDetail(log: RouteLog): boolean {
+  if (log.result === 'running') return true
+  // 终态：详情完整（attempts 非空）则不再刷新；否则按次数重试。
+  const cached = detailsMap.get(log.request_id)
+  if (cached && (cached.attempts?.length ?? 0) > 0) {
+    detailRetryCount.delete(log.request_id)
+    return false
+  }
+  const tries = detailRetryCount.get(log.request_id) ?? 0
+  if (tries >= DETAIL_RETRY_MAX) return false
+  return true
+}
+
 const displayLogs = computed(() => {
   const list = logs.value || []
   return list.map((log) => {
@@ -46,17 +63,27 @@ const displayLogs = computed(() => {
   })
 })
 
-// 拉取"已展开 + 未结束"的详情；终态日志不再刷新，保留 map 中的最终结果
+// 拉取"已展开"的详情：进行中照常刷；终态但 attempts 缺失则继续重试最多 N 次。
+// 成功但终态 attempts 仍为空、或请求失败，都计入重试次数；达上限即放弃并收起该行。
 async function refreshActiveDetails() {
   const current = logs.value || []
   for (const log of current) {
     if (!expandedIds.has(log.request_id)) continue
-    if (log.result !== 'running') continue
+    if (!shouldRefreshDetail(log)) continue
+    const tries = (detailRetryCount.get(log.request_id) ?? 0) + 1
+    detailRetryCount.set(log.request_id, tries)
     try {
       const detail = await service.detail(log.request_id)
       detailsMap.set(log.request_id, detail)
+      // 终态 + attempts 为空：视为本次拉取仍不完整（继续计数，下次轮询重试）
+      if (log.result !== 'running' && !(detail.attempts?.length)) {
+        // 已达上限：收起该行，避免无限轮询一个本无 attempts 的请求
+        if (tries >= DETAIL_RETRY_MAX) expandedIds.delete(log.request_id)
+        continue
+      }
     } catch {
       // 静默：定时刷新已在 silentError 模式，避免与列表刷新错误提示重复
+      if (tries >= DETAIL_RETRY_MAX) expandedIds.delete(log.request_id)
     }
   }
 }
@@ -109,6 +136,8 @@ async function expand(log: RouteLog) {
   try {
     const detail = await service.detail(log.request_id)
     detailsMap.set(log.request_id, detail)
+  } catch {
+    // 首次拉取失败：不阻塞展开，定时刷新（refreshActiveDetails）会按重试策略补拉
   } finally {
     loadingDetail.value = ''
   }

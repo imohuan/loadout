@@ -79,6 +79,13 @@ Loadout 是一个把 MCP 工具聚合后**只暴露 3 个入口**、按需加载
 - `vision` 插件订阅该事件，改写 `pipeline.Messages`（图片→文字）并填 `VisionText`，供 `model-gateway` 在 SSE 流开头注入 `reasoning_content` 块；
 - 视觉失败返回 `GatewayError{Type:"vision_capability_error"}`，由网关转成标准 OpenAI 错误。
 
+#### 历史图片分级处理（多轮对话影子消除）
+- 多轮对话客户端每轮携带完整历史，历史旧图若不区分会被每轮重复识别、重复输出流式「图片理解」前缀（对话里全是识别影子、视觉模型被反复调用）；
+- 按消息位置分级：**最后一条 user 消息的图片 = 新图**（完整识别，走 md5 缓存优先）；**其余消息的图片 = 历史旧图**（只读缓存描述替换，缓存 miss 用 `[图片]` 占位符，**不调视觉模型、不输出流式前缀**）；
+- 缓存 key 由 `visionCacheKey(images, viaModel)` 单一来源（`plugins/vision/service.go`），保证「首轮新图写入、第二轮旧图命中」；
+- `VisionHistoryMode`（`LOADOUT_VISION_HISTORY_MODE`）：`cache`（默认，缓存描述替换 miss 占位）/ `placeholder`（旧图一律占位符）/ `keep`（全部识别，旧行为回退）；非法值回退 cache 并告警；
+- 边界：messages 全非 user 或最后一条 user 无图时无新图，全部按旧图处理；**首轮即处于历史位置的消息**（多消息并发首轮）其图只会得到占位符、不会获得缓存项（不重复识别是设计意图，cache 模式对这批图不生效）。
+
 ### 3. MCP 三工具与省 token 手段
 - `status`（分类总览 / 按类查询，≤阈值时扁平返回）、`get`（批量加载 schema / 技能返回 SKILL.md 全文）、`invoke`（转发 + 截断）；
 - 冲突前缀（`来源_`）、两级开关（MCP 级 + 工具级）、确定性序列化（按 name 排序 + 字段顺序固定）+ `index_version` 递增。
