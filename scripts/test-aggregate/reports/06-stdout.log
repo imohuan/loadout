@@ -1,0 +1,9 @@
+
+=== 06 测试 /v1/chat/completions 对虚拟模型的白名单行为 ===
+[INFO] 用不限制 key 调 chat model=auto-demo（期望：通过白名单）
+[INFO] HTTP 502：{"error":{"message":"所有模型均失败: 所有渠道均失败: Post \"http://127.0.0.1:19999/v1/chat/completions\": dial tcp 127.0.0.1:19999: connectex: No connection could be made because the target machine actively refused...
+[WARN] 返回 502（非 200/403；通常是上游不可达，符合预期）
+[INFO] 用限制 key（models=[real-model]）调 chat model=auto-demo（期望：403）
+[INFO] HTTP 403：{"error":{"message":"API key 无权访问模型 \"auto-demo\"","type":"permission_error"}}
+
+[ OK ] ✅ 403（受限 key 正确拦截虚拟模型）

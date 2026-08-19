@@ -1,0 +1,35 @@
+# Loadout systemd 单元文件（Linux 部署）
+#
+# 安装步骤：
+#   1. 构建二进制：go build -o /usr/local/bin/loadout ./apps/server
+#   2. 复制本文件：cp apps/server/loadout.service /etc/systemd/system/
+#   3. 建运行用户（可选）：useradd -r -m loadout
+#   4. 启动：systemctl daemon-reload && systemctl enable --now loadout
+#
+# 数据目录默认 ~/.loadout（运行用户的 home），可用 LOADOUT_HOME_DIR 覆盖。
+
+[Unit]
+Description=Loadout - MCP 聚合网关 + 模型网关 + skills 预设管理
+After=network.target
+
+[Service]
+Type=simple
+User=loadout
+Group=loadout
+ExecStart=/usr/local/bin/loadout
+Restart=on-failure
+RestartSec=3
+
+# 程序级配置（环境变量优先，未设置走 config.go 默认值）
+Environment=LOADOUT_SERVER_ADDR=:3000
+# Environment=LOADOUT_LOG_LEVEL=info
+# Environment=LOADOUT_UPSTREAM_BASE_URL=http://127.0.0.1:3001/v1
+# Environment=LOADOUT_HOME_DIR=/var/lib/loadout
+
+# 安全加固（可选）
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=false
+
+[Install]
+WantedBy=multi-user.target
