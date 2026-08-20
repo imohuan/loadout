@@ -49,10 +49,6 @@ var DataDir string
 // SkillsDir 技能完整仓库（所有安装过的技能真实文件所在，永不删除）。
 var SkillsDir string
 
-// UnifyaiDir UnifyAI CLI 源码目录（含 src/cli.mjs）。为空时优先用 PATH 中的
-// unifyai 命令，其次尝试常见仓库位置（D:/Code/Git/unifyai）。
-var UnifyaiDir string // env: LOADOUT_UNIFYAI_DIR
-
 // LogsDir 日志文件目录（loadout.log，轮转）。
 var LogsDir string
 
@@ -211,7 +207,6 @@ func Load() {
 
 	HomeDir = strEnv("LOADOUT_HOME_DIR", "~/.loadout")
 	AgentSkillsDir = strEnv("LOADOUT_AGENT_SKILLS_DIR", "~/.agents/skills")
-	UnifyaiDir = strEnv("LOADOUT_UNIFYAI_DIR", "")
 
 	ServerAddr = strEnv("LOADOUT_SERVER_ADDR", ":3000")
 

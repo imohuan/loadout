@@ -1,5 +1,6 @@
 // Package unifyai 实现 UnifyAI 配置同步 CLI 的桥接服务：
-// 把 Loadout 管理后台的「UnifyAI 配置同步」页面连接到本地 unifyai CLI，
+// 把 Loadout 管理后台的「UnifyAI 配置同步」页面连接到 unifyai CLI
+// （统一通过 `npx unifyai@latest -y` 运行，npx 自动安装，无需本地脚本），
 // 提供平台能力列表（--list-platforms --json）与指令执行（含实时日志流）。
 package unifyai
 
@@ -15,8 +16,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-
-	"loadout/core/config"
 )
 
 // Platform 对应 `unifyai --list-platforms --json` 输出的单个平台（附录 B.1）。
@@ -117,46 +116,27 @@ func (s *Service) Run(args []string, onLog func(string)) error {
 	return nil
 }
 
-// resolveCmd 解析 unifyai 可执行入口（调试阶段统一走 node + 本地仓库脚本）：
-//  1. 显式配置 UnifyaiDir（src/cli.mjs 存在）→ node + 该路径；
-//  2. 本地仓库（优先 D:/Code/Git/unifyai 等常见位置）→ node + cli.mjs；
-//  3. PATH 中的全局 unifyai 命令（最后兜底）。
+// resolveCmd 返回 unifyai 执行入口：统一走 `npx -y unifyai@latest`。
+// npx 会自动拉取/复用 unifyai 包，无需本地仓库或全局安装，只要机器有 Node.js 环境。
+// 注意：`-y`（跳过 npx 的 "Ok to proceed?" 安装确认）必须放在包名【前面】，
+// 放在包名后会作为 unifyai 的参数传入，导致 `error: unknown option '-y'`。
 func resolveCmd() (string, []string, error) {
-	if dir := config.UnifyaiDir; dir != "" {
-		if cli := filepath.Join(dir, "src", "cli.mjs"); fileExists(cli) {
-			return nodeCmd(cli)
-		}
-	}
-	for _, dir := range []string{"D:/Code/Git/unifyai", "C:/Code/unifyai", "~/unifyai"} {
-		cli := filepath.Join(dir, "src", "cli.mjs")
-		if fileExists(cli) {
-			return nodeCmd(cli)
-		}
-	}
-	if p, err := exec.LookPath("unifyai"); err == nil {
-		return p, nil, nil
-	}
-	return "", nil, fmt.Errorf("未找到 unifyai 脚本：请在 D:/Code/Git/unifyai 放置仓库或设置 LOADOUT_UNIFYAI_DIR")
-}
-
-// nodeCmd 返回 node 执行器 + cli.mjs 路径（Windows 下扩展名补全）。
-func nodeCmd(cli string) (string, []string, error) {
-	node, err := exec.LookPath("node")
+	npx, err := exec.LookPath("npx")
 	if err != nil {
 		// Windows 常见安装位置兜底。
 		if runtime.GOOS == "windows" {
 			for _, p := range []string{
-				"C:/Program Files/nodejs/node.exe",
-				filepath.Join(os.Getenv("APPDATA"), "npm", "node.exe"),
+				filepath.Join(os.Getenv("APPDATA"), "npm", "npx.cmd"),
+				"C:/Program Files/nodejs/npx.cmd",
 			} {
 				if fileExists(p) {
-					return p, []string{cli}, nil
+					return p, []string{"-y", "unifyai@latest"}, nil
 				}
 			}
 		}
-		return "", nil, fmt.Errorf("未找到 node：无法运行 unifyai CLI")
+		return "", nil, fmt.Errorf("未找到 npx：请先安装 Node.js（unifyai 通过 npx 自动运行，无需额外安装）")
 	}
-	return node, []string{cli}, nil
+	return npx, []string{"-y", "unifyai@latest"}, nil
 }
 
 // fileExists 判断路径存在且是普通文件。
@@ -165,12 +145,9 @@ func fileExists(p string) bool {
 	return err == nil && !fi.IsDir()
 }
 
-// displayCmd 生成人类可读的命令展示（长路径缩短为 unifyai）。
+// displayCmd 生成人类可读的命令展示。
 func displayCmd(cmd string, base []string) string {
-	if len(base) > 0 {
-		return "node " + strings.Join(base, " ")
-	}
-	return "unifyai"
+	return "npx -y unifyai@latest"
 }
 
 // defaultPlatforms 内置默认平台（CLI 不可用时的 UI 兜底，与附录 B.1 一致）。

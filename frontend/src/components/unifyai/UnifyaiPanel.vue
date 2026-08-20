@@ -632,10 +632,10 @@ onMounted(() => {
               <Label>模型源配置路径（--source）</Label>
               <Input v-model="sourcePath" placeholder="~/.opencodex/config.json" />
             </div>
-            <div class="flex items-center gap-2 pt-5">
+            <!-- <div class="flex items-center gap-2 pt-5">
               <Switch id="verbose" v-model="verbose" />
               <Label for="verbose" class="cursor-pointer text-sm">显示详细堆栈信息（--verbose）</Label>
-            </div>
+            </div> -->
           </div>
         </div>
         <div class="flex flex-wrap justify-end gap-2">
