@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
-import { RiCloseLine, RiSearchLine } from '@remixicon/vue'
+import { RiClipboardLine, RiCloseLine, RiSearchLine, RiUploadLine } from '@remixicon/vue'
 import ModelChannelList from '@/components/ModelChannelList.vue'
 import SensitiveWordList from '@/components/capability-routes/SensitiveWordList.vue'
 import ChannelGroupPicker, { type ChannelSelection } from '@/components/ChannelGroupPicker.vue'
@@ -22,6 +22,13 @@ const props = defineProps<{
 }>()
 const emit = defineEmits<{ save: [value: CapabilityRoute]; cancel: [] }>()
 const open = defineModel<boolean>('open', { required: true })
+
+// 敏感词列表子组件引用：Label 行右侧的「导出 / 导入」按钮调用其暴露的方法。
+type SensitiveWordListHandle = {
+  exportToClipboard: () => Promise<void> | void
+  importFromClipboard: () => Promise<void> | void
+}
+const sensitiveListRef = ref<SensitiveWordListHandle | null>(null)
 
 // 能力常量与文案。
 const CAP_VISION = 'vision'
@@ -414,8 +421,50 @@ function submit() {
           </div>
         </div>
         <div v-if="form.capability === CAP_SENSITIVE && form.route !== 'native'" class="space-y-2">
-          <Label>敏感词过滤列表（按从上到下顺序替换 / 命中判断）</Label>
-          <SensitiveWordList v-model="form.replacements" add-label="添加规则" />
+          <div class="flex items-center justify-between gap-2">
+            <Label>敏感词过滤列表（按从上到下顺序替换 / 命中判断）</Label>
+            <div class="flex shrink-0 items-center gap-1">
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger as-child>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      class="h-7 px-2 text-xs"
+                      aria-label="导出到剪贴板"
+                      @click="sensitiveListRef?.exportToClipboard?.()"
+                    >
+                      <RiClipboardLine size="14" />导出
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>把当前规则以 JSON 复制到剪贴板</TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger as-child>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      class="h-7 px-2 text-xs"
+                      aria-label="从剪贴板导入"
+                      @click="sensitiveListRef?.importFromClipboard?.()"
+                    >
+                      <RiUploadLine size="14" />导入
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>从剪贴板读取 JSON 覆盖当前规则</TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+            </div>
+          </div>
+          <SensitiveWordList
+            ref="sensitiveListRef"
+            v-model="form.replacements"
+            add-label="添加规则"
+          />
         </div>
         <div v-else-if="form.route === 'proxy'" class="space-y-2">
           <Label>视觉候选（从上到下依次请求，失败换下一个）</Label>

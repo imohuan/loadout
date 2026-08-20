@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { RiAddLine, RiArrowDownLine, RiArrowUpLine, RiDeleteBinLine } from '@remixicon/vue'
+import { toast } from 'vue-sonner'
 import type { SensitiveReplacement } from '@/lib/types'
 
 const props = withDefaults(
@@ -32,6 +33,107 @@ function moveItem(index: number, direction: -1 | 1) {
   const [item] = model.value.splice(index, 1)
   model.value.splice(target, 0, item)
 }
+
+// ===== JSON 导入导出 =====
+// 导出格式：纯 items 数组（[{from,to,regex}, ...]），剪贴板内容干净直观；
+// 导入时兼容「直接数组」与「{ items: [...] }」两种剪贴板内容。
+function serialize(): SensitiveReplacement[] {
+  // 过滤空规则、归一化字段，避免把空白行导入回来。
+  const items: SensitiveReplacement[] = []
+  for (const r of model.value || []) {
+    const from = (r?.from || '').toString()
+    const to = (r?.to ?? '').toString()
+    if (!from.trim()) continue
+    items.push({ from, to, regex: !!r?.regex })
+  }
+  return items
+}
+
+// 从剪贴板文本里解析出规则数组（不修改 model，只返回结果）。
+// 返回 null 表示解析失败（由调用方统一 toast）。
+function parseClipboardText(text: string): SensitiveReplacement[] | null {
+  if (!text || !text.trim()) return null
+  let data: unknown
+  try {
+    data = JSON.parse(text)
+  } catch {
+    return null
+  }
+  // 直接是数组：[...] 形式。
+  if (Array.isArray(data)) {
+    return normalizeItems(data)
+  }
+  // 对象形式：{ items: [...] }。
+  if (data && typeof data === 'object' && Array.isArray((data as { items?: unknown }).items)) {
+    return normalizeItems((data as { items: unknown[] }).items)
+  }
+  return null
+}
+
+// 校验 + 归一化每一项；遇到非法项整体返回 null。
+function normalizeItems(raw: unknown[]): SensitiveReplacement[] | null {
+  const out: SensitiveReplacement[] = []
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') return null
+    const r = item as Record<string, unknown>
+    if (typeof r.from !== 'string') return null
+    if (typeof r.to !== 'string') return null
+    const regex = r.regex === undefined ? false : !!r.regex
+    // 允许 from 为空字符串（保留「占位未填」的行），但完全缺字段则拒绝。
+    out.push({ from: r.from, to: r.to, regex })
+  }
+  return out
+}
+
+async function exportToClipboard(): Promise<void> {
+  try {
+    const payload = serialize()
+    const text = JSON.stringify(payload, null, 2)
+    await navigator.clipboard.writeText(text)
+    toast.success('已复制到剪贴板', {
+      description: `${payload.length} 条规则，JSON 格式`,
+    })
+  } catch (e) {
+    toast.error('复制失败', {
+      description: e instanceof Error ? e.message : String(e),
+    })
+  }
+}
+
+async function importFromClipboard(): Promise<void> {
+  // 仅支持 secure context（https / localhost / 局域网 IP）。
+  if (!navigator.clipboard?.readText) {
+    toast.error('当前环境不支持读取剪贴板', {
+      description: '请先复制 JSON 后再用导入功能（部分浏览器需 HTTPS）。',
+    })
+    return
+  }
+  let text: string
+  try {
+    text = await navigator.clipboard.readText()
+  } catch (e) {
+    toast.error('读取剪贴板失败', {
+      description: e instanceof Error ? e.message : '请检查浏览器剪贴板权限',
+    })
+    return
+  }
+  const items = parseClipboardText(text)
+  if (!items) {
+    toast.error('解析失败', {
+      description: '剪贴板内容不是合法的 JSON（需为数组或带 items 字段的对象）',
+    })
+    return
+  }
+  // 直接覆盖整个列表（含 0 条也允许 = 清空）。
+  model.value = items.length
+    ? items
+    : [{ from: '', to: '', regex: false }]
+  toast.success('已导入', {
+    description: `共 ${items.length} 条规则`,
+  })
+}
+
+defineExpose({ exportToClipboard, importFromClipboard })
 </script>
 
 <template>
