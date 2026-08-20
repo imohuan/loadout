@@ -32,7 +32,7 @@ const form = reactive<{
   channel_ids: [],
   capability: CAP_VISION,
   route: 'proxy',
-  viaOptions: [{ model: '', channel_id: '' }],
+  viaOptions: [{ model: '', channel_id: '', channel_ids: [] }],
   replacements: [{ from: '', to: '', regex: false }],
 })
 
@@ -60,8 +60,10 @@ watch(
         ? route.via_options.map((o) => ({
             model: o.via_model || '',
             channel_id: o.channel_id || '',
+            channel_ids: o.channel_ids?.length ? o.channel_ids : [],
+            channel_base_url: o.channel_base_url || '',
           }))
-        : [{ model: '', channel_id: '' }],
+        : [{ model: '', channel_id: '', channel_ids: [] }],
       replacements: route?.replacements?.length
         ? route.replacements.map((r) => ({ from: r.from || '', to: r.to || '', regex: !!r.regex }))
         : [{ from: '', to: '', regex: false }],
@@ -77,7 +79,7 @@ function onCapabilityChange(value: string) {
   if (value === CAP_SENSITIVE) {
     form.replacements = [{ from: '', to: '', regex: false }]
   } else {
-    form.viaOptions = [{ model: '', channel_id: '' }]
+    form.viaOptions = [{ model: '', channel_id: '', channel_ids: [] }]
   }
 }
 
@@ -189,7 +191,12 @@ function submit() {
   const viaOptions =
     form.route === 'proxy' && form.capability === CAP_VISION
       ? form.viaOptions
-          .map((o) => ({ via_model: o.model.trim(), channel_id: o.channel_id || '' }))
+          .map((o) => ({
+            via_model: o.model.trim(),
+            channel_id: o.channel_id || '',
+            channel_ids: o.channel_ids?.length ? o.channel_ids : undefined,
+            channel_base_url: o.channel_base_url || '',
+          }))
           .filter((o) => o.via_model)
       : []
   const replacements =

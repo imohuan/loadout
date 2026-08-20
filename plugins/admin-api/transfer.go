@@ -236,7 +236,7 @@ func (s *Service) writeExportSection(ctx context.Context, zw *zip.Writer, key st
 		for _, agg := range aggregates {
 			targets := make([]types.AggregateTarget, 0, len(agg.Targets))
 			for _, t := range agg.Targets {
-				targets = append(targets, types.AggregateTarget{Model: t.Model, ChannelID: t.ChannelID})
+				targets = append(targets, types.AggregateTarget{Model: t.Model, ChannelID: t.ChannelID, ChannelIDs: t.ChannelIDs, ChannelBaseURL: t.ChannelBaseURL})
 			}
 			out = append(out, exportAggregate{
 				Name:    agg.Name,
@@ -759,7 +759,7 @@ func (s *Service) importAggregates(ctx context.Context, data []byte, mode string
 		}
 		targets := make([]db.AggregateTarget, 0, len(item.Targets))
 		for _, t := range item.Targets {
-			targets = append(targets, db.AggregateTarget{Model: t.Model, ChannelID: t.ChannelID})
+			targets = append(targets, db.AggregateTarget{Model: t.Model, ChannelID: t.ChannelID, ChannelIDs: t.ChannelIDs, ChannelBaseURL: t.ChannelBaseURL})
 		}
 		merged = append(merged, db.Aggregate{Name: item.Name, Enabled: enabled, Targets: targets})
 	}

@@ -100,7 +100,15 @@ func (s *Service) HandleBeforeUpstream(payload any) (any, error) {
 	pipe.Metadata["__retry_count"] = 0
 
 	// 选择第一个可用模型（跳过已禁用的）
-	target := s.selectAvailableTarget(agg.Targets, nil)
+	target, candidates, err := s.selectAvailableTarget(agg.Targets, nil)
+	if err != nil {
+		s.lg.Error("[aggregate] 选择目标失败", "err", err)
+		return nil, &modelgateway.GatewayError{
+			Status: http.StatusInternalServerError,
+			Type:   "internal_error",
+			Msg:    err.Error(),
+		}
+	}
 	if target == nil {
 		s.lg.Error("[aggregate] 无可用目标")
 		return nil, &modelgateway.GatewayError{
@@ -110,11 +118,11 @@ func (s *Service) HandleBeforeUpstream(payload any) (any, error) {
 		}
 	}
 
-	s.lg.Info("[aggregate] 选择目标模型", "virtual", model, "selected", target.Model, "channel", target.ChannelID)
+	s.lg.Info("[aggregate] 选择目标模型", "virtual", model, "selected", target.Model, "channel", target.ChannelID, "base_url", target.ChannelBaseURL, "candidates", candidates)
 
 	// 改写为真实模型，让事件链继续（vision 等插件会自动处理）
 	pipe.Request.Model = target.Model
-	pipe.Metadata["__current_channel"] = target.ChannelID
+	applyTargetMetadata(pipe.Metadata, target, candidates)
 
 	s.lg.Debug("[aggregate] HandleBeforeUpstream 完成", "new_model", target.Model)
 	return pipe, nil
@@ -168,18 +176,21 @@ func (s *Service) HandleUpstreamFailed(payload any) (any, error) {
 
 	// 选择下一个可用模型
 	targets, _ := pipe.Metadata["__aggregate_targets"].([]types.AggregateTarget)
-	nextTarget := s.selectAvailableTarget(targets, failedTargets)
-
+	nextTarget, nextCandidates, err := s.selectAvailableTarget(targets, failedTargets)
+	if err != nil {
+		s.lg.Error("[aggregate] 选择下一个目标失败", "err", err)
+		return nil, err
+	}
 	if nextTarget == nil {
 		s.lg.Error("[aggregate] 所有目标模型均失败", "virtual", virtualModel, "failed_count", len(failedTargets))
 		return nil, fmt.Errorf("聚合模型 %q 的所有目标均失败", virtualModel)
 	}
 
-	s.lg.Info("[aggregate] 切换到下一个模型", "virtual", virtualModel, "next_model", nextTarget.Model, "channel", nextTarget.ChannelID)
+	s.lg.Info("[aggregate] 切换到下一个模型", "virtual", virtualModel, "next_model", nextTarget.Model, "channel", nextTarget.ChannelID, "candidates", nextCandidates)
 
 	// 改写并返回重试载荷
 	pipe.Request.Model = nextTarget.Model
-	pipe.Metadata["__current_channel"] = nextTarget.ChannelID
+	applyTargetMetadata(pipe.Metadata, nextTarget, nextCandidates)
 
 	s.lg.Debug("[aggregate] HandleUpstreamFailed 完成，返回重试载荷")
 	return &modelgateway.RetryPayload{Pipe: pipe}, nil
@@ -198,7 +209,12 @@ func (s *Service) findAggregate(model string) (*types.AggregateModel, error) {
 			}
 			value := &types.AggregateModel{Name: aggregate.Name, Targets: make([]types.AggregateTarget, 0, len(aggregate.Targets))}
 			for _, target := range aggregate.Targets {
-				value.Targets = append(value.Targets, types.AggregateTarget{Model: target.Model, ChannelID: target.ChannelID})
+				value.Targets = append(value.Targets, types.AggregateTarget{
+					Model:          target.Model,
+					ChannelID:      target.ChannelID,
+					ChannelIDs:     target.ChannelIDs,
+					ChannelBaseURL: target.ChannelBaseURL,
+				})
 			}
 			return value, nil
 		}

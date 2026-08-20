@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -289,12 +290,27 @@ func (s *Service) resolveChannels(ctx context.Context, model string, metadata ma
 		return nil, err
 	}
 	specified := ""
+	var specifiedIDs []string
+	specifiedBaseURL := ""
 	if metadata != nil {
 		specified, _ = metadata["__current_channel"].(string)
+		if v, ok := metadata["__channel_candidates"].([]string); ok {
+			specifiedIDs = v
+		}
+		specifiedBaseURL, _ = metadata["__current_channel_base_url"].(string)
 	}
 	var known, unknown []ResolvedChannel
 	for _, channel := range channels {
-		if specified != "" && channel.ID != specified {
+		// 候选约束：Key 多选列表 > 渠道级 base_url > 单 Key（向后兼容）。
+		if len(specifiedIDs) > 0 {
+			if !slices.Contains(specifiedIDs, channel.ID) {
+				continue
+			}
+		} else if specifiedBaseURL != "" {
+			if NormalizeBaseURL(channel.BaseURL) != NormalizeBaseURL(specifiedBaseURL) {
+				continue
+			}
+		} else if specified != "" && channel.ID != specified {
 			continue
 		}
 		availability, err := s.health.Check(ctx, channel.ID, model)

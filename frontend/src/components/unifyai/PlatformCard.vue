@@ -36,7 +36,7 @@ function mcpBadge() {
       <TooltipTrigger as-child>
         <button
           type="button"
-          class="group relative flex w-full flex-col gap-2 rounded-md border p-3 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+          class="group relative flex w-full flex-col gap-1.5 rounded-md border p-2 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-50"
           :class="
             selected
               ? 'border-primary bg-primary/5 ring-1 ring-primary'
@@ -46,39 +46,36 @@ function mcpBadge() {
           :aria-pressed="selected"
           @click="emit('toggle', platform)"
         >
-          <div class="flex items-center gap-2">
+          <div class="flex items-center gap-1.5">
             <span
-              class="grid size-6 shrink-0 place-items-center rounded-sm text-[11px] font-bold text-white"
+              class="grid size-5 shrink-0 place-items-center rounded-sm text-[10px] font-bold text-white"
               :style="{ backgroundColor: platform.color }"
             >
               {{ platform.name.slice(0, 1) }}
             </span>
-            <span class="min-w-0 flex-1 truncate font-medium">{{ platform.name }}</span>
+            <span class="min-w-0 flex-1 truncate text-sm font-medium">{{ platform.name }}</span>
             <RiCheckLine
               v-if="selected"
-              size="16"
+              size="14"
               class="shrink-0 text-primary"
               aria-hidden="true"
             />
-            <RiCloseLine v-else-if="disabled" size="16" class="shrink-0 text-muted-foreground" />
+            <RiCloseLine v-else-if="disabled" size="14" class="shrink-0 text-muted-foreground" />
           </div>
           <div class="flex flex-wrap gap-1">
-            <Badge :variant="modelBadge().variant" class="gap-0.5 font-normal"
+            <Badge :variant="modelBadge().variant" class="px-1.5 py-0 text-[10px] font-normal"
               >{{ modelBadge().text }}</Badge
             >
-            <Badge :variant="mcpBadge().variant" class="gap-0.5 font-normal"
+            <Badge :variant="mcpBadge().variant" class="px-1.5 py-0 text-[10px] font-normal"
               >{{ mcpBadge().text }}</Badge
             >
-          </div>
-          <div class="truncate font-mono text-[11px] text-muted-foreground">
-            {{ platform.format }}
           </div>
         </button>
       </TooltipTrigger>
       <TooltipContent side="bottom" align="start" class="max-w-xs">
         <div class="space-y-1">
           <div class="font-medium">{{ platform.name }}</div>
-          <div class="font-mono text-xs">{{ platform.configPath }}</div>
+          <div class="font-mono text-xs">{{ platform.configPath }} · {{ platform.format }}</div>
           <div v-if="disabled" class="text-xs text-destructive">{{ disableReason }}</div>
         </div>
       </TooltipContent>

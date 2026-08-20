@@ -1,2 +1,5 @@
 @import 'tailwindcss';
 @import 'vue-sonner/style.css';
+/* Tailwind v4 需要显式声明 .vue 源码源（默认只扫 html/js/css） */
+@source '../index.html';
+@source './**/*.{vue,js,ts,jsx,tsx}';

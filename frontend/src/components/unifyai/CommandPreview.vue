@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { ref } from 'vue'
+import { toast } from 'vue-sonner'
 import {
   RiArrowDownSLine,
   RiArrowRightSLine,
+  RiClipboardLine,
   RiCloudLine,
   RiCodeSSlashLine,
   RiFileList3Line,
@@ -20,9 +22,16 @@ const props = defineProps<{
   /** MCP 服务器启用数 / 总数 */
   mcpEnabled: number
   mcpTotal: number
+  /** 元数据缓存更新时间（空 = 未刷新） */
+  metadataUpdatedAt?: string
 }>()
 
 const expanded = ref(true)
+
+async function copyCommand() {
+  await navigator.clipboard.writeText(props.command)
+  toast.success('命令已复制', { description: '粘贴到终端执行即可完成同步' })
+}
 
 const modelLabel: Record<
   ModelSourceKind,
@@ -62,6 +71,9 @@ const modelLabel: Record<
             <p class="mt-0.5 truncate font-mono text-xs text-muted-foreground">
               {{ modelSource.url }} · {{ modelSource.count }} 个模型
             </p>
+            <p v-if="metadataUpdatedAt" class="mt-0.5 text-xs text-emerald-600">
+              元数据缓存：{{ metadataUpdatedAt }} 已刷新
+            </p>
           </div>
         </div>
         <div class="flex items-center gap-3 rounded-md border p-3">
@@ -78,9 +90,14 @@ const modelLabel: Record<
         </div>
       </div>
       <div class="rounded-md border bg-muted/40 p-3">
-        <div class="mb-2 flex items-center gap-2 text-xs font-medium text-muted-foreground">
-          <RiCodeSSlashLine size="14" />
-          命令预览（实时生成，等宽字体）
+        <div class="mb-2 flex items-center justify-between gap-2">
+          <div class="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+            <RiCodeSSlashLine size="14" />
+            命令预览（实时生成，等宽字体）
+          </div>
+          <Button variant="outline" size="sm" class="h-7 px-2 text-xs" @click="copyCommand">
+            <RiClipboardLine size="14" />复制命令
+          </Button>
         </div>
         <code class="block overflow-x-auto whitespace-pre rounded-md bg-background p-3 font-mono text-xs leading-6">
           {{ command }}

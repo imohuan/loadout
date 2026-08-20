@@ -137,9 +137,12 @@ func MatchChannel(channelIDs []string, channelID string) bool {
 }
 
 // ViaOption 视觉兜底候选：视觉模型 + 可选渠道，按数组顺序从上到下依次请求（failover）。
+// 渠道粒度：ChannelBaseURL（渠道级，按 base_url 组轮询 Key）> ChannelIDs（Key 多选）> ChannelID（兼容单 Key）。
 type ViaOption struct {
-	ViaModel  string `json:"via_model"`            // 视觉模型名
-	ChannelID string `json:"channel_id,omitempty"` // 渠道 id；空 = 按 via_model 自动路由（走 /v1/models 探测兜底）
+	ViaModel       string   `json:"via_model"`            // 视觉模型名
+	ChannelID      string   `json:"channel_id,omitempty"` // 渠道 id；空 = 按 via_model 自动路由（走 /v1/models 探测兜底）
+	ChannelIDs     []string `json:"channel_ids,omitempty"` // 渠道 id 列表（Key 多选）
+	ChannelBaseURL string   `json:"channel_base_url,omitempty"` // 渠道地址（渠道级）
 }
 
 // SensitiveReplacement 敏感词替换规则：from → to。
@@ -163,9 +166,13 @@ type CapabilityRoute struct {
 // ============ 5.12 聚合模型（轮询） ============
 
 // AggregateTarget 聚合模型的单个目标：指定模型名和渠道 ID。
+// 三种粒度（优先级从高到低）：ChannelBaseURL（渠道级，按 base_url 组轮询 Key）>
+// ChannelIDs（Key 多选）> ChannelID（兼容单 Key）。
 type AggregateTarget struct {
-	Model     string `json:"model"`      // 真实模型名
-	ChannelID string `json:"channel_id"` // 渠道 ID
+	Model          string   `json:"model"`                      // 真实模型名
+	ChannelID      string   `json:"channel_id"`                 // 渠道 ID（单 Key，兼容）
+	ChannelIDs     []string `json:"channel_ids,omitempty"`      // 渠道 ID 列表（Key 多选）
+	ChannelBaseURL string   `json:"channel_base_url,omitempty"` // 渠道地址（渠道级，按 base_url 组轮询 Key）
 }
 
 // AggregateModel 聚合模型：对外暴露一个虚拟模型名，按顺序路由到多个真实模型+渠道。

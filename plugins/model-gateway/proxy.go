@@ -170,6 +170,41 @@ func (s *Service) proxyForward(w http.ResponseWriter, r *http.Request, pipe *Pro
 		return nil
 	}
 
+	// aggregate 指定了候选 Key 列表（Key 多选 / 渠道级展开）时只使用这些 Key。
+	// 空结果不回退：聚合语义是「指定渠道不可用 → 触发 failover 换下一个 target」，
+	// 回退默认候选会越界路由到未选 Key/渠道。
+	if idsAny, ok := pipe.Metadata["__channel_candidates"]; ok {
+		if ids, ok := idsAny.([]string); ok && len(ids) > 0 {
+			filtered := candidates[:0]
+			for _, ch := range candidates {
+				for _, id := range ids {
+					if ch.ID == id {
+						filtered = append(filtered, ch)
+						break
+					}
+				}
+			}
+			if len(filtered) > 0 {
+				candidates = filtered
+			} else {
+				s.lg.Warn("候选 Key 列表均不可用，交由 failover 处理", "ids", ids, "model", model)
+			}
+		}
+	}
+	// aggregate 指定了渠道组（base_url）时只使用该组所有 Key。
+	if baseURL, ok := pipe.Metadata["__current_channel_base_url"].(string); ok && baseURL != "" {
+		filtered := candidates[:0]
+		for _, ch := range candidates {
+			if NormalizeBaseURL(ch.BaseURL) == NormalizeBaseURL(baseURL) {
+				filtered = append(filtered, ch)
+			}
+		}
+		if len(filtered) > 0 {
+			candidates = filtered
+		} else {
+			s.lg.Warn("指定渠道不可用，交由 failover 处理", "base_url", baseURL, "model", model)
+		}
+	}
 	// aggregate 插件指定了渠道时只使用该渠道。
 	if specified, ok := pipe.Metadata["__current_channel"].(string); ok && specified != "" {
 		filtered := candidates[:0]
@@ -181,7 +216,7 @@ func (s *Service) proxyForward(w http.ResponseWriter, r *http.Request, pipe *Pro
 		if len(filtered) > 0 {
 			candidates = filtered
 		} else {
-			s.lg.Warn("指定渠道不可用或不在候选，回退默认候选", "specified", specified, "model", model)
+			s.lg.Warn("指定渠道不可用，交由 failover 处理", "specified", specified, "model", model)
 		}
 	}
 

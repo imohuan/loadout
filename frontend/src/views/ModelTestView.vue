@@ -12,6 +12,7 @@ import {
   RiStopLine,
 } from '@remixicon/vue'
 import { useChannels, groupChannelsByBaseURL } from '@/composables/useChannels'
+import { BUILTIN_CHANNEL } from '@/lib/constants'
 import { api } from '@/lib/api'
 import { useListLoader } from '@/composables/useListLoader'
 import { useModelTest } from '@/composables/useModelTest'
@@ -61,8 +62,7 @@ function choosePreset(id: string) {
   importChannel(id)
 }
 const config = reactive({ channelId: '', baseUrl: '', apiKey: '', skKeyHash: '', model: '' })
-// 「Loadout 自带」预设：channelId 用此哨兵值标记，API Key 变自建 SK key 下拉。
-const BUILTIN_CHANNEL = '__builtin__'
+// 「Loadout 自带」预设：channelId 用此哨兵值标记（见 lib/constants.ts，与后端 builtinChannelID 一致）。
 // 自建 SK key 列表（settings 页创建；只含 id/name/prefix/hash，后端不回传明文）。
 const skKeys = ref<{ id: string; name: string; prefix: string; hash: string }[]>([])
 async function loadSkKeys() {

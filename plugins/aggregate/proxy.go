@@ -68,13 +68,17 @@ func (s *Service) HandleProxyBeforeUpstream(payload any) (any, error) {
 	pipe.Metadata["__failed_targets"] = []string{}
 	pipe.Metadata["__retry_count"] = 0
 
-	target := s.selectAvailableTarget(agg.Targets, nil)
+	target, candidates, err := s.selectAvailableTarget(agg.Targets, nil)
+	if err != nil {
+		s.lg.Error("[aggregate] 选择目标失败", "err", err)
+		return nil, &modelgateway.GatewayError{Status: http.StatusInternalServerError, Type: "internal_error", Msg: err.Error()}
+	}
 	if target == nil {
 		s.lg.Error("[aggregate] 无可用目标")
 		return nil, &modelgateway.GatewayError{Status: http.StatusServiceUnavailable, Type: "no_available_model", Msg: fmt.Sprintf("聚合模型 %q 的所有目标当前不可用", model)}
 	}
 
-	s.lg.Info("[aggregate] 选择目标模型", "virtual", model, "selected", target.Model, "channel", target.ChannelID)
+	s.lg.Info("[aggregate] 选择目标模型", "virtual", model, "selected", target.Model, "channel", target.ChannelID, "base_url", target.ChannelBaseURL, "candidates", candidates)
 
 	// 改写请求体里的 model 为真实模型名，并锁定渠道。
 	body, err := rewriteBodyModel(pipe.Request.Body, target.Model)
@@ -84,7 +88,7 @@ func (s *Service) HandleProxyBeforeUpstream(payload any) (any, error) {
 	}
 	pipe.Request.Body = body
 	pipe.Request.Model = target.Model
-	pipe.Metadata["__current_channel"] = target.ChannelID
+	applyTargetMetadata(pipe.Metadata, target, candidates)
 	return pipe, nil
 }
 
@@ -132,13 +136,17 @@ func (s *Service) HandleProxyUpstreamFailed(payload any) (any, error) {
 	pipe.Metadata["__failed_targets"] = failedTargets
 
 	targets, _ := pipe.Metadata["__aggregate_targets"].([]types.AggregateTarget)
-	nextTarget := s.selectAvailableTarget(targets, failedTargets)
+	nextTarget, nextCandidates, err := s.selectAvailableTarget(targets, failedTargets)
+	if err != nil {
+		s.lg.Error("[aggregate] 选择下一个目标失败", "err", err)
+		return nil, err
+	}
 	if nextTarget == nil {
 		s.lg.Error("[aggregate] 所有目标模型均失败", "virtual", virtualModel, "failed_count", len(failedTargets))
 		return nil, fmt.Errorf("聚合模型 %q 的所有目标均失败", virtualModel)
 	}
 
-	s.lg.Info("[aggregate] 切换到下一个模型", "virtual", virtualModel, "next_model", nextTarget.Model, "channel", nextTarget.ChannelID)
+	s.lg.Info("[aggregate] 切换到下一个模型", "virtual", virtualModel, "next_model", nextTarget.Model, "channel", nextTarget.ChannelID, "candidates", nextCandidates)
 
 	body, err := rewriteBodyModel(pipe.Request.Body, nextTarget.Model)
 	if err != nil {
@@ -147,7 +155,7 @@ func (s *Service) HandleProxyUpstreamFailed(payload any) (any, error) {
 	}
 	pipe.Request.Body = body
 	pipe.Request.Model = nextTarget.Model
-	pipe.Metadata["__current_channel"] = nextTarget.ChannelID
+	applyTargetMetadata(pipe.Metadata, nextTarget, nextCandidates)
 
 	return &modelgateway.ProxyRetry{Pipe: pipe}, nil
 }

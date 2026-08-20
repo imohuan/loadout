@@ -212,12 +212,12 @@ export async function fetchModelSource(): Promise<ModelSourceStatus> {
 
 /**
  * 读取 MCP 配置（文档 §5.3）：优先级 ./mcp.json > ~/.unifyai/mcp.json。
- * disabled 的服务器已被过滤，不参与同步。
- * TODO(backend): 替换为真实读取，返回已启用的服务器列表。
+ * 返回所有服务器（含 disabled），由 UI 决定是否参与同步。
+ * TODO(backend): 替换为真实读取。
  */
 export async function fetchMcpServers(): Promise<McpServerInfo[]> {
   console.warn(NOT_IMPLEMENTED)
-  return INITIAL_MCP_SERVERS.filter((server) => server.enabled)
+  return INITIAL_MCP_SERVERS
 }
 
 /**
@@ -242,8 +242,9 @@ export function buildCommand(opts: {
   else args.push(`--platforms ${opts.platforms.join(',')}`)
   if (opts.mcpPlatforms?.length) args.push(`--mcp-platforms ${opts.mcpPlatforms.join(',')}`)
   for (const name of opts.globalExcludes) args.push(`--mcp-exclude ${name}`)
+  // 同平台的多个服务器合并到同一参数（逗号分隔），等价于多次指定同一平台
   for (const [platform, names] of Object.entries(opts.perPlatformExcludes)) {
-    for (const name of names) args.push(`--mcp-exclude-for ${platform}=${name}`)
+    if (names.length) args.push(`--mcp-exclude-for ${platform}=${names.join(',')}`)
   }
   if (opts.dryRun) args.push('--dry-run')
   if (opts.source !== DEFAULT_SOURCE) args.push(`--source ${opts.source}`)

@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { toast } from 'vue-sonner'
 import {
   RiArrowDownSLine,
   RiArrowRightSLine,
   RiCheckLine,
   RiCloseLine,
+  RiInformationLine,
   RiLoader4Line,
   RiPlayLine,
   RiQuestionLine,
@@ -37,11 +39,6 @@ import {
 // ---------- ① 同步内容三态 ----------
 const modeTab = ref<SyncMode>('all')
 const mode = computed<SyncMode>(() => modeTab.value)
-const MODE_HINTS: Record<SyncMode, string> = {
-  all: '模型全量覆盖 + MCP 增量合并，同步到所选平台。',
-  models: '仅同步模型（--models-only），MCP 过滤配置不可用。',
-  mcp: '仅同步 MCP（--mcp-only），跳过模型。',
-}
 
 // ---------- ② 目标平台 ----------
 const allPlatforms = ref(false)
@@ -52,14 +49,6 @@ function platformSupportsMode(platform: Platform, m: SyncMode) {
   if (m === 'mcp') return platform.mcpSync === true
   return true
 }
-
-// 模式切换后，剔除不支持当前能力的目标平台
-watch(mode, (m) => {
-  selectedPlatforms.value = selectedPlatforms.value.filter((id) => {
-    const platform = PLATFORMS.find((p) => p.id === id)
-    return platform ? platformSupportsMode(platform, m) : false
-  })
-})
 
 function togglePlatform(platform: Platform) {
   if (allPlatforms.value) return
@@ -80,14 +69,36 @@ function disableReason(platform: Platform) {
 
 // ---------- ③ MCP 过滤 ----------
 const allServers = ref<McpServerInfo[]>(INITIAL_MCP_SERVERS)
-const enabledServers = computed(() => allServers.value.filter((server) => server.enabled))
+/** 已禁用的服务器名集合（UI 仍展示但参与同步时跳过） */
+const disabledServers = ref<Set<string>>(
+  new Set(INITIAL_MCP_SERVERS.filter((s) => !s.enabled).map((s) => s.name)),
+)
+/** 实际参与同步的服务器（不在 disabled 集合中） */
+const enabledServers = computed(() =>
+  allServers.value.filter((server) => !disabledServers.value.has(server.name)),
+)
 
 const matrix = ref<Record<string, Record<PlatformId, boolean>>>({})
 const whitelist = ref<PlatformId[]>([])
+/** 白名单开关：false=不限定（所有平台同步 MCP）；true=仅 whitelist 中的平台同步 */
+const whitelistEnabled = ref(false)
+
+/** 开关 v-model 包装（get/set） */
+const whitelistChecked = computed({
+  get: () => whitelistEnabled.value,
+  set: (value: boolean) => (whitelistEnabled.value = value),
+})
+
+function toggleWhitelistPlatform(platformId: PlatformId) {
+  whitelist.value = whitelist.value.includes(platformId)
+    ? whitelist.value.filter((id) => id !== platformId)
+    : [...whitelist.value, platformId]
+}
 
 function initMatrix() {
   const next: Record<string, Record<PlatformId, boolean>> = {}
-  for (const server of enabledServers.value) {
+  // 所有服务器都建占位（含 disabled），启用后行状态干净
+  for (const server of allServers.value) {
     next[server.name] = {
       opencode: false,
       codex: false,
@@ -142,7 +153,7 @@ const command = computed(() =>
     mode: mode.value,
     all: allPlatforms.value,
     platforms: selectedPlatforms.value,
-    mcpPlatforms: whitelist.value.length ? whitelist.value : null,
+    mcpPlatforms: whitelistEnabled.value && whitelist.value.length ? whitelist.value : null,
     globalExcludes: globalExcludes.value,
     perPlatformExcludes: perPlatformExcludes.value,
     dryRun: false,
@@ -177,9 +188,9 @@ function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-/** 白名单是否放行某平台的 MCP */
+/** 白名单是否放行某平台的 MCP（未启用开关 = 全部放行；启用后空列表 = 全部跳过） */
 function whitelistAllows(platformId: PlatformId) {
-  return whitelist.value.length === 0 || whitelist.value.includes(platformId)
+  return !whitelistEnabled.value || whitelist.value.includes(platformId)
 }
 
 /** 目标平台列表（含 --all 展开） */
@@ -367,12 +378,34 @@ function startSync() {
   }
 }
 
-async function handleUpdateMetadata() {
-  await updateMetadata()
-}
-
 // ---------- 帮助 ----------
 const helpOpen = ref(false)
+
+// ---------- 元数据缓存刷新（--update-metadata，模拟反馈） ----------
+const metadataUpdating = ref(false)
+const metadataUpdatedAt = ref('')
+async function handleUpdateMetadata() {
+  if (metadataUpdating.value) return
+  metadataUpdating.value = true
+  try {
+    await updateMetadata()
+    await delay(500)
+    metadataUpdatedAt.value = new Date().toLocaleTimeString('zh-CN', { hour12: false })
+    toast.success('模型元数据缓存已刷新', {
+      description: 'OpenRouter 410+ 模型元数据已更新（context / vision / reasoning）',
+    })
+  } finally {
+    metadataUpdating.value = false
+  }
+}
+
+// ---------- 日志清空 ----------
+function clearLogs() {
+  logs.value = []
+  results.value = []
+  stage.value = 'idle'
+  dryRunMode.value = false
+}
 
 onMounted(() => {
   initMatrix()
@@ -392,8 +425,10 @@ onMounted(() => {
       description="把模型与 MCP 配置从 OpenCodex 源同步到 5 个 AI 开发平台的本地配置文件"
     >
       <template #actions>
-        <Button variant="outline" :disabled="running" @click="handleUpdateMetadata">
-          <RiRefreshLine size="16" />更新元数据
+        <Button variant="outline" :disabled="metadataUpdating" @click="handleUpdateMetadata">
+          <RiLoader4Line v-if="metadataUpdating" size="16" class="animate-spin" />
+          <RiRefreshLine v-else size="16" />
+          {{ metadataUpdating ? '刷新中...' : '更新元数据' }}
         </Button>
         <Button variant="ghost" @click="helpOpen = true">
           <RiQuestionLine size="16" />帮助
@@ -401,38 +436,29 @@ onMounted(() => {
       </template>
     </PageHeader>
 
-    <!-- ① 同步内容 -->
+    <!-- ② 目标平台（头部含同步内容 + 全部平台） -->
     <Card class="rounded-md">
-      <CardHeader>
-        <CardTitle class="text-base">同步内容</CardTitle>
-        <CardDescription>选择本次同步的数据域（对应 --models-only / --mcp-only）。</CardDescription>
-      </CardHeader>
-      <CardContent class="space-y-3">
-        <Tabs v-model="modeTab" class="w-full">
-          <TabsList class="grid w-full max-w-xl grid-cols-3">
-            <TabsTrigger value="all">全部同步</TabsTrigger>
-            <TabsTrigger value="models">仅模型</TabsTrigger>
-            <TabsTrigger value="mcp">仅 MCP</TabsTrigger>
-          </TabsList>
-        </Tabs>
-        <p class="text-xs text-muted-foreground">{{ MODE_HINTS[mode] }}</p>
-      </CardContent>
-    </Card>
-
-    <!-- ② 目标平台 -->
-    <Card class="rounded-md">
-      <CardHeader class="flex-row items-center justify-between space-y-0">
+      <CardHeader class="flex flex-col gap-3 space-y-0 lg:flex-row lg:items-center lg:justify-between">
         <div class="space-y-0.5">
-          <CardTitle class="text-base">目标平台</CardTitle>
-          <CardDescription>勾选要同步的平台；不支持所选能力的平台将置灰。</CardDescription>
+          <CardTitle class="text-base">② 目标平台</CardTitle>
+          <CardDescription>勾选要同步的平台；不支持所选能力的平台将置灰（执行时跳过并提示）。</CardDescription>
         </div>
-        <div class="flex shrink-0 items-center gap-2">
-          <Switch id="all-platforms" :checked="allPlatforms" @update:checked="allPlatforms = $event" />
-          <Label for="all-platforms" class="cursor-pointer text-sm font-medium">全部平台（--all）</Label>
+        <div class="flex flex-wrap items-center gap-x-4 gap-y-2">
+          <Tabs v-model="modeTab">
+            <TabsList variant="line" class="inline-flex h-auto w-fit max-w-full flex-wrap justify-start gap-2">
+              <TabsTrigger value="all">全部同步</TabsTrigger>
+              <TabsTrigger value="models">仅模型</TabsTrigger>
+              <TabsTrigger value="mcp">仅 MCP</TabsTrigger>
+            </TabsList>
+          </Tabs>
+          <div class="flex items-center gap-2">
+            <Switch id="all-platforms" v-model="allPlatforms" />
+            <Label for="all-platforms" class="cursor-pointer whitespace-nowrap text-sm font-medium">全部平台（--all）</Label>
+          </div>
         </div>
       </CardHeader>
       <CardContent>
-        <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+        <div class="grid grid-cols-2 gap-2 md:grid-cols-3" style="grid-template-columns: repeat(5, minmax(0, 1fr));">
           <PlatformCard
             v-for="platform in PLATFORMS"
             :key="platform.id"
@@ -446,20 +472,68 @@ onMounted(() => {
       </CardContent>
     </Card>
 
-    <!-- ③ MCP 过滤（仅模型模式下不可用） -->
+    <!-- ③ MCP 同步过滤（排除矩阵 + 白名单，并列展示） -->
     <Card v-if="mode !== 'models'" class="rounded-md">
       <CardHeader>
-        <CardTitle class="text-base">MCP 同步过滤</CardTitle>
+        <CardTitle class="text-base">③ MCP 同步过滤</CardTitle>
         <CardDescription
           >三个过滤维度：排除矩阵（全局/按平台）、平台白名单，优先级：白名单 → 排除。</CardDescription
         >
       </CardHeader>
-      <CardContent>
-        <ExcludeMatrix
-          :servers="enabledServers"
-          v-model:matrix="matrix"
-          v-model:whitelist="whitelist"
-        />
+      <CardContent class="space-y-6">
+        <section>
+          <h4 class="mb-3 text-sm font-medium">排除矩阵</h4>
+          <ExcludeMatrix
+            :servers="allServers"
+            :disabled="disabledServers"
+            v-model:matrix="matrix"
+            @update:disabled="disabledServers = $event"
+          />
+        </section>
+        <Separator />
+        <section class="space-y-3">
+          <div class="flex items-start justify-between gap-3">
+            <div class="min-w-0">
+              <h4 class="text-sm font-medium">仅以下平台执行 MCP 同步（--mcp-platforms）</h4>
+              <p class="mt-0.5 text-xs leading-5 text-muted-foreground">
+                未列出的平台将完全跳过 MCP 同步（⊘ 白名单外）。关闭开关 = 所有平台同步 MCP。
+              </p>
+            </div>
+            <Switch v-model="whitelistChecked" />
+          </div>
+          <div v-if="whitelistEnabled" class="flex flex-wrap gap-2 rounded-md border p-3">
+            <button
+              v-for="platform in PLATFORMS"
+              :key="platform.id"
+              type="button"
+              class="inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-sm transition-colors"
+              :class="
+                whitelist.includes(platform.id)
+                  ? 'border-primary bg-primary/10 text-primary'
+                  : 'border-border text-muted-foreground hover:border-primary/50'
+              "
+              :aria-pressed="whitelist.includes(platform.id)"
+              @click="toggleWhitelistPlatform(platform.id)"
+            >
+              <RiCheckLine v-if="whitelist.includes(platform.id)" size="14" />
+              {{ platform.name }}
+              <Badge v-if="platform.mcpSync === 'unimplemented'" variant="outline" class="px-1 text-[10px]"
+                >未实现</Badge
+              >
+            </button>
+          </div>
+          <p
+            v-if="whitelistEnabled && !whitelist.length"
+            class="flex items-center gap-1.5 text-xs text-amber-600"
+          >
+            <RiInformationLine size="13" />
+            白名单为空：所有平台（含已选目标）的 MCP 同步都会被跳过。
+          </p>
+          <p v-else-if="!whitelistEnabled" class="flex items-center gap-1 text-sm text-muted-foreground">
+            <RiCheckLine size="14" class="text-primary" />
+            未限定：全部平台同步 MCP。
+          </p>
+        </section>
       </CardContent>
     </Card>
 
@@ -470,10 +544,15 @@ onMounted(() => {
       :mcp-source-path="mcpSourcePath"
       :mcp-enabled="enabledServers.length"
       :mcp-total="allServers.length"
+      :metadata-updated-at="metadataUpdatedAt"
     />
 
-    <!-- 高级选项 + 操作区 -->
+    <!-- ⑤ 高级选项 + 操作区 -->
     <Card class="rounded-md">
+      <CardHeader>
+        <CardTitle class="text-base">⑤ 执行</CardTitle>
+        <CardDescription>预览（dry-run）只展示不写文件；开始同步前会弹确认，备份后写入各平台配置。</CardDescription>
+      </CardHeader>
       <CardContent class="space-y-4">
         <div class="rounded-md border">
           <button
@@ -491,7 +570,7 @@ onMounted(() => {
               <Input v-model="sourcePath" placeholder="~/.opencodex/config.json" />
             </div>
             <div class="flex items-center gap-2 pt-5">
-              <Switch id="verbose" :checked="verbose" @update:checked="verbose = $event" />
+              <Switch id="verbose" v-model="verbose" />
               <Label for="verbose" class="cursor-pointer text-sm">显示详细堆栈信息（--verbose）</Label>
             </div>
           </div>
@@ -515,11 +594,14 @@ onMounted(() => {
         <div class="flex flex-wrap items-center justify-between gap-2">
           <div class="space-y-0.5">
             <CardTitle class="text-base">
-              {{ dryRunMode ? '预览结果（未写入任何文件）' : '执行结果' }}
+              {{ dryRunMode ? '⑥ 预览结果（未写入任何文件）' : '⑥ 执行结果' }}
             </CardTitle>
             <CardDescription>实时滚动日志，图标语义：✓ 成功 / ⚠ 警告 / ✗ 失败 / ⊘ 排除跳过。</CardDescription>
           </div>
-          <Badge v-if="dryRunMode" variant="outline">--dry-run</Badge>
+          <div class="flex items-center gap-2">
+            <Badge v-if="dryRunMode" variant="outline">--dry-run</Badge>
+            <Button variant="ghost" size="sm" @click="clearLogs">清空</Button>
+          </div>
         </div>
         <div class="flex flex-wrap gap-1.5">
           <Badge

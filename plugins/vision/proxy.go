@@ -309,6 +309,7 @@ func (s *Service) HandleProxyBeforeUpstream(payload any) (any, error) {
 	visionLogging := len(newGroup.hits) > 0
 	var lastErr error
 	visionStep := 0 // 视觉 attempt 已使用的最大 step_no（与主链路共享单调递增空间）
+	channels := s.loadChannels(context.Background())
 	for idx, opt := range options {
 		viaModel := opt.ViaModel
 		if viaModel == "" {
@@ -350,7 +351,7 @@ func (s *Service) HandleProxyBeforeUpstream(payload any) (any, error) {
 		var newText string
 		var chID string
 		if len(newGroup.hits) > 0 {
-			newText, chID, err = s.Describe(context.Background(), newGroup.images, viaModel, opt.ChannelID, streamWriter)
+			newText, chID, err = s.describeViaOption(context.Background(), newGroup.images, opt, config.DefaultVisionModel, channels, streamWriter)
 			if err != nil {
 				lastErr = err
 				s.lg.Warn("视觉候选失败，尝试下一个", "via_model", viaModel, "err", err)

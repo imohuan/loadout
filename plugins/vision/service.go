@@ -279,12 +279,13 @@ func (s *Service) HandleBeforeUpstream(payload any) (any, error) {
 	}
 	s.lg.Info("命中视觉路由", "model", model, "候选数", len(options))
 	var lastErr error
+	channels := s.loadChannels(context.Background())
 	for _, opt := range options {
 		viaModel := opt.ViaModel
 		if viaModel == "" {
 			viaModel = config.DefaultVisionModel
 		}
-		text, _, err := s.Describe(context.Background(), images, viaModel, opt.ChannelID, pipe.StreamWriter)
+		text, _, err := s.describeViaOption(context.Background(), images, opt, config.DefaultVisionModel, channels, pipe.StreamWriter)
 		if err != nil {
 			lastErr = err
 			s.lg.Warn("视觉候选失败，尝试下一个", "via_model", viaModel, "err", err)
@@ -300,6 +301,51 @@ func (s *Service) HandleBeforeUpstream(payload any) (any, error) {
 // name while the plugin registers the exported event handler.
 func (s *Service) handleBeforeUpstream(payload any) (any, error) {
 	return s.HandleBeforeUpstream(payload)
+}
+
+// describeViaOption 对单个视觉候选执行描述：
+//   - 渠道级（ChannelBaseURL）：展开组内启用 Key 逐个尝试，任一成功即返回；
+//   - Key 多选（ChannelIDs）：按声明顺序逐个尝试；
+//   - 单 Key（ChannelID）：直接尝试（兼容老数据）；
+//   - 空渠道：走自动路由（Describe channelID="" → channelsForModel）。
+func (s *Service) describeViaOption(ctx context.Context, images []string, opt types.ViaOption, defaultModel string, channels []db.Channel, streamWriter func(string) error) (string, string, error) {
+	viaModel := opt.ViaModel
+	if viaModel == "" {
+		viaModel = defaultModel
+	}
+	keys := modelgateway.ExpandCandidateKeys(opt.ChannelID, opt.ChannelIDs, opt.ChannelBaseURL, channels)
+	if len(keys) == 0 {
+		// 显式渠道形态（渠道级 / Key 多选）展开后无候选：报错换下一个 viaOption，
+		// 不能静默回退自动路由（会越界路由到组外渠道）。
+		if opt.ChannelBaseURL != "" || len(opt.ChannelIDs) > 0 {
+			return "", "", fmt.Errorf("vision: 视觉候选 %q 无可用渠道（候选 Key 为空）", viaModel)
+		}
+		// 无指定渠道 / 渠道表无该单 Key：保持现状（自动路由或 resolveChannel 报错）。
+		return s.Describe(ctx, images, viaModel, opt.ChannelID, streamWriter)
+	}
+	var lastErr error
+	for _, k := range keys {
+		text, chID, err := s.Describe(ctx, images, viaModel, k.ChannelID, streamWriter)
+		if err == nil {
+			return text, chID, nil
+		}
+		lastErr = err
+		s.lg.Warn("视觉候选 Key 失败，尝试下一个", "via_model", viaModel, "channel", k.ChannelID, "err", err)
+	}
+	return "", "", lastErr
+}
+
+// loadChannels 读取全部渠道（SQLite）；repo 未装配或读取失败时返回空列表。
+func (s *Service) loadChannels(ctx context.Context) []db.Channel {
+	if s.repo == nil {
+		return nil
+	}
+	channels, err := s.repo.ListChannels(ctx)
+	if err != nil {
+		s.lg.Warn("vision: 读取渠道表失败", "err", err)
+		return nil
+	}
+	return channels
 }
 
 // resolveChannel 按 channel_id 查渠道表（SQLite，与主路由同源）并解密 api_key。

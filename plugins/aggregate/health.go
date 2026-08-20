@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"loadout/core/db"
 	"loadout/core/store"
 	modelgateway "loadout/plugins/model-gateway"
 	"loadout/plugins/types"
@@ -50,69 +51,145 @@ func (s *Service) saveHealth() {
 
 // selectAvailableTarget 选择第一个可用的目标模型（跳过手动禁用与自动熔断的目标）。
 // 不可用（冷却/禁用）的目标不发起真实请求，由调用方直接记录日志说明原因。
-func (s *Service) selectAvailableTarget(targets []types.AggregateTarget, failedKeys []string) *types.AggregateTarget {
+// 返回 (target, candidates, err)：
+//   - target = 选中的目标（渠道级时 ChannelID 为空、ChannelBaseURL 保留；Key 级时 ChannelID 已具体化）；
+//   - candidates = 渠道级目标展开后的可用 Key 列表（为空表示 target.ChannelID 已具体化 / 无候选）。
+func (s *Service) selectAvailableTarget(targets []types.AggregateTarget, failedKeys []string) (*types.AggregateTarget, []string, error) {
+	channels, err := s.loadChannels(context.Background())
+	if err != nil {
+		return nil, nil, err
+	}
 	if s.health != nil {
 		for i := range targets {
-			key := fmt.Sprintf("%s@%s", targets[i].Model, targets[i].ChannelID)
-			if contains(failedKeys, key) {
-				continue
+			keys := modelgateway.ExpandCandidateKeys(targets[i].ChannelID, targets[i].ChannelIDs, targets[i].ChannelBaseURL, channels)
+			// 兼容：渠道表无该 Key 记录（如 JSON 模式无渠道数据）时，Key 级目标仍按单 Key 直接检查。
+			if len(keys) == 0 && targets[i].ChannelBaseURL == "" && targets[i].ChannelID != "" {
+				keys = []modelgateway.ResolvedKey{{ChannelID: targets[i].ChannelID}}
 			}
-			availability, err := s.health.Check(context.Background(), targets[i].ChannelID, targets[i].Model)
-			if err == nil && availability.EffectiveAvailable {
-				return &targets[i]
+			var available []string
+			for _, k := range keys {
+				key := fmt.Sprintf("%s@%s", targets[i].Model, k.ChannelID)
+				if contains(failedKeys, key) {
+					continue
+				}
+				availability, err := s.health.Check(context.Background(), k.ChannelID, targets[i].Model)
+				if err == nil && availability.EffectiveAvailable {
+					available = append(available, k.ChannelID)
+				}
 			}
+			if len(available) == 0 {
+				continue // 该目标无可用 Key，换下一个
+			}
+			t := targets[i]
+			if t.ChannelBaseURL != "" || len(t.ChannelIDs) > 0 {
+				// 渠道级 / Key 多选：不具体化单 Key，交由 proxyForward 对 candidates 逐个 failover。
+				return &t, available, nil
+			}
+			// 单 Key：选中第一个可用 Key（保持现有语义）。
+			t.ChannelID = available[0]
+			return &t, nil, nil
 		}
-		return nil
+		return nil, nil, nil
 	}
+
 	s.healthMu.RLock()
 	defer s.healthMu.RUnlock()
 
 	now := time.Now()
 	s.lg.Info("[aggregate] 开始选择可用目标", "total_targets", len(targets), "failed_count", len(failedKeys))
 
-	for i, target := range targets {
-		key := fmt.Sprintf("%s@%s", target.Model, target.ChannelID)
-		s.lg.Info("[aggregate] 检查目标", "index", i, "key", key)
-
-		// 跳过本次已失败的
-		if contains(failedKeys, key) {
-			s.lg.Info("[aggregate] 跳过（本次已失败）", "key", key)
+	for i := range targets {
+		keys := modelgateway.ExpandCandidateKeys(targets[i].ChannelID, targets[i].ChannelIDs, targets[i].ChannelBaseURL, channels)
+		// 兼容：渠道表无该 Key 记录（如 JSON 模式无渠道数据）时，Key 级目标仍按单 Key 直接检查。
+		if len(keys) == 0 && targets[i].ChannelBaseURL == "" && targets[i].ChannelID != "" {
+			keys = []modelgateway.ResolvedKey{{ChannelID: targets[i].ChannelID}}
+		}
+		if len(keys) == 0 {
+			s.lg.Info("[aggregate] 目标无候选 Key，跳过", "index", i)
 			continue
 		}
+		var available []string
+		for _, k := range keys {
+			key := fmt.Sprintf("%s@%s", targets[i].Model, k.ChannelID)
+			s.lg.Info("[aggregate] 检查目标", "index", i, "key", key)
 
-		// 检查健康状态
-		health := s.healthMap[key]
-		if health == nil {
-			// 未记录过，视为可用
-			s.lg.Info("[aggregate] 选中（首次使用）", "key", key)
-			return &target
-		}
-
-		s.lg.Info("[aggregate] 健康状态", "key", key, "status", health.Status, "fail_count", health.FailCount)
-
-		if health.Status == "available" {
-			s.lg.Info("[aggregate] 选中（可用）", "key", key)
-			return &target
-		}
-
-		// 检查冷却是否结束
-		if health.Status == "cooling" && health.DisabledUntil != nil {
-			disabledUntil, err := time.Parse(time.RFC3339, *health.DisabledUntil)
-			if err == nil && now.After(disabledUntil) {
-				// 冷却结束，视为可用（实际恢复由后台检查器完成）
-				s.lg.Info("[aggregate] 选中（冷却已结束）", "key", key, "was_until", *health.DisabledUntil)
-				return &target
+			// 跳过本次已失败的
+			if contains(failedKeys, key) {
+				s.lg.Info("[aggregate] 跳过（本次已失败）", "key", key)
+				continue
 			}
-			s.lg.Info("[aggregate] 跳过（冷却中）", "key", key, "until", *health.DisabledUntil)
-		} else {
-			s.lg.Info("[aggregate] 跳过（已禁用）", "key", key, "status", health.Status)
-		}
 
-		// disabled 或 cooling 中，跳过
+			// 检查健康状态
+			health := s.healthMap[key]
+			if health == nil {
+				// 未记录过，视为可用
+				s.lg.Info("[aggregate] 选中（首次使用）", "key", key)
+				available = append(available, k.ChannelID)
+				continue
+			}
+
+			s.lg.Info("[aggregate] 健康状态", "key", key, "status", health.Status, "fail_count", health.FailCount)
+
+			if health.Status == "available" {
+				s.lg.Info("[aggregate] 选中（可用）", "key", key)
+				available = append(available, k.ChannelID)
+				continue
+			}
+
+			// 检查冷却是否结束
+			if health.Status == "cooling" && health.DisabledUntil != nil {
+				disabledUntil, err := time.Parse(time.RFC3339, *health.DisabledUntil)
+				if err == nil && now.After(disabledUntil) {
+					// 冷却结束，视为可用（实际恢复由后台检查器完成）
+					s.lg.Info("[aggregate] 选中（冷却已结束）", "key", key, "was_until", *health.DisabledUntil)
+					available = append(available, k.ChannelID)
+					continue
+				}
+				s.lg.Info("[aggregate] 跳过（冷却中）", "key", key, "until", *health.DisabledUntil)
+			} else {
+				s.lg.Info("[aggregate] 跳过（已禁用）", "key", key, "status", health.Status)
+			}
+		}
+		if len(available) == 0 {
+			s.lg.Info("[aggregate] 目标无可用 Key", "index", i)
+			continue
+		}
+		t := targets[i]
+		if t.ChannelBaseURL != "" || len(t.ChannelIDs) > 0 {
+			return &t, available, nil
+		}
+		t.ChannelID = available[0]
+		return &t, nil, nil
 	}
 
 	s.lg.Warn("[aggregate] 无可用目标")
-	return nil
+	return nil, nil, nil
+}
+
+// loadChannels 读取全部渠道（DB 优先，JSON 回退）。
+func (s *Service) loadChannels(ctx context.Context) ([]db.Channel, error) {
+	if s.routing != nil {
+		return s.routing.ListChannels(ctx)
+	}
+	var raw []types.Channel
+	if err := s.st.Read(types.FileChannels, &raw); err != nil {
+		if errors.Is(err, store.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	out := make([]db.Channel, 0, len(raw))
+	for _, ch := range raw {
+		out = append(out, db.Channel{
+			ID:            ch.ID,
+			Name:          ch.Name,
+			ChannelName:   ch.ChannelName,
+			BaseURL:       ch.BaseURL,
+			APIKeyCipher:  ch.APIKeyCipher,
+			ManualEnabled: ch.ManualEnabled || ch.Enabled,
+		})
+	}
+	return out, nil
 }
 
 // updateHealth 更新模型健康状态
@@ -191,6 +268,25 @@ func (s *Service) HandleUpstreamSucceeded(payload any) (any, error) {
 	s.lg.Info("[aggregate] 模型转发成功，标记可用", "model", modelKey)
 	s.saveHealth()
 	return payload, nil
+}
+
+// applyTargetMetadata 把选中的 target 写入管线 metadata：
+//   - 渠道级（ChannelBaseURL）或 Key 多选（ChannelIDs）：写 __channel_candidates（可用 Key 列表），
+//     model-gateway 据此逐 Key failover；渠道级额外写 base_url 备用；
+//   - 单 Key：写 __current_channel（具体 KeyID），保持向后兼容。
+func applyTargetMetadata(md map[string]any, target *types.AggregateTarget, candidates []string) {
+	if target == nil || md == nil {
+		return
+	}
+	if (target.ChannelBaseURL != "" || len(target.ChannelIDs) > 0) && len(candidates) > 0 {
+		md["__current_channel"] = ""
+		md["__current_channel_base_url"] = target.ChannelBaseURL
+		md["__channel_candidates"] = candidates
+		return
+	}
+	md["__current_channel"] = target.ChannelID
+	md["__current_channel_base_url"] = ""
+	md["__channel_candidates"] = nil
 }
 
 // contains 检查字符串切片是否包含指定元素

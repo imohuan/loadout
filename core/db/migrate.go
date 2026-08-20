@@ -240,6 +240,24 @@ ALTER TABLE channels ADD COLUMN channel_name TEXT NOT NULL DEFAULT '';
 	sql: `
 ALTER TABLE gateway_keys ADD COLUMN api_key_cipher TEXT NOT NULL DEFAULT '';
 `,
+}, {
+	version: 8,
+	name:    "aggregate-target-channel-level",
+	sql: `
+ALTER TABLE aggregate_targets RENAME TO aggregate_targets_old;
+CREATE TABLE aggregate_targets (
+  aggregate_id INTEGER NOT NULL REFERENCES aggregates(id) ON DELETE CASCADE,
+  position INTEGER NOT NULL,
+  model TEXT NOT NULL,
+  channel_id TEXT REFERENCES channels(id),
+  channel_ids_json TEXT NOT NULL DEFAULT '[]',
+  channel_base_url TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (aggregate_id, position)
+);
+INSERT INTO aggregate_targets (aggregate_id, position, model, channel_id, channel_ids_json, channel_base_url)
+  SELECT aggregate_id, position, model, channel_id, '[]', '' FROM aggregate_targets_old;
+DROP TABLE aggregate_targets_old;
+`,
 }}
 
 // Migrate applies all pending schema migrations and rejects an incompatible

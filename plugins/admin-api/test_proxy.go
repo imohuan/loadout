@@ -64,12 +64,13 @@ func (s *Service) resolveTestTarget(r *http.Request, in testTarget) (string, str
 			baseURL = "/v1"
 		}
 		if !strings.HasPrefix(baseURL, "http://") && !strings.HasPrefix(baseURL, "https://") {
+			// 相对路径必须 / 开头且不带 query，避免裸域名被误拼、suffix 追加错位。
+			if !strings.HasPrefix(baseURL, "/") || strings.Contains(baseURL, "?") {
+				return "", "", "", errors.New("base_url 需以 / 开头（如 /v1）或为完整 http(s):// 地址")
+			}
 			scheme := "http"
 			if r.TLS != nil {
 				scheme = "https"
-			}
-			if !strings.HasPrefix(baseURL, "/") {
-				baseURL = "/" + baseURL
 			}
 			baseURL = scheme + "://" + r.Host + baseURL
 		}
@@ -311,6 +312,12 @@ func splitDataURI(uri string) (mediaType, data string, ok bool) {
 // 支持非流式与流式（SSE）转发。测试请求不写入转发日志：访问摘要（request_id、模型、
 // 耗时、tokens、错误等）随响应回带，供前端「请求记录」面板直显；仅当上游是 Loadout
 // 自身的导出服务时，由 router 内部正常写日志。
+// 自带模式哨兵 channel id（与前端 BUILTIN_CHANNEL 一致）：
+// 自带模式下日志的 final_channel_id / attempts.channel_id 用它标记，前端显示为「自带」。
+const builtinChannelID = "__builtin__"
+
+// handleTestChat 代理上游 chat/completions（含 gpt /responses、claude /messages 转换），
+// 逐块透传 SSE。测试请求不写转发日志，访问摘要经响应头 + SSE route_log 事件回带。
 func (s *Service) handleTestChat(w http.ResponseWriter, r *http.Request) {
 	var req testChatRequest
 	if !decodeJSON(w, r, &req) {
@@ -329,6 +336,11 @@ func (s *Service) handleTestChat(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "messages 必填")
 		return
 	}
+	// 自带模式前端不传 channel_id，这里统一标记为 builtin，保证日志 attempts 显示「自带」而非空。
+	channelID := req.ChannelID
+	if req.SkKeyHash != "" {
+		channelID = builtinChannelID
+	}
 
 	payload := buildTestPayload(req)
 	body, err := json.Marshal(payload)
@@ -344,7 +356,7 @@ func (s *Service) handleTestChat(w http.ResponseWriter, r *http.Request) {
 	started := time.Now()
 	upReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, strings.TrimRight(baseURL, "/")+testSuffixPath(req.SuffixMode), bytes.NewReader(body))
 	if err != nil {
-		s.setTestLogHeader(w, buildTestLogSummary(requestID, req.Model, req.ChannelID, skKeyName, started, time.Now(), "failed", "network", http.StatusBadGateway, req.Stream, contracts.TokenUsage{}, err))
+		s.setTestLogHeader(w, buildTestLogSummary(requestID, req.Model, channelID, skKeyName, started, time.Now(), "failed", "network", http.StatusBadGateway, req.Stream, contracts.TokenUsage{}, err))
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
@@ -355,7 +367,7 @@ func (s *Service) handleTestChat(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := (&http.Client{Timeout: config.UpstreamTimeout}).Do(upReq)
 	if err != nil {
-		s.setTestLogHeader(w, buildTestLogSummary(requestID, req.Model, req.ChannelID, skKeyName, started, time.Now(), "failed", "network", http.StatusBadGateway, req.Stream, contracts.TokenUsage{}, err))
+		s.setTestLogHeader(w, buildTestLogSummary(requestID, req.Model, channelID, skKeyName, started, time.Now(), "failed", "network", http.StatusBadGateway, req.Stream, contracts.TokenUsage{}, err))
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
@@ -365,7 +377,7 @@ func (s *Service) handleTestChat(w http.ResponseWriter, r *http.Request) {
 		upstreamBody, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
 		s.lg.Warn("模型测试上游返回错误", "status", resp.StatusCode)
 		message := fmt.Sprintf("上游返回错误(%d): %s", resp.StatusCode, upstreamErrorText(upstreamBody))
-		s.setTestLogHeader(w, buildTestLogSummary(requestID, req.Model, req.ChannelID, skKeyName, started, time.Now(), "failed", failureClassForStatus(resp.StatusCode), resp.StatusCode, req.Stream, contracts.TokenUsage{}, errors.New(message)))
+		s.setTestLogHeader(w, buildTestLogSummary(requestID, req.Model, channelID, skKeyName, started, time.Now(), "failed", failureClassForStatus(resp.StatusCode), resp.StatusCode, req.Stream, contracts.TokenUsage{}, errors.New(message)))
 		// 透传上游错误体，便于前端展示原始错误。
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(resp.StatusCode)
@@ -376,21 +388,21 @@ func (s *Service) handleTestChat(w http.ResponseWriter, r *http.Request) {
 	if !req.Stream {
 		respBody, err := io.ReadAll(resp.Body)
 		if err != nil {
-			s.setTestLogHeader(w, buildTestLogSummary(requestID, req.Model, req.ChannelID, skKeyName, started, time.Now(), "failed", "network", resp.StatusCode, false, contracts.TokenUsage{}, err))
+			s.setTestLogHeader(w, buildTestLogSummary(requestID, req.Model, channelID, skKeyName, started, time.Now(), "failed", "network", resp.StatusCode, false, contracts.TokenUsage{}, err))
 			writeError(w, http.StatusBadGateway, err.Error())
 			return
 		}
 		if ct := resp.Header.Get("Content-Type"); ct != "" {
 			w.Header().Set("Content-Type", ct)
 		}
-		s.setTestLogHeader(w, buildTestLogSummary(requestID, req.Model, req.ChannelID, skKeyName, started, time.Now(), "success", "", resp.StatusCode, false, extractUsageNonStream(respBody), nil))
+		s.setTestLogHeader(w, buildTestLogSummary(requestID, req.Model, channelID, skKeyName, started, time.Now(), "success", "", resp.StatusCode, false, extractUsageNonStream(respBody), nil))
 		w.WriteHeader(resp.StatusCode)
 		_, _ = w.Write(respBody)
 		return
 	}
 
 	// 流式：SSE 末尾追加 route_log 事件携带访问摘要（含最终 tokens），不写转发日志。
-	s.streamTestUpstream(w, resp, started, req.Model, req.ChannelID, skKeyName, requestID)
+	s.streamTestUpstream(w, resp, started, req.Model, channelID, skKeyName, requestID)
 }
 
 // testLogHeaderName 响应头名：携带 base64(JSON) 的测试访问摘要，供前端「请求记录」面板直显。

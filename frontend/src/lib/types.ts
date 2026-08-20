@@ -29,7 +29,9 @@ export interface Channel {
 
 export interface AggregateTarget {
   model: string
-  channel_id: string
+  channel_id?: string
+  channel_ids?: string[]
+  channel_base_url?: string
 }
 
 export interface Aggregate {
@@ -128,15 +130,20 @@ export interface ApiKey {
 }
 
 // 模型+渠道组合：通用的「模型 + 渠道」有序列表项。
+// 三种粒度（优先级从高到低）：channel_base_url（渠道级）> channel_ids（Key 多选）> channel_id（兼容单 Key）。
 export interface ModelChannelItem {
   model: string // 模型名
-  channel_id: string // 渠道 id；空 = 自动路由（仅允许自动路由时有效）
+  channel_id?: string // 渠道 id；空 = 自动路由（仅允许自动路由时有效）
+  channel_ids?: string[] // 渠道 id 列表（Key 多选）
+  channel_base_url?: string // 渠道地址（渠道级）
 }
 
 // 能力路由：给不支持某能力的模型附加能力（如 vision 视觉）。
 export interface ViaOption {
   via_model: string // 视觉模型名
   channel_id?: string // 渠道 id；空 = 按 via_model 自动路由
+  channel_ids?: string[] // 渠道 id 列表（Key 多选）
+  channel_base_url?: string // 渠道地址（渠道级，按 base_url 组轮询 Key）
 }
 
 // 敏感词替换规则：from → to；regex=true 时 from 按正则匹配。

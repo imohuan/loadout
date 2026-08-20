@@ -2,24 +2,27 @@
 import { computed, ref } from 'vue'
 import { RiArrowDownSLine, RiArrowRightSLine } from '@remixicon/vue'
 import type { Channel, RouteLog } from '@/lib/types'
+import { BUILTIN_CHANNEL } from '@/lib/constants'
 import { formatDate, formatDuration } from '@/lib/format'
 import EmptyState from '@/components/EmptyState.vue'
 import DataPagination from '@/components/DataPagination.vue'
 
-const props = defineProps<{
-  logs: RouteLog[]
-  channels: Channel[]
-  loadingDetail?: string
-  /** false = 不做折叠：详情行始终展开、无箭头（如模型测试请求记录） */
-  collapsible?: boolean
-}>()
+const props = withDefaults(
+  defineProps<{
+    logs: RouteLog[]
+    channels: Channel[]
+    loadingDetail?: string
+    /** false = 不做折叠：详情行始终展开、无箭头（如模型测试请求记录） */
+    collapsible?: boolean
+  }>(),
+  { collapsible: true },
+)
 const emit = defineEmits<{ expand: [log: RouteLog] }>()
 const expanded = ref(new Set<string>())
 function channelName(channels: Channel[], id?: string) {
   return id ? channels.find((channel) => channel.id === id)?.name || id : '-'
 }
 // 自带模式哨兵（与 ModelTestView 一致）：final_channel_id 持有此值时显示为「自带」+ key 名。
-const BUILTIN_CHANNEL = '__builtin__'
 function finalTargetLabel(channelId?: string, skKeyName?: string) {
   if (channelId === BUILTIN_CHANNEL) {
     return skKeyName ? `自带 · ${skKeyName}` : '自带'
@@ -31,9 +34,17 @@ function toggle(log: RouteLog) {
     ? expanded.value.delete(log.request_id)
     : (expanded.value.add(log.request_id), emit('expand', log))
 }
+// 折叠模式：details 是否展开由 expanded 集合决定。
 function isExpanded(log: RouteLog) {
-  // collapsible === false 才强制展开；未传（undefined）保持默认可折叠。
-  return props.collapsible === false || expanded.value.has(log.request_id)
+  return expanded.value.has(log.request_id)
+}
+// 详情行是否渲染：
+//   - collapsible === false（模型测试请求记录）：用户显式要求隐藏整个详情区
+//     （含 attempts 列表与「暂无步骤详情」占位），详情不渲染。
+//   - 折叠模式：展开时渲染详情。
+function showDetails(log: RouteLog) {
+  if (props.collapsible === false) return false
+  return isExpanded(log)
 }
 
 // ---------- 前端分页 ----------
@@ -221,7 +232,7 @@ function cacheRatio(x: { prompt_tokens?: number; cached_tokens?: number }) {
                 ><TableCell class="whitespace-nowrap tabular-nums text-sm">{{
                   formatDuration(log.duration_ms)
                 }}</TableCell></TableRow
-              ><TableRow v-if="isExpanded(log)"
+              ><TableRow v-if="showDetails(log)"
                 ><TableCell colspan="9" class="bg-muted/30 p-4"
                   ><div
                     v-if="loadingDetail === log.request_id"

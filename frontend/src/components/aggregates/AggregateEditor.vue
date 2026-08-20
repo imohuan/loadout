@@ -16,7 +16,7 @@ const open = defineModel<boolean>('open', { required: true })
 const form = reactive<Aggregate>({
   name: '',
   enabled: true,
-  targets: [{ model: '', channel_id: '' }],
+  targets: [{ model: '', channel_id: '', channel_ids: [] }],
 })
 
 watch(
@@ -26,7 +26,7 @@ watch(
       name: aggregate?.name || '',
       enabled: aggregate?.enabled ?? true,
       targets: aggregate?.targets?.map((target) => ({ ...target })) || [
-        { model: '', channel_id: '' },
+        { model: '', channel_id: '', channel_ids: [] },
       ],
     })
   },
@@ -35,7 +35,12 @@ watch(
 
 function submit() {
   if (!form.name) return
-  const targets = form.targets.filter((t) => t.model && t.channel_id)
+  // 目标有效：模型 + 三种粒度至少一种渠道形态（渠道级 / Key 多选 / 单 Key 兼容）。
+  const targets = form.targets.filter(
+    (t) =>
+      t.model &&
+      (t.channel_id || t.channel_ids?.length || t.channel_base_url),
+  )
   if (targets.length) emit('save', { name: form.name, enabled: form.enabled, targets })
 }
 </script>
@@ -69,7 +74,7 @@ function submit() {
             :allow-custom-model="false"
             :require-channel-for-model="true"
             :clear-model-on-channel-change="true"
-            :show-move="false"
+            :show-move="true"
             :show-index="true"
             add-label="添加目标"
           />

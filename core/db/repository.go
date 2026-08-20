@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"time"
 )
@@ -43,10 +44,13 @@ type Aggregate struct {
 }
 
 // AggregateTarget pins an aggregate position to a model on one channel.
+// ChannelBaseURL 优先（渠道级，按 base_url 组轮询 Key）；其次 ChannelIDs（Key 多选）；最后 ChannelID（兼容单 Key）。
 type AggregateTarget struct {
-	Position  int    `json:"position"`
-	Model     string `json:"model"`
-	ChannelID string `json:"channel_id"`
+	Position       int      `json:"position"`
+	Model          string   `json:"model"`
+	ChannelID      string   `json:"channel_id"`
+	ChannelIDs     []string `json:"channel_ids"`
+	ChannelBaseURL string   `json:"channel_base_url"`
 }
 
 // Repository provides the small configuration CRUD surface shared by routing
@@ -262,7 +266,7 @@ func (r *Repository) ListAggregates(ctx context.Context) ([]Aggregate, error) {
 		return nil, fmt.Errorf("db: iterate aggregates: %w", err)
 	}
 
-	targetRows, err := r.database.QueryContext(ctx, "SELECT aggregate_id, position, model, channel_id FROM aggregate_targets ORDER BY aggregate_id, position")
+	targetRows, err := r.database.QueryContext(ctx, "SELECT aggregate_id, position, model, channel_id, channel_ids_json, channel_base_url FROM aggregate_targets ORDER BY aggregate_id, position")
 	if err != nil {
 		return nil, fmt.Errorf("db: list aggregate targets: %w", err)
 	}
@@ -270,8 +274,18 @@ func (r *Repository) ListAggregates(ctx context.Context) ([]Aggregate, error) {
 	for targetRows.Next() {
 		var aggregateID int64
 		var target AggregateTarget
-		if err := targetRows.Scan(&aggregateID, &target.Position, &target.Model, &target.ChannelID); err != nil {
+		var channelID sql.NullString
+		var channelIDsJSON string
+		if err := targetRows.Scan(&aggregateID, &target.Position, &target.Model, &channelID, &channelIDsJSON, &target.ChannelBaseURL); err != nil {
 			return nil, fmt.Errorf("db: scan aggregate target: %w", err)
+		}
+		if channelID.Valid {
+			target.ChannelID = channelID.String
+		}
+		if channelIDsJSON != "" && channelIDsJSON != "[]" {
+			if err := json.Unmarshal([]byte(channelIDsJSON), &target.ChannelIDs); err != nil {
+				return nil, fmt.Errorf("db: parse aggregate target channel_ids: %w", err)
+			}
 		}
 		aggregates[byID[aggregateID]].Targets = append(aggregates[byID[aggregateID]].Targets, target)
 	}
@@ -312,12 +326,29 @@ func (r *Repository) ReplaceAggregates(ctx context.Context, aggregates []Aggrega
 				return fmt.Errorf("db: clear aggregate %q targets: %w", aggregate.Name, err)
 			}
 			for position, target := range aggregate.Targets {
-				if target.Model == "" || target.ChannelID == "" {
-					return fmt.Errorf("db: aggregate %q targets[%d]: model and channel_id are required", aggregate.Name, position)
+				// 校验：model 必填；channel_id / channel_ids / channel_base_url 至少一个非空。
+				if target.Model == "" {
+					return fmt.Errorf("db: aggregate %q targets[%d]: model is required", aggregate.Name, position)
 				}
-				if _, err := tx.ExecContext(ctx, "INSERT INTO aggregate_targets (aggregate_id, position, model, channel_id) VALUES (?, ?, ?, ?)", id, position, target.Model, target.ChannelID); err != nil {
-					return fmt.Errorf("db: replace aggregate %q target %d: %w", aggregate.Name, position, err)
+				if target.ChannelID == "" && len(target.ChannelIDs) == 0 && target.ChannelBaseURL == "" {
+					return fmt.Errorf("db: aggregate %q targets[%d]: channel_id, channel_ids or channel_base_url is required", aggregate.Name, position)
 				}
+			channelIDsJSON := "[]"
+			if len(target.ChannelIDs) > 0 {
+				data, err := json.Marshal(target.ChannelIDs)
+				if err != nil {
+					return fmt.Errorf("db: marshal aggregate %q target %d channel_ids: %w", aggregate.Name, position, err)
+				}
+				channelIDsJSON = string(data)
+			}
+			// 渠道级 / Key 多选时 channel_id 为空：必须写 NULL（空字符串会被外键当有效值 → FK 失败）。
+			var channelID any
+			if target.ChannelID != "" {
+				channelID = target.ChannelID
+			}
+			if _, err := tx.ExecContext(ctx, "INSERT INTO aggregate_targets (aggregate_id, position, model, channel_id, channel_ids_json, channel_base_url) VALUES (?, ?, ?, ?, ?, ?)", id, position, target.Model, channelID, channelIDsJSON, target.ChannelBaseURL); err != nil {
+				return fmt.Errorf("db: replace aggregate %q target %d: %w", aggregate.Name, position, err)
+			}
 			}
 		}
 

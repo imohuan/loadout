@@ -164,7 +164,20 @@ func importAggregates(ctx context.Context, tx *sql.Tx, values []types.AggregateM
 			return err
 		}
 		for position, target := range aggregate.Targets {
-			if _, err := tx.ExecContext(ctx, `INSERT INTO aggregate_targets(aggregate_id, position, model, channel_id) VALUES(?, ?, ?, ?)`, id, position, target.Model, target.ChannelID); err != nil {
+			// 渠道级 / Key 多选时 channel_id 为空 → 写 NULL（空字符串会被外键当有效值 → FK 失败）。
+			var channelID any
+			if target.ChannelID != "" {
+				channelID = target.ChannelID
+			}
+			channelIDsJSON := "[]"
+			if len(target.ChannelIDs) > 0 {
+				data, err := json.Marshal(target.ChannelIDs)
+				if err != nil {
+					return fmt.Errorf("db: import aggregate %q target %d channel_ids: %w", aggregate.Name, position, err)
+				}
+				channelIDsJSON = string(data)
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO aggregate_targets(aggregate_id, position, model, channel_id, channel_ids_json, channel_base_url) VALUES(?, ?, ?, ?, ?, ?)`, id, position, target.Model, channelID, channelIDsJSON, target.ChannelBaseURL); err != nil {
 				return fmt.Errorf("db: import aggregate target %q: %w", aggregate.Name, err)
 			}
 		}
