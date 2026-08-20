@@ -93,6 +93,8 @@ export interface McpServerInfo {
   hasAuth?: boolean
   /** remote：完整请求头（写回 mcp.json 用） */
   headers?: Record<string, string>
+  /** local：stdio 进程环境变量（写回 mcp.json 用） */
+  env?: Record<string, string>
 }
 
 /** 界面初始 MCP 列表（后端 mcp.json 读取失败时的兜底，与 mcp.example.json 一致）。 */
@@ -254,6 +256,7 @@ export async function fetchManagedMcpServers(): Promise<McpServerInfo[]> {
     args?: string[]
     url?: string
     headers?: Record<string, string>
+    env?: Record<string, string>
     enabled?: boolean
   }>
   return (list || []).map((item) => {
@@ -263,6 +266,7 @@ export async function fetchManagedMcpServers(): Promise<McpServerInfo[]> {
         type: 'local' as const,
         enabled: item.enabled !== false,
         command: [item.command || 'npx', ...(item.args || [])],
+        env: item.env,
       }
     }
     return {

@@ -7,6 +7,7 @@ import {
   RiArrowRightSLine,
   RiCheckLine,
   RiCloseLine,
+  RiDeleteBinLine,
   RiImportLine,
   RiInformationLine,
   RiLoader4Line,
@@ -141,6 +142,7 @@ const addForm = reactive({
   command: '',
   url: '',
   headers: '',
+  env: [] as Array<{ key: string; value: string }>,
 })
 
 function openAddDialog() {
@@ -153,6 +155,17 @@ function openAddDialog() {
   addForm.command = ''
   addForm.url = ''
   addForm.headers = ''
+  addForm.env = []
+  // 打开即自动拉一次，避免用户再点「加载列表」
+  loadImportSource()
+}
+
+function addEnvRow() {
+  addForm.env.push({ key: '', value: '' })
+}
+
+function removeEnvRow(index: number) {
+  addForm.env.splice(index, 1)
 }
 
 /** 从 MCP 管理加载可导入的服务器 */
@@ -231,6 +244,14 @@ async function addManualServer() {
       return
     }
     srv.command = parts
+    // 环境变量：跳过空 key，保留空 value（用户可能故意置空）
+    const env: Record<string, string> = {}
+    for (const row of addForm.env) {
+      const k = row.key.trim()
+      if (!k) continue
+      env[k] = row.value
+    }
+    if (Object.keys(env).length) srv.env = env
   } else {
     if (!addForm.url.trim()) {
       toast.error('请输入远程地址 URL')
@@ -481,7 +502,7 @@ onMounted(() => {
         </div>
         <div class="flex flex-wrap items-center gap-x-4 gap-y-2">
           <Tabs v-model="modeTab">
-            <TabsList variant="line" class="inline-flex h-auto w-fit max-w-full flex-wrap justify-start gap-2">
+            <TabsList class="inline-flex h-auto w-fit max-w-full flex-wrap justify-start gap-1">
               <TabsTrigger value="all">全部同步</TabsTrigger>
               <TabsTrigger value="models">仅模型</TabsTrigger>
               <TabsTrigger value="mcp">仅 MCP</TabsTrigger>
@@ -510,7 +531,7 @@ onMounted(() => {
 
     <!-- ③ MCP 同步过滤（排除矩阵 + 白名单，并列展示） -->
     <Card v-if="mode !== 'models'" class="rounded-md">
-      <CardHeader class="flex-row items-center justify-between space-y-0">
+      <CardHeader class="flex flex-row items-center justify-between space-y-0 pb-2">
         <div class="space-y-0.5">
           <CardTitle class="text-base">③ MCP 同步过滤</CardTitle>
           <CardDescription
@@ -661,13 +682,13 @@ onMounted(() => {
 
     <!-- 添加 / 导入 MCP 工具弹窗 -->
     <Dialog v-model:open="addDialogOpen">
-      <DialogContent class="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-xl!">
+      <DialogContent class="max-h-[calc(100dvh-2rem)] overflow-x-hidden overflow-y-auto [grid-template-columns:minmax(0,1fr)] sm:max-w-xl!">
         <DialogHeader>
           <DialogTitle>添加 MCP 工具</DialogTitle>
           <DialogDescription>从 MCP 管理导入，或手动配置一个新的 MCP 服务器（保存到 mcp.json）。</DialogDescription>
         </DialogHeader>
         <Tabs default-value="import">
-          <TabsList variant="line" class="inline-flex h-auto w-fit max-w-full flex-wrap justify-start gap-2">
+          <TabsList class="inline-flex h-auto w-fit max-w-full flex-wrap justify-start gap-1">
             <TabsTrigger value="import">从 MCP 管理导入</TabsTrigger>
             <TabsTrigger value="manual">手动添加</TabsTrigger>
           </TabsList>
@@ -678,20 +699,20 @@ onMounted(() => {
               <Button variant="outline" size="sm" :disabled="importing" @click="loadImportSource">
                 <RiLoader4Line v-if="importing" size="14" class="animate-spin" />
                 <RiImportLine v-else size="14" />
-                {{ importing ? '加载中...' : '加载列表' }}
+                {{ importing ? '加载中...' : '刷新列表' }}
               </Button>
             </div>
-            <div v-if="importSource.length" class="max-h-56 space-y-1 overflow-y-auto rounded-md border p-2">
+            <div v-if="importSource.length" class="max-h-56 space-y-1 overflow-x-hidden overflow-y-auto rounded-md border p-2">
               <label
                 v-for="srv in importSource"
                 :key="srv.name"
-                class="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 hover:bg-muted/40"
+                class="flex min-w-0 cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 hover:bg-muted/40"
               >
                 <Checkbox
                   :model-value="importSelected.includes(srv.name)"
                   @update:model-value="toggleImport(srv.name)"
                 />
-                <span class="min-w-0 flex-1">
+                <span class="min-w-0 flex-1 overflow-hidden">
                   <span class="block truncate font-mono text-sm">{{ srv.name }}</span>
                   <span class="block truncate text-xs text-muted-foreground">
                     {{ srv.type === 'local' ? srv.command?.join(' ') : srv.url }}
@@ -700,7 +721,8 @@ onMounted(() => {
                 <Badge variant="secondary" class="shrink-0">{{ srv.type }}</Badge>
               </label>
             </div>
-            <p v-else class="text-sm text-muted-foreground">点击「加载列表」从 MCP 管理获取可导入的服务器。</p>
+            <p v-else-if="importing" class="text-sm text-muted-foreground">正在加载…</p>
+            <p v-else class="text-sm text-muted-foreground">点击「刷新列表」从 MCP 管理获取可导入的服务器。</p>
             <DialogFooter>
               <Button
                 :disabled="!importSelected.length"
@@ -738,6 +760,31 @@ onMounted(() => {
                 placeholder="npx -y @modelcontextprotocol/server-filesystem /path"
               />
             </div>
+            <div v-if="addForm.type === 'local'" class="space-y-2">
+              <Label>环境变量</Label>
+              <div v-for="(row, index) in addForm.env" :key="index" class="flex gap-2">
+                <Input v-model="row.key" placeholder="KEY" />
+                <Input v-model="row.value" placeholder="值" />
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger as-child>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        aria-label="删除环境变量"
+                        @click="removeEnvRow(index)"
+                      >
+                        <RiDeleteBinLine size="16" />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>删除环境变量</TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              </div>
+              <Button variant="outline" size="sm" @click="addEnvRow">
+                <RiAddLine size="16" />添加环境变量
+              </Button>
+            </div>
             <template v-else>
               <div class="space-y-1">
                 <Label>URL</Label>
@@ -749,7 +796,7 @@ onMounted(() => {
               </div>
             </template>
             <DialogFooter>
-              <Button :disabled="savingMcp" @click="addManualServer">保存到 mcp.json</Button>
+              <Button :disabled="savingMcp" @click="addManualServer">保存</Button>
               <Button variant="ghost" @click="addDialogOpen = false">取消</Button>
             </DialogFooter>
           </TabsContent>

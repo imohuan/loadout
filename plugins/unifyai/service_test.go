@@ -1,7 +1,10 @@
 package unifyai
 
 import (
+	"encoding/json"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -120,5 +123,40 @@ func TestRunnerSingleInstanceAndBroadcast(t *testing.T) {
 	}
 	if len(ev2) != len(ev1) {
 		t.Errorf("订阅者2 事件数 = %d, want %d（广播一致性）", len(ev2), len(ev1))
+	}
+}
+
+// TestSaveMcpServersSingleSwitchField 验证写回 mcp.json 只含 disabled 单开关字段
+// （unifyai 同步时 loadMcpConfig 以 `if (!config.disabled)` 过滤，enabled 不写）。
+func TestSaveMcpServersSingleSwitchField(t *testing.T) {
+	old := mcpConfigPath
+	defer func() { mcpConfigPath = old }()
+	dir := t.TempDir()
+	mcpConfigPath = func() string { return filepath.Join(dir, "mcp.json") }
+
+	svc := NewService(slog.Default())
+	if err := svc.SaveMcpServers([]McpServer{
+		{Name: "a", Type: "local", Enabled: false, Command: []string{"cmd"}},
+		{Name: "b", Type: "remote", Enabled: true, URL: "https://x", Headers: map[string]string{"k": "v"}},
+	}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	data, _ := os.ReadFile(filepath.Join(dir, "mcp.json"))
+	var doc map[string]any
+	if err := json.Unmarshal(data, &doc); err != nil {
+		t.Fatalf("json: %v", err)
+	}
+	ms := doc["mcpServers"].(map[string]any)
+	for _, name := range []string{"a", "b"} {
+		entry := ms[name].(map[string]any)
+		if _, hasEnabled := entry["enabled"]; hasEnabled {
+			t.Errorf("%s: 不应写出 enabled 字段", name)
+		}
+	}
+	if ms["a"].(map[string]any)["disabled"] != true {
+		t.Errorf("a.disabled = %v, want true", ms["a"].(map[string]any)["disabled"])
+	}
+	if ms["b"].(map[string]any)["disabled"] != false {
+		t.Errorf("b.disabled = %v, want false", ms["b"].(map[string]any)["disabled"])
 	}
 }

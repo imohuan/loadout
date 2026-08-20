@@ -160,7 +160,7 @@ function submit() {
 
 <template>
   <Dialog v-model:open="open">
-    <DialogContent class="sm:max-w-2xl!">
+    <DialogContent class="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-2xl!">
       <DialogHeader>
         <DialogTitle>{{ lockBaseUrl ? '添加 Key' : channel ? '编辑渠道' : '添加渠道' }}</DialogTitle>
         <DialogDescription v-if="lockBaseUrl">
@@ -308,7 +308,10 @@ function submit() {
               </div>
             </PopoverContent>
           </Popover>
-          <div v-if="form.models.length" class="flex flex-wrap gap-1.5">
+          <div
+            v-if="form.models.length"
+            class="flex max-h-40 flex-wrap gap-1.5 overflow-y-auto rounded-md border border-border p-2"
+          >
             <Badge v-for="m in form.models" :key="m" variant="secondary" class="gap-1 py-0 pr-1">
               {{ m }}
               <button

@@ -45,7 +45,7 @@ const modelLabel: Record<
 
 <template>
   <Card class="rounded-md">
-    <CardHeader class="flex-row items-center justify-between space-y-0">
+    <CardHeader class="flex flex-row items-center justify-between space-y-0 pb-2">
       <div class="space-y-0.5">
         <CardTitle class="text-base">数据预览</CardTitle>
         <CardDescription>将要同步的数据来源与最终执行命令。</CardDescription>

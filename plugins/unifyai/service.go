@@ -186,8 +186,9 @@ func defaultPlatforms() ListPlatformsResult {
 
 // ============ MCP 服务器列表（直接读写 mcp.json，不经 CLI）============
 
-// McpServer 单个 MCP 服务器（mcp.json 条目）。写回时同时写 enabled 与 disabled
-// 双字段：unifyai loadMcpConfig 认 disabled、normalizeMcp 认 enabled，双写保证兼容。
+// McpServer 单个 MCP 服务器（mcp.json 条目）。
+// 写回时只写 disabled 字段：unifyai 同步时 loadMcpConfig 以
+// `if (!config.disabled)` 过滤服务器（enabled 仅 normalizeMcp 兜底，不再双写）。
 type McpServer struct {
 	Name    string            `json:"name"`
 	Type    string            `json:"type"`    // local | remote
@@ -195,6 +196,7 @@ type McpServer struct {
 	Command []string          `json:"command,omitempty"`
 	URL     string            `json:"url,omitempty"`
 	Headers map[string]string `json:"headers,omitempty"`
+	Env     map[string]string `json:"env,omitempty"`
 }
 
 // mcpRawEntry mcp.json 中 mcpServers 的单条原始结构（兼容 string/数组 command）。
@@ -205,6 +207,7 @@ type mcpRawEntry struct {
 	Command  json.RawMessage   `json:"command"`
 	URL      string            `json:"url"`
 	Headers  map[string]string `json:"headers"`
+	Env      map[string]string `json:"env"`
 }
 
 // McpServers 读取 mcp.json（优先级 cwd/mcp.json > ~/.unifyai/mcp.json），
@@ -241,6 +244,7 @@ func (s *Service) McpServers() ([]McpServer, error) {
 			Command: parseCommandField(entry.Command),
 			URL:     entry.URL,
 			Headers: entry.Headers,
+			Env:     entry.Env,
 		})
 	}
 	// 稳定排序（按名称），UI 顺序一致。
@@ -257,9 +261,10 @@ func (s *Service) SaveMcpServers(servers []McpServer) error {
 	}
 	m := make(map[string]any, len(servers))
 	for _, srv := range servers {
+		// 只写 disabled：unifyai 同步时以 `if (!config.disabled)` 过滤（loadMcpConfig），
+		// enabled 不写（normalizeMcp 的 enabled 判断只是兜底，避免双字段冗余）。
 		entry := map[string]any{
 			"type":     srv.Type,
-			"enabled":  srv.Enabled,
 			"disabled": !srv.Enabled,
 		}
 		if len(srv.Command) > 0 {
@@ -270,6 +275,9 @@ func (s *Service) SaveMcpServers(servers []McpServer) error {
 		}
 		if len(srv.Headers) > 0 {
 			entry["headers"] = srv.Headers
+		}
+		if len(srv.Env) > 0 {
+			entry["env"] = srv.Env
 		}
 		m[srv.Name] = entry
 	}
@@ -288,7 +296,8 @@ func (s *Service) SaveMcpServers(servers []McpServer) error {
 }
 
 // mcpConfigPath 解析 mcp.json 路径：cwd 优先，回退 ~/.unifyai/mcp.json（写入时创建）。
-func mcpConfigPath() string {
+// 包级变量，测试可替换。
+var mcpConfigPath = func() string {
 	if p, err := os.Getwd(); err == nil {
 		if c := filepath.Join(p, "mcp.json"); fileExists(c) {
 			return c
