@@ -22,6 +22,7 @@ import (
 	"loadout/plugins/gateway-keys"
 	"loadout/plugins/skills"
 	"loadout/plugins/types"
+	unifyai "loadout/plugins/unifyai"
 	fakemcp "loadout/testkit/fake-mcp"
 )
 
@@ -50,7 +51,7 @@ func newTestServer(t *testing.T) (*httptest.Server, *store.Store, string) {
 
 	keys := gatewaykeys.NewManager(st)
 	skillSvc := skills.NewService(st, slog.Default(), t.TempDir(), t.TempDir())
-	svc := NewService(st, slog.Default(), authSvc, keys, skillSvc, nil)
+	svc := NewService(st, slog.Default(), authSvc, keys, skillSvc, nil, unifyai.NewService(slog.Default()))
 
 	ts := httptest.NewServer(svc.Handler())
 	t.Cleanup(ts.Close)
@@ -1010,7 +1011,7 @@ func TestModelTestBuiltinSkKey(t *testing.T) {
 	}
 	keys := gatewaykeys.NewManager(st)
 	skillSvc := skills.NewService(st, slog.Default(), t.TempDir(), t.TempDir())
-	svc := NewService(st, slog.Default(), authSvc, keys, skillSvc, nil)
+	svc := NewService(st, slog.Default(), authSvc, keys, skillSvc, nil, unifyai.NewService(slog.Default()))
 
 	combined := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// 自家网关 /v1/models：校验 Bearer sk- 明文，返回模型列表。

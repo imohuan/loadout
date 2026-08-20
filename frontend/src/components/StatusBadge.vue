@@ -1,9 +1,13 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 
-const props = defineProps<{ status?: string; available?: boolean; hideWhenAvailable?: boolean }>()
-// 有效不可用时优先显示「已关闭」——避免「红底可用」这种自相矛盾：
-// 手动关闭后 health.status 还没刷成 disabled 时的过渡态。
+const props = defineProps<{
+  status?: string
+  available?: boolean
+  hideWhenAvailable?: boolean
+  /** 可选计数：当徽章既要展示状态又要展示数量时，渲染为「label count」（如「已关闭 3」） */
+  count?: number
+}>()
 const label = computed(() => {
   if (props.available === false) return '已关闭'
   return (
@@ -27,12 +31,17 @@ const variant = computed(() =>
       ? 'secondary'
       : 'default',
 )
-// hideWhenAvailable：常态「可用」不渲染徽章，只在异常/关闭等状态时显示。
 const visible = computed(
   () => !(props.hideWhenAvailable && props.available !== false && props.status === 'available'),
 )
 </script>
 
 <template>
-  <Badge v-if="visible" :variant="variant">{{ label }}</Badge>
+  <Badge v-if="visible" :variant="variant">
+    {{ label }}
+
+    <template v-if="count !== undefined"> 
+      <span class="ml-2">{{ count }}个模型</span>
+    </template>
+  </Badge>
 </template>

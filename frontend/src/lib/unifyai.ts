@@ -221,10 +221,10 @@ export async function fetchMcpServers(): Promise<McpServerInfo[]> {
 }
 
 /**
- * 构建最终的 CLI 命令（纯前端逻辑，无需后端）。
+ * 构建 CLI 参数数组（纯前端逻辑，无需后端）。命令预览与真实执行共用。
  * @param opts 由 UI 状态翻译来的参数
  */
-export function buildCommand(opts: {
+export function buildArgs(opts: {
   mode: SyncMode
   all: boolean
   platforms: PlatformId[]
@@ -234,8 +234,8 @@ export function buildCommand(opts: {
   dryRun: boolean
   source: string
   verbose: boolean
-}): string {
-  const args: string[] = ['unifyai']
+}): string[] {
+  const args: string[] = []
   if (opts.mode === 'models') args.push('--models-only')
   if (opts.mode === 'mcp') args.push('--mcp-only')
   if (opts.all) args.push('--all')
@@ -249,7 +249,12 @@ export function buildCommand(opts: {
   if (opts.dryRun) args.push('--dry-run')
   if (opts.source !== DEFAULT_SOURCE) args.push(`--source ${opts.source}`)
   if (opts.verbose) args.push('--verbose')
-  return args.join(' ')
+  return args
+}
+
+/** 命令预览文本：unifyai + 参数 */
+export function buildCommand(opts: Parameters<typeof buildArgs>[0]): string {
+  return ['unifyai', ...buildArgs(opts)].join(' ')
 }
 
 export const DEFAULT_SOURCE = '~/.opencodex/config.json'

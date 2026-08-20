@@ -30,6 +30,7 @@ import (
 	mcphub "loadout/plugins/mcp-hub"
 	"loadout/plugins/skills"
 	"loadout/plugins/types"
+	unifyai "loadout/plugins/unifyai"
 )
 
 // sessionCookieName 管理后台会话 Cookie 名（与 core/auth.SessionCookieName 保持一致）。
@@ -43,6 +44,7 @@ type Service struct {
 	keys           *gatewaykeys.Manager
 	skill          *skills.Service
 	hub            *mcphub.Service // MCP 聚合网关（配置变更后失效其索引缓存）
+	unify          *unifyai.Service
 	routing        *db.Repository
 	health         contracts.ModelHealth
 	routeLog       contracts.RouteLog
@@ -52,11 +54,11 @@ type Service struct {
 }
 
 // NewService 组装管理后台服务。lg 为 nil 时回落到 slog.Default()；hub 可为 nil（测试）。
-func NewService(st *store.Store, lg *slog.Logger, auth *adminauth.Service, keys *gatewaykeys.Manager, skill *skills.Service, hub *mcphub.Service) *Service {
+func NewService(st *store.Store, lg *slog.Logger, auth *adminauth.Service, keys *gatewaykeys.Manager, skill *skills.Service, hub *mcphub.Service, unify *unifyai.Service) *Service {
 	if lg == nil {
 		lg = slog.Default()
 	}
-	return &Service{st: st, lg: lg, auth: auth, keys: keys, skill: skill, hub: hub}
+	return &Service{st: st, lg: lg, auth: auth, keys: keys, skill: skill, hub: hub, unify: unify}
 }
 
 // SetPluginCount 注入已装配插件总数（由 apps/server 装配完成后调用）。
@@ -156,6 +158,11 @@ func (s *Service) Routes() []plugin.RouteSpec {
 		{Method: http.MethodPost, Pattern: "POST /api/presets", Auth: plugin.AuthSession, Handler: s.session(s.handlePresetCreate)},
 		{Method: http.MethodDelete, Pattern: "DELETE /api/presets", Auth: plugin.AuthSession, Handler: s.session(s.handlePresetDelete)},
 		{Method: http.MethodPost, Pattern: "POST /api/presets/apply", Auth: plugin.AuthSession, Handler: s.session(s.handlePresetApply)},
+
+		// UnifyAI 配置同步
+		{Method: http.MethodGet, Pattern: "GET /api/unifyai/platforms", Auth: plugin.AuthSession, Handler: s.session(s.handleUnifyaiPlatforms)},
+		{Method: http.MethodPost, Pattern: "POST /api/unifyai/run", Auth: plugin.AuthSession, Handler: s.session(s.handleUnifyaiRun)},
+		{Method: http.MethodGet, Pattern: "GET /api/unifyai/stream", Auth: plugin.AuthSession, Handler: s.session(s.handleUnifyaiStream)},
 
 		// 聚合模型
 		{Method: http.MethodGet, Pattern: "GET /api/aggregates", Auth: plugin.AuthSession, Handler: s.session(s.handleAggregatesList)},
@@ -1756,6 +1763,94 @@ func (s *Service) handleSkillUpdateStream(w http.ResponseWriter, r *http.Request
 				return // 任务结束，订阅 channel 已关闭
 			}
 			fmt.Fprintf(w, "data: %s\n\n", evJSON(ev))
+			flusher.Flush()
+		case <-heartbeat.C:
+			fmt.Fprintf(w, ": heartbeat\n\n")
+			flusher.Flush()
+		case <-r.Context().Done():
+			return
+		}
+	}
+}
+
+// handleUnifyaiPlatforms 返回 unifyai 平台能力列表（--list-platforms --json）。
+func (s *Service) handleUnifyaiPlatforms(w http.ResponseWriter, r *http.Request) {
+	res, err := s.unify.PlatformInfo()
+	if err != nil {
+		s.writeServerError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+// handleUnifyaiRun 启动 unifyai 任务（单实例），立即返回；日志走
+// GET /api/unifyai/stream 的 SSE 流实时推送。body: {"args": ["--all", "--dry-run"]}。
+func (s *Service) handleUnifyaiRun(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Args []string `json:"args"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	s.unify.SetArgs(req.Args)
+	ch, err := s.unify.Subscribe()
+	if err != nil {
+		s.writeServerError(w, err)
+		return
+	}
+	// 非阻塞消费：如果任务已瞬间完成，拿终态；否则返回已启动。
+	select {
+	case ev := <-ch:
+		if ev.Type == "done" {
+			writeJSON(w, http.StatusOK, map[string]any{"done": true})
+			return
+		}
+		if ev.Type == "error" {
+			writeJSON(w, http.StatusOK, map[string]any{"error": ev.Data})
+			return
+		}
+	default:
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"started": true})
+}
+
+// handleUnifyaiStream SSE：实时推送 unifyai 任务日志流（data: RunEvent JSON）。
+// 支持 ?args=<json> 查询参数（args 数组 JSON 编码），SSE 连接即触发任务启动，
+// 避免 POST/SSE 双调用之间的任务竞态。
+func (s *Service) handleUnifyaiStream(w http.ResponseWriter, r *http.Request) {
+	if raw := r.URL.Query().Get("args"); raw != "" {
+		var args []string
+		if err := json.Unmarshal([]byte(raw), &args); err == nil {
+			s.unify.SetArgs(args)
+		}
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+
+	ch, err := s.unify.Subscribe()
+	if err != nil {
+		fmt.Fprintf(w, "data: %s\n\n", jsonString(`{"type":"error","data":"`+err.Error()+`"}`))
+		flusher.Flush()
+		return
+	}
+
+	heartbeat := time.NewTicker(15 * time.Second)
+	defer heartbeat.Stop()
+	for {
+		select {
+		case ev, ok := <-ch:
+			if !ok {
+				return // 任务结束，订阅 channel 已关闭
+			}
+			b, _ := json.Marshal(ev)
+			fmt.Fprintf(w, "data: %s\n\n", string(b))
 			flusher.Flush()
 		case <-heartbeat.C:
 			fmt.Fprintf(w, ": heartbeat\n\n")

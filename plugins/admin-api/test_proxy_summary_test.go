@@ -26,6 +26,7 @@ import (
 	"loadout/plugins/gateway-keys"
 	routelog "loadout/plugins/route-log"
 	"loadout/plugins/skills"
+	unifyai "loadout/plugins/unifyai"
 
 	_ "modernc.org/sqlite"
 )
@@ -63,7 +64,7 @@ func newRouteLogTestServer(t *testing.T) (*httptest.Server, *sql.DB, string) {
 	t.Cleanup(func() { _ = sqlDB.Close() })
 
 	routeLogSvc := routelog.NewService(sqlDB, slog.Default())
-	svc := NewService(st, slog.Default(), authSvc, keys, skillSvc, nil)
+	svc := NewService(st, slog.Default(), authSvc, keys, skillSvc, nil, unifyai.NewService(slog.Default()))
 	svc.SetRoutingServices(sqlDB, nil, nil, routeLogSvc)
 
 	ts := httptest.NewServer(svc.Handler())

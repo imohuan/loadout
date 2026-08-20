@@ -22,6 +22,7 @@ import (
 	"loadout/plugins/admin-auth"
 	"loadout/plugins/gateway-keys"
 	"loadout/plugins/skills"
+	unifyai "loadout/plugins/unifyai"
 	"loadout/plugins/types"
 )
 
@@ -45,7 +46,7 @@ func newTransferService(t *testing.T) (*Service, *store.Store, string) {
 	keys := gatewaykeys.NewManager(st)
 	repoDir := t.TempDir()
 	skillSvc := skills.NewService(st, slog.Default(), repoDir, t.TempDir())
-	svc := NewService(st, slog.Default(), authSvc, keys, skillSvc, nil)
+	svc := NewService(st, slog.Default(), authSvc, keys, skillSvc, nil, unifyai.NewService(slog.Default()))
 
 	database, err := db.OpenMemory()
 	if err != nil {

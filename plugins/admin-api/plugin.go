@@ -20,6 +20,7 @@ import (
 	"loadout/plugins/gateway-keys"
 	mcphub "loadout/plugins/mcp-hub"
 	"loadout/plugins/skills"
+	unifyai "loadout/plugins/unifyai"
 )
 
 // adminAPI 是 admin-api 插件的实现，编译期由 core 装配。
@@ -35,7 +36,7 @@ func (p *adminAPI) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name:    "admin-api",
 		Version: "0.1.0",
-		Inject:  []string{"store", "db", "logger", "admin-auth", "gateway-keys", "skills", "mcp-hub", "model-health", "route-log"},
+		Inject:  []string{"store", "db", "logger", "admin-auth", "gateway-keys", "skills", "mcp-hub", "model-health", "route-log", "unifyai"},
 		Provide: []string{"admin-api"},
 	}
 }
@@ -67,6 +68,10 @@ func (p *adminAPI) Apply(ctx plugin.Context) error {
 	if err != nil {
 		return err
 	}
+	unify, err := require[*unifyai.Service](ctx, "unifyai")
+	if err != nil {
+		return err
+	}
 	database, err := require[*sql.DB](ctx, "db")
 	if err != nil {
 		return err
@@ -84,7 +89,7 @@ func (p *adminAPI) Apply(ctx plugin.Context) error {
 		return err
 	}
 
-	svc := NewService(st, lg, auth, keys, skill, hub)
+	svc := NewService(st, lg, auth, keys, skill, hub, unify)
 	svc.SetRoutingServices(database, routing, health, routeLog)
 	ctx.Set("admin-api", svc)
 	for _, spec := range svc.Routes() {

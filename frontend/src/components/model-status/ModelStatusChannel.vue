@@ -37,6 +37,12 @@ const emit = defineEmits<{
 const expanded = ref(false)
 const selected = ref(new Set<string>())
 
+// 与标题行 StatusBadge「已关闭」判定口径一致（effective_available === false）：
+// 渠道不可用时，在其状态徽章后显示该渠道下实际不可用的模型数量
+const closedModelCount = computed(
+  () => props.item.models.filter((m) => !m.effective_available).length,
+)
+
 const selectedModels = computed(() => props.item.models.filter((m) => selected.value.has(m.model)))
 const hasSelection = computed(() => selected.value.size > 0)
 const allSelected = computed(
@@ -102,6 +108,7 @@ function busy(action: string) {
         <StatusBadge
           :status="item.health_status"
           :available="item.effective_available"
+          :count="!item.effective_available ? closedModelCount : undefined"
           hide-when-available
         />
         <span class="hidden text-sm text-muted-foreground md:block"

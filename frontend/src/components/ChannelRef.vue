@@ -1,22 +1,23 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { Channel } from '@/lib/types'
-import { formatChannelRef, type ChannelRef } from '@/composables/useChannelRef'
+import { formatChannelRef, type ChannelRefInput } from '@/composables/useChannelRef'
 
 const props = withDefaults(
   defineProps<{
-    ref: ChannelRef | undefined | null
+    target: ChannelRefInput | undefined | null
     channels: Channel[]
-    /** 渠道名前是否加 `@`（默认 true） */
+    /** 渠道名前是否加 `@` 前缀（默认 true，格式统一为 `@ 渠道名` / `@ 渠道名(Key1)`） */
     atPrefix?: boolean
-    /** 自定义类名 */
-    class?: string
   }>(),
   { atPrefix: true },
 )
-const text = computed(() => formatChannelRef(props.channels, props.ref))
+const text = computed(() => formatChannelRef(props.channels, props.target))
 </script>
 
 <template>
-  <span v-if="text" :class="props.class">{{ atPrefix ? '@ ' + text : text }}</span>
+  <span v-if="text" class="inline-flex items-center gap-0.5">
+    <span v-if="atPrefix" class="shrink-0">@</span
+    ><span class="whitespace-nowrap">{{ text }}</span>
+  </span>
 </template>

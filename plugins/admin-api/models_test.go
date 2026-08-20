@@ -16,6 +16,7 @@ import (
 	"loadout/plugins/admin-auth"
 	"loadout/plugins/gateway-keys"
 	"loadout/plugins/skills"
+	unifyai "loadout/plugins/unifyai"
 	"loadout/plugins/types"
 )
 
@@ -53,7 +54,7 @@ func newDBTestServer(t *testing.T) (*httptest.Server, *store.Store, string) {
 
 	keys := gatewaykeys.NewManager(st)
 	skillSvc := skills.NewService(st, slog.Default(), t.TempDir(), t.TempDir())
-	svc := NewService(st, slog.Default(), authSvc, keys, skillSvc, nil)
+	svc := NewService(st, slog.Default(), authSvc, keys, skillSvc, nil, unifyai.NewService(slog.Default()))
 	svc.SetRoutingServices(database, routing, nil, nil)
 
 	ts := httptest.NewServer(svc.Handler())

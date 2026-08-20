@@ -17,6 +17,7 @@ import (
 	routelog "loadout/plugins/route-log"
 	sensitivefilter "loadout/plugins/sensitive-filter"
 	skills "loadout/plugins/skills"
+	unifyai "loadout/plugins/unifyai"
 	vision "loadout/plugins/vision"
 )
 
@@ -26,6 +27,7 @@ func All() []plugin.Plugin {
 		gatewaykeys.New(),
 		adminauth.New(),
 		skills.New(),
+		unifyai.New(),
 		modelgateway.New(),
 		modelhealth.New(),
 		routelog.New(),

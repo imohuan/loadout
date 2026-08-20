@@ -21,6 +21,7 @@ import (
 	mcphub "loadout/plugins/mcp-hub"
 	routelog "loadout/plugins/route-log"
 	"loadout/plugins/skills"
+	unifyai "loadout/plugins/unifyai"
 
 	_ "modernc.org/sqlite"
 )
@@ -79,7 +80,7 @@ func newStatsTestServer(t *testing.T) (*httptest.Server, *mcphub.Service, *sql.D
 
 	hub := mcphub.NewService(st, slog.Default(), sqlDB)
 	routeLogSvc := routelog.NewService(sqlDB, slog.Default())
-	svc := NewService(st, slog.Default(), authSvc, keys, skillSvc, hub)
+	svc := NewService(st, slog.Default(), authSvc, keys, skillSvc, hub, unifyai.NewService(slog.Default()))
 	svc.SetRoutingServices(sqlDB, nil, nil, routeLogSvc)
 
 	ts := httptest.NewServer(svc.Handler())

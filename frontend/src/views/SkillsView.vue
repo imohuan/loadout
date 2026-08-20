@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onUnmounted, reactive, ref, watch } from 'vue'
+import { computed, reactive, ref } from 'vue'
 import {
   RiAddLine,
   RiDeleteBinLine,
@@ -17,6 +17,7 @@ import { useConfirm } from '@/composables/useConfirm'
 import PageHeader from '@/components/PageHeader.vue'
 import LoadingBlock from '@/components/LoadingBlock.vue'
 import EmptyState from '@/components/EmptyState.vue'
+import StreamLogPanel, { type StreamStatus } from '@/components/StreamLogPanel.vue'
 const api = useManagementApi()
 const {
   data: skills,
@@ -67,158 +68,18 @@ const anyRefreshing = computed(
 const syncing = ref(false)
 const npxCmd = ref('')
 
-// ===== 更新日志（SSE 实时进度）=====
-type UpdateStatus = 'idle' | 'running' | 'done' | 'error'
-const logLines = ref<string[]>([])
-const updateStatus = ref<UpdateStatus>('idle')
-const logBox = ref<HTMLElement>()
-let updateStream: EventSource | null = null
+// ===== 更新日志（SSE 实时进度，通用组件）=====
+const updateStatus = ref<StreamStatus>('idle')
+const updateTrigger = ref(0)
 
-const updateStatusLabel = computed(() => {
-  switch (updateStatus.value) {
-    case 'running':
-      return '更新中…'
-    case 'done':
-      return '已完成'
-    case 'error':
-      return '失败'
-    default:
-      return '未开始'
-  }
-})
-
-function stopUpdateStream() {
-  updateStream?.close()
-  updateStream = null
+function onUpdateDone() {
+  void refreshSkills()
+  void refreshStatus()
 }
-
-function openUpdateStream() {
-  stopUpdateStream()
-  logLines.value = []
-  updateStatus.value = 'running'
-  activeTab.value = 'logs'
-  const es = new EventSource('/api/skills/update-stream')
-  updateStream = es
-  // 统一用 onmessage + JSON.type 分桶，不依赖 SSE event: 行（更稳健，
-  // 避免 vite 代理/网络层对自定义事件名的兼容差异）。
-  es.onmessage = (e: MessageEvent) => {
-    let ev: { type: string; line?: string; data?: string }
-    try {
-      ev = JSON.parse(e.data as string)
-    } catch {
-      ev = { type: 'log', line: e.data as string }
-    }
-    if (ev.type === 'log') {
-      logLines.value.push(ev.line || '')
-    } else if (ev.type === 'done') {
-      updateStatus.value = 'done'
-      stopUpdateStream()
-      void refreshSkills()
-      void refreshStatus()
-    } else if (ev.type === 'error') {
-      updateStatus.value = 'error'
-      stopUpdateStream()
-      void refreshSkills()
-      void refreshStatus()
-    }
-  }
-  es.onerror = () => {
-    // 任务结束或连接异常：仅当仍在 running 时视为失败。
-    if (updateStatus.value === 'running') {
-      updateStatus.value = 'error'
-    }
-    stopUpdateStream()
-  }
+function onUpdateError() {
+  void refreshSkills()
+  void refreshStatus()
 }
-
-// 日志自动滚动到底部。
-watch(
-  () => logLines.value.length,
-  async () => {
-    await nextTick()
-    if (logBox.value) logBox.value.scrollTop = logBox.value.scrollHeight
-  },
-)
-
-// 组件卸载时关闭 SSE 连接。
-onUnmounted(stopUpdateStream)
-
-// ===== ANSI 颜色码 → HTML（支持 16 色 + 256 色 + 重置/加粗）=====
-const FG16: Record<number, string> = {
-  30: '#000',
-  31: '#c00',
-  32: '#0a0',
-  33: '#aa0',
-  34: '#00c',
-  35: '#c0c',
-  36: '#0aa',
-  37: '#bbb',
-  90: '#555',
-  91: '#f55',
-  92: '#5f5',
-  93: '#ff5',
-  94: '#55f',
-  95: '#f5f',
-  96: '#5ff',
-  97: '#fff',
-}
-function ansi256(n: number): string {
-  if (n < 16) {
-    return FG16[n < 8 ? 30 + n : 90 + (n - 8)] || '#fff'
-  }
-  if (n >= 232) {
-    const g = (n - 232) * 10 + 8
-    return `rgb(${g},${g},${g})`
-  }
-  const c = n - 16
-  const r = Math.floor(c / 36)
-  const g = Math.floor((c % 36) / 6)
-  const b = c % 6
-  const v = (lv: number) => (lv === 0 ? 0 : 55 * lv + 40)
-  return `rgb(${v(r)},${v(g)},${v(b)})`
-}
-function ansiToHtml(s: string): string {
-  // 1) 去掉 OSC 序列（标题/颜色等，...\u0007 结尾）。
-  let out = s.replace(/\u001b\][\s\S]*?(?:\u0007|\u001b\\)/g, '')
-  // 2) 去掉行内 \r（终端用 CR 覆盖行，进度条等场景）。
-  out = out.replace(/\r+/g, '')
-  // 3) HTML escape。
-  out = out.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-  // 4) 统一处理 CSI 序列：SGR (m) → span；其他（光标移动/擦除/私有模式等）→ 剥掉。
-  out = out.replace(/\u001b\[([\d;?]*)([\x40-\x7e])/g, (_, params: string, final: string) => {
-    if (final !== 'm') {
-      return '' // 非 SGR 全部剥掉（光标/清除/私有模式）
-    }
-    const tokens = params
-      .split(';')
-      .filter((c) => c !== '')
-      .map(Number)
-    if (tokens.includes(0)) {
-      return '</span>'
-    }
-    const styles: string[] = []
-    for (let i = 0; i < tokens.length; i++) {
-      const c = tokens[i]
-      if (c === 1) styles.push('font-weight:bold')
-      else if (c === 2) styles.push('font-weight:normal')
-      else if (c === 3) styles.push('font-style:italic')
-      else if (c === 4) styles.push('text-decoration:underline')
-      else if (c === 38 && tokens[i + 1] === 5 && i + 2 < tokens.length) {
-        styles.push(`color:${ansi256(tokens[i + 2])}`)
-        i += 2
-      } else if (c === 48 && tokens[i + 1] === 5 && i + 2 < tokens.length) {
-        styles.push(`background-color:${ansi256(tokens[i + 2])}`)
-        i += 2
-      } else if (FG16[c]) styles.push(`color:${FG16[c]}`)
-    }
-    if (!styles.length) return ''
-    return `<span style="${styles.join(';')}">`
-  })
-  return out
-}
-
-// 组件卸载时关闭 SSE 连接。
-onUnmounted(stopUpdateStream)
 
 // 目标平台选项与标签（generic 映射后端空串 = 通用 .agents）。
 const platformOptions = [
@@ -434,8 +295,9 @@ async function syncSkills() {
 }
 async function checkUpdates() {
   if (updateStatus.value === 'running') return
-  // SSE 连接即触发后端启动更新任务，日志实时推送到「更新日志」Tab。
-  openUpdateStream()
+  // 触发通用日志组件连接 SSE（后端自动启动更新任务），日志实时推送到「更新日志」Tab。
+  activeTab.value = 'logs'
+  updateTrigger.value++
 }
 async function restoreBackup(status: { name: string; dir: string }) {
   const label = platformName(status.name)
@@ -734,39 +596,13 @@ async function restoreAllBackups() {
           </Card>
         </TabsContent>
         <TabsContent value="logs" class="space-y-4">
-          <Card class="h-full rounded-md self-start">
-            <CardHeader class="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle class="text-base">更新日志</CardTitle>
-              <Badge
-                :variant="
-                  updateStatus === 'done'
-                    ? 'default'
-                    : updateStatus === 'error'
-                      ? 'destructive'
-                      : updateStatus === 'running'
-                        ? 'secondary'
-                        : 'outline'
-                "
-                >{{ updateStatusLabel }}</Badge
-              >
-            </CardHeader>
-            <CardContent class="p-0">
-              <div
-                ref="logBox"
-                class="min-h-[320px] space-y-1 overflow-y-auto bg-muted/50 p-3 font-mono text-xs"
-              >
-                <div
-                  v-for="(line, i) in logLines"
-                  :key="i"
-                  class="whitespace-pre-wrap break-all text-foreground"
-                  v-html="ansiToHtml(line)"
-                />
-                <div v-if="!logLines.length" class="text-muted-foreground">
-                  暂无日志。点击右上角「检查并更新」开始，命令输出将实时显示在这里。
-                </div>
-              </div>
-            </CardContent>
-          </Card>
+          <StreamLogPanel
+            :stream-url="'/api/skills/update-stream'"
+            :trigger="updateTrigger"
+            v-model:status="updateStatus"
+            @done="onUpdateDone"
+            @error="onUpdateError"
+          />
         </TabsContent>
       </Tabs>
     </TooltipProvider>

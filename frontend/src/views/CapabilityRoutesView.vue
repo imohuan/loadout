@@ -48,14 +48,11 @@ function key(route: CapabilityRoute) {
   )
 }
 
-// 渠道展示：`*` = 通用（全匹配）；空 = 全渠道；否则渠道名列表。
+// 渠道展示：空或含 `*`（老数据全匹配）= 全渠道；否则渠道名列表。
 function channelScopeLabel(route: CapabilityRoute) {
   const ids = route.channel_ids || []
-  if (!ids.length) return '全渠道'
-  if (ids.includes('*')) return '通用（全匹配）'
-  return ids
-    .map((id) => channels.value?.find((c) => c.id === id)?.name || id)
-    .join('、')
+  if (!ids.length || ids.includes('*')) return '全渠道'
+  return ids.map((id) => channels.value?.find((c) => c.id === id)?.name || id).join('、')
 }
 function routeTitle(route: CapabilityRoute) {
   return `${route.models.join(',')}（${channelScopeLabel(route)}）× ${route.capability}`
@@ -78,25 +75,28 @@ async function save(value: CapabilityRoute) {
     toast.error(`路由「${routeTitle(value)}」已存在`)
     return
   }
-  await run('save', async () => {
-    const next = [
-      ...(routes.value || []).filter((item) => key(item) !== editingKey),
-      value,
-    ]
-    await routeService.replaceAll(next)
-    editing.value = undefined
-    editorOpen.value = false
-    await refreshRoutes()
-  }, '能力路由已保存')
+  await run(
+    'save',
+    async () => {
+      const next = [...(routes.value || []).filter((item) => key(item) !== editingKey), value]
+      await routeService.replaceAll(next)
+      editing.value = undefined
+      editorOpen.value = false
+      await refreshRoutes()
+    },
+    '能力路由已保存',
+  )
 }
 async function remove(value: CapabilityRoute) {
   if (!(await confirmDialog(`删除路由「${routeTitle(value)}」？`))) return
-  await run(`route:${key(value)}:remove`, async () => {
-    await routeService.replaceAll(
-      (routes.value || []).filter((item) => key(item) !== key(value)),
-    )
-    await refreshRoutes()
-  }, '能力路由已删除')
+  await run(
+    `route:${key(value)}:remove`,
+    async () => {
+      await routeService.replaceAll((routes.value || []).filter((item) => key(item) !== key(value)))
+      await refreshRoutes()
+    },
+    '能力路由已删除',
+  )
 }
 </script>
 

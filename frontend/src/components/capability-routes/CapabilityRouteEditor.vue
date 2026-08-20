@@ -3,6 +3,14 @@ import { computed, reactive, ref, watch } from 'vue'
 import { RiCloseLine, RiSearchLine } from '@remixicon/vue'
 import ModelChannelList from '@/components/ModelChannelList.vue'
 import SensitiveWordList from '@/components/capability-routes/SensitiveWordList.vue'
+import ChannelGroupPicker, { type ChannelSelection } from '@/components/ChannelGroupPicker.vue'
+import {
+  formatChannelGroupLabel,
+  formatChannelRef,
+  groupSegmentsFor,
+  type ChannelGroupSegment,
+} from '@/composables/useChannelRef'
+import { normalizeBaseURL } from '@/composables/useChannels'
 import type { CapabilityRoute, Channel, ModelChannelItem, SensitiveReplacement } from '@/lib/types'
 
 const props = defineProps<{
@@ -13,27 +21,29 @@ const props = defineProps<{
 const emit = defineEmits<{ save: [value: CapabilityRoute]; cancel: [] }>()
 const open = defineModel<boolean>('open', { required: true })
 
-// 通用全匹配渠道：路由对所有渠道生效（与模型 `*` 通配同语义）。
-const ALL_CHANNELS = '*'
-
 // 能力常量与文案。
 const CAP_VISION = 'vision'
 const CAP_SENSITIVE = 'sensitive_filter'
 
 const form = reactive<{
   models: string[]
-  channel_ids: string[]
   capability: string
   route: string
   viaOptions: ModelChannelItem[]
   replacements: SensitiveReplacement[]
 }>({
   models: [],
-  channel_ids: [],
   capability: CAP_VISION,
   route: 'proxy',
   viaOptions: [{ model: '', channel_id: '', channel_ids: [] }],
   replacements: [{ from: '', to: '', regex: false }],
+})
+
+// 目标渠道选择态（由 ChannelGroupPicker 直接 v-model；空 = 全渠道生效）。
+const channelSel = reactive<ChannelSelection>({
+  channel_id: '',
+  channel_ids: [],
+  channel_base_url: '',
 })
 
 // 全部可用模型：所有渠道模型目录去重排序（目标模型与候选下拉共用）。
@@ -44,16 +54,12 @@ const allModels = computed(() => {
   }
   return [...set].sort()
 })
-function channelName(id: string) {
-  return props.channels.find((c) => c.id === id)?.name || id
-}
 
 watch(
   () => props.route,
   (route) => {
     Object.assign(form, {
       models: route?.models ? [...route.models] : [],
-      channel_ids: route?.channel_ids?.length ? [...route.channel_ids] : [],
       capability: route?.capability || CAP_VISION,
       route: route?.route || 'proxy',
       viaOptions: route?.via_options?.length
@@ -67,6 +73,13 @@ watch(
       replacements: route?.replacements?.length
         ? route.replacements.map((r) => ({ from: r.from || '', to: r.to || '', regex: !!r.regex }))
         : [{ from: '', to: '', regex: false }],
+    })
+    // 老数据 `*`（通用全匹配）归一化为空 = 全渠道生效，语义一致。
+    const raw = route?.channel_ids || []
+    Object.assign(channelSel, {
+      channel_id: '',
+      channel_ids: raw.includes('*') ? [] : [...raw],
+      channel_base_url: '',
     })
   },
   { immediate: true },
@@ -83,32 +96,39 @@ function onCapabilityChange(value: string) {
   }
 }
 
-// ===== 目标渠道（多选；`*` = 通用全匹配，与具体渠道互斥；空 = 全渠道，兼容旧数据）=====
+// ===== 目标渠道（ChannelGroupPicker 多选；空 = 全渠道生效）=====
 const channelOpen = ref(false)
-const isAllChannels = computed(() => form.channel_ids.includes(ALL_CHANNELS))
-function toggleChannel(id: string) {
-  if (id === ALL_CHANNELS) {
-    // 通用全匹配独占：选中则清空具体渠道，再次点击回到空（仍为全渠道）。
-    form.channel_ids = isAllChannels.value ? [] : [ALL_CHANNELS]
-    return
+// 已选 Key id（渠道级 = 组内所有 Key；Key 多选 = channel_ids）。
+const selectedKeyIds = computed(() => {
+  if (channelSel.channel_base_url) {
+    return props.channels
+      .filter(
+        (c) => normalizeBaseURL(c.base_url) === normalizeBaseURL(channelSel.channel_base_url!),
+      )
+      .map((c) => c.id)
   }
-  // 选具体渠道时移除 `*`（从全匹配切到限定渠道）。
-  const next = form.channel_ids.filter((c) => c !== ALL_CHANNELS)
-  const i = next.indexOf(id)
-  if (i >= 0) next.splice(i, 1)
-  else next.push(id)
-  form.channel_ids = next
-}
-const channelTriggerLabel = computed(() => {
-  if (isAllChannels.value || !form.channel_ids.length) return '通用（全匹配）'
-  const names = form.channel_ids.map((id) => channelName(id)).join('、')
-  return `已选 ${form.channel_ids.length} 个渠道：${names}`
+  return channelSel.channel_ids || []
 })
-// 目标模型候选：按所选渠道过滤（通用/空 = 全渠道模型并集）。
+const channelTriggerLabel = computed(
+  () => formatChannelRef(props.channels, channelSel, true) || '通用（全匹配）',
+)
+// 已选渠道分组（跨渠道时按 base_url 聚合成多段，badge 按段渲染）。
+const selectedGroups = computed<ChannelGroupSegment[]>(() =>
+  groupSegmentsFor(props.channels, selectedKeyIds.value),
+)
+// 移除某个 base_url 整组（在 Key 多选模式下）。
+function removeChannelGroup(baseUrl: string) {
+  const idsInGroup = new Set(
+    props.channels.filter((c) => normalizeBaseURL(c.base_url) === baseUrl).map((c) => c.id),
+  )
+  channelSel.channel_ids = (channelSel.channel_ids || []).filter((id) => !idsInGroup.has(id))
+}
+// 目标模型候选：按所选渠道过滤（空 = 全渠道模型并集）。
 const candidateModels = computed(() => {
-  if (isAllChannels.value || !form.channel_ids.length) return allModels.value
+  const ids = selectedKeyIds.value
+  if (!ids.length) return allModels.value
   const set = new Set<string>()
-  for (const id of form.channel_ids) {
+  for (const id of ids) {
     const ch = props.channels.find((c) => c.id === id)
     for (const model of ch?.models || []) set.add(model)
   }
@@ -163,7 +183,8 @@ const routeOptions = computed(() =>
 const routeHint = computed(() => {
   if (form.capability === CAP_SENSITIVE) {
     return {
-      proxy: '请求体按替换规则整体过滤：敏感词被替换后再转发给目标模型；整体替换若破坏 JSON，自动降级为只替换 messages 文本。',
+      proxy:
+        '请求体按替换规则整体过滤：敏感词被替换后再转发给目标模型；整体替换若破坏 JSON，自动降级为只替换 messages 文本。',
       native: '请求体原样透传，不做敏感词过滤（适合通配规则下的精确豁免）。',
       error: '请求体命中任一敏感词规则直接拒绝，不转发上游（依赖下方规则列表）。',
     }[form.route]
@@ -205,8 +226,8 @@ function submit() {
           .map((r) => ({ from: r.from.trim(), to: r.to || '', regex: !!r.regex }))
           .filter((r) => r.from)
       : []
-  // channel_ids 规范化：含 `*` 时独占（通用全匹配），其余去重。
-  const channel_ids = isAllChannels.value ? [ALL_CHANNELS] : [...new Set(form.channel_ids)]
+  // channel_ids：渠道级已展开为组内 Key；空 = 全渠道生效（与老数据 `*` 语义一致）。
+  const channel_ids = [...selectedKeyIds.value]
   emit('save', {
     models: [...form.models],
     channel_ids,
@@ -237,52 +258,38 @@ function submit() {
                 <RiSearchLine class="size-4 shrink-0 opacity-50" />
               </Button>
             </PopoverTrigger>
-            <PopoverContent class="w-[var(--reka-popper-anchor-width)] p-2" align="start">
-              <div class="space-y-2">
-                <div
-                  class="flex max-h-56 flex-wrap gap-1.5 overflow-y-auto rounded-md border border-border p-2"
-                >
-                  <Button
-                    type="button"
-                    size="sm"
-                    :variant="isAllChannels ? 'default' : 'outline'"
-                    @click="toggleChannel(ALL_CHANNELS)"
-                    >通用（全匹配）</Button
-                  >
-                  <Button
-                    v-for="channel in channels"
-                    :key="channel.id"
-                    type="button"
-                    size="sm"
-                    :variant="
-                      !isAllChannels && form.channel_ids.includes(channel.id)
-                        ? 'default'
-                        : 'outline'
-                    "
-                    @click="toggleChannel(channel.id)"
-                    >{{ channel.name }}</Button
-                  >
-                </div>
-                <p class="text-xs text-muted-foreground">
-                  通用（全匹配）=
-                  路由对所有渠道生效；也可多选/单选具体渠道，仅这些渠道上的目标模型命中。
-                </p>
-              </div>
+            <PopoverContent
+              class="max-h-80 w-[var(--reka-popper-anchor-width)] overflow-y-auto p-3"
+              align="start"
+            >
+              <ChannelGroupPicker
+                v-model="channelSel"
+                :channels="channels"
+                :allow-auto="false"
+                :single-channel-group="false"
+                layout="horizontal"
+              />
+              <p class="mt-2 text-xs text-muted-foreground">
+                不选 = 路由对所有渠道生效；可单选/多选渠道或具体 Key，支持跨渠道组合。
+              </p>
             </PopoverContent>
           </Popover>
-          <div v-if="form.channel_ids.length" class="flex flex-wrap gap-1.5">
+          <div
+            v-if="!channelSel.channel_base_url && selectedGroups.length"
+            class="flex flex-wrap gap-1.5"
+          >
             <Badge
-              v-for="id in form.channel_ids"
-              :key="id"
+              v-for="g in selectedGroups"
+              :key="g.baseUrl"
               variant="secondary"
               class="gap-1 py-0 pr-1"
             >
-              {{ id === ALL_CHANNELS ? '通用（全匹配）' : channelName(id) }}
+              {{ formatChannelGroupLabel(g, true) }}
               <button
                 type="button"
                 class="rounded-full p-0.5 hover:bg-muted hover:text-destructive"
                 aria-label="移除"
-                @click="toggleChannel(id)"
+                @click="removeChannelGroup(g.baseUrl)"
               >
                 <RiCloseLine size="12" />
               </button>
@@ -358,54 +365,51 @@ function submit() {
           </p>
         </div>
         <div class="grid gap-4 sm:grid-cols-2">
-        <div class="space-y-2">
-          <Label>能力</Label>
-          <Select :model-value="form.capability" @update:model-value="onCapabilityChange">
-            <SelectTrigger><SelectValue placeholder="选择能力" /></SelectTrigger>
-            <SelectContent position="popper" side="bottom" align="start" :side-offset="2">
-              <SelectGroup>
-                <SelectItem
-                  v-for="option in capabilityOptions"
-                  :key="option.value"
-                  :value="option.value"
-                >
-                  {{ option.label }}
-                </SelectItem>
-              </SelectGroup>
-            </SelectContent>
-          </Select>
+          <div class="space-y-2">
+            <Label>能力</Label>
+            <Select :model-value="form.capability" @update:model-value="onCapabilityChange">
+              <SelectTrigger><SelectValue placeholder="选择能力" /></SelectTrigger>
+              <SelectContent position="popper" side="bottom" align="start" :side-offset="2">
+                <SelectGroup>
+                  <SelectItem
+                    v-for="option in capabilityOptions"
+                    :key="option.value"
+                    :value="option.value"
+                  >
+                    {{ option.label }}
+                  </SelectItem>
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+          </div>
+          <div class="space-y-2">
+            <Label>路由方式</Label>
+            <Select v-model="form.route">
+              <SelectTrigger><SelectValue placeholder="选择路由方式" /></SelectTrigger>
+              <SelectContent position="popper" side="bottom" align="start" :side-offset="2">
+                <SelectGroup>
+                  <SelectItem
+                    v-for="option in routeOptions"
+                    :key="option.value"
+                    :value="option.value"
+                  >
+                    {{ option.label }}
+                  </SelectItem>
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+          </div>
         </div>
-        <div class="space-y-2">
-          <Label>路由方式</Label>
-          <Select v-model="form.route">
-            <SelectTrigger><SelectValue placeholder="选择路由方式" /></SelectTrigger>
-            <SelectContent position="popper" side="bottom" align="start" :side-offset="2">
-              <SelectGroup>
-                <SelectItem
-                  v-for="option in routeOptions"
-                  :key="option.value"
-                  :value="option.value"
-                >
-                  {{ option.label }}
-                </SelectItem>
-              </SelectGroup>
-            </SelectContent>
-          </Select>
+        <div v-if="form.capability === CAP_SENSITIVE && form.route !== 'native'" class="space-y-2">
+          <Label>敏感词过滤列表（按从上到下顺序替换 / 命中判断）</Label>
+          <SensitiveWordList v-model="form.replacements" add-label="添加规则" />
         </div>
-      </div>
-      <div
-        v-if="form.capability === CAP_SENSITIVE && form.route !== 'native'"
-        class="space-y-2"
-      >
-        <Label>敏感词过滤列表（按从上到下顺序替换 / 命中判断）</Label>
-        <SensitiveWordList v-model="form.replacements" add-label="添加规则" />
-      </div>
-      <div v-else-if="form.route === 'proxy'" class="space-y-2">
-        <Label>视觉候选（从上到下依次请求，失败换下一个）</Label>
-        <ModelChannelList v-model="form.viaOptions" :channels="channels" add-label="添加候选" />
-      </div>
-      <DialogFooter class="sm:justify-between">
-        <p class="text-xs text-muted-foreground">{{ routeHint }}</p>
+        <div v-else-if="form.route === 'proxy'" class="space-y-2">
+          <Label>视觉候选（从上到下依次请求，失败换下一个）</Label>
+          <ModelChannelList v-model="form.viaOptions" :channels="channels" add-label="添加候选" />
+        </div>
+        <DialogFooter class="sm:justify-between">
+          <p class="text-xs text-muted-foreground">{{ routeHint }}</p>
           <div class="flex gap-2">
             <Button type="submit" :disabled="pending">{{ pending ? '正在保存' : '保存' }}</Button>
             <Button type="button" variant="outline" :disabled="pending" @click="open = false"

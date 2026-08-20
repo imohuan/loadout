@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { RiDeleteBinLine, RiEditLine, RiFileCopyLine, RiLoader4Line } from '@remixicon/vue'
-import type { Aggregate, AggregateTarget, Channel } from '@/lib/types'
-import { formatChannelRef } from '@/composables/useChannelRef'
+import type { Aggregate, Channel } from '@/lib/types'
+import ChannelRef from '@/components/ChannelRef.vue'
 import EmptyState from '@/components/EmptyState.vue'
 
 const props = defineProps<{
@@ -14,8 +14,6 @@ const emit = defineEmits<{
   remove: [aggregate: Aggregate]
   duplicate: [aggregate: Aggregate]
 }>()
-const resolveTargetDisplay = (channels: Channel[], target: AggregateTarget) =>
-  formatChannelRef(channels, target)
 // 与 AggregatesView.remove() 的 key 规则一致：aggregate:{name}:remove
 function busy(aggregate: Aggregate, action: string) {
   return props.isPending ? props.isPending(`aggregate:${aggregate.name}:${action}`) : false
@@ -48,8 +46,12 @@ function busy(aggregate: Aggregate, action: string) {
                       :key="`${target.model}-${target.channel_base_url || target.channel_ids?.join(',') || target.channel_id}`"
                     >
                       <span class="mr-2 tabular-nums">{{ index + 1 }}.</span
-                      ><span class="font-mono text-foreground">{{ target.model }}</span> @
-                      {{ resolveTargetDisplay(channels, target) }}
+                      ><span class="font-mono text-foreground">{{ target.model }}</span>
+                      <ChannelRef
+                        :target="target"
+                        :channels="channels"
+                        class="text-muted-foreground"
+                      />
                     </li>
                   </ol></TableCell
                 ><TableCell

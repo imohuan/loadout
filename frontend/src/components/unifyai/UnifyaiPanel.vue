@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { toast } from 'vue-sonner'
 import {
   RiArrowDownSLine,
@@ -17,30 +17,29 @@ import PageHeader from '@/components/PageHeader.vue'
 import PlatformCard from '@/components/unifyai/PlatformCard.vue'
 import ExcludeMatrix from '@/components/unifyai/ExcludeMatrix.vue'
 import CommandPreview from '@/components/unifyai/CommandPreview.vue'
+import StreamLogPanel, { type StreamStatus } from '@/components/StreamLogPanel.vue'
 import {
   DEFAULT_SOURCE,
   INITIAL_MCP_SERVERS,
-  LOG_ICONS,
   PLATFORMS,
+  buildArgs,
   buildCommand,
   fetchMcpServers,
   fetchModelSource,
   updateMetadata,
-  type LogLevel,
   type McpServerInfo,
   type ModelSourceStatus,
   type Platform,
   type PlatformId,
-  type PlatformResult,
-  type SyncLogEntry,
   type SyncMode,
 } from '@/lib/unifyai'
 
-// ---------- ① 同步内容三态 ----------
+// ---------- 同步内容三态 ----------
 const modeTab = ref<SyncMode>('all')
 const mode = computed<SyncMode>(() => modeTab.value)
 
-// ---------- ② 目标平台 ----------
+// ---------- 目标平台（数据来自后端 --list-platforms --json，失败回落内置） ----------
+const platforms = ref<Platform[]>(PLATFORMS)
 const allPlatforms = ref(false)
 const selectedPlatforms = ref<PlatformId[]>(PLATFORMS.map((p) => p.id))
 
@@ -67,7 +66,7 @@ function disableReason(platform: Platform) {
   return ''
 }
 
-// ---------- ③ MCP 过滤 ----------
+// ---------- MCP 过滤 ----------
 const allServers = ref<McpServerInfo[]>(INITIAL_MCP_SERVERS)
 /** 已禁用的服务器名集合（UI 仍展示但参与同步时跳过） */
 const disabledServers = ref<Set<string>>(
@@ -112,7 +111,7 @@ function initMatrix() {
   matrix.value = next
 }
 
-// ---------- ④ 数据源状态 ----------
+// ---------- 数据源状态 ----------
 const modelSource = ref<ModelSourceStatus>({ kind: 'none', url: '', count: 0 })
 const mcpSourcePath = ref('./mcp.json（cwd 优先，回退 ~/.unifyai/mcp.json）')
 
@@ -125,7 +124,7 @@ const verbose = ref(false)
 const globalExcludes = computed(() =>
   enabledServers.value
     .filter((server) =>
-      PLATFORMS.every((platform) => matrix.value[server.name]?.[platform.id] === true),
+      platforms.value.every((platform) => matrix.value[server.name]?.[platform.id] === true),
     )
     .map((server) => server.name),
 )
@@ -141,219 +140,57 @@ const perPlatformExcludes = computed(() => {
   const global = new Set(globalExcludes.value)
   for (const server of enabledServers.value) {
     if (global.has(server.name)) continue
-    for (const platform of PLATFORMS) {
+    for (const platform of platforms.value) {
       if (matrix.value[server.name]?.[platform.id]) result[platform.id].push(server.name)
     }
   }
   return result
 })
 
-const command = computed(() =>
-  buildCommand({
-    mode: mode.value,
-    all: allPlatforms.value,
-    platforms: selectedPlatforms.value,
-    mcpPlatforms: whitelistEnabled.value && whitelist.value.length ? whitelist.value : null,
-    globalExcludes: globalExcludes.value,
-    perPlatformExcludes: perPlatformExcludes.value,
-    dryRun: false,
-    source: sourcePath.value,
-    verbose: verbose.value,
-  }),
-)
+const commandOpts = computed(() => ({
+  mode: mode.value,
+  all: allPlatforms.value,
+  platforms: selectedPlatforms.value,
+  mcpPlatforms: whitelistEnabled.value && whitelist.value.length ? whitelist.value : null,
+  globalExcludes: globalExcludes.value,
+  perPlatformExcludes: perPlatformExcludes.value,
+  dryRun: false,
+  source: sourcePath.value,
+  verbose: verbose.value,
+}))
 
-// ---------- ⑤ 执行状态机（文档 §6.2） ----------
-type Stage = 'idle' | 'running' | 'done'
-const stage = ref<Stage>('idle')
+const command = computed(() => buildCommand(commandOpts.value))
+
+// ---------- 执行（真实 unifyai CLI，经后端 SSE 流式日志） ----------
+const runTrigger = ref(0)
+const runStatus = ref<StreamStatus>('idle')
+const runExitCode = ref<number | null>(null)
 const dryRunMode = ref(false)
-const logs = ref<SyncLogEntry[]>([])
-const results = ref<PlatformResult[]>([])
-const platformRunning = ref<Record<PlatformId, 'pending' | 'running' | 'success' | 'failed' | 'skipped'>>(
-  { opencode: 'pending', codex: 'pending', claudecode: 'pending', reasonix: 'pending', penguin: 'pending' },
-)
-const running = computed(() => stage.value === 'running')
-const logBox = ref<HTMLElement | null>(null)
-let logId = 0
 
-function pushLog(level: LogLevel, message: string, platformId?: PlatformId) {
-  logs.value.push({ id: ++logId, level, message, platformId })
-}
-
-watch(logs, async () => {
-  await nextTick()
-  if (logBox.value) logBox.value.scrollTop = logBox.value.scrollHeight
+/** SSE 端点：args 数组 JSON 编码进查询参数，连接即触发任务 */
+const streamUrl = computed(() => {
+  const args = buildArgs({ ...commandOpts.value, dryRun: dryRunMode.value })
+  return `/api/unifyai/stream?args=${encodeURIComponent(JSON.stringify(args))}`
 })
 
-function delay(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms))
-}
-
-/** 白名单是否放行某平台的 MCP（未启用开关 = 全部放行；启用后空列表 = 全部跳过） */
-function whitelistAllows(platformId: PlatformId) {
-  return !whitelistEnabled.value || whitelist.value.includes(platformId)
-}
-
-/** 目标平台列表（含 --all 展开） */
-const effectiveTargets = computed(() =>
-  allPlatforms.value ? PLATFORMS : PLATFORMS.filter((p) => selectedPlatforms.value.includes(p.id)),
-)
-
-/** 单个平台本次实际要同步的内容（用于日志与汇总） */
-function platformPlan(platform: Platform): { models: boolean; mcps: number } {
-  const models = mode.value !== 'mcp' && platform.modelSync
-  let mcps = 0
-  if (mode.value !== 'models' && platform.mcpSync === true && whitelistAllows(platform.id)) {
-    const global = new Set(globalExcludes.value)
-    const per = new Set(perPlatformExcludes.value[platform.id])
-    mcps = enabledServers.value.filter((s) => !global.has(s.name) && !per.has(s.name)).length
-  }
-  return { models, mcps }
-}
-
-/** 生成完整执行序列日志（对应文档 §8 输出格式） */
-function buildExecutionLogs(dryRun: boolean) {
-  const lines: Array<{ level: LogLevel; message: string; platformId?: PlatformId }> = []
-  lines.push({ level: 'info', message: '🚀 AI Config Sync - 配置同步工具' })
-  lines.push({ level: 'info', message: `📂 加载配置: ${sourcePath.value}` })
-  lines.push({ level: 'success', message: '✓ 加载配置: 3 个 provider' })
-
-  if (mode.value !== 'mcp') {
-    lines.push({
-      level: 'success',
-      message: `✓ 从 OpenCodex 代理服务获取模型列表 (${modelSource.value.url})`,
-    })
-    lines.push({ level: 'success', message: `  ✓ 获取到 ${modelSource.value.count} 个模型` })
-  }
-  if (mode.value !== 'models') {
-    lines.push({
-      level: 'success',
-      message: `✓ MCP 配置 (来自 cwd): ${enabledServers.value.length}/${allServers.value.length} 个服务器启用`,
-    })
-  }
-
-  // 白名单提示
-  for (const platform of effectiveTargets.value) {
-    if (
-      mode.value !== 'models' &&
-      platform.mcpSync === true &&
-      !whitelistAllows(platform.id)
-    ) {
-      lines.push({
-        level: 'skip',
-        message: `⊘ ${platform.name}: MCP 同步已跳过（不在 --mcp-platforms 白名单）`,
-        platformId: platform.id,
-      })
-    }
-  }
-  // 排除提示
-  const excludedNames = [...globalExcludes.value]
-  for (const names of Object.values(perPlatformExcludes.value)) excludedNames.push(...names)
-  if (mode.value !== 'models' && excludedNames.length) {
-    lines.push({ level: 'skip', message: `⊘ 已排除 MCP: ${[...new Set(excludedNames)].join(', ')}` })
-  }
-
-  // 逐平台执行
-  for (const platform of effectiveTargets.value) {
-    const plan = platformPlan(platform)
-    const suffix = dryRun ? '（dry-run 预览）' : ''
-    lines.push({
-      level: 'sync',
-      message: `📦 同步到 ${platform.name}...${suffix}`,
-      platformId: platform.id,
-    })
-    if (!dryRun) {
-      lines.push({
-        level: 'backup',
-        message: `  💾 备份: ${platform.format.includes('YAML') ? 'system_config.yaml' : platform.configPath.split('/').pop()}.bak-${Date.now()}`,
-        platformId: platform.id,
-      })
-    }
-    if (mode.value !== 'mcp') {
-      if (platform.modelSync) {
-        lines.push({
-          level: 'success',
-          message: dryRun
-            ? `  → 将同步 ${modelSource.value.count} 个模型`
-            : `  → 同步模型配置 (${modelSource.value.count} 个)`,
-          platformId: platform.id,
-        })
-      } else {
-        lines.push({
-          level: 'skip',
-          message: `  ⊘ 该平台不支持模型同步，跳过`,
-          platformId: platform.id,
-        })
-      }
-    }
-    if (mode.value !== 'models') {
-      if (platform.mcpSync === 'unimplemented') {
-        lines.push({
-          level: 'skip',
-          message: `  ⊘ MCP 配置格式待调查，暂时跳过`,
-          platformId: platform.id,
-        })
-      } else if (platform.mcpSync && !whitelistAllows(platform.id)) {
-        lines.push({
-          level: 'skip',
-          message: `  ⊘ MCP 同步已跳过（不在白名单）`,
-          platformId: platform.id,
-        })
-      } else if (platform.mcpSync && plan.mcps > 0) {
-        lines.push({
-          level: 'success',
-          message: dryRun ? `  → 将同步 ${plan.mcps} 个 MCP 服务器` : `  → 同步 MCP 配置 (${plan.mcps} 个)`,
-          platformId: platform.id,
-        })
-      }
-    }
-    lines.push({
-      level: 'success',
-      message: dryRun ? `✓ ${platform.name} 预览通过` : `✓ ${platform.name} 同步成功`,
-      platformId: platform.id,
-    })
-  }
-
-  const successCount = effectiveTargets.value.length
-  lines.push({ level: 'info', message: '==================================================' })
-  lines.push({ level: 'success', message: `✓ 成功: ${successCount} 个平台` })
-  lines.push({ level: 'success', message: '✗ 失败: 0 个平台' })
-  lines.push({ level: 'info', message: '==================================================' })
-  return lines
-}
-
-async function runSimulated(dryRun: boolean) {
-  if (running.value) return
-  stage.value = 'running'
+function execute(dryRun: boolean) {
+  if (runStatus.value === 'running') return
   dryRunMode.value = dryRun
-  logs.value = []
-  results.value = []
-  platformRunning.value = {
-    opencode: 'pending',
-    codex: 'pending',
-    claudecode: 'pending',
-    reasonix: 'pending',
-    penguin: 'pending',
+  runExitCode.value = null
+  runTrigger.value++ // 触发 StreamLogPanel 连接 SSE（后端自动启动任务）
+}
+
+function onRunDone(exitCode: string) {
+  runExitCode.value = Number(exitCode) || 0
+  if (runExitCode.value === 0) {
+    toast.success(dryRunMode.value ? '预览完成（dry-run，未写入文件）' : '同步完成')
+  } else {
+    toast.error(`命令退出码 ${runExitCode.value}，请查看日志`)
   }
-  const lines = buildExecutionLogs(dryRun)
-  for (const line of lines) {
-    await delay(220)
-    pushLog(line.level, line.message, line.platformId)
-    if (line.platformId) platformRunning.value[line.platformId] = 'running'
-  }
-  // 汇总结果（模拟全部成功）
-  results.value = effectiveTargets.value.map((platform) => {
-    const plan = platformPlan(platform)
-    return {
-      platformId: platform.id,
-      status: 'success' as const,
-      models: plan.models ? modelSource.value.count : undefined,
-      mcps: plan.mcps || undefined,
-    }
-  })
-  for (const platform of effectiveTargets.value) {
-    platformRunning.value[platform.id] = 'success'
-  }
-  stage.value = 'done'
+}
+
+function onRunError(message: string) {
+  toast.error(message || '命令执行失败')
 }
 
 // ---------- 执行前确认弹窗（文档 §10.3） ----------
@@ -362,7 +199,7 @@ const confirmWarnings = ref<string[]>([])
 
 function startSync() {
   const warnings: string[] = []
-  const targets = effectiveTargets.value
+  const targets = allPlatforms.value ? platforms.value : platforms.value.filter((p) => selectedPlatforms.value.includes(p.id))
   const hasOpenCode = targets.some((p) => p.id === 'opencode')
   const hasClaude = targets.some((p) => p.id === 'claudecode')
   if (mode.value !== 'mcp' && hasOpenCode)
@@ -374,7 +211,7 @@ function startSync() {
     confirmWarnings.value = warnings
     confirmOpen.value = true
   } else {
-    runSimulated(false)
+    execute(false)
   }
 }
 
@@ -389,7 +226,7 @@ async function handleUpdateMetadata() {
   metadataUpdating.value = true
   try {
     await updateMetadata()
-    await delay(500)
+    await new Promise((resolve) => setTimeout(resolve, 500))
     metadataUpdatedAt.value = new Date().toLocaleTimeString('zh-CN', { hour12: false })
     toast.success('模型元数据缓存已刷新', {
       description: 'OpenRouter 410+ 模型元数据已更新（context / vision / reasoning）',
@@ -399,14 +236,7 @@ async function handleUpdateMetadata() {
   }
 }
 
-// ---------- 日志清空 ----------
-function clearLogs() {
-  logs.value = []
-  results.value = []
-  stage.value = 'idle'
-  dryRunMode.value = false
-}
-
+// ---------- 初始化 ----------
 onMounted(() => {
   initMatrix()
   fetchModelSource().then((source) => (modelSource.value = source))
@@ -415,6 +245,31 @@ onMounted(() => {
     const names = new Set(servers.map((s) => s.name))
     if (names.size) initMatrix()
   })
+  // 从后端拉取平台能力（--list-platforms --json），失败保持内置默认。
+  const colorOf = Object.fromEntries(PLATFORMS.map((p) => [p.id, p.color]))
+  fetch('/api/unifyai/platforms')
+    .then((res) => (res.ok ? res.json() : null))
+    .then((data: { platforms?: Array<Record<string, unknown>> } | null) => {
+      if (!data?.platforms?.length) return
+      const known = new Set<string>(PLATFORMS.map((p) => p.id))
+      platforms.value = data.platforms
+        .filter((p) => known.has(String(p.id)))
+        .map((p) => ({
+          id: String(p.id) as PlatformId,
+          name: String(p.name),
+          color: colorOf[String(p.id)] || '#888888',
+          modelSync: p.modelStatus === 'supported' || p.supportsModels === true,
+          mcpSync:
+            p.mcpStatus === 'supported'
+              ? true
+              : p.mcpStatus === 'not_implemented'
+                ? 'unimplemented'
+                : false,
+          configPath: String(p.configPath),
+          format: String(p.configFormat || '').toUpperCase(),
+        }))
+    })
+    .catch(() => {})
 })
 </script>
 
@@ -460,7 +315,7 @@ onMounted(() => {
       <CardContent>
         <div class="grid grid-cols-2 gap-2 md:grid-cols-3" style="grid-template-columns: repeat(5, minmax(0, 1fr));">
           <PlatformCard
-            v-for="platform in PLATFORMS"
+            v-for="platform in platforms"
             :key="platform.id"
             :platform="platform"
             :selected="allPlatforms || selectedPlatforms.includes(platform.id)"
@@ -503,7 +358,7 @@ onMounted(() => {
           </div>
           <div v-if="whitelistEnabled" class="flex flex-wrap gap-2 rounded-md border p-3">
             <button
-              v-for="platform in PLATFORMS"
+              v-for="platform in platforms"
               :key="platform.id"
               type="button"
               class="inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-sm transition-colors"
@@ -576,96 +431,43 @@ onMounted(() => {
           </div>
         </div>
         <div class="flex flex-wrap justify-end gap-2">
-          <Button variant="outline" :disabled="running" @click="runSimulated(true)">
+          <Button variant="outline" :disabled="runStatus === 'running'" @click="execute(true)">
             <RiPlayLine size="16" />预览（dry-run）
           </Button>
-          <Button :disabled="running" @click="startSync">
-            <RiLoader4Line v-if="running" size="16" class="animate-spin" />
+          <Button :disabled="runStatus === 'running'" @click="startSync">
+            <RiLoader4Line v-if="runStatus === 'running'" size="16" class="animate-spin" />
             <RiPlayLine v-else size="16" />
-            开始同步
+            {{ runStatus === 'running' ? '执行中...' : '开始同步' }}
           </Button>
         </div>
       </CardContent>
     </Card>
 
-    <!-- ⑥ 日志 / 结果 -->
-    <Card v-if="logs.length" class="rounded-md">
-      <CardHeader class="space-y-3">
-        <div class="flex flex-wrap items-center justify-between gap-2">
-          <div class="space-y-0.5">
-            <CardTitle class="text-base">
-              {{ dryRunMode ? '⑥ 预览结果（未写入任何文件）' : '⑥ 执行结果' }}
-            </CardTitle>
-            <CardDescription>实时滚动日志，图标语义：✓ 成功 / ⚠ 警告 / ✗ 失败 / ⊘ 排除跳过。</CardDescription>
-          </div>
-          <div class="flex items-center gap-2">
-            <Badge v-if="dryRunMode" variant="outline">--dry-run</Badge>
-            <Button variant="ghost" size="sm" @click="clearLogs">清空</Button>
-          </div>
-        </div>
-        <div class="flex flex-wrap gap-1.5">
-          <Badge
-            v-for="platform in PLATFORMS"
-            :key="platform.id"
-            :variant="
-              platformRunning[platform.id] === 'success'
-                ? 'default'
-                : platformRunning[platform.id] === 'pending'
-                  ? 'outline'
-                  : 'secondary'
-            "
-            class="gap-1 font-normal"
-          >
-            <RiLoader4Line
-              v-if="platformRunning[platform.id] === 'running'"
-              size="12"
-              class="animate-spin"
-            />
-            <RiCheckLine v-else-if="platformRunning[platform.id] === 'success'" size="12" />
-            <RiCloseLine v-else size="12" />
-            {{ platform.name }}
-          </Badge>
-        </div>
-      </CardHeader>
-      <CardContent class="space-y-4">
-        <div
-          ref="logBox"
-          class="max-h-72 overflow-y-auto rounded-md border bg-muted/40 p-3 font-mono text-xs leading-6"
-        >
-          <div
-            v-for="entry in logs"
-            :key="entry.id"
-            class="flex gap-2 whitespace-pre-wrap break-all"
-            :class="{
-              'text-destructive': entry.level === 'error',
-              'text-amber-600': entry.level === 'warn' || entry.level === 'skip',
-              'text-emerald-600': entry.level === 'success',
-              'text-muted-foreground': entry.level === 'info',
-            }"
-          >
-            <span class="shrink-0 select-none">{{ LOG_ICONS[entry.level] }}</span>
-            <span>{{ entry.message }}</span>
+    <!-- ⑥ 执行日志（真实 unifyai 输出，SSE 流式） -->
+    <StreamLogPanel
+      v-if="runStatus !== 'idle'"
+      :stream-url="streamUrl"
+      :trigger="runTrigger"
+      v-model:status="runStatus"
+      :empty-text="'正在连接执行任务…'"
+      @done="onRunDone"
+      @error="onRunError"
+    />
+    <Card v-if="runStatus === 'done' || runStatus === 'error'" class="rounded-md">
+      <CardContent class="grid gap-3 p-4 sm:grid-cols-3">
+        <div class="rounded-md border p-3" :class="runStatus === 'done' ? 'bg-emerald-500/5' : 'bg-destructive/5'">
+          <div class="text-xs text-muted-foreground">执行结果</div>
+          <div class="mt-1 text-2xl font-semibold" :class="runStatus === 'done' ? 'text-emerald-600' : 'text-destructive'">
+            {{ runStatus === 'done' ? '成功' : '失败' }}
           </div>
         </div>
-        <div v-if="stage === 'done'" class="grid gap-3 sm:grid-cols-3">
-          <div class="rounded-md border bg-emerald-500/5 p-3">
-            <div class="text-xs text-muted-foreground">成功平台</div>
-            <div class="mt-1 text-2xl font-semibold text-emerald-600">
-              {{ results.filter((r) => r.status === 'success').length }}
-            </div>
-          </div>
-          <div class="rounded-md border p-3">
-            <div class="text-xs text-muted-foreground">失败平台</div>
-            <div class="mt-1 text-2xl font-semibold">
-              {{ results.filter((r) => r.status === 'failed').length }}
-            </div>
-          </div>
-          <div class="rounded-md border p-3">
-            <div class="text-xs text-muted-foreground">同步模型 / MCP 服务器</div>
-            <div class="mt-1 text-2xl font-semibold">
-              {{ modelSource.count }} / {{ enabledServers.length }}
-            </div>
-          </div>
+        <div class="rounded-md border p-3">
+          <div class="text-xs text-muted-foreground">退出码</div>
+          <div class="mt-1 text-2xl font-semibold font-mono">{{ runExitCode ?? '-' }}</div>
+        </div>
+        <div class="rounded-md border p-3">
+          <div class="text-xs text-muted-foreground">模式</div>
+          <div class="mt-1 text-2xl font-semibold">{{ dryRunMode ? 'dry-run 预览' : '实际同步' }}</div>
         </div>
       </CardContent>
     </Card>
@@ -688,7 +490,7 @@ onMounted(() => {
           </div>
         </div>
         <DialogFooter>
-          <Button @click="confirmOpen = false; runSimulated(false)">确认，开始同步</Button>
+          <Button @click="confirmOpen = false; execute(false)">确认，开始同步</Button>
           <Button variant="ghost" @click="confirmOpen = false">取消</Button>
         </DialogFooter>
       </DialogContent>
@@ -711,7 +513,7 @@ onMounted(() => {
             </TableRow>
           </TableHeader>
           <TableBody>
-            <TableRow v-for="platform in PLATFORMS" :key="platform.id">
+            <TableRow v-for="platform in platforms" :key="platform.id">
               <TableCell class="font-medium">{{ platform.name }}</TableCell>
               <TableCell>
                 <Badge :variant="platform.modelSync ? 'default' : 'secondary'">
