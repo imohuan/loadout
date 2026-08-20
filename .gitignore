@@ -1,0 +1,55 @@
+# Binaries
+dist
+build
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.tgz
+bin
+
+# Go
+vendor/
+
+# Wails
+wailsjs/
+
+# Frontend (Vue/Vite)
+dist
+node_modules/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Build artifacts
+build/bin/
+*.nsis
+
+# Env
+.env
+.env.local
+
+# Secrets（本地测试用 API key，勿提交）
+/keys
+
+# Test
+coverage.out
+
+# Python
+__pycache__/
+*.pyc
+
+.cursor
+.codegraph
+backend/app/appicon_windows_amd64.syso
+.reasonix
