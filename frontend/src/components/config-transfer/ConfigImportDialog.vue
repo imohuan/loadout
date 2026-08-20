@@ -175,7 +175,7 @@ function onOpenChange(value: boolean) {
 
 <template>
   <Dialog :open="open" @update:open="onOpenChange">
-    <DialogContent class="sm:max-w-2xl!">
+    <DialogContent class="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-2xl!">
       <DialogHeader>
         <DialogTitle>导入配置</DialogTitle>
         <DialogDescription>

@@ -203,7 +203,7 @@ function submit() {
           ><Input id="channel-key" v-model="form.api_key" type="password" autocomplete="off" />
         </div>
         <div
-          class="flex flex-col justify-end gap-3 pb-1 sm:flex-row sm:items-center sm:justify-start"
+          class="flex flex-col justify-start gap-3 pb-1 sm:flex-row sm:items-center sm:justify-start"
         >
           <div class="flex items-center gap-2">
             <Switch id="channel-enabled" v-model="form.manual_enabled" /><Label

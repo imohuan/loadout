@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import {
   RiAddLine,
   RiArrowDownSLine,
@@ -21,6 +21,7 @@ import type { RouteLog } from '@/lib/types'
 import { loadTestRouteLogs, saveTestRouteLog, clearTestRouteLogs } from '@/lib/routeLogCache'
 import PageHeader from '@/components/PageHeader.vue'
 import RouteLogTable from '@/components/route-logs/RouteLogTable.vue'
+import ChannelGroupPicker, { type ChannelSelection } from '@/components/ChannelGroupPicker.vue'
 
 type MessageRole = 'system' | 'user' | 'assistant'
 type TestMessage = { id: number; role: MessageRole; content: string }
@@ -32,12 +33,9 @@ const routeLogs = useRouteLogs()
 const { data: channels, loading: channelsLoading } = useListLoader(channelService.list)
 // 预设下拉按 Base URL 分组：组标题 = 渠道名称（channel_name 兜底首个 Key 名），组内 = 各 Key。
 const channelGroups = computed(() => groupChannelsByBaseURL(channels.value || []))
-// 组标题：渠道名 · Key 数量（用于 SelectLabel 与 popover 分组）。
-function groupLabel(group: ReturnType<typeof groupChannelsByBaseURL>[number]) {
-  const first = group.keys[0]
-  const title = first?.channel_name || first?.name || group.baseUrl
-  return `${title} · ${group.keys.length} 个 Key`
-}
+// 预设下拉的开合状态（用 Popover 而不是 Select——便于自定义 tag 网格布局）。
+const presetOpen = ref(false)
+const config = reactive({ channelId: '', baseUrl: '', apiKey: '', skKeyHash: '', model: '' })
 // 当前选中的展示文本：「渠道名 · Key 名」；自带模式显示「Key 名 · Loadout 自带」。空时由模板给占位提示。
 const presetTriggerLabel = computed(() => {
   const id = config.channelId
@@ -55,13 +53,56 @@ const presetTriggerLabel = computed(() => {
   }
   return ''
 })
-// 预设下拉的开合状态（用 Popover 而不是 Select——便于自定义 tag 网格布局）。
-const presetOpen = ref(false)
-function choosePreset(id: string) {
-  presetOpen.value = false
-  importChannel(id)
-}
-const config = reactive({ channelId: '', baseUrl: '', apiKey: '', skKeyHash: '', model: '' })
+// ChannelGroupPicker 的选择态（统一用 ChannelSelection 字段；当前模型测试只选单个 Key）。
+// channel_id/channel_base_url 模式给渠道级用，这里 channelsOnly=true 不会触发，渠道级字段始终为空。
+// channel_ids 即当前选中的 Key id 列表（单选模式下长度始终 ≤ 1）。
+const presetSelection = reactive<ChannelSelection>({
+  channel_id: '',
+  channel_ids: [],
+  channel_base_url: '',
+  channel_base_urls: [],
+})
+// 通道互相同步的「重入防护」标记：true 表示当前 presetSelection 的变化来自 config 同步，
+// length 监听器不应再次触发 importChannel，避免循环。
+const presetFromConfig = ref(false)
+// 外部 config.channelId 变化（如 importChannel / chooseBuiltinKey）反向同步到 picker。
+watch(
+  () => config.channelId,
+  (id) => {
+    // BUILTIN_CHANNEL 是 SK key 模式，不属于 channels 列表，由上方 SK key 段管理，picker 不参与。
+    if (!id || id === BUILTIN_CHANNEL) return
+    presetFromConfig.value = true
+    presetSelection.channel_id = ''
+    presetSelection.channel_ids = [id]
+    presetSelection.channel_base_url = ''
+    presetSelection.channel_base_urls = []
+  },
+)
+// 监听 picker 选中变化 → 触发 importChannel（外部同步过来的赋值不算）。
+watch(
+  () => presetSelection.channel_ids?.length ?? 0,
+  (len, prev) => {
+    if (presetFromConfig.value) {
+      presetFromConfig.value = false
+      return
+    }
+    // prev>0 且长度变小才回退到「无选中」（例如加载完成清空）；其他场景不主动取消。
+    if (len === 0) {
+      if (prev > 0 && config.channelId && config.channelId !== BUILTIN_CHANNEL) {
+        presetOpen.value = false
+        config.channelId = ''
+        config.skKeyHash = ''
+      }
+      return
+    }
+    const ids = presetSelection.channel_ids || []
+    const next = ids[ids.length - 1]
+    // 与当前 config.channelId 一致则无需重复导入（如初始化回填）。
+    if (next === config.channelId) return
+    presetOpen.value = false
+    importChannel(next)
+  },
+)
 // 「Loadout 自带」预设：channelId 用此哨兵值标记（见 lib/constants.ts，与后端 builtinChannelID 一致）。
 // 自建 SK key 列表（settings 页创建；只含 id/name/prefix/hash，后端不回传明文）。
 const skKeys = ref<{ id: string; name: string; prefix: string; hash: string }[]>([])
@@ -202,7 +243,8 @@ function addMessage() {
   messages.value.push({ id: nextMessageId.value++, role: 'user', content: '' })
 }
 function removeMessage(index: number) {
-  if (messages.value.length > 1) messages.value.splice(index, 1)
+  // 允许列表为空（删除最后一个），空列表状态由模板的 empty 占位提示。
+  messages.value.splice(index, 1)
 }
 function chooseModel(model: string) {
   config.model = model
@@ -545,11 +587,12 @@ onBeforeUnmount(() => {
                     </Button>
                   </PopoverTrigger>
                   <PopoverContent
-                    class="w-[var(--reka-popper-anchor-width)] p-3 max-h-80 overflow-y-auto"
+                    class="p-3 max-h-80 overflow-y-auto"
                     align="start"
-                    :side-offset="2"
+                    :side-offset="6"
                   >
-                    <div class="mb-3">
+                    <!-- Loadout 自带 API：与渠道分开维护（不属于 channel 列表，由独立 SK key 接口管理） -->
+                    <div class="p-2 pb-0">
                       <p class="mb-1.5 text-xs font-medium text-muted-foreground">
                         Loadout 自带 API
                       </p>
@@ -577,35 +620,19 @@ onBeforeUnmount(() => {
                         暂无可用 Key，请先到「设置」创建
                       </p>
                     </div>
-                    <template v-for="group in channelGroups" :key="group.baseUrl">
-                      <div class="mb-3 last:mb-0">
-                        <p class="mb-1.5 text-xs font-medium text-muted-foreground">
-                          {{ groupLabel(group) }}
-                        </p>
-                        <div class="flex flex-wrap gap-1.5">
-                          <button
-                            v-for="key in group.keys"
-                            :key="key.id"
-                            type="button"
-                            class="rounded-md border px-2 py-1 text-xs font-medium transition-colors"
-                            :class="
-                              config.channelId === key.id
-                                ? 'border-primary bg-primary text-primary-foreground'
-                                : 'border-border bg-background hover:bg-muted'
-                            "
-                            @click="choosePreset(key.id)"
-                          >
-                            {{ key.name }}
-                          </button>
-                        </div>
-                      </div>
-                    </template>
-                    <p
-                      v-if="!channelGroups.length"
-                      class="px-2 py-3 text-sm text-muted-foreground"
-                    >
-                      暂无可用渠道
-                    </p>
+                    <!-- 渠道 Key 选择：复用 ChannelGroupPicker，统一视觉与编辑聚合模型 dialog；
+                         channelsOnly=true 禁止点组标题选整组，多选关掉以匹配单 Key 选择。
+                         空数组（含加载失败）由 picker 内部的 emptyLabel 处理。 -->
+                    <ChannelGroupPicker
+                      :model-value="presetSelection"
+                      :channels="channels || []"
+                      :allow-auto="false"
+                      :multi-select="false"
+                      :single-channel-group="true"
+                      :channels-only="true"
+                      layout="vertical"
+                      empty-label="暂无可用渠道"
+                    />
                   </PopoverContent>
                 </Popover>
               </div>
@@ -735,7 +762,6 @@ onBeforeUnmount(() => {
                 size="icon"
                 variant="ghost"
                 aria-label="删除消息"
-                :disabled="messages.length === 1"
                 @click="removeMessage(index)"
               >
                 <RiCloseLine size="16" />

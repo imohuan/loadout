@@ -5,6 +5,8 @@
 //   vertical   = 组标题在上、keys 换行在下（ModelChannelList 原样式）
 //   horizontal = 每个渠道一行：左渠道名、右 keys 横向排开
 // 选择态统一归一为 { channel_id, channel_ids, channel_base_url }，与 ModelChannelItem 字段兼容。
+// channelsOnly：只允许选 Key（禁选渠道级 + 隐藏自动路由）。模型测试页用，
+// 让「预设」下拉与编辑聚合模型 dialog 视觉一致，同时禁用点组标题选整组的语义。
 import { computed } from 'vue'
 import { RiCheckLine, RiKey2Line, RiStackLine } from '@remixicon/vue'
 import type { Channel } from '@/lib/types'
@@ -28,6 +30,9 @@ const props = withDefaults(
     // 单渠道约束：true（默认，ModelChannelList 场景）= 选中 Key 自动切组（跨组清空旧组）；
     //   false（能力路由场景）= 允许跨 base_url 组自由累加 Key。
     singleChannelGroup?: boolean
+    // 仅 Key 选择：true = 禁用渠道级（点组标题）与自动路由，组标题仅作分组标签展示。
+    //   用于模型测试「预设」下拉，确保只选到具体 Key，不点组标题选整组。
+    channelsOnly?: boolean
     autoLabel?: string
     emptyLabel?: string
   }>(),
@@ -36,12 +41,16 @@ const props = withDefaults(
     allowAuto: true,
     multiSelect: true,
     singleChannelGroup: true,
+    channelsOnly: false,
     autoLabel: '自动路由（按模型找渠道）',
     emptyLabel: '暂无可用渠道',
   },
 )
 
 const model = defineModel<ChannelSelection>({ required: true })
+
+// 实际生效的 allowAuto：channelsOnly 模式下强制关闭。
+const effectiveAllowAuto = computed(() => props.allowAuto && !props.channelsOnly)
 
 // 渠道按 base_url 分组（渠道组 = 一个渠道；组内 = 各 Key）。
 const channelGroups = computed(() => groupChannelsByBaseURL(props.channels))
@@ -56,7 +65,7 @@ function groupLabel(group: ReturnType<typeof groupChannelsByBaseURL>[number]) {
 const selection = computed(() => {
   const m = model.value
   if (!m) return { auto: true, ids: new Set<string>() }
-  if (props.singleChannelGroup && m.channel_base_url) {
+  if (props.singleChannelGroup && m.channel_base_url && !props.channelsOnly) {
     const group = channelGroups.value.find(
       (g) => normalizeBaseURL(g.baseUrl) === normalizeBaseURL(m.channel_base_url!),
     )
@@ -64,7 +73,7 @@ const selection = computed(() => {
   }
   const ids = new Set<string>()
   for (const id of m.channel_ids || []) ids.add(id)
-  if (!props.singleChannelGroup) {
+  if (!props.singleChannelGroup && !props.channelsOnly) {
     // 多渠道级展开：渠道级组内的 Key 也算已选。
     for (const bu of m.channel_base_urls || []) {
       const group = channelGroups.value.find(
@@ -95,9 +104,26 @@ function isMultiChannelLevelSelected(group: ReturnType<typeof groupChannelsByBas
 //   - 渠道级：只能由点击渠道组标题触发。
 //   - Key 多选：即使全部 Key 恰好被勾满，也仍然是 channel_ids，不会自动折叠为渠道级。
 //   - 空：自动路由。
+// channelsOnly 模式：禁用渠道级 → 直接清空 channel_base_url / channel_base_urls。
 function applySelection(ids: Set<string>, auto: boolean) {
   const m = model.value
   if (!m) return
+  if (props.channelsOnly) {
+    // channelsOnly 模式：自动路由不开放，无勾选 = 清空 channel_ids。
+    const ordered = channelGroups.value
+      .flatMap((g) => g.keys.map((k) => k.id))
+      .filter((id) => ids.has(id))
+    if (!props.multiSelect && ordered.length > 1) {
+      m.channel_id = ''
+      m.channel_ids = [ordered[ordered.length - 1]]
+    } else {
+      m.channel_id = ''
+      m.channel_ids = ordered
+    }
+    m.channel_base_url = ''
+    m.channel_base_urls = []
+    return
+  }
   if (auto || ids.size === 0) {
     m.channel_id = ''
     m.channel_ids = []
@@ -139,11 +165,16 @@ function activeGroupOf(): ReturnType<typeof groupChannelsByBaseURL>[number] | un
 // ===== 多渠道模式（singleChannelGroup=false，能力路由）=====
 // 渠道级与 Key 选择分开存：channel_base_urls（点过渠道名，多选）+ channel_ids（勾过 Key）。
 // 保存时由外部把渠道级展开为 Key ids；此处只维护 UI 语义。
+// channelsOnly 模式：禁止渠道级 → 不实现多渠道级多选逻辑，只走 channel_ids。
 
 // 多渠道模式：toggle 单个 Key。
 //   - 点在渠道级组内 → 该组退出渠道级，改为只选这个 Key。
 //   - 普通 → 进/出 channel_ids（跨组自由累加）。
 function multiToggleKey(id: string) {
+  if (props.channelsOnly) {
+    toggleKey(id)
+    return
+  }
   const m = model.value
   if (!m) return
   const keyGroup = channelGroups.value.find((g) => g.keys.some((k) => k.id === id))
@@ -164,6 +195,7 @@ function multiToggleKey(id: string) {
 //   - 设为渠道级：加入 channel_base_urls，并移除该组单独勾选的 Key（避免重复）。
 //   - 取消渠道级：从 channel_base_urls 移除。
 function multiToggleGroup(group: ReturnType<typeof groupChannelsByBaseURL>[number]) {
+  if (props.channelsOnly) return
   const m = model.value
   if (!m) return
   const base = normalizeBaseURL(group.baseUrl)
@@ -206,6 +238,7 @@ function toggleKey(id: string) {
 //   - 单渠道模式（ModelChannelList）：渠道级选中（channel_base_url 命中该组）。
 //   - 多渠道模式（能力路由）：该组在渠道级列表里（点过渠道名才算，勾满 Key 不算）。
 function isGroupSelected(group: ReturnType<typeof groupChannelsByBaseURL>[number]) {
+  if (props.channelsOnly) return false
   if (props.singleChannelGroup) return isChannelLevelSelected(group)
   return isMultiChannelLevelSelected(group)
 }
@@ -213,7 +246,9 @@ function isGroupSelected(group: ReturnType<typeof groupChannelsByBaseURL>[number
 // 点击组标题 = 选中/取消整个渠道：
 //   - 单渠道模式：设为渠道级（channel_base_url，独占；再次点击同组取消）。
 //   - 多渠道模式：渠道级多选（channel_base_urls），可多组并存。
+//   - channelsOnly：组标题不响应点击，仅作分组标签。
 function toggleGroup(group: ReturnType<typeof groupChannelsByBaseURL>[number]) {
+  if (props.channelsOnly) return
   if (!group.keys.length) return
   if (props.singleChannelGroup) {
     if (isChannelLevelSelected(group)) {
@@ -232,7 +267,7 @@ function toggleAuto() {
 
 <template>
   <div>
-    <div v-if="allowAuto" class="mb-3">
+    <div v-if="effectiveAllowAuto" class="mb-3">
       <button
         type="button"
         class="w-full rounded-md border px-2 py-1.5 text-xs font-medium transition-colors"
@@ -252,7 +287,16 @@ function toggleAuto() {
           class="rounded-md border p-1 transition-colors"
           :class="isGroupSelected(group) ? 'border-primary/40 bg-primary/5' : 'border-transparent'"
         >
+          <!-- channelsOnly 模式：组标题不响应点击，仅作分组标签 -->
+          <div
+            v-if="channelsOnly"
+            class="flex w-full items-center gap-1 rounded px-1 py-0.5 text-left text-xs font-medium text-muted-foreground"
+          >
+            <RiStackLine class="size-3.5 shrink-0 opacity-50" />
+            <span class="flex-1 truncate">{{ groupLabel(group) }}</span>
+          </div>
           <button
+            v-else
             type="button"
             class="flex w-full items-center gap-1 rounded px-1 py-0.5 text-left text-xs font-medium transition-colors"
             :class="
@@ -292,7 +336,17 @@ function toggleAuto() {
         class="flex items-center gap-2 rounded-md border p-1.5 transition-colors"
         :class="isGroupSelected(group) ? 'border-primary/40 bg-primary/5' : 'border-transparent'"
       >
+        <!-- channelsOnly 模式：组标题不响应点击，仅作分组标签 -->
+        <div
+          v-if="channelsOnly"
+          class="flex w-36 shrink-0 items-center gap-1 rounded px-1 py-0.5 text-left text-xs font-medium text-muted-foreground"
+          :title="groupLabel(group)"
+        >
+          <RiStackLine class="size-3.5 shrink-0 opacity-50" />
+          <span class="flex-1 truncate">{{ groupLabel(group) }}</span>
+        </div>
         <button
+          v-else
           type="button"
           class="flex w-36 shrink-0 items-center gap-1 rounded px-1 py-0.5 text-left text-xs font-medium transition-colors"
           :class="

@@ -116,8 +116,15 @@ onUnmounted(stopStream)
 
 <template>
   <Card class="rounded-md">
-    <CardHeader class="flex flex-row items-center justify-between space-y-0 pb-2">
+    <CardHeader class="flex flex-row flex-wrap items-center justify-between gap-x-3 gap-y-2 pb-2">
       <CardTitle class="text-base">执行日志</CardTitle>
+      <div class="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
+        <!--
+          父组件可在标题旁注入自定义指标（结果 / 退出码 / 模式 等）。
+          slot scope 暴露当前 status，父组件按需决定是否渲染。
+        -->
+        <slot name="header-extra" :status="status" />
+      </div>
       <Badge
         :variant="
           status === 'done'

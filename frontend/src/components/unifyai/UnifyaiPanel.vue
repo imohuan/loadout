@@ -651,34 +651,42 @@ onMounted(() => {
       </CardContent>
     </Card>
 
-    <!-- ⑥ 执行日志（真实 unifyai 输出，SSE 流式） -->
+    <!-- ⑥ 执行日志（真实 unifyai 输出，SSE 流式）。
+         ⚠ 不要加 v-if="runStatus !== 'idle'"：该组件必须先实例化才能 watch trigger、
+         才能 emit('update:status','running') 把 runStatus 拉离 idle（v-model 闭环要求）。
+         空态文案由组件内部 <div v-if="!logLines.length"> 承担，与 SkillsView 用法一致。
+         执行指标（结果/退出码/模式）通过 #header-extra 嵌到卡片头部右侧，不再用单独卡片。 -->
     <StreamLogPanel
-      v-if="runStatus !== 'idle'"
       :stream-url="streamUrl"
       :trigger="runTrigger"
       v-model:status="runStatus"
       :empty-text="'正在连接执行任务…'"
       @done="onRunDone"
       @error="onRunError"
-    />
-    <Card v-if="runStatus === 'done' || runStatus === 'error'" class="rounded-md">
-      <CardContent class="grid gap-3 p-4 sm:grid-cols-3">
-        <div class="rounded-md border p-3" :class="runStatus === 'done' ? 'bg-emerald-500/5' : 'bg-destructive/5'">
-          <div class="text-xs text-muted-foreground">执行结果</div>
-          <div class="mt-1 text-2xl font-semibold" :class="runStatus === 'done' ? 'text-emerald-600' : 'text-destructive'">
-            {{ runStatus === 'done' ? '成功' : '失败' }}
-          </div>
+    >
+      <template #header-extra>
+        <div
+          v-if="runStatus === 'done' || runStatus === 'error'"
+          class="flex flex-wrap items-center gap-x-3 gap-y-0.5"
+        >
+          <span class="flex items-baseline gap-1">
+            <span class="text-muted-foreground">执行结果</span>
+            <span
+              class="font-semibold"
+              :class="runStatus === 'done' ? 'text-emerald-600' : 'text-destructive'"
+            >{{ runStatus === 'done' ? '成功' : '失败' }}</span>
+          </span>
+          <span class="flex items-baseline gap-1">
+            <span class="text-muted-foreground">退出码</span>
+            <span class="font-mono font-semibold">{{ runExitCode ?? '-' }}</span>
+          </span>
+          <span class="flex items-baseline gap-1">
+            <span class="text-muted-foreground">模式</span>
+            <span class="font-semibold">{{ dryRunMode ? 'dry-run 预览' : '实际同步' }}</span>
+          </span>
         </div>
-        <div class="rounded-md border p-3">
-          <div class="text-xs text-muted-foreground">退出码</div>
-          <div class="mt-1 text-2xl font-semibold font-mono">{{ runExitCode ?? '-' }}</div>
-        </div>
-        <div class="rounded-md border p-3">
-          <div class="text-xs text-muted-foreground">模式</div>
-          <div class="mt-1 text-2xl font-semibold">{{ dryRunMode ? 'dry-run 预览' : '实际同步' }}</div>
-        </div>
-      </CardContent>
-    </Card>
+      </template>
+    </StreamLogPanel>
 
     <!-- 添加 / 导入 MCP 工具弹窗 -->
     <Dialog v-model:open="addDialogOpen">

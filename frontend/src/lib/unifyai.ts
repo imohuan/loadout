@@ -282,7 +282,11 @@ export async function fetchManagedMcpServers(): Promise<McpServerInfo[]> {
 
 /**
  * 构建 CLI 参数数组（纯前端逻辑，无需后端）。命令预览与真实执行共用。
- * @param opts 由 UI 状态翻译来的参数
+ *
+ * 注意：每个 option 必须拆成「名 + 值」两个独立 argv 项，不能用一个含空格的
+ * 字符串（如 `--platforms opencode,codex`）。CLI 用 commander，期望 `--platforms <list>`
+ * 是两个 token；Go `exec.Command` 不会按空格再分词，含空格的 token 会被 commander
+ * 当成未知 option 名。命令预览 buildCommand 用 join(' ') 拼，UI 看起来仍是合法命令。
  */
 export function buildArgs(opts: {
   mode: SyncMode
@@ -298,16 +302,25 @@ export function buildArgs(opts: {
   const args: string[] = []
   if (opts.mode === 'models') args.push('--models-only')
   if (opts.mode === 'mcp') args.push('--mcp-only')
-  if (opts.all) args.push('--all')
-  else args.push(`--platforms ${opts.platforms.join(',')}`)
-  if (opts.mcpPlatforms?.length) args.push(`--mcp-platforms ${opts.mcpPlatforms.join(',')}`)
-  for (const name of opts.globalExcludes) args.push(`--mcp-exclude ${name}`)
+  if (opts.all) {
+    args.push('--all')
+  } else {
+    args.push('--platforms', opts.platforms.join(','))
+  }
+  if (opts.mcpPlatforms?.length) {
+    args.push('--mcp-platforms', opts.mcpPlatforms.join(','))
+  }
+  for (const name of opts.globalExcludes) {
+    args.push('--mcp-exclude', name)
+  }
   // 同平台的多个服务器合并到同一参数（逗号分隔），等价于多次指定同一平台
   for (const [platform, names] of Object.entries(opts.perPlatformExcludes)) {
-    if (names.length) args.push(`--mcp-exclude-for ${platform}=${names.join(',')}`)
+    if (names.length) args.push('--mcp-exclude-for', `${platform}=${names.join(',')}`)
   }
   if (opts.dryRun) args.push('--dry-run')
-  if (opts.source !== DEFAULT_SOURCE) args.push(`--source ${opts.source}`)
+  if (opts.source !== DEFAULT_SOURCE) {
+    args.push('--source', opts.source)
+  }
   if (opts.verbose) args.push('--verbose')
   return args
 }
