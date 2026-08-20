@@ -3,6 +3,7 @@ import { computed, ref } from 'vue'
 import {
   RiCheckLine,
   RiCloseLine,
+  RiDeleteBinLine,
   RiFilterLine,
   RiFilterOffLine,
   RiInformationLine,
@@ -23,6 +24,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   'update:matrix': [value: Record<string, Record<PlatformId, boolean>>]
   'update:disabled': [value: Set<string>]
+  /** 删除服务器 */
+  remove: [name: string]
 }>()
 
 /** 展示「只显示被排除项」 */
@@ -218,6 +221,22 @@ const excludedCount = computed(() => {
                     <TooltipContent>
                       {{ isDisabled(server.name) ? '启用' : '禁用' }}
                     </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger as-child
+                      ><Button
+                        variant="ghost"
+                        size="icon"
+                        class="size-7 text-muted-foreground hover:text-destructive"
+                        :aria-label="`删除 ${server.name}`"
+                        @click="emit('remove', server.name)"
+                      >
+                        <RiDeleteBinLine size="14" />
+                      </Button></TooltipTrigger
+                    >
+                    <TooltipContent>删除</TooltipContent>
                   </Tooltip>
                 </TooltipProvider>
               </div>

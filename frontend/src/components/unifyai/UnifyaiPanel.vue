@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { toast } from 'vue-sonner'
 import {
+  RiAddLine,
   RiArrowDownSLine,
   RiArrowRightSLine,
   RiCheckLine,
   RiCloseLine,
+  RiImportLine,
   RiInformationLine,
   RiLoader4Line,
   RiPlayLine,
@@ -24,8 +26,10 @@ import {
   PLATFORMS,
   buildArgs,
   buildCommand,
+  fetchManagedMcpServers,
   fetchMcpServers,
   fetchModelSource,
+  saveMcpServers,
   updateMetadata,
   type McpServerInfo,
   type ModelSourceStatus,
@@ -77,6 +81,184 @@ const enabledServers = computed(() =>
   allServers.value.filter((server) => !disabledServers.value.has(server.name)),
 )
 
+/** 把当前服务器列表写回后端 mcp.json（启用/禁用/添加/删除/导入共用） */
+const savingMcp = ref(false)
+async function persistMcpServers() {
+  savingMcp.value = true
+  try {
+    await saveMcpServers(allServers.value)
+    toast.success('MCP 配置已保存到 mcp.json')
+  } catch (e) {
+    toast.error(e instanceof Error ? e.message : '保存失败')
+    throw e
+  } finally {
+    savingMcp.value = false
+  }
+}
+
+/** 启用/禁用切换：更新本地状态 + 自动保存 */
+async function onDisabledChange(next: Set<string>) {
+  disabledServers.value = next
+  // 同步 allServers 的 enabled 字段
+  allServers.value = allServers.value.map((s) => ({
+    ...s,
+    enabled: !next.has(s.name),
+  }))
+  try {
+    await persistMcpServers()
+  } catch {
+    /* toast 已提示 */
+  }
+}
+
+/** 删除服务器：确认后移除 + 保存 */
+async function removeServer(name: string) {
+  const confirmed = window.confirm(`确定删除 MCP 服务器「${name}」？将从 mcp.json 中移除。`)
+  if (!confirmed) return
+  allServers.value = allServers.value.filter((s) => s.name !== name)
+  const next = new Set(disabledServers.value)
+  next.delete(name)
+  disabledServers.value = next
+  const nextMatrix = { ...matrix.value }
+  delete nextMatrix[name]
+  matrix.value = nextMatrix
+  try {
+    await persistMcpServers()
+  } catch {
+    /* toast 已提示 */
+  }
+}
+
+// ---------- 添加 / 导入 MCP 工具 ----------
+const addDialogOpen = ref(false)
+const importSource = ref<McpServerInfo[]>([])
+const importSelected = ref<string[]>([])
+const importing = ref(false)
+const addForm = reactive({
+  name: '',
+  type: 'local' as 'local' | 'remote',
+  enabled: true,
+  command: '',
+  url: '',
+  headers: '',
+})
+
+function openAddDialog() {
+  addDialogOpen.value = true
+  importSelected.value = []
+  importSource.value = []
+  addForm.name = ''
+  addForm.type = 'local'
+  addForm.enabled = true
+  addForm.command = ''
+  addForm.url = ''
+  addForm.headers = ''
+}
+
+/** 从 MCP 管理加载可导入的服务器 */
+async function loadImportSource() {
+  importing.value = true
+  try {
+    importSource.value = await fetchManagedMcpServers()
+    if (!importSource.value.length) {
+      toast.info('MCP 管理中没有可导入的服务器')
+    }
+  } catch (e) {
+    toast.error(e instanceof Error ? e.message : '读取 MCP 管理失败')
+  } finally {
+    importing.value = false
+  }
+}
+
+function toggleImport(name: string) {
+  const i = importSelected.value.indexOf(name)
+  if (i >= 0) importSelected.value.splice(i, 1)
+  else importSelected.value.push(name)
+}
+
+/** 把选中的 MCP 管理服务器导入到本地列表并保存 */
+async function importSelectedServers() {
+  const picked = importSource.value.filter((s) => importSelected.value.includes(s.name))
+  if (!picked.length) return
+  const existing = new Set(allServers.value.map((s) => s.name))
+  const added: string[] = []
+  for (const srv of picked) {
+    if (existing.has(srv.name)) {
+      toast.warning(`「${srv.name}」已存在，跳过`)
+      continue
+    }
+    allServers.value = [...allServers.value, { ...srv }]
+    added.push(srv.name)
+  }
+  if (!added.length) return
+  const next = { ...matrix.value }
+  for (const name of added) {
+    next[name] = { opencode: false, codex: false, claudecode: false, reasonix: false, penguin: false }
+  }
+  matrix.value = next
+  try {
+    await persistMcpServers()
+    addDialogOpen.value = false
+    toast.success(`已导入 ${added.length} 个 MCP 工具`)
+  } catch {
+    /* toast 已提示 */
+  }
+}
+
+/** 手动添加 MCP 工具并保存 */
+async function addManualServer() {
+  const name = addForm.name.trim()
+  if (!name) {
+    toast.error('请输入工具名称')
+    return
+  }
+  if (allServers.value.some((s) => s.name === name)) {
+    toast.error(`「${name}」已存在`)
+    return
+  }
+  const srv: McpServerInfo = {
+    name,
+    type: addForm.type,
+    enabled: addForm.enabled,
+  }
+  if (addForm.type === 'local') {
+    const parts = addForm.command
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean)
+    if (!parts.length) {
+      toast.error('请输入启动命令（如 npx -y @modelcontextprotocol/server-filesystem /path）')
+      return
+    }
+    srv.command = parts
+  } else {
+    if (!addForm.url.trim()) {
+      toast.error('请输入远程地址 URL')
+      return
+    }
+    srv.url = addForm.url.trim()
+    if (addForm.headers.trim()) {
+      const headers: Record<string, string> = {}
+      for (const line of addForm.headers.split('\n')) {
+        const idx = line.indexOf(':')
+        if (idx > 0) headers[line.slice(0, idx).trim()] = line.slice(idx + 1).trim()
+      }
+      if (Object.keys(headers).length) {
+        srv.headers = headers
+        srv.hasAuth = true
+      }
+    }
+  }
+  allServers.value = [...allServers.value, srv]
+  matrix.value = { ...matrix.value, [name]: { opencode: false, codex: false, claudecode: false, reasonix: false, penguin: false } }
+  try {
+    await persistMcpServers()
+    addDialogOpen.value = false
+  } catch {
+    /* toast 已提示 */
+  }
+}
+
 const matrix = ref<Record<string, Record<PlatformId, boolean>>>({})
 const whitelist = ref<PlatformId[]>([])
 /** 白名单开关：false=不限定（所有平台同步 MCP）；true=仅 whitelist 中的平台同步 */
@@ -106,8 +288,6 @@ function initMatrix() {
       penguin: false,
     }
   }
-  // 文档典型用例：Codex 内置 node_env 默认排除
-  if (next.node_env) next.node_env.codex = true
   matrix.value = next
 }
 
@@ -240,10 +420,11 @@ async function handleUpdateMetadata() {
 onMounted(() => {
   initMatrix()
   fetchModelSource().then((source) => (modelSource.value = source))
+  // 从后端读取 mcp.json（真实数据，失败回落内置示例）
   fetchMcpServers().then((servers) => {
-    allServers.value = INITIAL_MCP_SERVERS
-    const names = new Set(servers.map((s) => s.name))
-    if (names.size) initMatrix()
+    allServers.value = servers
+    disabledServers.value = new Set(servers.filter((s) => !s.enabled).map((s) => s.name))
+    initMatrix()
   })
   // 从后端拉取平台能力（--list-platforms --json），失败保持内置默认。
   const colorOf = Object.fromEntries(PLATFORMS.map((p) => [p.id, p.color]))
@@ -329,11 +510,16 @@ onMounted(() => {
 
     <!-- ③ MCP 同步过滤（排除矩阵 + 白名单，并列展示） -->
     <Card v-if="mode !== 'models'" class="rounded-md">
-      <CardHeader>
-        <CardTitle class="text-base">③ MCP 同步过滤</CardTitle>
-        <CardDescription
-          >三个过滤维度：排除矩阵（全局/按平台）、平台白名单，优先级：白名单 → 排除。</CardDescription
-        >
+      <CardHeader class="flex-row items-center justify-between space-y-0">
+        <div class="space-y-0.5">
+          <CardTitle class="text-base">③ MCP 同步过滤</CardTitle>
+          <CardDescription
+            >三个过滤维度：排除矩阵（全局/按平台）、平台白名单，优先级：白名单 → 排除。</CardDescription
+          >
+        </div>
+        <Button variant="outline" size="sm" :disabled="savingMcp" @click="openAddDialog">
+          <RiAddLine size="16" />添加 MCP 工具
+        </Button>
       </CardHeader>
       <CardContent class="space-y-6">
         <section>
@@ -342,7 +528,8 @@ onMounted(() => {
             :servers="allServers"
             :disabled="disabledServers"
             v-model:matrix="matrix"
-            @update:disabled="disabledServers = $event"
+            @update:disabled="onDisabledChange"
+            @remove="removeServer"
           />
         </section>
         <Separator />
@@ -471,6 +658,104 @@ onMounted(() => {
         </div>
       </CardContent>
     </Card>
+
+    <!-- 添加 / 导入 MCP 工具弹窗 -->
+    <Dialog v-model:open="addDialogOpen">
+      <DialogContent class="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-xl!">
+        <DialogHeader>
+          <DialogTitle>添加 MCP 工具</DialogTitle>
+          <DialogDescription>从 MCP 管理导入，或手动配置一个新的 MCP 服务器（保存到 mcp.json）。</DialogDescription>
+        </DialogHeader>
+        <Tabs default-value="import">
+          <TabsList variant="line" class="inline-flex h-auto w-fit max-w-full flex-wrap justify-start gap-2">
+            <TabsTrigger value="import">从 MCP 管理导入</TabsTrigger>
+            <TabsTrigger value="manual">手动添加</TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="import" class="space-y-3 pt-2">
+            <div class="flex items-center justify-between gap-2">
+              <p class="text-sm text-muted-foreground">勾选 MCP 管理中的上游服务器，导入为同步工具。</p>
+              <Button variant="outline" size="sm" :disabled="importing" @click="loadImportSource">
+                <RiLoader4Line v-if="importing" size="14" class="animate-spin" />
+                <RiImportLine v-else size="14" />
+                {{ importing ? '加载中...' : '加载列表' }}
+              </Button>
+            </div>
+            <div v-if="importSource.length" class="max-h-56 space-y-1 overflow-y-auto rounded-md border p-2">
+              <label
+                v-for="srv in importSource"
+                :key="srv.name"
+                class="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 hover:bg-muted/40"
+              >
+                <Checkbox
+                  :model-value="importSelected.includes(srv.name)"
+                  @update:model-value="toggleImport(srv.name)"
+                />
+                <span class="min-w-0 flex-1">
+                  <span class="block truncate font-mono text-sm">{{ srv.name }}</span>
+                  <span class="block truncate text-xs text-muted-foreground">
+                    {{ srv.type === 'local' ? srv.command?.join(' ') : srv.url }}
+                  </span>
+                </span>
+                <Badge variant="secondary" class="shrink-0">{{ srv.type }}</Badge>
+              </label>
+            </div>
+            <p v-else class="text-sm text-muted-foreground">点击「加载列表」从 MCP 管理获取可导入的服务器。</p>
+            <DialogFooter>
+              <Button
+                :disabled="!importSelected.length"
+                @click="importSelectedServers"
+              >导入 {{ importSelected.length }} 个</Button>
+              <Button variant="ghost" @click="addDialogOpen = false">取消</Button>
+            </DialogFooter>
+          </TabsContent>
+
+          <TabsContent value="manual" class="space-y-4 pt-2">
+            <div class="grid gap-3 sm:grid-cols-2">
+              <div class="space-y-1">
+                <Label>名称</Label>
+                <Input v-model="addForm.name" placeholder="filesystem" />
+              </div>
+              <div class="space-y-1">
+                <Label>类型</Label>
+                <Select v-model="addForm.type">
+                  <SelectTrigger><SelectValue placeholder="选择类型" /></SelectTrigger>
+                  <SelectContent position="popper" side="bottom" align="start" :side-offset="2">
+                    <SelectItem value="local">local（本地命令）</SelectItem>
+                    <SelectItem value="remote">remote（远程网关）</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div class="flex items-center gap-2">
+              <Switch id="add-enabled" v-model="addForm.enabled" />
+              <Label for="add-enabled" class="cursor-pointer text-sm">启用</Label>
+            </div>
+            <div v-if="addForm.type === 'local'" class="space-y-1">
+              <Label>启动命令（空格分隔）</Label>
+              <Input
+                v-model="addForm.command"
+                placeholder="npx -y @modelcontextprotocol/server-filesystem /path"
+              />
+            </div>
+            <template v-else>
+              <div class="space-y-1">
+                <Label>URL</Label>
+                <Input v-model="addForm.url" placeholder="https://your-mcp-gateway.example.com/path" />
+              </div>
+              <div class="space-y-1">
+                <Label>Headers（每行一个，格式：名称: 值）</Label>
+                <Textarea v-model="addForm.headers" rows="2" placeholder="Authorization: Bearer xxx" />
+              </div>
+            </template>
+            <DialogFooter>
+              <Button :disabled="savingMcp" @click="addManualServer">保存到 mcp.json</Button>
+              <Button variant="ghost" @click="addDialogOpen = false">取消</Button>
+            </DialogFooter>
+          </TabsContent>
+        </Tabs>
+      </DialogContent>
+    </Dialog>
 
     <!-- 执行前确认弹窗 -->
     <Dialog v-model:open="confirmOpen">

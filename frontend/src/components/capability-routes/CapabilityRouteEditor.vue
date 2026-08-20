@@ -5,9 +5,11 @@ import ModelChannelList from '@/components/ModelChannelList.vue'
 import SensitiveWordList from '@/components/capability-routes/SensitiveWordList.vue'
 import ChannelGroupPicker, { type ChannelSelection } from '@/components/ChannelGroupPicker.vue'
 import {
+  channelLevelSegments,
   formatChannelGroupLabel,
   formatChannelRef,
   groupSegmentsFor,
+  mergeSegments,
   type ChannelGroupSegment,
 } from '@/composables/useChannelRef'
 import { normalizeBaseURL } from '@/composables/useChannels'
@@ -40,10 +42,12 @@ const form = reactive<{
 })
 
 // 目标渠道选择态（由 ChannelGroupPicker 直接 v-model；空 = 全渠道生效）。
+// channel_base_urls = 渠道级多选（点过渠道名，显示无括号）；channel_ids = Key 级多选（显示带括号）。
 const channelSel = reactive<ChannelSelection>({
   channel_id: '',
   channel_ids: [],
   channel_base_url: '',
+  channel_base_urls: [],
 })
 
 // 全部可用模型：所有渠道模型目录去重排序（目标模型与候选下拉共用）。
@@ -75,11 +79,13 @@ watch(
         : [{ from: '', to: '', regex: false }],
     })
     // 老数据 `*`（通用全匹配）归一化为空 = 全渠道生效，语义一致。
+    // 数据只有 channel_ids（Key 级），还原时一律按 Key 多选显示——没点过渠道名就不算选渠道。
     const raw = route?.channel_ids || []
     Object.assign(channelSel, {
       channel_id: '',
       channel_ids: raw.includes('*') ? [] : [...raw],
       channel_base_url: '',
+      channel_base_urls: [],
     })
   },
   { immediate: true },
@@ -98,29 +104,36 @@ function onCapabilityChange(value: string) {
 
 // ===== 目标渠道（ChannelGroupPicker 多选；空 = 全渠道生效）=====
 const channelOpen = ref(false)
-// 已选 Key id（渠道级 = 组内所有 Key；Key 多选 = channel_ids）。
+// 已选 Key id（保存用）：渠道级组展开为组内所有 Key + Key 级多选。
 const selectedKeyIds = computed(() => {
-  if (channelSel.channel_base_url) {
-    return props.channels
-      .filter(
-        (c) => normalizeBaseURL(c.base_url) === normalizeBaseURL(channelSel.channel_base_url!),
-      )
-      .map((c) => c.id)
+  const ids = new Set<string>()
+  for (const bu of channelSel.channel_base_urls || []) {
+    for (const c of props.channels) {
+      if (normalizeBaseURL(c.base_url) === normalizeBaseURL(bu)) ids.add(c.id)
+    }
   }
-  return channelSel.channel_ids || []
+  for (const id of channelSel.channel_ids || []) ids.add(id)
+  return [...ids]
 })
 const channelTriggerLabel = computed(
-  () => formatChannelRef(props.channels, channelSel, true) || '通用（全匹配）',
+  () => formatChannelRef(props.channels, channelSel) || '通用（全匹配）',
 )
-// 已选渠道分组（跨渠道时按 base_url 聚合成多段，badge 按段渲染）。
+// 已选渠道分组：渠道级段（无括号）在前 + Key 级段（带括号）在后，badge 按段渲染。
 const selectedGroups = computed<ChannelGroupSegment[]>(() =>
-  groupSegmentsFor(props.channels, selectedKeyIds.value),
+  mergeSegments(
+    channelLevelSegments(props.channels, channelSel.channel_base_urls || []),
+    groupSegmentsFor(props.channels, channelSel.channel_ids || []),
+  ),
 )
-// 移除某个 base_url 整组（在 Key 多选模式下）。
-function removeChannelGroup(baseUrl: string) {
-  const idsInGroup = new Set(
-    props.channels.filter((c) => normalizeBaseURL(c.base_url) === baseUrl).map((c) => c.id),
-  )
+// 移除一个展示段：渠道级段从 channel_base_urls 删；Key 级段从 channel_ids 删该组。
+function removeChannelGroup(seg: ChannelGroupSegment) {
+  if (seg.level) {
+    channelSel.channel_base_urls = (channelSel.channel_base_urls || []).filter(
+      (bu) => normalizeBaseURL(bu) !== seg.baseUrl,
+    )
+    return
+  }
+  const idsInGroup = new Set(seg.ids)
   channelSel.channel_ids = (channelSel.channel_ids || []).filter((id) => !idsInGroup.has(id))
 }
 // 目标模型候选：按所选渠道过滤（空 = 全渠道模型并集）。
@@ -280,16 +293,16 @@ function submit() {
           >
             <Badge
               v-for="g in selectedGroups"
-              :key="g.baseUrl"
+              :key="g.baseUrl + (g.level ? ':l' : ':k')"
               variant="secondary"
               class="gap-1 py-0 pr-1"
             >
-              {{ formatChannelGroupLabel(g, true) }}
+              {{ formatChannelGroupLabel(g) }}
               <button
                 type="button"
                 class="rounded-full p-0.5 hover:bg-muted hover:text-destructive"
                 aria-label="移除"
-                @click="removeChannelGroup(g.baseUrl)"
+                @click="removeChannelGroup(g)"
               >
                 <RiCloseLine size="12" />
               </button>

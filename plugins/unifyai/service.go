@@ -4,6 +4,7 @@
 package unifyai
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -11,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 
@@ -115,18 +117,15 @@ func (s *Service) Run(args []string, onLog func(string)) error {
 	return nil
 }
 
-// resolveCmd 解析 unifyai 可执行入口：
+// resolveCmd 解析 unifyai 可执行入口（调试阶段统一走 node + 本地仓库脚本）：
 //  1. 显式配置 UnifyaiDir（src/cli.mjs 存在）→ node + 该路径；
-//  2. PATH 中的 unifyai → 直接执行；
-//  3. 常见仓库位置（D:/Code/Git/unifyai 等）→ node + cli.mjs。
+//  2. 本地仓库（优先 D:/Code/Git/unifyai 等常见位置）→ node + cli.mjs；
+//  3. PATH 中的全局 unifyai 命令（最后兜底）。
 func resolveCmd() (string, []string, error) {
 	if dir := config.UnifyaiDir; dir != "" {
 		if cli := filepath.Join(dir, "src", "cli.mjs"); fileExists(cli) {
 			return nodeCmd(cli)
 		}
-	}
-	if p, err := exec.LookPath("unifyai"); err == nil {
-		return p, nil, nil
 	}
 	for _, dir := range []string{"D:/Code/Git/unifyai", "C:/Code/unifyai", "~/unifyai"} {
 		cli := filepath.Join(dir, "src", "cli.mjs")
@@ -134,7 +133,10 @@ func resolveCmd() (string, []string, error) {
 			return nodeCmd(cli)
 		}
 	}
-	return "", nil, fmt.Errorf("未找到 unifyai 命令：请安装 unifyai（npm i -g）或设置 LOADOUT_UNIFYAI_DIR")
+	if p, err := exec.LookPath("unifyai"); err == nil {
+		return p, nil, nil
+	}
+	return "", nil, fmt.Errorf("未找到 unifyai 脚本：请在 D:/Code/Git/unifyai 放置仓库或设置 LOADOUT_UNIFYAI_DIR")
 }
 
 // nodeCmd 返回 node 执行器 + cli.mjs 路径（Windows 下扩展名补全）。
@@ -180,4 +182,141 @@ func defaultPlatforms() ListPlatformsResult {
 		{ID: "reasonix", Name: "Reasonix", SupportsModels: true, ModelStatus: "supported", SupportsMcp: true, McpStatus: "not_implemented", ConfigPath: "~/AppData/Roaming/reasonix/config.toml", ConfigFormat: "toml"},
 		{ID: "penguin", Name: "PenguinHarness", SupportsModels: true, ModelStatus: "supported", SupportsMcp: true, McpStatus: "supported", ConfigPath: "~/.penguin/data/default_project/.project_config.toml", ConfigFormat: "toml"},
 	}}
+}
+
+// ============ MCP 服务器列表（直接读写 mcp.json，不经 CLI）============
+
+// McpServer 单个 MCP 服务器（mcp.json 条目）。写回时同时写 enabled 与 disabled
+// 双字段：unifyai loadMcpConfig 认 disabled、normalizeMcp 认 enabled，双写保证兼容。
+type McpServer struct {
+	Name    string            `json:"name"`
+	Type    string            `json:"type"`    // local | remote
+	Enabled bool              `json:"enabled"`
+	Command []string          `json:"command,omitempty"`
+	URL     string            `json:"url,omitempty"`
+	Headers map[string]string `json:"headers,omitempty"`
+}
+
+// mcpRawEntry mcp.json 中 mcpServers 的单条原始结构（兼容 string/数组 command）。
+type mcpRawEntry struct {
+	Type     string            `json:"type"`
+	Enabled  *bool             `json:"enabled"`
+	Disabled *bool             `json:"disabled"`
+	Command  json.RawMessage   `json:"command"`
+	URL      string            `json:"url"`
+	Headers  map[string]string `json:"headers"`
+}
+
+// McpServers 读取 mcp.json（优先级 cwd/mcp.json > ~/.unifyai/mcp.json），
+// 返回 UI 使用的服务器列表（含 disabled，由 UI 决定参与同步）。
+// 文件不存在返回空列表（不报错）。
+func (s *Service) McpServers() ([]McpServer, error) {
+	path := mcpConfigPath()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []McpServer{}, nil
+		}
+		return nil, fmt.Errorf("unifyai: 读取 mcp.json 失败: %w", err)
+	}
+	var raw struct {
+		McpServers map[string]mcpRawEntry `json:"mcpServers"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, fmt.Errorf("unifyai: 解析 mcp.json 失败: %w", err)
+	}
+	servers := make([]McpServer, 0, len(raw.McpServers))
+	for name, entry := range raw.McpServers {
+		enabled := true
+		if entry.Enabled != nil && !*entry.Enabled {
+			enabled = false
+		}
+		if entry.Disabled != nil && *entry.Disabled {
+			enabled = false
+		}
+		servers = append(servers, McpServer{
+			Name:    name,
+			Type:    entry.Type,
+			Enabled: enabled,
+			Command: parseCommandField(entry.Command),
+			URL:     entry.URL,
+			Headers: entry.Headers,
+		})
+	}
+	// 稳定排序（按名称），UI 顺序一致。
+	sortMcpServers(servers)
+	return servers, nil
+}
+
+// SaveMcpServers 把服务器列表写回 mcp.json（优先写已存在的 cwd/mcp.json，
+// 否则写 ~/.unifyai/mcp.json，目录不存在自动创建）。
+func (s *Service) SaveMcpServers(servers []McpServer) error {
+	path := mcpConfigPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("unifyai: 创建配置目录失败: %w", err)
+	}
+	m := make(map[string]any, len(servers))
+	for _, srv := range servers {
+		entry := map[string]any{
+			"type":     srv.Type,
+			"enabled":  srv.Enabled,
+			"disabled": !srv.Enabled,
+		}
+		if len(srv.Command) > 0 {
+			entry["command"] = srv.Command
+		}
+		if srv.URL != "" {
+			entry["url"] = srv.URL
+		}
+		if len(srv.Headers) > 0 {
+			entry["headers"] = srv.Headers
+		}
+		m[srv.Name] = entry
+	}
+	doc := map[string]any{"mcpServers": m}
+	buf := new(bytes.Buffer)
+	enc := json.NewEncoder(buf)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(doc); err != nil {
+		return fmt.Errorf("unifyai: 编码 mcp.json 失败: %w", err)
+	}
+	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
+		return fmt.Errorf("unifyai: 写入 mcp.json 失败: %w", err)
+	}
+	s.lg.Info("unifyai: 已保存 mcp.json", "path", path, "count", len(servers))
+	return nil
+}
+
+// mcpConfigPath 解析 mcp.json 路径：cwd 优先，回退 ~/.unifyai/mcp.json（写入时创建）。
+func mcpConfigPath() string {
+	if p, err := os.Getwd(); err == nil {
+		if c := filepath.Join(p, "mcp.json"); fileExists(c) {
+			return c
+		}
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(home, ".unifyai", "mcp.json")
+	}
+	return "mcp.json"
+}
+
+// parseCommandField 兼容 command 为数组或字符串两种写法。
+func parseCommandField(raw json.RawMessage) []string {
+	if len(raw) == 0 {
+		return nil
+	}
+	var arr []string
+	if err := json.Unmarshal(raw, &arr); err == nil {
+		return arr
+	}
+	var str string
+	if err := json.Unmarshal(raw, &str); err == nil && strings.TrimSpace(str) != "" {
+		return []string{str}
+	}
+	return nil
+}
+
+// sortMcpServers 按名称排序（稳定展示顺序）。
+func sortMcpServers(servers []McpServer) {
+	sort.Slice(servers, func(i, j int) bool { return servers[i].Name < servers[j].Name })
 }

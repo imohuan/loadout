@@ -4,6 +4,7 @@ import {
   RiAddLine,
   RiArrowDownLine,
   RiArrowDownSLine,
+  RiArrowDropDownLine,
   RiArrowUpLine,
   RiCheckLine,
   RiDeleteBinLine,
@@ -267,7 +268,7 @@ function modelCandidates(index: number): string[] {
           </Command>
         </PopoverContent>
       </Popover>
-      <TooltipProvider v-if="showMove" :delay-duration="1000">
+      <TooltipProvider v-if="showMove">
         <Tooltip>
           <TooltipTrigger as-child>
             <Button
@@ -282,7 +283,7 @@ function modelCandidates(index: number): string[] {
           <TooltipContent>上移</TooltipContent>
         </Tooltip>
       </TooltipProvider>
-      <TooltipProvider v-if="showMove" :delay-duration="1000">
+      <TooltipProvider v-if="showMove">
         <Tooltip>
           <TooltipTrigger as-child>
             <Button
@@ -297,7 +298,7 @@ function modelCandidates(index: number): string[] {
           <TooltipContent>下移</TooltipContent>
         </Tooltip>
       </TooltipProvider>
-      <TooltipProvider v-if="showRemove" :delay-duration="1000">
+      <TooltipProvider v-if="showRemove">
         <Tooltip>
           <TooltipTrigger as-child>
             <Button

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { RiDeleteBinLine, RiEditLine, RiLoader4Line } from '@remixicon/vue'
 import type { CapabilityRoute, Channel } from '@/lib/types'
+import { formatChannelGroupLabel, groupSegmentsFor } from '@/composables/useChannelRef'
 import ChannelRef from '@/components/ChannelRef.vue'
 import EmptyState from '@/components/EmptyState.vue'
 
@@ -47,10 +48,10 @@ function replacementLabel(r: { from: string; to: string; regex?: boolean }) {
 function proxyReplacementsLabel(route: CapabilityRoute) {
   return (route.replacements || []).map((r) => replacementLabel(r)).join('\n')
 }
-// 目标渠道展示：空或含 `*`（老数据全匹配）= 全渠道；否则渠道名列表。
+// 目标渠道展示：空 / 含 `*`（老数据全匹配）= 全渠道；否则按 base_url 分组聚合「渠道名(Key1, Key2)」。
 function channelScopeLabel(channels: Channel[], ids?: string[]) {
   if (!ids || !ids.length || ids.includes('*')) return '全渠道'
-  return ids.map((id) => channels.find((c) => c.id === id)?.name || id).join('、')
+  return groupSegmentsFor(channels, ids).map(formatChannelGroupLabel).join(', ')
 }
 </script>
 

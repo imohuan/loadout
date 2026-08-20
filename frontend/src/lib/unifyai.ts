@@ -79,7 +79,7 @@ export const PLATFORMS: Platform[] = [
   },
 ]
 
-// ---- MCP 服务器（源：mcp.json，文档 §5.3） ----
+// ---- MCP 服务器（源：mcp.json，文档 §5.3，由后端直接读写文件） ----
 
 export interface McpServerInfo {
   name: string
@@ -91,9 +91,11 @@ export interface McpServerInfo {
   url?: string
   /** remote：认证 header（仅展示是否存在，不回显密钥） */
   hasAuth?: boolean
+  /** remote：完整请求头（写回 mcp.json 用） */
+  headers?: Record<string, string>
 }
 
-/** 界面初始 MCP 列表（来自 mcp.json 示例）。后端接入后由 fetchMcpServers() 返回。 */
+/** 界面初始 MCP 列表（后端 mcp.json 读取失败时的兜底，与 mcp.example.json 一致）。 */
 export const INITIAL_MCP_SERVERS: McpServerInfo[] = [
   {
     name: 'filesystem',
@@ -211,13 +213,67 @@ export async function fetchModelSource(): Promise<ModelSourceStatus> {
 }
 
 /**
- * 读取 MCP 配置（文档 §5.3）：优先级 ./mcp.json > ~/.unifyai/mcp.json。
- * 返回所有服务器（含 disabled），由 UI 决定是否参与同步。
- * TODO(backend): 替换为真实读取。
+ * 从后端读取 MCP 服务器列表（后端直接读 mcp.json，不经 CLI）。
+ * 失败时回落到内置示例，保证页面可用。
  */
 export async function fetchMcpServers(): Promise<McpServerInfo[]> {
-  console.warn(NOT_IMPLEMENTED)
+  try {
+    const res = await fetch('/api/unifyai/mcp-servers')
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const data = (await res.json()) as { servers?: McpServerInfo[] }
+    if (data.servers?.length) return data.servers
+  } catch {
+    // 后端未接入时保持默认
+  }
   return INITIAL_MCP_SERVERS
+}
+
+/**
+ * 把服务器列表写回 mcp.json（后端全量替换）。
+ */
+export async function saveMcpServers(servers: McpServerInfo[]): Promise<void> {
+  const res = await fetch('/api/unifyai/mcp-servers', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ servers }),
+  })
+  if (!res.ok) throw new Error(`保存 MCP 配置失败：HTTP ${res.status}`)
+}
+
+/**
+ * 从 MCP 管理（Loadout 上游服务器）导入为 mcp.json 条目：
+ * stdio → local(command=[cmd, ...args])；http/sse → remote(url + headers)。
+ */
+export async function fetchManagedMcpServers(): Promise<McpServerInfo[]> {
+  const res = await fetch('/api/mcp-servers')
+  if (!res.ok) throw new Error(`读取 MCP 管理失败：HTTP ${res.status}`)
+  const list = (await res.json()) as Array<{
+    name: string
+    transport: string
+    command?: string
+    args?: string[]
+    url?: string
+    headers?: Record<string, string>
+    enabled?: boolean
+  }>
+  return (list || []).map((item) => {
+    if (item.transport === 'stdio') {
+      return {
+        name: item.name,
+        type: 'local' as const,
+        enabled: item.enabled !== false,
+        command: [item.command || 'npx', ...(item.args || [])],
+      }
+    }
+    return {
+      name: item.name,
+      type: 'remote' as const,
+      enabled: item.enabled !== false,
+      url: item.url || '',
+      headers: item.headers,
+      hasAuth: !!(item.headers && Object.keys(item.headers).length),
+    }
+  })
 }
 
 /**

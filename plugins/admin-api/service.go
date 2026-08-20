@@ -163,6 +163,8 @@ func (s *Service) Routes() []plugin.RouteSpec {
 		{Method: http.MethodGet, Pattern: "GET /api/unifyai/platforms", Auth: plugin.AuthSession, Handler: s.session(s.handleUnifyaiPlatforms)},
 		{Method: http.MethodPost, Pattern: "POST /api/unifyai/run", Auth: plugin.AuthSession, Handler: s.session(s.handleUnifyaiRun)},
 		{Method: http.MethodGet, Pattern: "GET /api/unifyai/stream", Auth: plugin.AuthSession, Handler: s.session(s.handleUnifyaiStream)},
+		{Method: http.MethodGet, Pattern: "GET /api/unifyai/mcp-servers", Auth: plugin.AuthSession, Handler: s.session(s.handleUnifyaiMcpServersList)},
+		{Method: http.MethodPut, Pattern: "PUT /api/unifyai/mcp-servers", Auth: plugin.AuthSession, Handler: s.session(s.handleUnifyaiMcpServersSave)},
 
 		// 聚合模型
 		{Method: http.MethodGet, Pattern: "GET /api/aggregates", Auth: plugin.AuthSession, Handler: s.session(s.handleAggregatesList)},
@@ -1859,6 +1861,31 @@ func (s *Service) handleUnifyaiStream(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+}
+
+// handleUnifyaiMcpServersList 返回 mcp.json 中的服务器列表（含 disabled）。
+func (s *Service) handleUnifyaiMcpServersList(w http.ResponseWriter, r *http.Request) {
+	servers, err := s.unify.McpServers()
+	if err != nil {
+		s.writeServerError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"servers": servers})
+}
+
+// handleUnifyaiMcpServersSave 全量写回 mcp.json（启用/禁用、添加、删除、导入共用）。
+func (s *Service) handleUnifyaiMcpServersSave(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Servers []unifyai.McpServer `json:"servers"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if err := s.unify.SaveMcpServers(req.Servers); err != nil {
+		s.writeServerError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 // handleSkillRestoreAll 对所有目标（通用 + 各平台）执行恢复，返回成功恢复的目标列表。

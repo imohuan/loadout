@@ -8,6 +8,7 @@ import { useListLoader } from '@/composables/useListLoader'
 import { useAsyncTask } from '@/composables/useAsyncTask'
 import { useConfirm } from '@/composables/useConfirm'
 import type { CapabilityRoute } from '@/lib/types'
+import { formatChannelGroupLabel, groupSegmentsFor } from '@/composables/useChannelRef'
 import PageHeader from '@/components/PageHeader.vue'
 import LoadingBlock from '@/components/LoadingBlock.vue'
 import CapabilityRouteEditor from '@/components/capability-routes/CapabilityRouteEditor.vue'
@@ -48,11 +49,13 @@ function key(route: CapabilityRoute) {
   )
 }
 
-// 渠道展示：空或含 `*`（老数据全匹配）= 全渠道；否则渠道名列表。
+// 渠道展示：空 / 含 `*` = 全渠道；否则按 base_url 分组聚合「渠道名(Key1, Key2)」。
 function channelScopeLabel(route: CapabilityRoute) {
   const ids = route.channel_ids || []
   if (!ids.length || ids.includes('*')) return '全渠道'
-  return ids.map((id) => channels.value?.find((c) => c.id === id)?.name || id).join('、')
+  return groupSegmentsFor(channels.value || [], ids)
+    .map(formatChannelGroupLabel)
+    .join(', ')
 }
 function routeTitle(route: CapabilityRoute) {
   return `${route.models.join(',')}（${channelScopeLabel(route)}）× ${route.capability}`

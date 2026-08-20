@@ -14,6 +14,8 @@ export interface ChannelSelection {
   channel_id?: string
   channel_ids?: string[]
   channel_base_url?: string
+  /** 多渠道级（singleChannelGroup=false 时用；点过渠道名的组，显示无括号） */
+  channel_base_urls?: string[]
 }
 
 const props = withDefaults(
@@ -50,18 +52,28 @@ function groupLabel(group: ReturnType<typeof groupChannelsByBaseURL>[number]) {
   return first?.channel_name || first?.name || group.baseUrl
 }
 
-// 当前选择态：{ auto, ids }。ids = 已勾选 Key 的 id 集合。
+// 当前选择态：{ auto, ids }。ids = 已勾选 Key 的 id 集合（渠道级展开为组内全部 Key）。
 const selection = computed(() => {
   const m = model.value
   if (!m) return { auto: true, ids: new Set<string>() }
-  if (m.channel_base_url) {
+  if (props.singleChannelGroup && m.channel_base_url) {
     const group = channelGroups.value.find(
       (g) => normalizeBaseURL(g.baseUrl) === normalizeBaseURL(m.channel_base_url!),
     )
     return { auto: false, ids: new Set((group?.keys || []).map((k) => k.id)) }
   }
-  const ids = m.channel_ids?.length ? m.channel_ids : m.channel_id ? [m.channel_id] : []
-  return { auto: ids.length === 0, ids: new Set(ids) }
+  const ids = new Set<string>()
+  for (const id of m.channel_ids || []) ids.add(id)
+  if (!props.singleChannelGroup) {
+    // 多渠道级展开：渠道级组内的 Key 也算已选。
+    for (const bu of m.channel_base_urls || []) {
+      const group = channelGroups.value.find(
+        (g) => normalizeBaseURL(g.baseUrl) === normalizeBaseURL(bu),
+      )
+      group?.keys.forEach((k) => ids.add(k.id))
+    }
+  }
+  return { auto: ids.size === 0, ids }
 })
 
 // 是否渠道级选中指定组（只有 channel_base_url === group.baseUrl 才算渠道级）。
@@ -71,7 +83,14 @@ function isChannelLevelSelected(group: ReturnType<typeof groupChannelsByBaseURL>
   return normalizeBaseURL(m.channel_base_url) === normalizeBaseURL(group.baseUrl)
 }
 
-// 把勾选态写回 model（后端字段归一化）。
+// 多渠道模式下该组是否在渠道级列表里（点过渠道名才算）。
+function isMultiChannelLevelSelected(group: ReturnType<typeof groupChannelsByBaseURL>[number]) {
+  const m = model.value
+  if (!m?.channel_base_urls?.length) return false
+  return m.channel_base_urls.some((bu) => normalizeBaseURL(bu) === normalizeBaseURL(group.baseUrl))
+}
+
+// 把勾选态写回 model（单渠道模式，后端字段归一化）。
 // 重要：渠道级（channel_base_url）与 Key 多选（channel_ids）是两个独立概念，互不转换。
 //   - 渠道级：只能由点击渠道组标题触发。
 //   - Key 多选：即使全部 Key 恰好被勾满，也仍然是 channel_ids，不会自动折叠为渠道级。
@@ -99,7 +118,7 @@ function applySelection(ids: Set<string>, auto: boolean) {
   m.channel_base_url = ''
 }
 
-// 设为渠道级（点击组标题触发）。再次点击同组 = 取消渠道级。
+// 设为渠道级（点击组标题触发，单渠道模式）。再次点击同组 = 取消渠道级。
 function setChannelLevel(group: ReturnType<typeof groupChannelsByBaseURL>[number]) {
   const m = model.value
   if (!m) return
@@ -117,28 +136,65 @@ function activeGroupOf(): ReturnType<typeof groupChannelsByBaseURL>[number] | un
   return undefined
 }
 
+// ===== 多渠道模式（singleChannelGroup=false，能力路由）=====
+// 渠道级与 Key 选择分开存：channel_base_urls（点过渠道名，多选）+ channel_ids（勾过 Key）。
+// 保存时由外部把渠道级展开为 Key ids；此处只维护 UI 语义。
+
+// 多渠道模式：toggle 单个 Key。
+//   - 点在渠道级组内 → 该组退出渠道级，改为只选这个 Key。
+//   - 普通 → 进/出 channel_ids（跨组自由累加）。
+function multiToggleKey(id: string) {
+  const m = model.value
+  if (!m) return
+  const keyGroup = channelGroups.value.find((g) => g.keys.some((k) => k.id === id))
+  if (keyGroup && isMultiChannelLevelSelected(keyGroup)) {
+    m.channel_base_urls = (m.channel_base_urls || []).filter(
+      (bu) => normalizeBaseURL(bu) !== normalizeBaseURL(keyGroup.baseUrl),
+    )
+    m.channel_ids = [id]
+    return
+  }
+  const next = new Set(m.channel_ids || [])
+  if (next.has(id)) next.delete(id)
+  else next.add(id)
+  m.channel_ids = [...next]
+}
+
+// 多渠道模式：toggle 整个渠道（渠道级多选）。
+//   - 设为渠道级：加入 channel_base_urls，并移除该组单独勾选的 Key（避免重复）。
+//   - 取消渠道级：从 channel_base_urls 移除。
+function multiToggleGroup(group: ReturnType<typeof groupChannelsByBaseURL>[number]) {
+  const m = model.value
+  if (!m) return
+  const base = normalizeBaseURL(group.baseUrl)
+  const groupIds = new Set(group.keys.map((k) => k.id))
+  if (isMultiChannelLevelSelected(group)) {
+    m.channel_base_urls = (m.channel_base_urls || []).filter((bu) => normalizeBaseURL(bu) !== base)
+  } else {
+    m.channel_base_urls = [...(m.channel_base_urls || []), group.baseUrl]
+    m.channel_ids = (m.channel_ids || []).filter((id) => !groupIds.has(id))
+  }
+}
+
 function toggleKey(id: string) {
+  if (!props.singleChannelGroup) {
+    multiToggleKey(id)
+    return
+  }
   const sel = selection.value
   const keyGroup = channelGroups.value.find((g) => g.keys.some((k) => k.id === id))
   const active = activeGroupOf()
   // 单渠道模式：跨组勾选自动切组（清空旧组，只保留新勾选的 Key）。
-  if (props.singleChannelGroup && keyGroup && active && keyGroup.baseUrl !== active.baseUrl) {
+  if (keyGroup && active && keyGroup.baseUrl !== active.baseUrl) {
     applySelection(new Set([id]), false)
     return
   }
-  // 当前是渠道级 → 切到 Key 多选模式：
-  //   - 单渠道模式：保留组内所有 Key 的勾选视觉，仅切换当前 Key。
-  //   - 多渠道模式：保留组内所有 Key（用作起点），合并点击的 Key（可跨组累加）。
+  // 当前是渠道级 → 切到 Key 多选模式（保留组内所有 Key 的勾选视觉，仅切换当前 Key）。
   if (model.value?.channel_base_url) {
     const own = (active?.keys || []).map((k) => k.id)
     const next = new Set(own)
-    if (props.singleChannelGroup) {
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-    } else {
-      // 多渠道模式：从渠道级切换到多 Key 时，已有 Key 一律带过去（之后可继续跨组扩展）。
-      next.add(id)
-    }
+    if (next.has(id)) next.delete(id)
+    else next.add(id)
     applySelection(next, false)
     return
   }
@@ -148,16 +204,15 @@ function toggleKey(id: string) {
 }
 // 组标题是否呈选中态：
 //   - 单渠道模式（ModelChannelList）：渠道级选中（channel_base_url 命中该组）。
-//   - 多渠道模式（能力路由）：组内全部 Key 都已被勾选（整组多选）。
+//   - 多渠道模式（能力路由）：该组在渠道级列表里（点过渠道名才算，勾满 Key 不算）。
 function isGroupSelected(group: ReturnType<typeof groupChannelsByBaseURL>[number]) {
   if (props.singleChannelGroup) return isChannelLevelSelected(group)
-  const { ids } = selection.value
-  return group.keys.length > 0 && group.keys.every((k) => ids.has(k.id))
+  return isMultiChannelLevelSelected(group)
 }
 
 // 点击组标题 = 选中/取消整个渠道：
 //   - 单渠道模式：设为渠道级（channel_base_url，独占；再次点击同组取消）。
-//   - 多渠道模式：整组 keys 一起进出 channel_ids，可跨组多选；不写 channel_base_url。
+//   - 多渠道模式：渠道级多选（channel_base_urls），可多组并存。
 function toggleGroup(group: ReturnType<typeof groupChannelsByBaseURL>[number]) {
   if (!group.keys.length) return
   if (props.singleChannelGroup) {
@@ -168,17 +223,7 @@ function toggleGroup(group: ReturnType<typeof groupChannelsByBaseURL>[number]) {
     setChannelLevel(group)
     return
   }
-  // 多渠道模式：toggle 整组（并集，保留其他组已选）。
-  const sel = selection.value
-  const groupIds = new Set(group.keys.map((k) => k.id))
-  const allIn = group.keys.every((k) => sel.ids.has(k.id))
-  if (allIn) {
-    const next = new Set(sel.ids)
-    group.keys.forEach((k) => next.delete(k.id))
-    applySelection(next, false)
-  } else {
-    applySelection(new Set([...sel.ids, ...groupIds]), false)
-  }
+  multiToggleGroup(group)
 }
 function toggleAuto() {
   applySelection(new Set(), true)
@@ -188,34 +233,52 @@ function toggleAuto() {
 <template>
   <div>
     <div v-if="allowAuto" class="mb-3">
-      <button type="button" class="w-full rounded-md border px-2 py-1.5 text-xs font-medium transition-colors" :class="!model.channel_id && !model.channel_ids?.length && !model.channel_base_url
-          ? 'border-primary bg-primary text-primary-foreground'
-          : 'border-border bg-background hover:bg-muted'
-        " @click="toggleAuto">
+      <button
+        type="button"
+        class="w-full rounded-md border px-2 py-1.5 text-xs font-medium transition-colors"
+        :class="
+          !model.channel_id && !model.channel_ids?.length && !model.channel_base_url
+            ? 'border-primary bg-primary text-primary-foreground'
+            : 'border-border bg-background hover:bg-muted'
+        "
+        @click="toggleAuto"
+      >
         {{ autoLabel }}
       </button>
     </div>
     <div v-if="layout === 'vertical'" class="space-y-1">
       <template v-for="group in channelGroups" :key="group.baseUrl">
-        <div class="rounded-md border p-1 transition-colors"
-          :class="isGroupSelected(group) ? 'border-primary/40 bg-primary/5' : 'border-transparent'">
-          <button type="button"
+        <div
+          class="rounded-md border p-1 transition-colors"
+          :class="isGroupSelected(group) ? 'border-primary/40 bg-primary/5' : 'border-transparent'"
+        >
+          <button
+            type="button"
             class="flex w-full items-center gap-1 rounded px-1 py-0.5 text-left text-xs font-medium transition-colors"
-            :class="isGroupSelected(group)
-                ? 'text-primary'
-                : 'text-muted-foreground hover:bg-muted/50'
-              " :aria-label="`选择整组：${groupLabel(group)}`" @click="toggleGroup(group)">
+            :class="
+              isGroupSelected(group) ? 'text-primary' : 'text-muted-foreground hover:bg-muted/50'
+            "
+            :aria-label="`选择整组：${groupLabel(group)}`"
+            @click="toggleGroup(group)"
+          >
             <RiStackLine v-if="isGroupSelected(group)" class="size-3.5 shrink-0" />
             <RiKey2Line v-else class="size-3.5 shrink-0 opacity-50" />
             <span class="flex-1 truncate">{{ groupLabel(group) }}</span>
             <RiCheckLine v-if="isGroupSelected(group)" class="size-3.5 shrink-0" />
           </button>
           <div class="mt-0.5 flex flex-wrap gap-1">
-            <button v-for="key in group.keys" :key="key.id" type="button"
-              class="rounded border px-1.5 py-0.5 text-xs font-medium transition-colors" :class="selection.ids.has(key.id)
+            <button
+              v-for="key in group.keys"
+              :key="key.id"
+              type="button"
+              class="rounded border px-1.5 py-0.5 text-xs font-medium transition-colors"
+              :class="
+                selection.ids.has(key.id)
                   ? 'border-primary bg-primary text-primary-foreground'
                   : 'border-border bg-background hover:bg-muted'
-                " @click="toggleKey(key.id)">
+              "
+              @click="toggleKey(key.id)"
+            >
               {{ key.name }}
             </button>
           </div>
@@ -223,24 +286,39 @@ function toggleAuto() {
       </template>
     </div>
     <div v-else class="space-y-0">
-      <div v-for="group in channelGroups" :key="group.baseUrl"
+      <div
+        v-for="group in channelGroups"
+        :key="group.baseUrl"
         class="flex items-center gap-2 rounded-md border p-1.5 transition-colors"
-        :class="isGroupSelected(group) ? 'border-primary/40 bg-primary/5' : 'border-transparent'">
-        <button type="button"
+        :class="isGroupSelected(group) ? 'border-primary/40 bg-primary/5' : 'border-transparent'"
+      >
+        <button
+          type="button"
           class="flex w-36 shrink-0 items-center gap-1 rounded px-1 py-0.5 text-left text-xs font-medium transition-colors"
-          :class="isGroupSelected(group) ? 'text-primary' : 'text-muted-foreground hover:bg-muted/50'
-            " :title="groupLabel(group)" @click="toggleGroup(group)">
+          :class="
+            isGroupSelected(group) ? 'text-primary' : 'text-muted-foreground hover:bg-muted/50'
+          "
+          :title="groupLabel(group)"
+          @click="toggleGroup(group)"
+        >
           <RiStackLine v-if="isGroupSelected(group)" class="size-3.5 shrink-0" />
           <RiKey2Line v-else class="size-3.5 shrink-0 opacity-50" />
           <span class="flex-1 truncate">{{ groupLabel(group) }}</span>
           <RiCheckLine v-if="isGroupSelected(group)" class="size-3.5 shrink-0" />
         </button>
         <div class="flex min-w-0 flex-1 flex-wrap gap-1">
-          <button v-for="key in group.keys" :key="key.id" type="button"
-            class="rounded border px-1.5 py-0.5 text-xs font-medium transition-colors" :class="selection.ids.has(key.id)
+          <button
+            v-for="key in group.keys"
+            :key="key.id"
+            type="button"
+            class="rounded border px-1.5 py-0.5 text-xs font-medium transition-colors"
+            :class="
+              selection.ids.has(key.id)
                 ? 'border-primary bg-primary text-primary-foreground'
                 : 'border-border bg-background hover:bg-muted'
-              " @click="toggleKey(key.id)">
+            "
+            @click="toggleKey(key.id)"
+          >
             {{ key.name }}
           </button>
         </div>
