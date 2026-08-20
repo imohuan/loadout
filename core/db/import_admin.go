@@ -266,7 +266,7 @@ func importAPIKeys(ctx context.Context, tx *sql.Tx, values []types.APIKey) error
 	}
 	for _, key := range values {
 		models, _ := json.Marshal(key.Models)
-		if _, err := tx.ExecContext(ctx, `INSERT INTO gateway_keys (id, kind, name, prefix, hash, models_json, enabled, created_at, endpoint, header_name) VALUES (?, 'api', ?, ?, ?, ?, ?, ?, '', '')`, key.ID, key.Name, key.Prefix, key.Hash, string(models), boolInt(key.Enabled), key.CreatedAt); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO gateway_keys (id, kind, name, prefix, hash, api_key_cipher, models_json, enabled, created_at, endpoint, header_name) VALUES (?, 'api', ?, ?, ?, ?, ?, ?, ?, '', '')`, key.ID, key.Name, key.Prefix, key.Hash, key.Cipher, string(models), boolInt(key.Enabled), key.CreatedAt); err != nil {
 			return fmt.Errorf("db: import api key %q: %w", key.ID, err)
 		}
 	}

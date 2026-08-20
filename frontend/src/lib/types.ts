@@ -17,6 +17,7 @@ export interface ChannelModelDetail {
 export interface Channel {
   id: string
   name: string
+  channel_name?: string
   base_url: string
   enabled?: boolean
   manual_enabled?: boolean
@@ -81,6 +82,7 @@ export interface RouteLog {
   requested_model: string
   final_model?: string
   final_channel_id?: string
+  sk_key_name?: string
   started_at: string
   result: string
   http_status?: number

@@ -41,6 +41,7 @@ type APIKey struct {
 	Name      string   `json:"name"`       // 备注名，如「本机调用」
 	Prefix    string   `json:"prefix"`     // 展示用前缀，如 sk-abc
 	Hash      string   `json:"hash"`       // 完整 key 的 sha256 哈希
+	Cipher    string   `json:"cipher,omitempty"` // 完整 key 的 AES 密文（仅服务端测试代理解密用，列表接口不返回）
 	Models    []string `json:"models"`     // 允许的模型；空或 ["*"] 表示不限制
 	Enabled   bool     `json:"enabled"`    // 是否启用
 	CreatedAt string   `json:"created_at"` // 创建时间（RFC3339）
@@ -60,7 +61,8 @@ type MCPKey struct {
 // Channel 上游渠道（NewAPI 及任何 OpenAI 兼容地址）。APIKey 用 AES-GCM 加密存储。
 type Channel struct {
 	ID            string               `json:"id"`                      // 唯一 ID
-	Name          string               `json:"name"`                    // 名称
+	Name          string               `json:"name"`                    // Key 名称（同一 Base URL 下多个 Key 各有名字）
+	ChannelName   string               `json:"channel_name,omitempty"`  // 渠道名称（Base URL 组级名称，同组 Key 同步一致）
 	BaseURL       string               `json:"base_url"`                // 地址，如 https://api.deepseek.com/v1
 	APIKeyCipher  string               `json:"api_key_cipher"`          // AES 密文（密钥在 .secret）
 	Enabled       bool                 `json:"enabled"`                 // 旧 JSON 兼容字段

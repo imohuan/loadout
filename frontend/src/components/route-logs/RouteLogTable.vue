@@ -3,20 +3,37 @@ import { computed, ref } from 'vue'
 import { RiArrowDownSLine, RiArrowRightSLine } from '@remixicon/vue'
 import type { Channel, RouteLog } from '@/lib/types'
 import { formatDate, formatDuration } from '@/lib/format'
-import StatusBadge from '@/components/StatusBadge.vue'
 import EmptyState from '@/components/EmptyState.vue'
 import DataPagination from '@/components/DataPagination.vue'
 
-const props = defineProps<{ logs: RouteLog[]; channels: Channel[]; loadingDetail?: string }>()
+const props = defineProps<{
+  logs: RouteLog[]
+  channels: Channel[]
+  loadingDetail?: string
+  /** false = 不做折叠：详情行始终展开、无箭头（如模型测试请求记录） */
+  collapsible?: boolean
+}>()
 const emit = defineEmits<{ expand: [log: RouteLog] }>()
 const expanded = ref(new Set<string>())
 function channelName(channels: Channel[], id?: string) {
   return id ? channels.find((channel) => channel.id === id)?.name || id : '-'
 }
+// 自带模式哨兵（与 ModelTestView 一致）：final_channel_id 持有此值时显示为「自带」+ key 名。
+const BUILTIN_CHANNEL = '__builtin__'
+function finalTargetLabel(channelId?: string, skKeyName?: string) {
+  if (channelId === BUILTIN_CHANNEL) {
+    return skKeyName ? `自带 · ${skKeyName}` : '自带'
+  }
+  return ''
+}
 function toggle(log: RouteLog) {
   expanded.value.has(log.request_id)
     ? expanded.value.delete(log.request_id)
     : (expanded.value.add(log.request_id), emit('expand', log))
+}
+function isExpanded(log: RouteLog) {
+  // collapsible === false 才强制展开；未传（undefined）保持默认可折叠。
+  return props.collapsible === false || expanded.value.has(log.request_id)
 }
 
 // ---------- 前端分页 ----------
@@ -72,9 +89,22 @@ const RESULT_TONES: Record<string, string> = {
   failed: 'bg-red-500/15 text-red-700 dark:text-red-300 border-red-500/20',
   running: 'bg-blue-500/15 text-blue-700 dark:text-blue-300 border-blue-500/20',
   skipped: 'bg-slate-500/15 text-slate-700 dark:text-slate-300 border-slate-500/20',
+  stream_interrupted: 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/20',
 }
 function resultTone(result?: string) {
   return RESULT_TONES[result || ''] || ''
+}
+// 模型测试的 result 字符串直接显示中文（不走 StatusBadge 的 health-status 映射，
+// 避免模型健康"已关闭"语义污染测试请求记录）。
+const RESULT_LABELS: Record<string, string> = {
+  success: '已成功',
+  failed: '失败',
+  running: '进行中',
+  skipped: '已跳过',
+  stream_interrupted: '已中断',
+}
+function resultLabel(result?: string) {
+  return RESULT_LABELS[result || ''] || result || '未知'
 }
 
 // 流速 t/s：completion_tokens / 秒。duration_ms<=0 或 tokens 缺失 → 返回空。
@@ -131,10 +161,13 @@ function cacheRatio(x: { prompt_tokens?: number; cached_tokens?: number }) {
             ></TableHeader
           ><TableBody
             ><template v-for="log in pagedLogs" :key="log.request_id"
-              ><TableRow class="cursor-pointer" @click="toggle(log)"
-                ><TableCell
+              ><TableRow
+                :class="props.collapsible !== false ? 'cursor-pointer' : ''"
+                @click="props.collapsible !== false && toggle(log)"
+              ><TableCell
                   ><component
-                    :is="expanded.has(log.request_id) ? RiArrowDownSLine : RiArrowRightSLine"
+                    v-if="props.collapsible !== false"
+                    :is="isExpanded(log) ? RiArrowDownSLine : RiArrowRightSLine"
                     size="18"
                     class="text-muted-foreground" /></TableCell
                 ><TableCell class="whitespace-nowrap text-xs text-muted-foreground">{{
@@ -147,11 +180,13 @@ function cacheRatio(x: { prompt_tokens?: number; cached_tokens?: number }) {
                   </p></TableCell
                 ><TableCell class="text-sm"
                   ><span class="font-mono">{{ log.final_model || '-' }}</span
-                  ><span v-if="log.final_channel_id" class="text-muted-foreground">
-                    @ {{ channelName(channels, log.final_channel_id) }}</span
+                  ><span v-if="log.final_channel_id === BUILTIN_CHANNEL" class="text-muted-foreground"
+                    >@ {{ finalTargetLabel(log.final_channel_id, log.sk_key_name) }}</span
+                  ><span v-else-if="log.final_channel_id" class="text-muted-foreground"
+                    >@ {{ channelName(channels, log.final_channel_id) }}</span
                   ></TableCell
                 ><TableCell
-                  ><StatusBadge :status="log.result" :class="resultTone(log.result)" /></TableCell
+                  ><Badge :class="resultTone(log.result)">{{ resultLabel(log.result) }}</Badge></TableCell
                 ><TableCell class="whitespace-nowrap text-xs"
                   ><span
                     v-if="log.stream"
@@ -186,7 +221,7 @@ function cacheRatio(x: { prompt_tokens?: number; cached_tokens?: number }) {
                 ><TableCell class="whitespace-nowrap tabular-nums text-sm">{{
                   formatDuration(log.duration_ms)
                 }}</TableCell></TableRow
-              ><TableRow v-if="expanded.has(log.request_id)"
+              ><TableRow v-if="isExpanded(log)"
                 ><TableCell colspan="9" class="bg-muted/30 p-4"
                   ><div
                     v-if="loadingDetail === log.request_id"
@@ -219,10 +254,10 @@ function cacheRatio(x: { prompt_tokens?: number; cached_tokens?: number }) {
                             variant="outline"
                             :class="['shrink-0 border', actionTone(attempt.action)]"
                             >{{ actionLabel(attempt.action) }}</Badge
-                          ><StatusBadge
-                            :status="attempt.result"
-                            :class="resultTone(attempt.result)"
-                          /><span class="text-xs text-muted-foreground">{{
+                          ><Badge
+                            :class="['shrink-0 border', resultTone(attempt.result)]"
+                            >{{ resultLabel(attempt.result) }}</Badge
+                          ><span class="text-xs text-muted-foreground">{{
                             formatDuration(attempt.duration_ms)
                           }}</span
                           ><span

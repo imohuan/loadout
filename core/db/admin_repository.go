@@ -344,7 +344,7 @@ func (r *Repository) PutSettings(ctx context.Context, settings types.Settings) e
 
 // ListAPIKeys 返回全部模型 API key（kind=api）。
 func (r *Repository) ListAPIKeys(ctx context.Context) ([]types.APIKey, error) {
-	rows, err := r.database.QueryContext(ctx, `SELECT id, name, prefix, hash, models_json, enabled, created_at FROM gateway_keys WHERE kind = 'api' ORDER BY id`)
+	rows, err := r.database.QueryContext(ctx, `SELECT id, name, prefix, hash, api_key_cipher, models_json, enabled, created_at FROM gateway_keys WHERE kind = 'api' ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("db: list api keys: %w", err)
 	}
@@ -353,7 +353,7 @@ func (r *Repository) ListAPIKeys(ctx context.Context) ([]types.APIKey, error) {
 	for rows.Next() {
 		var key types.APIKey
 		var modelsJSON string
-		if err := rows.Scan(&key.ID, &key.Name, &key.Prefix, &key.Hash, &modelsJSON, &key.Enabled, &key.CreatedAt); err != nil {
+		if err := rows.Scan(&key.ID, &key.Name, &key.Prefix, &key.Hash, &key.Cipher, &modelsJSON, &key.Enabled, &key.CreatedAt); err != nil {
 			return nil, fmt.Errorf("db: scan api key: %w", err)
 		}
 		if err := json.Unmarshal([]byte(modelsJSON), &key.Models); err != nil {
@@ -378,7 +378,7 @@ func (r *Repository) ReplaceAPIKeys(ctx context.Context, keys []types.APIKey) er
 			if err != nil {
 				return fmt.Errorf("db: marshal api key models: %w", err)
 			}
-			if _, err := tx.ExecContext(ctx, `INSERT INTO gateway_keys (id, kind, name, prefix, hash, models_json, enabled, created_at, endpoint, header_name) VALUES (?, 'api', ?, ?, ?, ?, ?, ?, '', '')`, key.ID, key.Name, key.Prefix, key.Hash, string(models), boolInt(key.Enabled), key.CreatedAt); err != nil {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO gateway_keys (id, kind, name, prefix, hash, api_key_cipher, models_json, enabled, created_at, endpoint, header_name) VALUES (?, 'api', ?, ?, ?, ?, ?, ?, ?, '', '')`, key.ID, key.Name, key.Prefix, key.Hash, key.Cipher, string(models), boolInt(key.Enabled), key.CreatedAt); err != nil {
 				return fmt.Errorf("db: insert api key %q: %w", key.ID, err)
 			}
 		}

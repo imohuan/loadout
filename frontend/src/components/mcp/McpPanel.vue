@@ -13,6 +13,7 @@ import {
   RiEditLine,
   RiFileCopyLine,
   RiKey2Line,
+  RiLoader4Line,
   RiRefreshLine,
   RiTestTubeLine,
 } from '@remixicon/vue'
@@ -24,7 +25,7 @@ import { useManagementApi } from '@/composables/useManagementApi'
 import { useAsyncTask } from '@/composables/useAsyncTask'
 const mcp = reactive(useMcpManagement())
 const api = useManagementApi()
-const { pending: keyPending, run: runKey } = useAsyncTask()
+const { run: runKey, isPending: isKeyPending } = useAsyncTask()
 const labels: Record<string, string> = { http: 'Streamable HTTP', sse: 'SSE', stdio: 'stdio' }
 const activeTab = ref('upstream')
 const serverDialog = ref(false)
@@ -239,7 +240,7 @@ function endpointUrl(path: string) {
   return `${window.location.origin}${path}`
 }
 async function createMcpKey(endpoint: string) {
-  await runKey(async () => {
+  await runKey(`endpoint:${endpoint}:create`, async () => {
     const result = await api.createMcpKey(endpoint)
     endpointKeys.value = { ...endpointKeys.value, [endpoint]: result.key }
     if (!isEndpointExpanded(endpoint)) expandedEndpoints.value.push(endpoint)
@@ -249,7 +250,7 @@ async function createMcpKey(endpoint: string) {
   }, 'MCP 端点密钥已签发')
 }
 async function deleteMcpKey(endpoint: string) {
-  await runKey(async () => {
+  await runKey(`endpoint:${endpoint}:delete`, async () => {
     await api.deleteMcpKey(endpoint)
     const index = expandedEndpoints.value.indexOf(endpoint)
     if (index >= 0) expandedEndpoints.value.splice(index, 1)
@@ -374,9 +375,10 @@ async function copyConfig(endpoint: {
                                   variant="ghost"
                                   size="icon"
                                   aria-label="测试"
+                                  :disabled="mcp.isPending(`server:${server.id}:test`)"
                                   @click="mcp.testServer(server, server.name)"
                                 >
-                                  <RiTestTubeLine size="16" /> </Button
+                                  <RiLoader4Line v-if="mcp.isPending(`server:${server.id}:test`)" class="animate-spin" size="16" /><RiTestTubeLine v-else size="16" /> </Button
                               ></TooltipTrigger>
                               <TooltipContent>测试连接</TooltipContent>
                             </Tooltip>
@@ -398,9 +400,10 @@ async function copyConfig(endpoint: {
                                   variant="ghost"
                                   size="icon"
                                   aria-label="切换状态"
+                                  :disabled="mcp.isPending(`server:${server.id}:toggle`)"
                                   @click="mcp.toggleServer(server)"
                                 >
-                                  <RiRefreshLine size="16" /> </Button
+                                  <RiLoader4Line v-if="mcp.isPending(`server:${server.id}:toggle`)" class="animate-spin" size="16" /><RiRefreshLine v-else size="16" /> </Button
                               ></TooltipTrigger>
                               <TooltipContent>切换状态</TooltipContent>
                             </Tooltip>
@@ -410,9 +413,10 @@ async function copyConfig(endpoint: {
                                   variant="ghost"
                                   size="icon"
                                   aria-label="删除"
+                                  :disabled="mcp.isPending(`server:${server.id}:remove`)"
                                   @click="mcp.removeServer(server)"
                                 >
-                                  <RiDeleteBinLine size="16" /> </Button
+                                  <RiLoader4Line v-if="mcp.isPending(`server:${server.id}:remove`)" class="animate-spin" size="16" /><RiDeleteBinLine v-else size="16" /> </Button
                               ></TooltipTrigger>
                               <TooltipContent>删除</TooltipContent>
                             </Tooltip>
@@ -523,9 +527,10 @@ async function copyConfig(endpoint: {
                                 variant="ghost"
                                 size="icon"
                                 aria-label="删除分组"
+                                :disabled="mcp.isPending(`group:${group.name}:remove`)"
                                 @click="mcp.removeGroup(group)"
                               >
-                                <RiDeleteBinLine size="16" /> </Button
+                                <RiLoader4Line v-if="mcp.isPending(`group:${group.name}:remove`)" class="animate-spin" size="16" /><RiDeleteBinLine v-else size="16" /> </Button
                             ></TooltipTrigger>
                             <TooltipContent>删除分组</TooltipContent>
                           </Tooltip>
@@ -605,19 +610,19 @@ async function copyConfig(endpoint: {
                           v-if="mcp.endpointHasKey(endpoint.path)"
                           variant="destructive"
                           size="sm"
-                          :disabled="keyPending"
+                          :disabled="isKeyPending(`endpoint:${endpoint.path}:delete`)"
                           @click="deleteMcpKey(endpoint.path)"
                         >
-                          <RiDeleteBinLine size="16" />删除认证
+                          <RiLoader4Line v-if="isKeyPending(`endpoint:${endpoint.path}:delete`)" class="animate-spin" size="16" /><RiDeleteBinLine v-else size="16" />删除认证
                         </Button>
                         <Button
                           v-else
                           variant="secondary"
                           size="sm"
-                          :disabled="keyPending"
+                          :disabled="isKeyPending(`endpoint:${endpoint.path}:create`)"
                           @click="createMcpKey(endpoint.path)"
                         >
-                          <RiKey2Line size="16" />创建端点密钥
+                          <RiLoader4Line v-if="isKeyPending(`endpoint:${endpoint.path}:create`)" class="animate-spin" size="16" /><RiKey2Line v-else size="16" />创建端点密钥
                         </Button>
                       </div>
                     </TableCell>

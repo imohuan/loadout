@@ -4,6 +4,7 @@ import {
   RiAddLine,
   RiDeleteBinLine,
   RiEditLine,
+  RiLoader4Line,
   RiLoaderLine,
   RiRefreshLine,
   RiUploadLine,
@@ -34,7 +35,7 @@ const {
   refreshing: statusRefreshing,
   refresh: refreshStatus,
 } = useListLoader(api.skillStatus)
-const { pending, run } = useAsyncTask()
+const { run, isPending } = useAsyncTask()
 const { confirmDialog } = useConfirm()
 const activeTab = ref('skills')
 const skillDialog = ref(false)
@@ -318,7 +319,7 @@ async function refresh() {
   await Promise.all([refreshSkills(), refreshPresets(), refreshStatus()])
 }
 async function installSkill() {
-  await run(async () => {
+  await run('install-skill', async () => {
     await api.installSkill({ ...skillForm })
     Object.assign(skillForm, { name: '', source: '', version: '' })
     npxCmd.value = ''
@@ -330,7 +331,7 @@ async function installSkill() {
 async function importSkillZip() {
   const file = skillFile.value
   if (!file) return
-  await run(async () => {
+  await run('import-skill', async () => {
     await api.importSkillZip(file, skillForm.name || file.name.replace(/\.zip$/i, ''))
     Object.assign(skillForm, { name: '', source: '', version: '' })
     npxCmd.value = ''
@@ -371,6 +372,7 @@ async function savePreset() {
   }
   const isEdit = !!editingPreset.value
   await run(
+    'save-preset',
     async () => {
       // 后端 CreatePreset 同名覆盖：编辑时 name 不变即可原地更新；新建时 name 唯一。
       await api.createPreset({
@@ -391,7 +393,7 @@ function presetTargetsLabel(preset: { target?: string; targets?: string[] }): st
 }
 async function removeSkill(name: string) {
   if (!(await confirmDialog('移除技能「' + name + '」？'))) return
-  await run(async () => {
+  await run(`skill:${name}:remove`, async () => {
     await api.deleteSkill(name)
     await refreshSkills()
     await refreshStatus()
@@ -404,14 +406,14 @@ async function applyPreset(name: string) {
     confirmText: '切换',
   })
   if (!confirmed) return
-  await run(async () => {
+  await run(`preset:${name}:apply`, async () => {
     await api.applyPreset(name)
     await refreshStatus()
   }, '预设已切换')
 }
 async function removePreset(name: string) {
   if (!(await confirmDialog('删除预设「' + name + '」？'))) return
-  await run(async () => {
+  await run(`preset:${name}:remove`, async () => {
     await api.deletePreset(name)
     await refreshPresets()
   }, '预设已删除')
@@ -443,7 +445,7 @@ async function restoreBackup(status: { name: string; dir: string }) {
     confirmText: '恢复',
   })
   if (!confirmed) return
-  await run(async () => {
+  await run(`platform:${status.name}:restore`, async () => {
     await api.restoreBackup(status.name)
     await refreshStatus()
     toast.success(`已恢复「${label}」`)
@@ -456,7 +458,7 @@ async function restoreAllBackups() {
     confirmText: '恢复所有',
   })
   if (!confirmed) return
-  await run(async () => {
+  await run('restore-all', async () => {
     const r = await api.restoreAllBackups()
     await refreshStatus()
     toast.success(`已恢复 ${r.restored.length} 个平台`)
@@ -467,17 +469,17 @@ async function restoreAllBackups() {
   <div class="h-full flex flex-col gap-6">
     <PageHeader title="Skills" description="安装、移除技能，并保存可快速切换的技能预设。">
       <template #actions
-        ><Button variant="outline" :disabled="loading || pending" @click="refresh">
+        ><Button variant="outline" :disabled="loading || anyRefreshing" @click="refresh">
           <RiRefreshLine :class="anyRefreshing ? 'animate-spin' : ''" size="16" />刷新
         </Button>
-        <Button variant="outline" :disabled="pending || syncing" @click="syncSkills">
+        <Button variant="outline" :disabled="syncing" @click="syncSkills">
           <RiUploadLine :class="syncing ? 'animate-spin' : ''" size="16" />{{
             syncing ? '同步中…' : '主动同步'
           }}
         </Button>
         <Button
           variant="outline"
-          :disabled="pending || updateStatus === 'running'"
+          :disabled="updateStatus === 'running'"
           @click="checkUpdates"
         >
           <RiLoaderLine :class="updateStatus === 'running' ? 'animate-spin' : ''" size="16" />{{
@@ -567,9 +569,10 @@ async function restoreAllBackups() {
                               variant="ghost"
                               size="icon"
                               aria-label="移除技能"
+                              :disabled="isPending(`skill:${skill.name}:remove`)"
                               @click="removeSkill(skill.name)"
                             >
-                              <RiDeleteBinLine size="16" /> </Button
+                              <RiLoader4Line v-if="isPending(`skill:${skill.name}:remove`)" class="animate-spin" size="16" /><RiDeleteBinLine v-else size="16" /> </Button
                           ></TooltipTrigger>
                           <TooltipContent>移除技能</TooltipContent>
                         </Tooltip>
@@ -625,8 +628,8 @@ async function restoreAllBackups() {
                       </TableCell>
                       <TableCell class="text-right">
                         <div class="flex justify-end gap-2">
-                          <Button variant="outline" size="sm" @click="applyPreset(preset.name)"
-                            >切换</Button
+                          <Button variant="outline" size="sm" :disabled="isPending(`preset:${preset.name}:apply`)" @click="applyPreset(preset.name)"
+                            ><RiLoader4Line v-if="isPending(`preset:${preset.name}:apply`)" class="animate-spin" size="16" />切换</Button
                           >
                           <Tooltip>
                             <TooltipTrigger as-child
@@ -646,9 +649,10 @@ async function restoreAllBackups() {
                                 variant="ghost"
                                 size="icon"
                                 aria-label="删除预设"
+                                :disabled="isPending(`preset:${preset.name}:remove`)"
                                 @click="removePreset(preset.name)"
                               >
-                                <RiDeleteBinLine size="16" /> </Button
+                                <RiLoader4Line v-if="isPending(`preset:${preset.name}:remove`)" class="animate-spin" size="16" /><RiDeleteBinLine v-else size="16" /> </Button
                             ></TooltipTrigger>
                             <TooltipContent>删除预设</TooltipContent>
                           </Tooltip>
@@ -673,10 +677,10 @@ async function restoreAllBackups() {
               <Button
                 variant="destructive"
                 size="sm"
-                :disabled="pending"
+                :disabled="isPending('restore-all')"
                 v-if="skillStatus?.some((s) => s.has_backup)"
                 @click="restoreAllBackups"
-                >恢复所有</Button
+                ><RiLoader4Line v-if="isPending('restore-all')" class="animate-spin" size="16" />恢复所有</Button
               >
             </CardHeader>
             <CardContent class="p-0">
@@ -710,10 +714,10 @@ async function restoreAllBackups() {
                         <Button
                           variant="destructive"
                           size="sm"
-                          :disabled="pending"
+                          :disabled="isPending(`platform:${st.name || 'generic'}:restore`)"
                           v-if="st.has_backup"
                           @click="restoreBackup(st)"
-                          >恢复</Button
+                          ><RiLoader4Line v-if="isPending(`platform:${st.name || 'generic'}:restore`)" class="animate-spin" size="16" />恢复</Button
                         >
                         <span v-else class="text-sm text-muted-foreground">—</span>
                       </TableCell>
@@ -808,13 +812,15 @@ async function restoreAllBackups() {
             />
           </div>
           <DialogFooter>
-            <Button type="submit" :disabled="pending">安装</Button>
+            <Button type="submit" :disabled="isPending('install-skill')">
+              <RiLoader4Line v-if="isPending('install-skill')" class="animate-spin" size="16" />安装
+            </Button>
             <Button
               type="button"
               variant="secondary"
-              :disabled="pending || !skillFile"
+              :disabled="isPending('import-skill') || !skillFile"
               @click="importSkillZip"
-              >导入 ZIP</Button
+              ><RiLoader4Line v-if="isPending('import-skill')" class="animate-spin" size="16" />导入 ZIP</Button
             >
             <Button type="button" variant="outline" @click="skillDialog = false">取消</Button>
           </DialogFooter>
@@ -983,9 +989,10 @@ async function restoreAllBackups() {
             <p class="text-xs text-muted-foreground">未选择时默认通用（.agents）</p>
           </div>
           <DialogFooter
-            ><Button type="submit" :disabled="pending">{{
-              editingPreset ? '保存' : '创建预设'
-            }}</Button
+            ><Button type="submit" :disabled="isPending('save-preset')"
+              ><RiLoader4Line v-if="isPending('save-preset')" class="animate-spin" size="16" />{{
+                editingPreset ? '保存' : '创建预设'
+              }}</Button
             ><Button type="button" variant="outline" @click="closePresetDialog()"
               >取消</Button
             ></DialogFooter

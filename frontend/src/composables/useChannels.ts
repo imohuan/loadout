@@ -2,6 +2,7 @@ import { api, request } from '@/lib/api'
 import type { Channel } from '@/lib/types'
 
 export interface ChannelInput {
+  channel_name?: string
   name: string
   base_url: string
   api_key: string
@@ -54,6 +55,10 @@ export function useChannels() {
   /** 启用/禁用单个 key（渠道记录） */
   const setEnabled = (id: string, enabled: boolean) =>
     request<void>(`/api/model-status/channels/${id}`, 'PATCH', { manual_enabled: enabled })
+  /** 按表单当前值直接探测上游 /v1/models（不落库）：新建传 base_url+api_key；
+   *  编辑时 Key 不回显，传 id 让后台取已存 Key */
+  const probe = (input: { id?: string; base_url: string; api_key?: string }) =>
+    request<{ models: string[]; models_error?: string }>('/api/channels/probe', 'POST', input)
   const refreshModels = (id: string) =>
     request<void>(`/api/channels/${id}/refresh-models`, 'POST', {})
   const replaceModels = (id: string, models: ChannelModelInput[]) =>
@@ -64,5 +69,5 @@ export function useChannels() {
       'POST',
       { id, model, vision },
     )
-  return { list, save, remove, move, reorder, setEnabled, refreshModels, replaceModels, test }
+  return { list, save, remove, move, reorder, setEnabled, probe, refreshModels, replaceModels, test }
 }

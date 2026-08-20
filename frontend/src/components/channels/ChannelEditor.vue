@@ -1,18 +1,22 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
-import { RiCloseLine, RiSearchLine } from '@remixicon/vue'
+import { RiCloseLine, RiRefreshLine, RiSearchLine } from '@remixicon/vue'
 import type { Channel } from '@/lib/types'
-import type { ChannelInput } from '@/composables/useChannels'
+import { useChannels, type ChannelInput } from '@/composables/useChannels'
 
+const service = useChannels()
 const props = defineProps<{
   channel?: Channel
   pending?: boolean
   /** 非空 = "添加 Key" 模式：base_url 锁定为该值（同组渠道），只需填 Key 名与 API Key */
   lockBaseUrl?: string
+  /** 所属渠道组的名称（添加 Key 模式只读展示，来自同组首个 Key） */
+  groupName?: string
 }>()
 const emit = defineEmits<{ save: [value: ChannelInput]; cancel: [] }>()
 const open = defineModel<boolean>('open', { required: true })
 const form = reactive<{
+  channel_name: string
   name: string
   base_url: string
   api_key: string
@@ -21,6 +25,7 @@ const form = reactive<{
   models: string[]
   model_candidates: string[]
 }>({
+  channel_name: '',
   name: '',
   base_url: '',
   api_key: '',
@@ -32,11 +37,15 @@ const form = reactive<{
 // 模型搜索词与下拉开关（必须在 watch 前声明，immediate 回调会用到）。
 const modelOpen = ref(false)
 const modelSearch = ref('')
+// "获取模型"按钮状态：探测中 / 探测错误。
+const fetchingModels = ref(false)
+const probeError = ref('')
 
 function resetForm() {
   const channel = props.channel
   const detail = channel?.models_detail
   Object.assign(form, {
+    channel_name: channel?.channel_name || props.groupName || '',
     name: channel?.name || '',
     base_url: props.lockBaseUrl || channel?.base_url || '',
     api_key: '',
@@ -48,6 +57,7 @@ function resetForm() {
     model_candidates: detail ? detail.map((d) => d.model) : [...(channel?.models || [])],
   })
   modelSearch.value = ''
+  probeError.value = ''
 }
 // 每次打开时重置表单：连续两次"添加 Key"（editing 恒 undefined，channel 不变化）
 // 也必须清空残留，不能只 watch channel。
@@ -107,9 +117,41 @@ function onModelSearchEnter() {
   if (!modelSearch.value.trim()) return
   addCustomModel()
 }
+// 按表单当前值探测上游 /v1/models，结果并入候选池（不落库，保存时才生效）。
+// 新建：传 base_url + api_key；编辑：Key 不回显，传 id 让后台取已存 Key。
+async function fetchModels() {
+  const baseUrl = form.base_url.trim()
+  if (!baseUrl) return
+  fetchingModels.value = true
+  probeError.value = ''
+  try {
+    const result = await service.probe({
+      id: props.channel?.id,
+      base_url: baseUrl,
+      api_key: form.api_key,
+    })
+    probeError.value = result.models_error || ''
+    if (result.models?.length) {
+      const known = new Set(form.model_candidates)
+      for (const m of result.models) {
+        if (!known.has(m)) {
+          known.add(m)
+          form.model_candidates.push(m)
+          form.models.push(m) // 新探测到的模型默认启用
+        }
+      }
+    }
+  } catch (err) {
+    probeError.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    fetchingModels.value = false
+  }
+}
 function submit() {
   emit('save', {
     ...form,
+    // 添加 Key 模式：渠道名跟随所属组，交由后端继承，避免把组名当新值提交。
+    channel_name: props.lockBaseUrl ? '' : form.channel_name,
     models: [...form.models],
     model_candidates: [...candidateModels.value],
   })
@@ -127,6 +169,15 @@ function submit() {
         <DialogDescription v-else>支持 NewAPI 和 OpenAI 兼容的上游服务。</DialogDescription>
       </DialogHeader>
       <form class="grid gap-4 md:grid-cols-2" @submit.prevent="submit">
+        <div class="space-y-2">
+          <Label for="channel-name-title">渠道名称</Label
+          ><Input
+            id="channel-name-title"
+            v-model="form.channel_name"
+            :disabled="!!lockBaseUrl"
+            :placeholder="lockBaseUrl ? '跟随渠道组' : '如：主力 NewAPI'"
+          />
+        </div>
         <div class="space-y-2">
           <Label for="channel-name">{{ lockBaseUrl ? 'Key 名称' : '名称' }}</Label
           ><Input
@@ -187,6 +238,18 @@ function submit() {
                     @keydown.esc="modelOpen = false"
                     @keydown.enter.prevent="onModelSearchEnter"
                   />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    class="shrink-0"
+                    :disabled="!form.base_url.trim() || fetchingModels"
+                    title="按当前 Base URL / API Key 重新探测模型"
+                    @click="fetchModels"
+                  >
+                    <RiRefreshLine :class="{ 'animate-spin': fetchingModels }" size="14" />
+                    获取模型
+                  </Button>
                   <div class="flex items-center gap-1">
                     <Button
                       type="button"
@@ -258,7 +321,8 @@ function submit() {
               </button>
             </Badge>
           </div>
-          <p v-if="modelsError" class="text-xs text-destructive">
+          <p v-if="probeError" class="text-xs text-destructive">获取模型失败：{{ probeError }}</p>
+          <p v-else-if="modelsError" class="text-xs text-destructive">
             上次探测模型失败：{{ modelsError }}
           </p>
           <p v-else class="text-xs text-muted-foreground">

@@ -2,14 +2,16 @@
 // 统一收敛到后台转发，避免前端直连不支持 CORS 的上游 base_url。
 //
 // 目标既可通过 channel_id 复用已存渠道（后端解密密钥，不回传明文），
-// 也可直接提供临时 base_url + api_key（不落盘）。测试请求以 request_id
-// 写入转发日志（route-log），可在「转发日志」Tab 还原完整时间线。
+// 也可直接提供临时 base_url + api_key（不落盘）。测试请求是「旁路探针」：
+// 不写入转发日志（route-log），访问摘要（request_id、模型、耗时、tokens、
+// 错误等）随响应回带，由前端「请求记录」面板直显；仅当上游是 Loadout
+// 自身的导出服务时，由 router 内部正常写日志。
 package adminapi
 
 import (
 	"bufio"
 	"bytes"
-	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,11 +27,14 @@ import (
 
 // testTarget 模型测试的目标来源：channel_id 与 base_url/api_key 二选一。
 // 选中渠道（预设）时始终传 channel_id，后端解密渠道密钥；渠道未存 K 时
-// 用请求携带的临时 api_key 自动补全。suffix_mode 指定上游路径后缀模式。
+// 用请求携带的临时 api_key 自动补全。sk_key_hash 为「Loadout 自带」模式：
+// 前端传自建 SK key 的哈希，后端按哈希解析出明文 key，配 base_url 直接调用
+// 自家网关（明文不出服务端）。suffix_mode 指定上游路径后缀模式。
 type testTarget struct {
 	ChannelID  string `json:"channel_id"`
 	BaseURL    string `json:"base_url"`
 	APIKey     string `json:"api_key"`
+	SkKeyHash  string `json:"sk_key_hash"`
 	SuffixMode string `json:"suffix_mode"` // chat(默认/常规) | gpt | claude
 }
 
@@ -44,15 +49,42 @@ type testChatRequest struct {
 }
 
 // resolveTestTarget 解析出 base_url 与明文 api_key。
-// 选中渠道时始终以渠道记录为准取 base_url；key 的优先级：请求携带的自定义
-// key（前端手动输入，表示想用它）> 渠道存储的 key。未选渠道时用临时 base_url+api_key。
-func (s *Service) resolveTestTarget(r *http.Request, in testTarget) (string, string, error) {
+// 优先级：
+//  1. sk_key_hash 非空 → 「Loadout 自带」：按哈希解析自建 SK key 明文，base_url 用请求携带值。
+//  2. channel_id 非空 → 渠道记录为准取 base_url；key 优先级：请求自定义 key > 渠道存储 key。
+//  3. 否则用临时 base_url + api_key。
+func (s *Service) resolveTestTarget(r *http.Request, in testTarget) (string, string, string, error) {
+	if in.SkKeyHash != "" {
+		// 自带模式：按 sk_key_hash 识别（非 base_url）。base_url 解析规则：
+		//   - 相对路径（/v1、/ 或空）→ 用当前请求 Host 补全 scheme://Host；
+		//   - 完整 URL（http(s)://...）→ 直接使用（用户自定义域名测试）。
+		// 默认 /v1 对齐自家网关挂载路径。
+		baseURL := strings.TrimSpace(in.BaseURL)
+		if baseURL == "" || baseURL == "/" {
+			baseURL = "/v1"
+		}
+		if !strings.HasPrefix(baseURL, "http://") && !strings.HasPrefix(baseURL, "https://") {
+			scheme := "http"
+			if r.TLS != nil {
+				scheme = "https"
+			}
+			if !strings.HasPrefix(baseURL, "/") {
+				baseURL = "/" + baseURL
+			}
+			baseURL = scheme + "://" + r.Host + baseURL
+		}
+		plain, name, err := s.keys.ResolveAPIKey(in.SkKeyHash)
+		if err != nil {
+			return "", "", "", err
+		}
+		return baseURL, plain, name, nil
+	}
 	if in.ChannelID != "" {
 		var baseURL, channelKey string
 		if s.routing != nil {
 			channel, _, err := s.channelByID(r.Context(), in.ChannelID)
 			if err != nil {
-				return "", "", err
+				return "", "", "", err
 			}
 			baseURL = channel.BaseURL
 			if channel.APIKeyCipher != "" {
@@ -61,34 +93,33 @@ func (s *Service) resolveTestTarget(r *http.Request, in testTarget) (string, str
 		} else {
 			items, err := readSlice[types.Channel](s.st, types.FileChannels)
 			if err != nil {
-				return "", "", err
+				return "", "", "", err
 			}
 			found := false
 			for _, channel := range items {
-				if channel.ID != in.ChannelID {
-					continue
+				if channel.ID == in.ChannelID {
+					baseURL = channel.BaseURL
+					if channel.APIKeyCipher != "" {
+						channelKey, _ = s.st.Decrypt(channel.APIKeyCipher)
+					}
+					found = true
+					break
 				}
-				baseURL = channel.BaseURL
-				if channel.APIKeyCipher != "" {
-					channelKey, _ = s.st.Decrypt(channel.APIKeyCipher)
-				}
-				found = true
-				break
 			}
 			if !found {
-				return "", "", errNotFound("channel")
+				return "", "", "", errNotFound("channel")
 			}
 		}
 		key := strings.TrimSpace(in.APIKey)
 		if key == "" {
 			key = channelKey
 		}
-		return baseURL, key, nil
+		return baseURL, key, "", nil
 	}
 	if strings.TrimSpace(in.BaseURL) == "" {
-		return "", "", errors.New("缺少 channel_id 或 base_url")
+		return "", "", "", errors.New("缺少 channel_id 或 base_url")
 	}
-	return strings.TrimSpace(in.BaseURL), in.APIKey, nil
+	return strings.TrimSpace(in.BaseURL), in.APIKey, "", nil
 }
 
 // handleTestModels 代理上游 /models，返回模型 id 列表。上游失败以 error 字段返回（HTTP 200）。
@@ -97,7 +128,7 @@ func (s *Service) handleTestModels(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &in) {
 		return
 	}
-	baseURL, apiKey, err := s.resolveTestTarget(r, in)
+	baseURL, apiKey, _, err := s.resolveTestTarget(r, in)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -277,13 +308,15 @@ func splitDataURI(uri string) (mediaType, data string, ok bool) {
 }
 
 // handleTestChat 代理上游对话接口（按后缀模式选 /chat/completions、/responses、/messages），
-// 支持非流式与流式（SSE）转发，并把本次测试请求写入转发日志。
+// 支持非流式与流式（SSE）转发。测试请求不写入转发日志：访问摘要（request_id、模型、
+// 耗时、tokens、错误等）随响应回带，供前端「请求记录」面板直显；仅当上游是 Loadout
+// 自身的导出服务时，由 router 内部正常写日志。
 func (s *Service) handleTestChat(w http.ResponseWriter, r *http.Request) {
 	var req testChatRequest
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	baseURL, apiKey, err := s.resolveTestTarget(r, req.testTarget)
+	baseURL, apiKey, skKeyName, err := s.resolveTestTarget(r, req.testTarget)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -308,9 +341,10 @@ func (s *Service) handleTestChat(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Request-Id", requestID)
 
 	// base_url 原样拼接，不自动补 /v1（部分上游没有 v1 段，地址完全由用户/渠道决定）。
+	started := time.Now()
 	upReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, strings.TrimRight(baseURL, "/")+testSuffixPath(req.SuffixMode), bytes.NewReader(body))
 	if err != nil {
-		s.logTestResult(r.Context(), requestID, req.Model, req.ChannelID, time.Now(), "failed", "network", http.StatusBadGateway, false, contracts.TokenUsage{}, err)
+		s.setTestLogHeader(w, buildTestLogSummary(requestID, req.Model, req.ChannelID, skKeyName, started, time.Now(), "failed", "network", http.StatusBadGateway, req.Stream, contracts.TokenUsage{}, err))
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
@@ -319,10 +353,9 @@ func (s *Service) handleTestChat(w http.ResponseWriter, r *http.Request) {
 		upReq.Header.Set("Authorization", "Bearer "+apiKey)
 	}
 
-	started := time.Now()
 	resp, err := (&http.Client{Timeout: config.UpstreamTimeout}).Do(upReq)
 	if err != nil {
-		s.logTestResult(r.Context(), requestID, req.Model, req.ChannelID, started, "failed", "network", http.StatusBadGateway, false, contracts.TokenUsage{}, err)
+		s.setTestLogHeader(w, buildTestLogSummary(requestID, req.Model, req.ChannelID, skKeyName, started, time.Now(), "failed", "network", http.StatusBadGateway, req.Stream, contracts.TokenUsage{}, err))
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
@@ -332,7 +365,7 @@ func (s *Service) handleTestChat(w http.ResponseWriter, r *http.Request) {
 		upstreamBody, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
 		s.lg.Warn("模型测试上游返回错误", "status", resp.StatusCode)
 		message := fmt.Sprintf("上游返回错误(%d): %s", resp.StatusCode, upstreamErrorText(upstreamBody))
-		s.logTestResult(r.Context(), requestID, req.Model, req.ChannelID, started, "failed", failureClassForStatus(resp.StatusCode), resp.StatusCode, false, contracts.TokenUsage{}, errors.New(message))
+		s.setTestLogHeader(w, buildTestLogSummary(requestID, req.Model, req.ChannelID, skKeyName, started, time.Now(), "failed", failureClassForStatus(resp.StatusCode), resp.StatusCode, req.Stream, contracts.TokenUsage{}, errors.New(message)))
 		// 透传上游错误体，便于前端展示原始错误。
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(resp.StatusCode)
@@ -343,25 +376,104 @@ func (s *Service) handleTestChat(w http.ResponseWriter, r *http.Request) {
 	if !req.Stream {
 		respBody, err := io.ReadAll(resp.Body)
 		if err != nil {
-			s.logTestResult(r.Context(), requestID, req.Model, req.ChannelID, started, "failed", "network", resp.StatusCode, false, contracts.TokenUsage{}, err)
+			s.setTestLogHeader(w, buildTestLogSummary(requestID, req.Model, req.ChannelID, skKeyName, started, time.Now(), "failed", "network", resp.StatusCode, false, contracts.TokenUsage{}, err))
 			writeError(w, http.StatusBadGateway, err.Error())
 			return
 		}
 		if ct := resp.Header.Get("Content-Type"); ct != "" {
 			w.Header().Set("Content-Type", ct)
 		}
-		s.logTestResult(r.Context(), requestID, req.Model, req.ChannelID, started, "success", "", resp.StatusCode, false, extractUsageNonStream(respBody), nil)
+		s.setTestLogHeader(w, buildTestLogSummary(requestID, req.Model, req.ChannelID, skKeyName, started, time.Now(), "success", "", resp.StatusCode, false, extractUsageNonStream(respBody), nil))
 		w.WriteHeader(resp.StatusCode)
 		_, _ = w.Write(respBody)
 		return
 	}
 
-	result, usage := s.streamTestUpstream(w, resp)
-	s.logTestResult(r.Context(), requestID, req.Model, req.ChannelID, started, result, "", resp.StatusCode, true, usage, nil)
+	// 流式：SSE 末尾追加 route_log 事件携带访问摘要（含最终 tokens），不写转发日志。
+	s.streamTestUpstream(w, resp, started, req.Model, req.ChannelID, skKeyName, requestID)
 }
 
-// streamTestUpstream 把上游 SSE 响应原样转发给客户端，同时扫描最后一个 usage chunk。
-func (s *Service) streamTestUpstream(w http.ResponseWriter, resp *http.Response) (string, contracts.TokenUsage) {
+// testLogHeaderName 响应头名：携带 base64(JSON) 的测试访问摘要，供前端「请求记录」面板直显。
+const testLogHeaderName = "X-Test-Log"
+
+// setTestLogHeader 把访问摘要 base64 编码后写入响应头（必须在 WriteHeader 前调用）。
+func (s *Service) setTestLogHeader(w http.ResponseWriter, summary testLogSummary) {
+	w.Header().Set(testLogHeaderName, encodeTestLogSummary(summary))
+}
+
+// testLogSummary 模型测试请求的访问摘要：与前端 RouteLog 同形，随响应回带，不写库。
+type testLogSummary struct {
+	RequestID        string           `json:"request_id"`
+	RequestedModel   string           `json:"requested_model"`
+	FinalModel       string           `json:"final_model"`
+	FinalChannelID   string           `json:"final_channel_id,omitempty"`
+	SkKeyName        string           `json:"sk_key_name,omitempty"` // 自带模式下选中的 SK key 名称（请求记录展示用）
+	StartedAt        time.Time        `json:"started_at"`
+	Result           string           `json:"result"` // success | failed | stream_interrupted
+	HTTPStatus       int              `json:"http_status"`
+	DurationMS       int64            `json:"duration_ms"`
+	ErrorMessage     string           `json:"error_message,omitempty"`
+	Stream           bool             `json:"stream"`
+	PromptTokens     int              `json:"prompt_tokens"`
+	CompletionTokens int              `json:"completion_tokens"`
+	CachedTokens     int              `json:"cached_tokens"`
+	Attempts         []testLogAttempt `json:"attempts"`
+}
+
+type testLogAttempt struct {
+	StepNo       int       `json:"step_no"`
+	Action       string    `json:"action"`
+	Result       string    `json:"result"`
+	Model        string    `json:"model"`
+	ChannelID    string    `json:"channel_id,omitempty"`
+	StartedAt    time.Time `json:"started_at"`
+	DurationMS   int64     `json:"duration_ms"`
+	FailureClass string    `json:"failure_class,omitempty"`
+	ErrorMessage string    `json:"error_message,omitempty"`
+	Stream       bool      `json:"stream"`
+}
+
+// buildTestLogSummary 构造单步访问摘要（成功/失败/中断统一入口）。
+// error_message 截断到 4KB，避免摘要超响应头大小限制。
+func buildTestLogSummary(requestID, model, channelID, skKeyName string, started, finished time.Time, result, failureClass string, statusCode int, stream bool, usage contracts.TokenUsage, err error) testLogSummary {
+	message := ""
+	if err != nil {
+		message = err.Error()
+		if len([]rune(message)) > 4096 {
+			message = string([]rune(message)[:4096])
+		}
+	}
+	duration := finished.Sub(started).Milliseconds()
+	return testLogSummary{
+		RequestID: requestID, RequestedModel: model, FinalModel: model,
+		FinalChannelID: channelID, SkKeyName: skKeyName, StartedAt: started, Result: result,
+		HTTPStatus: statusCode, DurationMS: duration, ErrorMessage: message, Stream: stream,
+		PromptTokens: usage.PromptTokens, CompletionTokens: usage.CompletionTokens, CachedTokens: usage.CachedTokens,
+		Attempts: []testLogAttempt{{
+			StepNo: 1, Action: "首次尝试", Result: result, Model: model, ChannelID: channelID,
+			StartedAt: started, DurationMS: duration, FailureClass: failureClass, ErrorMessage: message, Stream: stream,
+		}},
+	}
+}
+
+// encodeTestLogSummary 把摘要 base64 编码；若压缩后仍超 6KB（异常情况），
+// 清空 error_message 与 attempts 兜底，保证不突破常见反代 header 大小限制。
+func encodeTestLogSummary(summary testLogSummary) string {
+	raw, err := json.Marshal(summary)
+	if err != nil {
+		return ""
+	}
+	if len(raw) > 6*1024 {
+		summary.ErrorMessage = ""
+		summary.Attempts = nil
+		raw, _ = json.Marshal(summary)
+	}
+	return base64.StdEncoding.EncodeToString(raw)
+}
+
+// streamTestUpstream 把上游 SSE 响应原样转发给客户端，同时扫描最后一个 usage chunk，
+// 并在流结束（正常/中断）时追加 route_log 事件携带访问摘要。测试请求不写转发日志。
+func (s *Service) streamTestUpstream(w http.ResponseWriter, resp *http.Response, started time.Time, model, channelID, skKeyName, requestID string) {
 	defer resp.Body.Close()
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -374,7 +486,8 @@ func (s *Service) streamTestUpstream(w http.ResponseWriter, resp *http.Response)
 		line, err := reader.ReadString('\n')
 		if len(line) > 0 {
 			if _, writeErr := io.WriteString(w, line); writeErr != nil {
-				return "stream_interrupted", usage
+				writeTestLogSSEEvent(w, flusher, buildTestLogSummary(requestID, model, channelID, skKeyName, started, time.Now(), "stream_interrupted", "network", http.StatusOK, true, usage, errors.New("客户端连接中断")))
+				return
 			}
 			if u := parseTestUsageLine(line); u.PromptTokens > 0 || u.CompletionTokens > 0 || u.CachedTokens > 0 {
 				usage = u
@@ -385,42 +498,26 @@ func (s *Service) streamTestUpstream(w http.ResponseWriter, resp *http.Response)
 		}
 		if err != nil {
 			if err != io.EOF {
+				writeTestLogSSEEvent(w, flusher, buildTestLogSummary(requestID, model, channelID, skKeyName, started, time.Now(), "stream_interrupted", "network", http.StatusOK, true, usage, errors.New("上游流式响应中断")))
 				writeTestSSEError(w, flusher, "上游流式响应中断")
-				return "stream_interrupted", usage
+				return
 			}
-			return "success", usage
+			writeTestLogSSEEvent(w, flusher, buildTestLogSummary(requestID, model, channelID, skKeyName, started, time.Now(), "success", "", http.StatusOK, true, usage, nil))
+			return
 		}
 	}
 }
 
-// logTestResult 把一次模型测试请求写入转发日志（best-effort，失败不影响响应）。
-// Start/Attempt/Finish 一次性完成，request 不会停留在 running 状态。
-func (s *Service) logTestResult(ctx context.Context, requestID, model, channelID string, started time.Time, result, failureClass string, statusCode int, stream bool, usage contracts.TokenUsage, err error) {
-	if s.routeLog == nil {
+// writeTestLogSSEEvent 在 SSE 流末尾追加 route_log 事件，data 为 base64(JSON summary)。
+func writeTestLogSSEEvent(w http.ResponseWriter, flusher http.Flusher, summary testLogSummary) {
+	block, err := json.Marshal(summary)
+	if err != nil {
 		return
 	}
-	finished := time.Now()
-	message := ""
-	if err != nil {
-		message = err.Error()
-	}
-	if startErr := s.routeLog.Start(ctx, contracts.RouteRequest{RequestID: requestID, RequestedModel: model, StartedAt: started}); startErr != nil {
-		s.lg.Warn("test route-log start failed", "err", startErr)
-	}
-	if _, attemptErr := s.routeLog.Attempt(ctx, contracts.RouteAttempt{
-		RequestID: requestID, StepNo: 1, Action: "首次尝试", Model: model, ChannelID: channelID,
-		StartedAt: started, FinishedAt: &finished, Result: result, FailureClass: failureClass,
-		StatusCode: statusCode, ErrorMessage: message, Duration: contracts.DurationMS(time.Since(started)),
-		Stream: stream, PromptTokens: usage.PromptTokens, CompletionTokens: usage.CompletionTokens, CachedTokens: usage.CachedTokens,
-	}); attemptErr != nil {
-		s.lg.Warn("test route-log attempt failed", "err", attemptErr)
-	}
-	if finishErr := s.routeLog.Finish(ctx, contracts.RouteFinish{
-		RequestID: requestID, FinishedAt: finished, Result: result, FinalModel: model,
-		FinalChannelID: channelID, HTTPStatus: statusCode, Duration: contracts.DurationMS(time.Since(started)), ErrorMessage: message,
-		Stream: stream, PromptTokens: usage.PromptTokens, CompletionTokens: usage.CompletionTokens, CachedTokens: usage.CachedTokens,
-	}); finishErr != nil {
-		s.lg.Warn("test route-log finish failed", "err", finishErr)
+	_, _ = io.WriteString(w, "event: route_log\n")
+	_, _ = io.WriteString(w, "data: "+base64.StdEncoding.EncodeToString(block)+"\n\n")
+	if flusher != nil {
+		flusher.Flush()
 	}
 }
 

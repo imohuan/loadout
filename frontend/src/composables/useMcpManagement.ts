@@ -56,7 +56,7 @@ export function useMcpManagement() {
   const selectedTools = ref<Array<{ server_id: string; tool_name: string }>>([])
   const editingId = ref<string | null>(null)
   const editingGroup = ref<string | null>(null)
-  const { pending, run } = useAsyncTask()
+  const { pending, run, isPending } = useAsyncTask()
   const { confirmDialog } = useConfirm()
   // `initialLoading` only flips to false after the first refresh completes,
   // so a "loading skeleton" can be shown on cold start without flashing the
@@ -206,7 +206,7 @@ export function useMcpManagement() {
       error?: string
       tools?: Array<{ name: string; description?: string }>
     }
-    await run(async () => {
+    await run(`server:${name}:test`, async () => {
       try {
         result = {
           name,
@@ -226,7 +226,7 @@ export function useMcpManagement() {
     return result!
   }
   async function saveServer() {
-    await run(async () => {
+    await run('save-server', async () => {
       const data = payload()
       if (!data.name) throw new Error('名称必填')
       if ((data.transport === 'http' || data.transport === 'sse') && !data.url)
@@ -239,7 +239,7 @@ export function useMcpManagement() {
     }, 'MCP 服务器已保存')
   }
   async function toggleServer(server: McpServer) {
-    await run(async () => {
+    await run(`server:${server.id}:toggle`, async () => {
       await request('/api/mcp-servers/' + server.id, 'PUT', {
         ...server,
         enabled: server.enabled === false,
@@ -249,13 +249,13 @@ export function useMcpManagement() {
   }
   async function removeServer(server: McpServer) {
     if (!(await confirmDialog('删除 MCP「' + server.name + '」？'))) return
-    await run(async () => {
+    await run(`server:${server.id}:remove`, async () => {
       await api('/api/mcp-servers', { method: 'DELETE', body: JSON.stringify({ id: server.id }) })
       await refresh()
     }, 'MCP 服务器已删除')
   }
   async function saveGroup() {
-    await run(async () => {
+    await run('save-group', async () => {
       if (!groupName.value.trim()) throw new Error('分组名必填')
       await request('/api/groups', 'PUT', [
         ...groups.value.filter(
@@ -269,7 +269,7 @@ export function useMcpManagement() {
   }
   async function removeGroup(group: McpGroup) {
     if (!(await confirmDialog('删除分组「' + group.name + '」？'))) return
-    await run(async () => {
+    await run(`group:${group.name}:remove`, async () => {
       await api('/api/groups', { method: 'DELETE', body: JSON.stringify({ name: group.name }) })
       await refresh()
     }, '分组已删除')
@@ -294,6 +294,7 @@ export function useMcpManagement() {
     initialLoading,
     refreshing,
     pending,
+    isPending,
     refresh,
     refreshKeys,
     resetServer,

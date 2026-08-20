@@ -460,6 +460,7 @@ func (s *Service) CheckNow(ctx context.Context, _ bool) error {
 type channelStatusRow struct {
 	ID          string
 	Name        string
+	ChannelName string
 	BaseURL     string
 	Manual      bool
 	SyncBilling bool
@@ -500,6 +501,7 @@ func (s *Service) List(ctx context.Context) ([]contracts.ChannelStatus, error) {
 		item := contracts.ChannelStatus{
 			ID:            channel.ID,
 			Name:          channel.Name,
+			ChannelName:   channel.ChannelName,
 			BaseURL:       channel.BaseURL,
 			ManualEnabled: channel.Manual,
 			SyncBilling:   channel.SyncBilling,
@@ -545,7 +547,7 @@ func (s *Service) List(ctx context.Context) ([]contracts.ChannelStatus, error) {
 }
 
 func (s *Service) listChannelStatus(ctx context.Context) ([]channelStatusRow, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT c.id, c.name, c.base_url, c.manual_enabled, c.sync_billing, COALESCE(cs.status, 'available'), cs.disabled_until FROM channels c LEFT JOIN channel_states cs ON cs.channel_id = c.id ORDER BY c.id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT c.id, c.name, c.channel_name, c.base_url, c.manual_enabled, c.sync_billing, COALESCE(cs.status, 'available'), cs.disabled_until FROM channels c LEFT JOIN channel_states cs ON cs.channel_id = c.id ORDER BY c.id`)
 	if err != nil {
 		return nil, err
 	}
@@ -553,7 +555,7 @@ func (s *Service) listChannelStatus(ctx context.Context) ([]channelStatusRow, er
 	var result []channelStatusRow
 	for rows.Next() {
 		var row channelStatusRow
-		if err := rows.Scan(&row.ID, &row.Name, &row.BaseURL, &row.Manual, &row.SyncBilling, &row.Status, &row.Until); err != nil {
+		if err := rows.Scan(&row.ID, &row.Name, &row.ChannelName, &row.BaseURL, &row.Manual, &row.SyncBilling, &row.Status, &row.Until); err != nil {
 			return nil, err
 		}
 		result = append(result, row)

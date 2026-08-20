@@ -67,6 +67,7 @@ type ModelHealth interface {
 type ChannelStatus struct {
 	ID            string        `json:"id"`
 	Name          string        `json:"name"`
+	ChannelName   string        `json:"channel_name,omitempty"`
 	BaseURL       string        `json:"base_url"`
 	ManualEnabled bool          `json:"manual_enabled"`
 	SyncBilling   bool          `json:"sync_billing"`

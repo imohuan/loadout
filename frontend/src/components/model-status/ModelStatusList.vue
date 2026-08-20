@@ -4,7 +4,7 @@ import type { ChannelStatus, ModelStatus } from '@/lib/types'
 import EmptyState from '@/components/EmptyState.vue'
 import ModelStatusChannelGroup from './ModelStatusChannelGroup.vue'
 
-const props = defineProps<{ items: ChannelStatus[]; mode: 'table' | 'tags'; pending?: boolean }>()
+const props = defineProps<{ items: ChannelStatus[]; mode: 'table' | 'tags'; isPending?: (key: string) => boolean }>()
 const emit = defineEmits<{
   channelToggle: [item: ChannelStatus, enabled: boolean]
   modelToggle: [item: ChannelStatus, model: ModelStatus, enabled: boolean]
@@ -42,7 +42,7 @@ const groups = computed(() => {
         :base-url="group.baseUrl"
         :keys="group.keys"
         :mode="mode"
-        :pending="pending"
+        :is-pending="isPending"
         @channel-toggle="(item, enabled) => emit('channelToggle', item, enabled)"
         @model-toggle="(item, m, enabled) => emit('modelToggle', item, m, enabled)"
         @recover-channel="(item) => emit('recoverChannel', item)"

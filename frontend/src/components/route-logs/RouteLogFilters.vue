@@ -1,16 +1,19 @@
 <script setup lang="ts">
 import { reactive, watch } from 'vue'
-import { RiFilter3Line, RiRefreshLine } from '@remixicon/vue'
+import { RiFilter3Line, RiLoader4Line, RiRefreshLine } from '@remixicon/vue'
 import type { Channel } from '@/lib/types'
 import type { RouteLogFilters } from '@/composables/useRouteLogs'
 
-const props = defineProps<{ channels: Channel[]; pending?: boolean }>()
+const props = defineProps<{ channels: Channel[]; isPending?: (key: string) => boolean }>()
 const emit = defineEmits<{ apply: [filters: RouteLogFilters]; reset: [] }>()
 const form = reactive<RouteLogFilters>({})
 watch(
   () => props.channels,
   () => undefined,
 )
+function busy(key: string) {
+  return props.isPending ? props.isPending(key) : false
+}
 function submit() {
   emit('apply', { ...form })
 }
@@ -70,12 +73,12 @@ function reset() {
       <Input id="log-to" v-model="form.to" type="datetime-local" />
     </div>
     <div class="flex shrink-0 items-center gap-2">
-      <Button type="submit" :disabled="pending">
-        <RiFilter3Line size="16" />筛选
+      <Button type="submit" :disabled="busy('apply')">
+        <RiLoader4Line v-if="busy('apply')" class="animate-spin" size="16" /><RiFilter3Line v-else size="16" />筛选
       </Button>
       <TooltipProvider>
         <Tooltip>
-          <TooltipTrigger as-child><Button type="button" variant="outline" :disabled="pending" aria-label="重置筛选"
+          <TooltipTrigger as-child><Button type="button" variant="outline" :disabled="busy('apply')" aria-label="重置筛选"
               @click="reset">
               <RiRefreshLine size="16" />
             </Button></TooltipTrigger>

@@ -1,11 +1,15 @@
 <script setup lang="ts">
 import { reactive } from 'vue'
-import { RiFilter3Line, RiRefreshLine } from '@remixicon/vue'
+import { RiFilter3Line, RiLoader4Line, RiRefreshLine } from '@remixicon/vue'
 import type { ModelStatusFilters } from '@/composables/useModelStatus'
 
+const props = defineProps<{ isPending?: (key: string) => boolean }>()
 const emit = defineEmits<{ apply: [filters: ModelStatusFilters]; reset: [] }>()
 const form = reactive<ModelStatusFilters>({})
 
+function busy(key: string) {
+  return props.isPending ? props.isPending(key) : false
+}
 function submit() {
   emit('apply', { ...form })
 }
@@ -58,8 +62,8 @@ function reset() {
       </Select>
     </div>
     <div class="flex shrink-0 items-center gap-2">
-      <Button type="submit">
-        <RiFilter3Line size="16" />筛选
+      <Button type="submit" :disabled="busy('filter')">
+        <RiLoader4Line v-if="busy('filter')" class="animate-spin" size="16" /><RiFilter3Line v-else size="16" />筛选
       </Button>
       <TooltipProvider>
         <Tooltip>

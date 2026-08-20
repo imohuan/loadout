@@ -26,7 +26,7 @@ const {
   refreshing: channelsRefreshing,
   refresh: refreshChannels,
 } = useListLoader(channelService.list)
-const { pending, run } = useAsyncTask()
+const { run, isPending } = useAsyncTask()
 const { confirmDialog } = useConfirm()
 const editing = ref<Aggregate>()
 const editorOpen = ref(false)
@@ -65,7 +65,7 @@ function openDuplicate(value: Aggregate) {
   editorOpen.value = true
 }
 async function save(value: Aggregate) {
-  await run(async () => {
+  await run('save', async () => {
     const next = [
       ...(aggregates.value || []).filter(
         (item) => item.name !== (editing.value?.name || value.name),
@@ -80,7 +80,7 @@ async function save(value: Aggregate) {
 }
 async function remove(value: Aggregate) {
   if (!(await confirmDialog(`删除聚合模型「${value.name}」？`))) return
-  await run(async () => {
+  await run(`aggregate:${value.name}:remove`, async () => {
     await aggregateService.replaceAll(
       (aggregates.value || []).filter((item) => item.name !== value.name),
     )
@@ -104,7 +104,7 @@ async function remove(value: Aggregate) {
       v-model:open="editorOpen"
       :aggregate="editing"
       :channels="channels || []"
-      :pending="pending"
+      :pending="isPending('save')"
       :duplicate="editorDuplicate"
       @save="save"
       @cancel="editorOpen = false"
@@ -114,7 +114,7 @@ async function remove(value: Aggregate) {
       v-else
       :aggregates="aggregates || []"
       :channels="channels || []"
-      :pending="pending"
+      :is-pending="isPending"
       @edit="openEdit"
       @duplicate="openDuplicate"
       @remove="remove"

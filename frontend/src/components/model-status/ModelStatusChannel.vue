@@ -3,6 +3,7 @@ import { ref, computed } from 'vue'
 import {
   RiArrowDownSLine,
   RiArrowRightSLine,
+  RiLoader4Line,
   RiRefreshLine,
   RiRestartLine,
   RiDeleteBinLine,
@@ -18,7 +19,7 @@ import { formatDate } from '@/lib/format'
 const props = defineProps<{
   item: ChannelStatus
   mode: 'table' | 'tags'
-  pending?: boolean
+  isPending?: (key: string) => boolean
 }>()
 
 const emit = defineEmits<{
@@ -66,6 +67,12 @@ function clearSelection() {
 function toggleAllSelect() {
   allSelected.value ? clearSelection() : selectAll()
 }
+
+// 操作 key：与 ModelStatusView.run() 的 key 规则完全一致（ms:{channelId}:{action}）。
+// 按钮级 loading/disabled 依赖 key 精确匹配，不能改格式。
+function busy(action: string) {
+  return props.isPending ? props.isPending(`ms:${props.item.channel.id}:${action}`) : false
+}
 </script>
 
 <template>
@@ -85,24 +92,30 @@ function toggleAllSelect() {
           class="shrink-0 text-muted-foreground"
         />
         <div class="min-w-0 flex-1">
-          <p class="font-medium text-foreground">{{ item.channel.name }}</p>
-          <p class="truncate font-mono text-xs text-muted-foreground">
-            {{ item.channel.base_url }}
-          </p>
+          <div class="flex items-baseline gap-3">
+            <p class="truncate font-medium text-foreground">{{ item.channel.name }}</p>
+            <p class="shrink-0 truncate font-mono text-xs text-muted-foreground">
+              {{ item.channel.base_url }}
+            </p>
+          </div>
         </div>
-        <StatusBadge :status="item.health_status" :available="item.effective_available" />
+        <StatusBadge
+          :status="item.health_status"
+          :available="item.effective_available"
+          hide-when-available
+        />
         <span class="hidden text-sm text-muted-foreground md:block"
           >{{ item.models.length }} 个模型</span
         >
       </button>
-      <div class="flex flex-wrap items-center gap-2 border-t border-border px-4 py-2 text-sm">
+      <div v-if="expanded" class="flex flex-wrap items-center gap-2 border-t border-border px-4 py-2 text-sm">
         <div class="flex flex-1 flex-wrap items-center gap-2">
           <template v-if="!hasSelection">
             <div class="flex items-center gap-2">
               <Switch
                 :id="`channel-${item.channel.id}`"
                 :model-value="item.manual_enabled"
-                :disabled="pending"
+                :disabled="busy('toggle')"
                 @update:model-value="emit('channelToggle', Boolean($event))"
               />
               <Label :for="`channel-${item.channel.id}`">手动启用</Label>
@@ -110,18 +123,18 @@ function toggleAllSelect() {
             <span v-if="item.reason" class="min-w-48 flex-1 text-muted-foreground">{{
               item.reason
             }}</span>
-            <Button variant="outline" size="sm" :disabled="pending" @click="emit('recoverChannel')">
-              <RiRefreshLine size="16" />恢复渠道
+            <Button variant="outline" size="sm" :disabled="busy('recover')" @click="emit('recoverChannel')">
+              <RiLoader4Line v-if="busy('recover')" class="animate-spin" size="16" /><RiRefreshLine v-else size="16" />恢复渠道
             </Button>
             <Tooltip>
               <TooltipTrigger as-child>
                 <Button
                   variant="outline"
                   size="sm"
-                  :disabled="pending"
+                  :disabled="busy('recover-all')"
                   @click="emit('recoverAllModels')"
                 >
-                  <RiRestartLine size="16" />恢复全部异常
+                  <RiLoader4Line v-if="busy('recover-all')" class="animate-spin" size="16" /><RiRestartLine v-else size="16" />恢复全部异常
                 </Button>
               </TooltipTrigger>
               <TooltipContent>
@@ -132,18 +145,18 @@ function toggleAllSelect() {
             <Button
               variant="outline"
               size="sm"
-              :disabled="pending"
+              :disabled="busy('batch-toggle:off')"
               @click="emit('batchModelToggle', item.models, false)"
             >
-              关闭全部
+              <RiLoader4Line v-if="busy('batch-toggle:off')" class="animate-spin" size="16" />关闭全部
             </Button>
             <Button
               variant="outline"
               size="sm"
-              :disabled="pending"
+              :disabled="busy('batch-toggle:on')"
               @click="emit('batchModelToggle', item.models, true)"
             >
-              开启全部
+              <RiLoader4Line v-if="busy('batch-toggle:on')" class="animate-spin" size="16" />开启全部
             </Button>
           </template>
           <template v-else>
@@ -151,38 +164,38 @@ function toggleAllSelect() {
             <Button
               variant="outline"
               size="sm"
-              :disabled="pending"
+              :disabled="busy('batch-delete')"
               @click="emit('batchDeleteModel', selectedModels)"
             >
-              <RiDeleteBinLine size="14" />删除
+              <RiLoader4Line v-if="busy('batch-delete')" class="animate-spin" size="14" /><RiDeleteBinLine v-else size="14" />删除
             </Button>
             <Button
               variant="outline"
               size="sm"
-              :disabled="pending"
+              :disabled="busy('batch-toggle:on')"
               @click="emit('batchModelToggle', selectedModels, true)"
             >
-              <RiToggleLine size="14" />开启
+              <RiLoader4Line v-if="busy('batch-toggle:on')" class="animate-spin" size="14" /><RiToggleLine v-else size="14" />开启
             </Button>
             <Button
               variant="outline"
               size="sm"
-              :disabled="pending"
+              :disabled="busy('batch-toggle:off')"
               @click="emit('batchModelToggle', selectedModels, false)"
             >
-              关闭
+              <RiLoader4Line v-if="busy('batch-toggle:off')" class="animate-spin" size="14" />关闭
             </Button>
             <Button
               variant="outline"
               size="sm"
-              :disabled="pending"
+              :disabled="busy('batch-recover')"
               @click="emit('batchRecoverModel', selectedModels)"
             >
-              <RiRefreshLine size="14" />恢复
+              <RiLoader4Line v-if="busy('batch-recover')" class="animate-spin" size="14" /><RiRefreshLine v-else size="14" />恢复
             </Button>
           </template>
         </div>
-        <div class="flex items-center gap-0.5">
+        <div class="flex shrink-0 items-center gap-0.5">
           <Tooltip>
             <TooltipTrigger as-child>
               <Button size="sm" variant="ghost" @click="selectAll">
@@ -248,7 +261,7 @@ function toggleAllSelect() {
                   <Switch
                     :id="`model-${item.channel.id}-${model.model}`"
                     :model-value="model.manual_enabled"
-                    :disabled="pending"
+                    :disabled="busy(`model-toggle:${model.model}`)"
                     @update:model-value="emit('modelToggle', model, Boolean($event))"
                   />
                 </TableCell>
@@ -256,6 +269,7 @@ function toggleAllSelect() {
                   <StatusBadge
                     :status="model.health_status"
                     :available="model.effective_available"
+                    hide-when-available
                   />
                 </TableCell>
                 <TableCell class="max-w-64 whitespace-normal text-xs text-muted-foreground">{{
@@ -270,18 +284,18 @@ function toggleAllSelect() {
                     v-if="model.source === 'manual'"
                     variant="outline"
                     size="sm"
-                    :disabled="pending"
+                    :disabled="busy(`model-delete:${model.model}`)"
                     @click="emit('deleteModel', model)"
                   >
-                    <RiDeleteBinLine size="14" />删除
+                    <RiLoader4Line v-if="busy(`model-delete:${model.model}`)" class="animate-spin" size="14" /><RiDeleteBinLine v-else size="14" />删除
                   </Button>
                   <Button
                     variant="outline"
                     size="sm"
-                    :disabled="pending"
+                    :disabled="busy(`model-recover:${model.model}`)"
                     @click="emit('recoverModel', model)"
                   >
-                    <RiRefreshLine size="14" />恢复
+                    <RiLoader4Line v-if="busy(`model-recover:${model.model}`)" class="animate-spin" size="14" /><RiRefreshLine v-else size="14" />恢复
                   </Button>
                 </TableCell>
               </TableRow>
@@ -299,18 +313,24 @@ function toggleAllSelect() {
                 ? 'border-transparent bg-primary text-primary-foreground'
                 : 'border-border bg-background text-foreground hover:bg-muted'
             "
-            :disabled="pending"
+            :disabled="busy(`model-toggle:${model.model}`)"
             @click="toggleSelect(model.model)"
           >
             <span class="font-mono">{{ model.model }}</span>
-            <StatusBadge :status="model.health_status" :available="model.effective_available" />
+            <StatusBadge
+              :status="model.health_status"
+              :available="model.effective_available"
+              hide-when-available
+            />
             <Tooltip v-if="model.source === 'manual'">
               <TooltipTrigger as-child>
                 <span
                   class="rounded-full p-0.5 hover:bg-destructive/20 hover:text-destructive"
+                  :class="{ 'pointer-events-none opacity-50': busy(`model-delete:${model.model}`) }"
                   @click.stop="emit('deleteModel', model)"
                 >
-                  <RiCloseLine size="12" />
+                  <RiLoader4Line v-if="busy(`model-delete:${model.model}`)" class="animate-spin" size="12" />
+                  <RiCloseLine v-else size="12" />
                 </span>
               </TooltipTrigger>
               <TooltipContent>删除（仅手动添加）</TooltipContent>

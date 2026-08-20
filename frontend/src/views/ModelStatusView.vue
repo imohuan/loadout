@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import {
+  RiLoader4Line,
   RiRefreshLine,
   RiRestartLine,
   RiStethoscopeLine,
@@ -21,8 +22,14 @@ import ModelStatusList from '@/components/model-status/ModelStatusList.vue'
 
 const service = useModelStatus()
 const { data: rawData, loading } = useListLoader(service.list)
-const { pending, run } = useAsyncTask()
+const { run, isPending } = useAsyncTask()
 const { confirmDialog } = useConfirm()
+
+// 操作 key：模型状态页所有按钮级 loading 的唯一来源。
+// 子组件（ModelStatusList → ChannelGroup → Channel）内部按钮用相同规则生成 key。
+function msKey(channelId: string, action: string) {
+  return `ms:${channelId}:${action}`
+}
 
 const filters = ref<ModelStatusFilters>({})
 const mode = ref<'table' | 'tags'>('table')
@@ -64,7 +71,9 @@ const data = computed(() => {
 })
 
 async function applyFilters(next: ModelStatusFilters) {
-  filters.value = next
+  await run('filter', async () => {
+    filters.value = next
+  })
 }
 function resetFilters() {
   filters.value = {}
@@ -91,18 +100,20 @@ async function patchChannel(id: string) {
 
 // 静默全量刷新：不置 loading，避免整表闪烁（用于健康检查、手动刷新）
 async function silentRefresh() {
-  const fresh = await fetchFresh()
-  if (fresh) rawData.value = fresh
+  await run('refresh', async () => {
+    const fresh = await fetchFresh()
+    if (fresh) rawData.value = fresh
+  })
 }
 
 async function channelToggle(item: ChannelStatus, enabled: boolean) {
-  await run(async () => {
+  await run(msKey(item.channel.id, 'toggle'), async () => {
     await service.setChannel(item.channel.id, enabled)
     await patchChannel(item.channel.id)
   }, '渠道开关已更新')
 }
 async function modelToggle(item: ChannelStatus, model: ModelStatus, enabled: boolean) {
-  await run(async () => {
+  await run(msKey(item.channel.id, `model-toggle:${model.model}`), async () => {
     await service.setModel(item.channel.id, model.model, enabled)
     await patchChannel(item.channel.id)
   }, '模型开关已更新')
@@ -114,7 +125,7 @@ async function deleteModel(item: ChannelStatus, model: ModelStatus) {
     confirmText: '删除',
   })
   if (!confirmed) return
-  await run(async () => {
+  await run(msKey(item.channel.id, `model-delete:${model.model}`), async () => {
     await service.deleteModel(item.channel.id, model.model)
     await patchChannel(item.channel.id)
   }, '模型已删除')
@@ -127,13 +138,13 @@ async function batchModelToggle(item: ChannelStatus, models: ModelStatus[], enab
     confirmText: action,
   })
   if (!confirmed) return
-  await run(async () => {
+  await run(msKey(item.channel.id, `batch-toggle:${enabled ? 'on' : 'off'}`), async () => {
     await service.setModels(item.channel.id, models.map((m) => m.model), enabled)
     await patchChannel(item.channel.id)
   }, `已${action} ${models.length} 个模型`)
 }
 async function batchRecoverModel(item: ChannelStatus, models: ModelStatus[]) {
-  await run(async () => {
+  await run(msKey(item.channel.id, 'batch-recover'), async () => {
     await service.recoverModels(item.channel.id, models.map((m) => m.model))
     await patchChannel(item.channel.id)
   }, `已恢复 ${models.length} 个模型`)
@@ -150,25 +161,25 @@ async function batchDeleteModel(item: ChannelStatus, models: ModelStatus[]) {
     confirmText: '删除',
   })
   if (!confirmed) return
-  await run(async () => {
+  await run(msKey(item.channel.id, 'batch-delete'), async () => {
     await service.deleteModels(item.channel.id, manualOnly.map((m) => m.model))
     await patchChannel(item.channel.id)
   }, `已删除 ${manualOnly.length} 个手动模型`)
 }
 async function recoverChannel(item: ChannelStatus) {
-  await run(async () => {
+  await run(msKey(item.channel.id, 'recover'), async () => {
     await service.recoverChannel(item.channel.id)
     await patchChannel(item.channel.id)
   }, '渠道已恢复')
 }
 async function recoverModel(item: ChannelStatus, model: ModelStatus) {
-  await run(async () => {
+  await run(msKey(item.channel.id, `model-recover:${model.model}`), async () => {
     await service.recoverModel(item.channel.id, model.model)
     await patchChannel(item.channel.id)
   }, '模型已恢复')
 }
 async function check() {
-  await run(async () => {
+  await run('check', async () => {
     await service.check()
     await silentRefresh()
   }, '健康检查已启动')
@@ -192,7 +203,7 @@ async function recoverAllModels(item: ChannelStatus) {
     confirmText: '恢复全部',
   })
   if (!confirmed) return
-  await run(async () => {
+  await run(msKey(item.channel.id, 'recover-all'), async () => {
     await service.recoverAllByChannel(item.channel.id)
     await patchChannel(item.channel.id)
   }, `已恢复「${item.channel.name}」全部异常模型`)
@@ -211,7 +222,7 @@ async function recoverAllChannelsGlobal() {
     confirmText: '恢复全部渠道',
   })
   if (!confirmed) return
-  await run(async () => {
+  await run('recover-all-channels', async () => {
     await service.recoverAllChannels()
     await silentRefresh()
   }, '已恢复全部异常渠道')
@@ -238,7 +249,7 @@ async function recoverAllModelsGlobal() {
     confirmText: '恢复全部',
   })
   if (!confirmed) return
-  await run(async () => {
+  await run('recover-all-models', async () => {
     await service.recoverAll()
     await silentRefresh()
   }, '已恢复全平台全部异常模型')
@@ -248,17 +259,17 @@ async function recoverAllModelsGlobal() {
 <template>
   <div class="space-y-6">
     <PageHeader title="模型状态" description="手动开关与自动健康状态分别管理；自动状态不会重新打开手动关闭的对象。"><template #actions><Button
-          variant="outline" :disabled="pending" @click="silentRefresh">
-          <RiRefreshLine size="16" />刷新
-        </Button><Button :disabled="pending" @click="check">
-          <RiStethoscopeLine size="16" />健康检查
-        </Button><Button variant="outline" :disabled="pending" @click="recoverAllChannelsGlobal">
-          <RiRefreshLine size="16" />全平台恢复渠道
-        </Button><Button variant="outline" :disabled="pending" @click="recoverAllModelsGlobal">
-          <RiRestartLine size="16" />全平台恢复全部异常
+          variant="outline" :disabled="isPending('refresh')" @click="silentRefresh">
+          <RiLoader4Line v-if="isPending('refresh')" class="animate-spin" size="16" /><RiRefreshLine v-else size="16" />刷新
+        </Button><Button :disabled="isPending('check')" @click="check">
+          <RiLoader4Line v-if="isPending('check')" class="animate-spin" size="16" /><RiStethoscopeLine v-else size="16" />健康检查
+        </Button><Button variant="outline" :disabled="isPending('recover-all-channels')" @click="recoverAllChannelsGlobal">
+          <RiLoader4Line v-if="isPending('recover-all-channels')" class="animate-spin" size="16" /><RiRefreshLine v-else size="16" />全平台恢复渠道
+        </Button><Button variant="outline" :disabled="isPending('recover-all-models')" @click="recoverAllModelsGlobal">
+          <RiLoader4Line v-if="isPending('recover-all-models')" class="animate-spin" size="16" /><RiRestartLine v-else size="16" />全平台恢复全部异常
         </Button></template></PageHeader>
     <div class="flex items-center gap-3">
-      <ModelStatusFiltersForm class="flex-1" @apply="applyFilters" @reset="resetFilters" />
+      <ModelStatusFiltersForm class="flex-1" :is-pending="isPending" @apply="applyFilters" @reset="resetFilters" />
 
       <TooltipProvider>
         <div class="flex shrink-0 min-w-32 items-center justify-end gap-1">
@@ -284,7 +295,7 @@ async function recoverAllModelsGlobal() {
       </TooltipProvider>
     </div>
     <LoadingBlock v-if="loading" />
-    <ModelStatusList v-else :items="data || []" :mode="mode" :pending="pending" @channel-toggle="channelToggle"
+    <ModelStatusList v-else :items="data || []" :mode="mode" :is-pending="isPending" @channel-toggle="channelToggle"
       @model-toggle="modelToggle" @recover-channel="recoverChannel" @recover-model="recoverModel"
       @recover-all-models="recoverAllModels" @batch-model-toggle="batchModelToggle"
       @batch-recover-model="batchRecoverModel" @batch-delete-model="batchDeleteModel" @delete-model="deleteModel" />

@@ -60,7 +60,8 @@ func NewManager(st *store.Store) *Manager {
 // SetRepository 注入 SQLite 仓储（由装配层在 db 就绪后调用；测试可省略）。
 func (m *Manager) SetRepository(repo *db.Repository) { m.repo = repo }
 
-// CreateAPIKey 生成 sk- key：完整 key 只返回一次（full），落盘只存哈希 + 前缀。
+// CreateAPIKey 生成 sk- key：完整 key 只返回一次（full），落盘只存哈希 + 密文。
+// Cipher 用数据目录主密钥对称加密明文，仅供服务端「模型测试」解析 key 使用，不回传前端。
 func (m *Manager) CreateAPIKey(name string, models []string) (full, prefix string, err error) {
 	full, hash, err := auth.GenerateSecretKey("sk-")
 	if err != nil {
@@ -71,6 +72,10 @@ func (m *Manager) CreateAPIKey(name string, models []string) (full, prefix strin
 		return "", "", err
 	}
 	prefix = prefixOf(full)
+	cipher, err := m.st.Encrypt(full)
+	if err != nil {
+		return "", "", fmt.Errorf("gateway-keys: 加密 API key 失败: %w", err)
+	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -84,6 +89,7 @@ func (m *Manager) CreateAPIKey(name string, models []string) (full, prefix strin
 		Name:      name,
 		Prefix:    prefix,
 		Hash:      hash,
+		Cipher:    cipher,
 		Models:    models,
 		Enabled:   true,
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
@@ -97,6 +103,37 @@ func (m *Manager) CreateAPIKey(name string, models []string) (full, prefix strin
 // ListAPIKeys 返回全部 sk- key（不含完整 key，只有哈希/前缀）。
 func (m *Manager) ListAPIKeys() ([]types.APIKey, error) {
 	return m.readAPIKeys()
+}
+
+// APIKeyByHash 按完整 key 的 sha256 哈希查找 sk- key 记录（模型测试传入 hash 解析用）。
+func (m *Manager) APIKeyByHash(hash string) (types.APIKey, bool) {
+	keys, err := m.readAPIKeys()
+	if err != nil {
+		return types.APIKey{}, false
+	}
+	for _, key := range keys {
+		if key.Hash == hash && key.Enabled {
+			return key, true
+		}
+	}
+	return types.APIKey{}, false
+}
+
+// ResolveAPIKey 按 hash 解析出完整 key 明文 + 取所属 SK key 名称：查记录 → 解密 Cipher。
+// 仅服务端模型测试使用，明文不出进程；名称用于请求记录展示。
+func (m *Manager) ResolveAPIKey(hash string) (plain string, name string, err error) {
+	key, ok := m.APIKeyByHash(hash)
+	if !ok {
+		return "", "", fmt.Errorf("gateway-keys: API key 不存在或已禁用")
+	}
+	if key.Cipher == "" {
+		return "", "", fmt.Errorf("gateway-keys: API key 缺少密文（旧数据，请重新创建）")
+	}
+	text, err := m.st.Decrypt(key.Cipher)
+	if err != nil {
+		return "", "", fmt.Errorf("gateway-keys: 解密 API key 失败: %w", err)
+	}
+	return text, key.Name, nil
 }
 
 // DeleteAPIKey 按 id 删除；不存在返回错误。
@@ -316,11 +353,6 @@ func (m *Manager) readAPIKeys() ([]types.APIKey, error) {
 
 // writeAPIKeys 写 API key 列表（SQLite 优先，fallback api_keys.json）。
 func (m *Manager) writeAPIKeys(keys []types.APIKey) error {
-	if m.repo != nil {
-		if err := m.repo.ReplaceAPIKeys(context.Background(), keys); err == nil {
-			return nil
-		}
-	}
 	if m.repo != nil {
 		if err := m.repo.ReplaceAPIKeys(context.Background(), keys); err == nil {
 			return nil

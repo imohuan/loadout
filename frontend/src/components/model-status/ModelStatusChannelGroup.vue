@@ -8,7 +8,7 @@ const props = defineProps<{
   baseUrl: string
   keys: ChannelStatus[]
   mode: 'table' | 'tags'
-  pending?: boolean
+  isPending?: (key: string) => boolean
 }>()
 
 const emit = defineEmits<{
@@ -28,6 +28,11 @@ const expanded = ref(true)
 
 const totalModels = computed(() => props.keys.reduce((sum, key) => sum + key.models.length, 0))
 const availableKeys = computed(() => props.keys.filter((key) => key.effective_available).length)
+// 组标题：渠道名称（channel_name 兜底首个 Key 名/账号名）。
+const groupTitle = computed(() => {
+  const first = props.keys[0]?.channel
+  return first?.channel_name || first?.name || props.baseUrl
+})
 </script>
 
 <template>
@@ -46,7 +51,10 @@ const availableKeys = computed(() => props.keys.filter((key) => key.effective_av
           class="shrink-0 text-muted-foreground"
         />
         <div class="min-w-0 flex-1">
-          <p class="truncate font-mono text-sm font-medium">{{ baseUrl }}</p>
+          <div class="flex items-baseline gap-3">
+            <p class="truncate text-sm font-medium">{{ groupTitle }}</p>
+            <p class="shrink-0 truncate font-mono text-xs text-muted-foreground">{{ baseUrl }}</p>
+          </div>
           <p class="text-xs text-muted-foreground">
             {{ keys.length }} 个 Key · {{ totalModels }} 个模型 · {{ availableKeys }}/{{ keys.length }} 可用
           </p>
@@ -58,7 +66,7 @@ const availableKeys = computed(() => props.keys.filter((key) => key.effective_av
           :key="item.channel.id"
           :item="item"
           :mode="mode"
-          :pending="pending"
+          :is-pending="isPending"
           @channel-toggle="(enabled) => emit('channelToggle', item, enabled)"
           @model-toggle="(m, enabled) => emit('modelToggle', item, m, enabled)"
           @recover-channel="emit('recoverChannel', item)"

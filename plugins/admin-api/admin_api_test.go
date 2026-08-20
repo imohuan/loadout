@@ -3,6 +3,7 @@ package adminapi
 import (
 	"archive/zip"
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -198,6 +199,27 @@ func TestModelTestProxy(t *testing.T) {
 	}
 	if resp.Header.Get("X-Request-Id") == "" {
 		t.Fatal("chat 响应应携带 X-Request-Id")
+	}
+	// 测试请求不写转发日志：访问摘要经 X-Test-Log 头（base64 JSON）回带。
+	header := resp.Header.Get("X-Test-Log")
+	if header == "" {
+		t.Fatal("chat 响应应携带 X-Test-Log 访问摘要")
+	}
+	raw, err := base64.StdEncoding.DecodeString(header)
+	if err != nil {
+		t.Fatalf("X-Test-Log 不是合法 base64: %v", err)
+	}
+	var summary struct {
+		RequestID      string `json:"request_id"`
+		RequestedModel string `json:"requested_model"`
+		Result         string `json:"result"`
+		DurationMS     int64  `json:"duration_ms"`
+	}
+	if err := json.Unmarshal(raw, &summary); err != nil {
+		t.Fatalf("X-Test-Log 不是合法 JSON: %v", err)
+	}
+	if summary.RequestID == "" || summary.RequestedModel != "gpt-4o" || summary.Result != "success" || summary.DurationMS < 0 {
+		t.Fatalf("X-Test-Log 摘要字段不符: %+v", summary)
 	}
 }
 
@@ -704,5 +726,407 @@ func TestSkillImportZipHandler(t *testing.T) {
 	_, data = apiReq(t, ts, http.MethodGet, "/api/skills", nil, cookie)
 	if !strings.Contains(string(data), "from-zip") {
 		t.Fatalf("技能列表应含 from-zip，实际 %s", data)
+	}
+}
+
+// TestChannelProbe 验证 /api/channels/probe：新建传 base_url+api_key 直接探测；
+// 编辑时 Key 不回显、只传 id，后台取已存 Key 参与探测；不落库。
+func TestChannelProbe(t *testing.T) {
+	ts, _, pw := newTestServer(t)
+	cookie := login(t, ts, pw)
+
+	// 假上游：/v1/models 返回模型列表。
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"object":"list","data":[{"id":"gpt-4o"},{"id":"gpt-4o-mini"}]}`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	// 1) 新建探测：传 base_url + api_key。
+	resp, data := apiReq(t, ts, http.MethodPost, "/api/channels/probe", map[string]any{
+		"base_url": upstream.URL + "/v1",
+		"api_key":  "sk-test",
+	}, cookie)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("新建 probe 期望 200，实际 %d: %s", resp.StatusCode, data)
+	}
+	var out struct {
+		Models      []string `json:"models"`
+		ModelsError string   `json:"models_error"`
+	}
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatalf("解析新建 probe 响应: %v", err)
+	}
+	if len(out.Models) != 2 || out.Models[0] != "gpt-4o" || out.Models[1] != "gpt-4o-mini" {
+		t.Fatalf("新建 probe 期望 2 个模型，实际 %s", data)
+	}
+	if out.ModelsError != "" {
+		t.Fatalf("新建 probe 不应有错误，实际 %s", out.ModelsError)
+	}
+
+	// 2) 编辑探测：先创建渠道（store 文件模式，保存时即探测成功），
+	// 再只传 id + base_url（不回显 Key），后台应取已存 Key 完成探测。
+	resp, data = apiReq(t, ts, http.MethodPost, "/api/channels", map[string]any{
+		"name":     "probe-channel",
+		"base_url": upstream.URL + "/v1",
+		"api_key":  "sk-stored",
+	}, cookie)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("创建渠道期望 200，实际 %d: %s", resp.StatusCode, data)
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(data, &created); err != nil {
+		t.Fatalf("解析创建渠道响应: %v", err)
+	}
+	if created.ID == "" {
+		t.Fatal("创建渠道应返回非空 id")
+	}
+	resp, data = apiReq(t, ts, http.MethodPost, "/api/channels/probe", map[string]any{
+		"id":       created.ID,
+		"base_url": upstream.URL + "/v1",
+	}, cookie)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("编辑 probe 期望 200，实际 %d: %s", resp.StatusCode, data)
+	}
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatalf("解析编辑 probe 响应: %v", err)
+	}
+	if len(out.Models) != 2 || out.ModelsError != "" {
+		t.Fatalf("编辑 probe 应按已存 Key 探测到 2 个模型，实际 %s", data)
+	}
+
+	// 3) 无效 id：应 404。
+	resp, _ = apiReq(t, ts, http.MethodPost, "/api/channels/probe", map[string]any{
+		"id":       "no-such-id",
+		"base_url": upstream.URL + "/v1",
+	}, cookie)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("无效 id probe 期望 404，实际 %d", resp.StatusCode)
+	}
+
+	// 4) 缺 base_url：应 400。
+	resp, _ = apiReq(t, ts, http.MethodPost, "/api/channels/probe", map[string]any{
+		"api_key": "sk-test",
+	}, cookie)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("缺 base_url probe 期望 400，实际 %d", resp.StatusCode)
+	}
+}
+
+// TestChannelNameSync 验证渠道名称（channel_name）：
+// 1) 创建渠道显式传 channel_name；
+// 2) 同 Base URL 添加 Key 时不传则继承组名；
+// 3) 编辑任一 Key 改渠道名 → 同 Base URL 全部 Key 同步；不同 Base URL 不受影响。
+func TestChannelNameSync(t *testing.T) {
+	ts, _, pw := newTestServer(t)
+	cookie := login(t, ts, pw)
+
+	// 假上游：/v1/models 返回空模型列表，创建渠道不报错即可。
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"object":"list","data":[]}`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	// 创建渠道 1（含渠道名）。
+	resp, data := apiReq(t, ts, http.MethodPost, "/api/channels", map[string]any{
+		"name":         "key-a",
+		"channel_name": "主力 NewAPI",
+		"base_url":     upstream.URL + "/v1",
+		"api_key":      "sk-a",
+	}, cookie)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("创建渠道 1 期望 200，实际 %d: %s", resp.StatusCode, data)
+	}
+	var ch1 struct {
+		ID          string `json:"id"`
+		Name        string `json:"name"`
+		ChannelName string `json:"channel_name"`
+		BaseURL     string `json:"base_url"`
+	}
+	if err := json.Unmarshal(data, &ch1); err != nil {
+		t.Fatalf("解析渠道 1: %v", err)
+	}
+	if ch1.ChannelName != "主力 NewAPI" {
+		t.Fatalf("渠道 1 渠道名应为「主力 NewAPI」，实际 %q", ch1.ChannelName)
+	}
+
+	// 同 Base URL 添加 Key 2（不传 channel_name，应继承）。
+	resp, data = apiReq(t, ts, http.MethodPost, "/api/channels", map[string]any{
+		"name":     "key-b",
+		"base_url": upstream.URL + "/v1",
+		"api_key":  "sk-b",
+	}, cookie)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("添加 Key 2 期望 200，实际 %d: %s", resp.StatusCode, data)
+	}
+	var ch2 struct {
+		ID          string `json:"id"`
+		ChannelName string `json:"channel_name"`
+	}
+	if err := json.Unmarshal(data, &ch2); err != nil {
+		t.Fatalf("解析 Key 2: %v", err)
+	}
+	if ch2.ChannelName != "主力 NewAPI" {
+		t.Fatalf("Key 2 应继承渠道名「主力 NewAPI」，实际 %q", ch2.ChannelName)
+	}
+
+	// 不同 Base URL 的渠道 3。
+	resp, data = apiReq(t, ts, http.MethodPost, "/api/channels", map[string]any{
+		"name":         "key-c",
+		"channel_name": "备用 Volc",
+		"base_url":     "https://volc.example.com/v1",
+		"api_key":      "sk-c",
+	}, cookie)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("创建渠道 3 期望 200，实际 %d: %s", resp.StatusCode, data)
+	}
+
+	// 编辑 Key 1：渠道名改为「升级 NewAPI」→ Key1/Key2 同步，Key3 不动。
+	resp, data = apiReq(t, ts, http.MethodPut, "/api/channels/"+ch1.ID, map[string]any{
+		"name":         "key-a",
+		"channel_name": "升级 NewAPI",
+		"base_url":     upstream.URL + "/v1",
+	}, cookie)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("编辑 Key 1 期望 200，实际 %d: %s", resp.StatusCode, data)
+	}
+
+	_, data = apiReq(t, ts, http.MethodGet, "/api/channels", nil, cookie)
+	var channels []struct {
+		ID          string `json:"id"`
+		ChannelName string `json:"channel_name"`
+		BaseURL     string `json:"base_url"`
+	}
+	if err := json.Unmarshal(data, &channels); err != nil {
+		t.Fatalf("解析渠道列表: %v", err)
+	}
+	byID := map[string]string{}
+	baseByID := map[string]string{}
+	for _, c := range channels {
+		byID[c.ID] = c.ChannelName
+		baseByID[c.ID] = c.BaseURL
+	}
+	if byID[ch1.ID] != "升级 NewAPI" {
+		t.Fatalf("Key 1 渠道名应为「升级 NewAPI」，实际 %q", byID[ch1.ID])
+	}
+	if byID[ch2.ID] != "升级 NewAPI" {
+		t.Fatalf("Key 2 应同步为「升级 NewAPI」，实际 %q", byID[ch2.ID])
+	}
+	if byID[""] != "" && len(channels) == 3 {
+		for _, c := range channels {
+			if c.BaseURL != baseByID[ch1.ID] && c.ID != ch1.ID && c.ID != ch2.ID && c.ChannelName != "备用 Volc" {
+				t.Fatalf("Key 3 不应被同步，实际 %q", c.ChannelName)
+			}
+		}
+	}
+}
+
+// TestChannelMoveGroupName 验证编辑 Key 时改 Base URL（挪组）→ 渠道名跟随新组，
+// 不残留旧组名；同组一致不变量不被破坏。
+func TestChannelMoveGroupName(t *testing.T) {
+	ts, _, pw := newTestServer(t)
+	cookie := login(t, ts, pw)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"object":"list","data":[]}`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	// 组 A（名字 X）。
+	_, data := apiReq(t, ts, http.MethodPost, "/api/channels", map[string]any{
+		"name": "a1", "channel_name": "组A", "base_url": upstream.URL + "/v1", "api_key": "sk",
+	}, cookie)
+	var a1 struct {
+		ID          string `json:"id"`
+		ChannelName string `json:"channel_name"`
+	}
+	_ = json.Unmarshal(data, &a1)
+
+	// 组 B（名字 Y）。
+	_, data = apiReq(t, ts, http.MethodPost, "/api/channels", map[string]any{
+		"name": "b1", "channel_name": "组B", "base_url": upstream.URL + "/v2", "api_key": "sk",
+	}, cookie)
+	var b1 struct {
+		ID          string `json:"id"`
+		ChannelName string `json:"channel_name"`
+	}
+	_ = json.Unmarshal(data, &b1)
+
+	// 把 a1 挪到组 B：编辑时前端会回传旧组名「组A」，但后端应改用新组名「组B」。
+	_, data = apiReq(t, ts, http.MethodPut, "/api/channels/"+a1.ID, map[string]any{
+		"name": "a1", "channel_name": "组A", "base_url": upstream.URL + "/v2",
+	}, cookie)
+	if !strings.Contains(string(data), "ok") {
+		t.Fatalf("挪组编辑期望成功，实际 %s", data)
+	}
+
+	_, data = apiReq(t, ts, http.MethodGet, "/api/channels", nil, cookie)
+	var list []struct {
+		ID          string `json:"id"`
+		ChannelName string `json:"channel_name"`
+		BaseURL     string `json:"base_url"`
+	}
+	_ = json.Unmarshal(data, &list)
+	byID := map[string]struct{ name, base string }{}
+	for _, c := range list {
+		byID[c.ID] = struct{ name, base string }{c.ChannelName, c.BaseURL}
+	}
+	if byID[a1.ID].name != "组B" {
+		t.Fatalf("挪组后 a1 渠道名应跟随新组「组B」，实际 %q", byID[a1.ID].name)
+	}
+	if byID[b1.ID].name != "组B" {
+		t.Fatalf("组B 原成员 b1 渠道名不应被改，实际 %q", byID[b1.ID].name)
+	}
+}
+
+// TestModelTestBuiltinSkKey 验证「Loadout 自带」模式：传 sk_key_hash，
+// 后端按哈希解析出自建 SK key 明文，配 base_url 调用上游（HTTP 直调自家网关路径）。
+func TestModelTestBuiltinSkKey(t *testing.T) {
+	// 自带模式的 base_url 由后端按请求 Host 自动补全，所以测试服务器必须
+	// 同时挂 admin API 与 /v1/models（模拟自家网关同一地址）。
+	dir := t.TempDir()
+	st, err := store.New(dir)
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	old := config.AdminPasswordFile
+	config.AdminPasswordFile = filepath.Join(dir, "admin-password")
+	t.Cleanup(func() { config.AdminPasswordFile = old })
+	authSvc := adminauth.NewService(st, slog.Default())
+	if _, err := authSvc.EnsureFirstRun(); err != nil {
+		t.Fatalf("EnsureFirstRun: %v", err)
+	}
+	pw, err := os.ReadFile(config.AdminPasswordFile)
+	if err != nil {
+		t.Fatalf("读取初始密码: %v", err)
+	}
+	keys := gatewaykeys.NewManager(st)
+	skillSvc := skills.NewService(st, slog.Default(), t.TempDir(), t.TempDir())
+	svc := NewService(st, slog.Default(), authSvc, keys, skillSvc, nil)
+
+	combined := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 自家网关 /v1/models：校验 Bearer sk- 明文，返回模型列表。
+		if r.URL.Path == "/v1/models" {
+			if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer sk-") {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"object":"list","data":[{"id":"m1"},{"id":"m2"}]}`)
+			return
+		}
+		svc.Handler().ServeHTTP(w, r)
+	})
+	ts := httptest.NewServer(combined)
+	t.Cleanup(ts.Close)
+	cookie := login(t, ts, string(pw))
+
+	// 创建 SK key。
+	resp, data := apiReq(t, ts, http.MethodPost, "/api/keys/sk", map[string]any{"name": "本机"}, cookie)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("创建 SK key 期望 200，实际 %d: %s", resp.StatusCode, data)
+	}
+	var created struct {
+		Key string `json:"key"`
+	}
+	if err := json.Unmarshal(data, &created); err != nil || !strings.HasPrefix(created.Key, "sk-") {
+		t.Fatalf("创建 SK key 应返回 sk- 开头明文，实际 %s", data)
+	}
+
+	// 取 hash（列表接口不回传明文/密文）。
+	_, data = apiReq(t, ts, http.MethodGet, "/api/keys", nil, cookie)
+	var keysList struct {
+		SKKeys []struct {
+			Hash   string `json:"hash"`
+			Cipher string `json:"cipher"`
+		} `json:"sk_keys"`
+	}
+	if err := json.Unmarshal(data, &keysList); err != nil || len(keysList.SKKeys) != 1 {
+		t.Fatalf("SK key 列表应 1 条，实际 %s", data)
+	}
+	if keysList.SKKeys[0].Cipher != "" {
+		t.Fatal("列表接口不应回传 cipher 密文")
+	}
+	hash := keysList.SKKeys[0].Hash
+
+	// 只传 sk_key_hash（不传 base_url）→ 后端按 r.Host 构造 base_url + 解密明文，
+	// 请求自家 /v1/models 应命中 combined 的假网关并返回 2 个模型。
+	resp, data = apiReq(t, ts, http.MethodPost, "/api/test/models", map[string]any{
+		"sk_key_hash": hash,
+	}, cookie)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("自带模式 test/models 期望 200，实际 %d: %s", resp.StatusCode, data)
+	}
+	var out struct {
+		Models []string `json:"models"`
+		Error  string   `json:"error"`
+	}
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatalf("解析响应: %v", err)
+	}
+	if out.Error != "" || len(out.Models) != 2 {
+		t.Fatalf("自带模式应按解密后的 key 探测到 2 个模型，实际 %s", data)
+	}
+
+	// 相对路径 base_url（/v1）→ 后端按 r.Host 补全，同样命中。
+	resp, data = apiReq(t, ts, http.MethodPost, "/api/test/models", map[string]any{
+		"base_url":    "/v1",
+		"sk_key_hash": hash,
+	}, cookie)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("相对路径 base_url 期望 200，实际 %d: %s", resp.StatusCode, data)
+	}
+	if err := json.Unmarshal(data, &out); err != nil || out.Error != "" || len(out.Models) != 2 {
+		t.Fatalf("相对路径 base_url 应探测到 2 个模型，实际 %s", data)
+	}
+
+	// 完整 URL base_url（同 host）→ 直接使用，命中。
+	resp, data = apiReq(t, ts, http.MethodPost, "/api/test/models", map[string]any{
+		"base_url":    ts.URL + "/v1",
+		"sk_key_hash": hash,
+	}, cookie)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("完整 URL base_url 期望 200，实际 %d: %s", resp.StatusCode, data)
+	}
+	if err := json.Unmarshal(data, &out); err != nil || out.Error != "" || len(out.Models) != 2 {
+		t.Fatalf("完整 URL base_url 应探测到 2 个模型，实际 %s", data)
+	}
+
+	// 无效 hash → 400。
+	resp, _ = apiReq(t, ts, http.MethodPost, "/api/test/models", map[string]any{
+		"sk_key_hash": "deadbeef",
+	}, cookie)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("无效 hash 期望 400，实际 %d", resp.StatusCode)
+	}
+
+	// 删除 key 后 hash 失效 → 400。
+	var listForDelete struct {
+		SKKeys []struct {
+			ID string `json:"id"`
+		} `json:"sk_keys"`
+	}
+	_, data = apiReq(t, ts, http.MethodGet, "/api/keys", nil, cookie)
+	_ = json.Unmarshal(data, &listForDelete)
+	if len(listForDelete.SKKeys) != 1 {
+		t.Fatalf("应有 1 条 SK key，实际 %d", len(listForDelete.SKKeys))
+	}
+	resp, _ = apiReq(t, ts, http.MethodDelete, "/api/keys/sk/"+listForDelete.SKKeys[0].ID, nil, cookie)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("删除 SK key 期望 200，实际 %d", resp.StatusCode)
+	}
+	resp, _ = apiReq(t, ts, http.MethodPost, "/api/test/models", map[string]any{
+		"sk_key_hash": hash,
+	}, cookie)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("已删除 key 的 hash 期望 400，实际 %d", resp.StatusCode)
 	}
 }

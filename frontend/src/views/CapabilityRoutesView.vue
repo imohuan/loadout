@@ -27,7 +27,7 @@ const {
   refreshing: channelsRefreshing,
   refresh: refreshChannels,
 } = useListLoader(channelService.list)
-const { pending, run } = useAsyncTask()
+const { run, isPending } = useAsyncTask()
 const { confirmDialog } = useConfirm()
 const editing = ref<CapabilityRoute>()
 const editorOpen = ref(false)
@@ -78,7 +78,7 @@ async function save(value: CapabilityRoute) {
     toast.error(`路由「${routeTitle(value)}」已存在`)
     return
   }
-  await run(async () => {
+  await run('save', async () => {
     const next = [
       ...(routes.value || []).filter((item) => key(item) !== editingKey),
       value,
@@ -91,7 +91,7 @@ async function save(value: CapabilityRoute) {
 }
 async function remove(value: CapabilityRoute) {
   if (!(await confirmDialog(`删除路由「${routeTitle(value)}」？`))) return
-  await run(async () => {
+  await run(`route:${key(value)}:remove`, async () => {
     await routeService.replaceAll(
       (routes.value || []).filter((item) => key(item) !== key(value)),
     )
@@ -115,7 +115,7 @@ async function remove(value: CapabilityRoute) {
       v-model:open="editorOpen"
       :route="editing"
       :channels="channels || []"
-      :pending="pending"
+      :pending="isPending('save')"
       @save="save"
       @cancel="editorOpen = false"
     />
@@ -124,7 +124,7 @@ async function remove(value: CapabilityRoute) {
       v-else
       :routes="routes || []"
       :channels="channels || []"
-      :pending="pending"
+      :is-pending="isPending"
       @edit="openEdit"
       @remove="remove"
     />

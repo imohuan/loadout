@@ -17,6 +17,7 @@ import (
 
 type channelInput struct {
 	Name          string `json:"name"`
+	ChannelName   string `json:"channel_name"`
 	BaseURL       string `json:"base_url"`
 	APIKey        string `json:"api_key"`
 	Enabled       *bool  `json:"enabled"`
@@ -33,11 +34,36 @@ func channelAPI(channel db.Channel) types.Channel {
 			models = append(models, model.Model)
 		}
 	}
-	return types.Channel{ID: channel.ID, Name: channel.Name, BaseURL: channel.BaseURL, APIKeyCipher: channel.APIKeyCipher, Enabled: channel.ManualEnabled, ManualEnabled: channel.ManualEnabled, SyncBilling: channel.SyncBilling, Models: models, ModelsDetail: detail, ModelsError: channel.ModelsError, CreatedAt: channel.CreatedAt, UpdatedAt: channel.UpdatedAt}
+	return types.Channel{ID: channel.ID, Name: channel.Name, ChannelName: channel.ChannelName, BaseURL: channel.BaseURL, APIKeyCipher: channel.APIKeyCipher, Enabled: channel.ManualEnabled, ManualEnabled: channel.ManualEnabled, SyncBilling: channel.SyncBilling, Models: models, ModelsDetail: detail, ModelsError: channel.ModelsError, CreatedAt: channel.CreatedAt, UpdatedAt: channel.UpdatedAt}
 }
 
 func (s *Service) listDBChannels(ctx context.Context) ([]db.Channel, error) {
 	return s.routing.ListChannels(ctx)
+}
+
+// sameBaseChannels 返回与 baseURL 同组（忽略尾斜杠差异）的渠道列表。
+func (s *Service) sameBaseChannels(ctx context.Context, baseURL string) ([]db.Channel, error) {
+	channels, err := s.listDBChannels(ctx)
+	if err != nil {
+		return nil, err
+	}
+	target := strings.TrimRight(baseURL, "/")
+	out := make([]db.Channel, 0, 1)
+	for _, ch := range channels {
+		if strings.TrimRight(ch.BaseURL, "/") == target {
+			out = append(out, ch)
+		}
+	}
+	return out, nil
+}
+
+// applyChannelNameSync 当渠道名称变化时，同步同 Base URL 全部渠道的名称（含自身）。
+func applyChannelNameSync(channels []db.Channel, changedID, baseURL, newName string) {
+	for i := range channels {
+		if channels[i].ID != changedID && strings.TrimRight(channels[i].BaseURL, "/") == strings.TrimRight(baseURL, "/") {
+			channels[i].ChannelName = newName
+		}
+	}
 }
 
 func (s *Service) handleChannelsListDB(w http.ResponseWriter, r *http.Request) {
@@ -62,6 +88,16 @@ func (s *Service) handleChannelCreateDB(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "名称和地址必填")
 		return
 	}
+	// 渠道名称：未显式提供时，若同 Base URL 已有渠道则继承其渠道名（添加 Key 场景），
+	// 否则回退为 Key 名。
+	channelName := input.ChannelName
+	if channelName == "" {
+		if existing, err := s.sameBaseChannels(r.Context(), input.BaseURL); err == nil && len(existing) > 0 {
+			channelName = existing[0].ChannelName
+		} else {
+			channelName = input.Name
+		}
+	}
 	cipher, err := s.st.Encrypt(input.APIKey)
 	if err != nil {
 		s.writeServerError(w, err)
@@ -80,7 +116,7 @@ func (s *Service) handleChannelCreateDB(w http.ResponseWriter, r *http.Request) 
 	}
 	models, modelsError := probeChannelModels(input.BaseURL, input.APIKey)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	channel := db.Channel{ID: id, Name: input.Name, BaseURL: input.BaseURL, APIKeyCipher: cipher, ManualEnabled: manual, SyncBilling: input.SyncBilling, ModelsError: modelsError, CreatedAt: now, UpdatedAt: now}
+	channel := db.Channel{ID: id, Name: input.Name, ChannelName: channelName, BaseURL: input.BaseURL, APIKeyCipher: cipher, ManualEnabled: manual, SyncBilling: input.SyncBilling, ModelsError: modelsError, CreatedAt: now, UpdatedAt: now}
 	for _, model := range models {
 		channel.Models = append(channel.Models, db.ChannelModel{Model: model, Source: "probe", Enabled: true, FirstSeenAt: now, LastSeenAt: now})
 	}
@@ -133,6 +169,7 @@ func (s *Service) handleChannelUpdateDB(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	channel := &channels[index]
+	oldBase := strings.TrimRight(channel.BaseURL, "/")
 	if input.Name != "" {
 		channel.Name = input.Name
 	}
@@ -145,6 +182,24 @@ func (s *Service) handleChannelUpdateDB(w http.ResponseWriter, r *http.Request) 
 		channel.ManualEnabled = *input.Enabled
 	}
 	channel.SyncBilling = input.SyncBilling
+	newBase := strings.TrimRight(channel.BaseURL, "/")
+	if oldBase != newBase {
+		// 挪到别的组：渠道名跟随新组（忽略前端回传的旧组名），避免破坏"同组一致"。
+		channel.ChannelName = ""
+		for j := range channels {
+			if channels[j].ID != channel.ID && strings.TrimRight(channels[j].BaseURL, "/") == newBase && channels[j].ChannelName != "" {
+				channel.ChannelName = channels[j].ChannelName
+				break
+			}
+		}
+		if channel.ChannelName == "" {
+			channel.ChannelName = channel.Name
+		}
+	} else if input.ChannelName != "" && input.ChannelName != channel.ChannelName {
+		// 渠道名称变化：同步同 Base URL 的全部渠道（一个 Base URL 一组，名称应一致）。
+		channel.ChannelName = input.ChannelName
+		applyChannelNameSync(channels, channel.ID, channel.BaseURL, input.ChannelName)
+	}
 	if input.APIKey != "" {
 		channel.APIKeyCipher, err = s.st.Encrypt(input.APIKey)
 		if err != nil {
@@ -695,7 +750,7 @@ func flattenStatus(values []contracts.ChannelStatus) []map[string]any {
 				"last_success_at": model.LastSuccessAt, "disabled_until": model.DisabledUntil, "source": model.Source,
 			})
 		}
-		result = append(result, map[string]any{"channel": map[string]any{"id": value.ID, "name": value.Name, "base_url": value.BaseURL, "manual_enabled": value.ManualEnabled, "sync_billing": value.SyncBilling}, "manual_enabled": value.ManualEnabled, "health_status": value.Health.HealthStatus, "effective_available": value.Health.EffectiveAvailable, "reason": value.Health.Reason, "models": models})
+		result = append(result, map[string]any{"channel": map[string]any{"id": value.ID, "name": value.Name, "channel_name": value.ChannelName, "base_url": value.BaseURL, "manual_enabled": value.ManualEnabled, "sync_billing": value.SyncBilling}, "manual_enabled": value.ManualEnabled, "health_status": value.Health.HealthStatus, "effective_available": value.Health.EffectiveAvailable, "reason": value.Health.Reason, "models": models})
 	}
 	return result
 }

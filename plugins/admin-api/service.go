@@ -93,9 +93,10 @@ func (s *Service) Routes() []plugin.RouteSpec {
 		// 渠道
 		{Method: http.MethodGet, Pattern: "GET /api/channels", Auth: plugin.AuthSession, Handler: s.session(s.handleChannelsList)},
 		{Method: http.MethodPost, Pattern: "POST /api/channels", Auth: plugin.AuthSession, Handler: s.session(s.handleChannelCreate)},
+		{Method: http.MethodPost, Pattern: "POST /api/channels/probe", Auth: plugin.AuthSession, Handler: s.session(s.handleChannelProbe)},
 		{Method: http.MethodPost, Pattern: "POST /api/channels/test", Auth: plugin.AuthSession, Handler: s.session(s.handleChannelTest)},
 
-		// 模型测试（后台代理上游，规避跨域；测试请求写入转发日志）
+		// 模型测试（后台代理上游，规避跨域；测试请求不写转发日志，访问摘要随响应回带）
 		{Method: http.MethodPost, Pattern: "POST /api/test/models", Auth: plugin.AuthSession, Handler: s.session(s.handleTestModels)},
 		{Method: http.MethodPost, Pattern: "POST /api/test/chat", Auth: plugin.AuthSession, Handler: s.session(s.handleTestChat)},
 		{Method: http.MethodPut, Pattern: "PUT /api/channels/{id}", Auth: plugin.AuthSession, Handler: s.session(s.handleChannelUpdate)},
@@ -400,12 +401,17 @@ func (s *Service) handleChannelCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Name    string `json:"name"`
-		BaseURL string `json:"base_url"`
-		APIKey  string `json:"api_key"`
-		Enabled bool   `json:"enabled"`
+		Name        string `json:"name"`
+		ChannelName string `json:"channel_name"`
+		BaseURL     string `json:"base_url"`
+		APIKey      string `json:"api_key"`
+		Enabled     bool   `json:"enabled"`
 	}
 	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if strings.TrimSpace(req.Name) == "" || strings.TrimSpace(req.BaseURL) == "" {
+		writeError(w, http.StatusBadRequest, "名称和地址必填")
 		return
 	}
 	cipher, err := s.st.Encrypt(req.APIKey)
@@ -423,9 +429,23 @@ func (s *Service) handleChannelCreate(w http.ResponseWriter, r *http.Request) {
 		s.writeServerError(w, err)
 		return
 	}
+	// 渠道名称：未显式提供时，同 Base URL 已有渠道则继承其渠道名（添加 Key），否则回退 Key 名。
+	channelName := req.ChannelName
+	if channelName == "" {
+		for i := range items {
+			if strings.TrimRight(items[i].BaseURL, "/") == strings.TrimRight(req.BaseURL, "/") {
+				channelName = items[i].ChannelName
+				break
+			}
+		}
+		if channelName == "" {
+			channelName = req.Name
+		}
+	}
 	ch := types.Channel{
 		ID:           id,
 		Name:         req.Name,
+		ChannelName:  channelName,
 		BaseURL:      req.BaseURL,
 		APIKeyCipher: cipher,
 		Enabled:      req.Enabled,
@@ -448,10 +468,11 @@ func (s *Service) handleChannelUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	id := r.PathValue("id")
 	var req struct {
-		Name    string `json:"name"`
-		BaseURL string `json:"base_url"`
-		APIKey  string `json:"api_key"`
-		Enabled bool   `json:"enabled"`
+		Name        string `json:"name"`
+		ChannelName string `json:"channel_name"`
+		BaseURL     string `json:"base_url"`
+		APIKey      string `json:"api_key"`
+		Enabled     bool   `json:"enabled"`
 	}
 	if !decodeJSON(w, r, &req) {
 		return
@@ -462,14 +483,34 @@ func (s *Service) handleChannelUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	found := false
+	changedName := ""
 	for i := range items {
 		if items[i].ID != id {
 			continue
 		}
 		found = true
+		oldBase := strings.TrimRight(items[i].BaseURL, "/")
 		items[i].Name = req.Name
 		items[i].BaseURL = req.BaseURL
 		items[i].Enabled = req.Enabled
+		newBase := strings.TrimRight(items[i].BaseURL, "/")
+		if oldBase != newBase {
+			// 挪到别的组：渠道名跟随新组（忽略前端回传的旧组名），避免破坏"同组一致"。
+			items[i].ChannelName = ""
+			for j := range items {
+				if j != i && strings.TrimRight(items[j].BaseURL, "/") == newBase && items[j].ChannelName != "" {
+					items[i].ChannelName = items[j].ChannelName
+					break
+				}
+			}
+			if items[i].ChannelName == "" {
+				items[i].ChannelName = req.Name
+			}
+		} else if req.ChannelName != "" && req.ChannelName != items[i].ChannelName {
+			// 渠道名称变化：同 Base URL 组全部渠道同步（含自身）。
+			changedName = req.ChannelName
+			items[i].ChannelName = req.ChannelName
+		}
 		plainKey := req.APIKey
 		if req.APIKey != "" {
 			cipher, err := s.st.Encrypt(req.APIKey)
@@ -490,6 +531,14 @@ func (s *Service) handleChannelUpdate(w http.ResponseWriter, r *http.Request) {
 	if !found {
 		writeError(w, http.StatusNotFound, "渠道不存在")
 		return
+	}
+	if changedName != "" {
+		target := strings.TrimRight(req.BaseURL, "/")
+		for i := range items {
+			if items[i].ChannelName != changedName && strings.TrimRight(items[i].BaseURL, "/") == target {
+				items[i].ChannelName = changedName
+			}
+		}
 	}
 	if err := s.st.Write(types.FileChannels, items); err != nil {
 		s.writeServerError(w, err)
@@ -564,6 +613,76 @@ func (s *Service) handleChannelRefreshModels(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	writeError(w, http.StatusNotFound, "渠道不存在")
+}
+
+// handleChannelProbe 按表单当前值直接探测上游 /v1/models（不落库、不改渠道），
+// 供"添加渠道/编辑渠道"弹窗内的"获取模型"按钮使用。
+// 新建时传 base_url + api_key；编辑时 API Key 不回显，改传 id ——
+// 后台按 id 查出已存的 API Key 参与探测（api_key 非空时优先用表单值）。
+func (s *Service) handleChannelProbe(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ID      string `json:"id"`
+		BaseURL string `json:"base_url"`
+		APIKey  string `json:"api_key"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if strings.TrimSpace(req.BaseURL) == "" {
+		writeError(w, http.StatusBadRequest, "Base URL 必填")
+		return
+	}
+	key := req.APIKey
+	if key == "" && req.ID != "" {
+		// 编辑模式：表单没回显 Key，按 id 取已存 Key。
+		// 渠道存在但没有 Key（建渠道时未填）→ 空 key 探测，由上游决定成败。
+		var cipher string
+		found := false
+		if s.routing != nil {
+			channels, err := s.routing.ListChannels(r.Context())
+			if err != nil {
+				s.writeServerError(w, err)
+				return
+			}
+			for _, ch := range channels {
+				if ch.ID == req.ID {
+					cipher = ch.APIKeyCipher
+					found = true
+					break
+				}
+			}
+		} else {
+			items, err := readSlice[types.Channel](s.st, types.FileChannels)
+			if err != nil {
+				s.writeServerError(w, err)
+				return
+			}
+			for i := range items {
+				if items[i].ID == req.ID {
+					cipher = items[i].APIKeyCipher
+					found = true
+					break
+				}
+			}
+		}
+		if !found {
+			writeError(w, http.StatusNotFound, "渠道不存在")
+			return
+		}
+		if cipher != "" {
+			plain, err := s.st.Decrypt(cipher)
+			if err != nil {
+				s.writeServerError(w, fmt.Errorf("解密渠道 Key 失败: %w", err))
+				return
+			}
+			key = plain
+		}
+	}
+	models, modelsError := probeChannelModels(req.BaseURL, key)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"models":       models,
+		"models_error": modelsError,
+	})
 }
 
 // handleChannelModelsReplace 全量编辑渠道模型清单（添加/删除/禁用/启用一接口）。
@@ -1316,6 +1435,10 @@ func (s *Service) handleKeysList(w http.ResponseWriter, r *http.Request) {
 	}
 	if mcpKeys == nil {
 		mcpKeys = []types.MCPKey{}
+	}
+	// Cipher 是服务端测试用的加密明文，绝不回传前端。
+	for i := range skKeys {
+		skKeys[i].Cipher = ""
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"sk_keys":  skKeys,

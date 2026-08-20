@@ -1,9 +1,13 @@
 <script setup lang="ts">
-import { RiDeleteBinLine, RiEditLine, RiFileCopyLine } from '@remixicon/vue'
+import { RiDeleteBinLine, RiEditLine, RiFileCopyLine, RiLoader4Line } from '@remixicon/vue'
 import type { Aggregate, Channel } from '@/lib/types'
 import EmptyState from '@/components/EmptyState.vue'
 
-defineProps<{ aggregates: Aggregate[]; channels: Channel[]; pending?: boolean }>()
+const props = defineProps<{
+  aggregates: Aggregate[]
+  channels: Channel[]
+  isPending?: (key: string) => boolean
+}>()
 const emit = defineEmits<{
   edit: [aggregate: Aggregate]
   remove: [aggregate: Aggregate]
@@ -11,6 +15,10 @@ const emit = defineEmits<{
 }>()
 function channelName(channels: Channel[], id: string) {
   return channels.find((channel) => channel.id === id)?.name || id
+}
+// 与 AggregatesView.remove() 的 key 规则一致：aggregate:{name}:remove
+function busy(aggregate: Aggregate, action: string) {
+  return props.isPending ? props.isPending(`aggregate:${aggregate.name}:${action}`) : false
 }
 </script>
 
@@ -52,7 +60,6 @@ function channelName(channels: Channel[], id: string) {
                           variant="ghost"
                           size="icon"
                           aria-label="编辑"
-                          :disabled="pending"
                           @click="emit('edit', aggregate)"
                           ><RiEditLine size="16" /></Button></TooltipTrigger
                       ><TooltipContent>编辑</TooltipContent></Tooltip
@@ -62,7 +69,6 @@ function channelName(channels: Channel[], id: string) {
                           variant="ghost"
                           size="icon"
                           aria-label="复制"
-                          :disabled="pending"
                           @click="emit('duplicate', aggregate)"
                           ><RiFileCopyLine size="16" /></Button></TooltipTrigger
                       ><TooltipContent>复制</TooltipContent></Tooltip
@@ -72,9 +78,9 @@ function channelName(channels: Channel[], id: string) {
                           variant="ghost"
                           size="icon"
                           aria-label="删除"
-                          :disabled="pending"
+                          :disabled="busy(aggregate, 'remove')"
                           @click="emit('remove', aggregate)"
-                          ><RiDeleteBinLine size="16" /></Button></TooltipTrigger
+                          ><RiLoader4Line v-if="busy(aggregate, 'remove')" class="animate-spin" size="16" /><RiDeleteBinLine v-else size="16" /></Button></TooltipTrigger
                       ><TooltipContent>删除</TooltipContent></Tooltip
                     >
                   </div></TableCell

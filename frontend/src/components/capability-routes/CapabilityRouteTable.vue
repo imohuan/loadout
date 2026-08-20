@@ -1,10 +1,28 @@
 <script setup lang="ts">
-import { RiDeleteBinLine, RiEditLine } from '@remixicon/vue'
+import { RiDeleteBinLine, RiEditLine, RiLoader4Line } from '@remixicon/vue'
 import type { CapabilityRoute, Channel } from '@/lib/types'
 import EmptyState from '@/components/EmptyState.vue'
 
-defineProps<{ routes: CapabilityRoute[]; channels: Channel[]; pending?: boolean }>()
+const props = defineProps<{
+  routes: CapabilityRoute[]
+  channels: Channel[]
+  isPending?: (key: string) => boolean
+}>()
 const emit = defineEmits<{ edit: [route: CapabilityRoute]; remove: [route: CapabilityRoute] }>()
+
+// 路由唯一 key：与 CapabilityRoutesView.key() 一致（capability|models|channel_ids）。
+function routeKey(route: CapabilityRoute) {
+  return (
+    route.capability +
+    '|' +
+    (route.models || []).join(',') +
+    '|' +
+    (route.channel_ids || []).join(',')
+  )
+}
+function busy(route: CapabilityRoute, action: string) {
+  return props.isPending ? props.isPending(`route:${routeKey(route)}:${action}`) : false
+}
 
 const routeLabel: Record<string, string> = {
   native: '原生透传',
@@ -124,16 +142,16 @@ function channelScopeLabel(channels: Channel[], ids?: string[]) {
                 <TableCell>
                   <div class="flex justify-end gap-1">
                     <Tooltip>
-                      <TooltipTrigger as-child><Button variant="ghost" size="icon" aria-label="编辑" :disabled="pending"
+                      <TooltipTrigger as-child><Button variant="ghost" size="icon" aria-label="编辑"
                           @click="emit('edit', route)">
                           <RiEditLine size="16" />
                         </Button></TooltipTrigger>
                       <TooltipContent>编辑</TooltipContent>
                     </Tooltip>
                     <Tooltip>
-                      <TooltipTrigger as-child><Button variant="ghost" size="icon" aria-label="删除" :disabled="pending"
+                      <TooltipTrigger as-child><Button variant="ghost" size="icon" aria-label="删除" :disabled="busy(route, 'remove')"
                           @click="emit('remove', route)">
-                          <RiDeleteBinLine size="16" />
+                          <RiLoader4Line v-if="busy(route, 'remove')" class="animate-spin" size="16" /><RiDeleteBinLine v-else size="16" />
                         </Button></TooltipTrigger>
                       <TooltipContent>删除</TooltipContent>
                     </Tooltip>

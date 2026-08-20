@@ -49,8 +49,8 @@ func TestMigrateIsIdempotent(t *testing.T) {
 	if err := database.QueryRow("SELECT count(*) FROM schema_migrations").Scan(&count); err != nil {
 		t.Fatal(err)
 	}
-	if count != 5 {
-		t.Fatalf("schema_migrations count = %d, want 5", count)
+	if count != 7 {
+		t.Fatalf("schema_migrations count = %d, want 7", count)
 	}
 }
 
@@ -62,7 +62,7 @@ func TestMigrateRejectsIncompatibleHistory(t *testing.T) {
 			}
 		},
 		"newer database": func(database *sql.DB) {
-			if _, err := database.Exec("INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (6, 'future', 'future', 'now')"); err != nil {
+			if _, err := database.Exec("INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (8, 'future', 'future', 'now')"); err != nil {
 				t.Fatal(err)
 			}
 		},

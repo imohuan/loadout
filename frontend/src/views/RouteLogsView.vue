@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onScopeDispose, reactive, ref } from 'vue'
-import { RiDeleteBinLine, RiRefreshLine } from '@remixicon/vue'
+import { RiDeleteBinLine, RiLoader4Line, RiRefreshLine } from '@remixicon/vue'
 import { useRouteLogs } from '@/composables/useRouteLogs'
 import type { RouteLogFilters } from '@/composables/useRouteLogs'
 import { useChannels } from '@/composables/useChannels'
@@ -23,7 +23,7 @@ const {
   refresh,
 } = useListLoader(() => service.list(filters.value))
 const { data: channels } = useListLoader(channelService.list)
-const { pending, run } = useAsyncTask()
+const { run, isPending } = useAsyncTask()
 const { confirmDialog } = useConfirm()
 
 // 详情缓存：定时/手动刷新时新列表会替换原数组，列表对象上的 attempts 会丢失，
@@ -90,10 +90,10 @@ async function refreshActiveDetails() {
 
 // 手动刷新（先拉列表，再后台同步展开中的进行中详情）
 function manualRefresh() {
-  void (async () => {
+  void run('refresh', async () => {
     await refresh()
     await refreshActiveDetails()
-  })()
+  })
 }
 
 // 3 秒定时刷新。
@@ -121,9 +121,11 @@ onMounted(startAutoRefresh)
 onScopeDispose(stopAutoRefresh)
 
 async function apply(next: RouteLogFilters) {
-  filters.value = next
-  await refresh()
-  await refreshActiveDetails()
+  await run('apply', async () => {
+    filters.value = next
+    await refresh()
+    await refreshActiveDetails()
+  })
 }
 async function expand(log: RouteLog) {
   // 已有缓存直接展示（收起再展开瞬时显示，无 loading）
@@ -144,7 +146,7 @@ async function expand(log: RouteLog) {
 }
 async function clear() {
   if (!(await confirmDialog('清空全部转发日志？此操作不可恢复。'))) return
-  await run(async () => {
+  await run('clear', async () => {
     await service.clear()
     detailsMap.clear()
     expandedIds.clear()
@@ -161,17 +163,17 @@ async function clear() {
       ><template #actions
         ><Button
           variant="outline"
-          :disabled="loading || refreshing || pending"
+          :disabled="loading || refreshing || isPending('refresh')"
           @click="manualRefresh"
-          ><RiRefreshLine :class="{ 'animate-spin': refreshing }" size="16" />刷新 </Button
-        ><Button variant="destructive" :disabled="pending" @click="clear">
-          <RiDeleteBinLine size="16" />清空日志
+          ><RiLoader4Line v-if="isPending('refresh')" class="animate-spin" size="16" /><RiRefreshLine v-else :class="{ 'animate-spin': refreshing }" size="16" />刷新 </Button
+        ><Button variant="destructive" :disabled="isPending('clear')" @click="clear">
+          <RiLoader4Line v-if="isPending('clear')" class="animate-spin" size="16" /><RiDeleteBinLine v-else size="16" />清空日志
         </Button></template
       >
     </PageHeader>
     <RouteLogFiltersForm
       :channels="channels || []"
-      :pending="loading || pending"
+      :is-pending="isPending"
       @apply="apply"
       @reset="apply({})"
     />

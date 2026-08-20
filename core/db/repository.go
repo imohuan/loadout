@@ -11,7 +11,8 @@ import (
 type Channel struct {
 	ID            string         `json:"id"`
 	Position      int            `json:"-"`
-	Name          string         `json:"name"`
+	Name          string         `json:"name"`         // Key 名称
+	ChannelName   string         `json:"channel_name"` // 渠道名称（Base URL 组级，同组同步一致）
 	BaseURL       string         `json:"base_url"`
 	APIKeyCipher  string         `json:"api_key_cipher"`
 	ManualEnabled bool           `json:"manual_enabled"`
@@ -87,7 +88,7 @@ func WithTx(ctx context.Context, database *sql.DB, fn func(*sql.Tx) error) error
 
 // ListChannels returns channels and their complete model catalogs.
 func (r *Repository) ListChannels(ctx context.Context) ([]Channel, error) {
-	rows, err := r.database.QueryContext(ctx, `SELECT id, position, name, base_url, api_key_cipher, manual_enabled, sync_billing, models_error, created_at, updated_at FROM channels ORDER BY position, id`)
+	rows, err := r.database.QueryContext(ctx, `SELECT id, position, name, channel_name, base_url, api_key_cipher, manual_enabled, sync_billing, models_error, created_at, updated_at FROM channels ORDER BY position, id`)
 	if err != nil {
 		return nil, fmt.Errorf("db: list channels: %w", err)
 	}
@@ -97,7 +98,7 @@ func (r *Repository) ListChannels(ctx context.Context) ([]Channel, error) {
 	byID := make(map[string]int)
 	for rows.Next() {
 		var channel Channel
-		if err := rows.Scan(&channel.ID, &channel.Position, &channel.Name, &channel.BaseURL, &channel.APIKeyCipher, &channel.ManualEnabled, &channel.SyncBilling, &channel.ModelsError, &channel.CreatedAt, &channel.UpdatedAt); err != nil {
+		if err := rows.Scan(&channel.ID, &channel.Position, &channel.Name, &channel.ChannelName, &channel.BaseURL, &channel.APIKeyCipher, &channel.ManualEnabled, &channel.SyncBilling, &channel.ModelsError, &channel.CreatedAt, &channel.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("db: scan channel: %w", err)
 		}
 		byID[channel.ID] = len(channels)
@@ -148,7 +149,7 @@ func (r *Repository) ReplaceChannels(ctx context.Context, channels []Channel) er
 				channel.UpdatedAt = now
 			}
 			channel.Position = i
-			if _, err := tx.ExecContext(ctx, `INSERT INTO channels (id, position, name, base_url, api_key_cipher, manual_enabled, sync_billing, models_error, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET position = excluded.position, name = excluded.name, base_url = excluded.base_url, api_key_cipher = excluded.api_key_cipher, manual_enabled = excluded.manual_enabled, sync_billing = excluded.sync_billing, models_error = excluded.models_error, updated_at = excluded.updated_at`, channel.ID, channel.Position, channel.Name, channel.BaseURL, channel.APIKeyCipher, channel.ManualEnabled, channel.SyncBilling, channel.ModelsError, channel.CreatedAt, channel.UpdatedAt); err != nil {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO channels (id, position, name, channel_name, base_url, api_key_cipher, manual_enabled, sync_billing, models_error, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET position = excluded.position, name = excluded.name, channel_name = excluded.channel_name, base_url = excluded.base_url, api_key_cipher = excluded.api_key_cipher, manual_enabled = excluded.manual_enabled, sync_billing = excluded.sync_billing, models_error = excluded.models_error, updated_at = excluded.updated_at`, channel.ID, channel.Position, channel.Name, channel.ChannelName, channel.BaseURL, channel.APIKeyCipher, channel.ManualEnabled, channel.SyncBilling, channel.ModelsError, channel.CreatedAt, channel.UpdatedAt); err != nil {
 				return fmt.Errorf("db: replace channel %q: %w", channel.ID, err)
 			}
 			if err := replaceChannelModels(ctx, tx, channel.ID, channel.Models); err != nil {

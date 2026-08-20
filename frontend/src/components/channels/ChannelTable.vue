@@ -8,13 +8,14 @@ import {
   RiArrowUpLine,
   RiDeleteBinLine,
   RiEditLine,
+  RiLoader4Line,
   RiRefreshLine,
 } from '@remixicon/vue'
 import type { Channel } from '@/lib/types'
-import { groupChannelsByBaseURL } from '@/composables/useChannels'
+import { groupChannelsByBaseURL, type ChannelGroup } from '@/composables/useChannels'
 import EmptyState from '@/components/EmptyState.vue'
 
-const props = defineProps<{ channels: Channel[]; pending?: boolean }>()
+const props = defineProps<{ channels: Channel[]; isPending?: (key: string) => boolean }>()
 const emit = defineEmits<{
   addKey: [baseUrl: string]
   toggleKey: [channel: Channel]
@@ -36,6 +37,19 @@ function toggleGroup(baseUrl: string) {
 }
 function isGroupExpanded(baseUrl: string) {
   return expandedGroups.value.includes(baseUrl)
+}
+
+// 操作 key：与 ChannelsView.run() 使用的 key 必须完全一致，按钮级 loading/禁用才能对上。
+// 组操作锁整组按钮，key 操作锁单个 key 的按钮。
+function groupKey(baseUrl: string, action: string) {
+  return `group:${baseUrl}:${action}`
+}
+function keyKey(channel: Channel, action: string) {
+  return `key:${channel.id}:${action}`
+}
+/** 指定操作是否正在执行（按钮级 loading / disabled） */
+function busy(key: string) {
+  return props.isPending ? props.isPending(key) : false
 }
 
 const groups = computed(() => groupChannelsByBaseURL(props.channels))
@@ -74,6 +88,11 @@ function modelCountLabel(channel: Channel) {
   if (count > 0) return `${count} 个`
   if (count < 0) return '探测失败'
   return '未知'
+}
+// 组标题：渠道名称（channel_name）→ 兜底首个 Key 名 → 兜底 Base URL。
+function groupTitle(group: ChannelGroup) {
+  const first = group.keys[0]
+  return first?.channel_name || first?.name || group.baseUrl
 }
 </script>
 
@@ -124,7 +143,12 @@ function modelCountLabel(channel: Channel) {
                     </Button>
                   </TableCell>
                   <TableCell>
-                    <div class="truncate font-mono text-xs">{{ group.baseUrl }}</div>
+                    <div class="min-w-0">
+                      <div class="truncate text-sm font-medium">{{ groupTitle(group) }}</div>
+                      <div class="truncate font-mono text-xs text-muted-foreground">
+                        {{ group.baseUrl }}
+                      </div>
+                    </div>
                   </TableCell>
                   <TableCell>
                     <Badge variant="secondary">{{ group.keys.length }} 个</Badge>
@@ -143,9 +167,9 @@ function modelCountLabel(channel: Channel) {
                             variant="ghost"
                             size="icon"
                             aria-label="刷新全部 Key 模型"
-                            :disabled="pending"
+                            :disabled="busy(groupKey(group.baseUrl, 'refresh'))"
                             @click="emit('refreshGroup', group.baseUrl)"
-                            ><RiRefreshLine size="16" /></Button>
+                            ><RiLoader4Line v-if="busy(groupKey(group.baseUrl, 'refresh'))" class="animate-spin" size="16" /><RiRefreshLine v-else size="16" /></Button>
                         </TooltipTrigger>
                         <TooltipContent>刷新全部 Key 模型</TooltipContent>
                       </Tooltip>
@@ -155,9 +179,9 @@ function modelCountLabel(channel: Channel) {
                             variant="ghost"
                             size="icon"
                             aria-label="提高整组优先级"
-                            :disabled="pending || groupIndex === 0"
+                            :disabled="busy(groupKey(group.baseUrl, 'move-up')) || groupIndex === 0"
                             @click="emit('moveGroup', group.baseUrl, 'up')"
-                            ><RiArrowUpLine size="16" /></Button>
+                            ><RiLoader4Line v-if="busy(groupKey(group.baseUrl, 'move-up'))" class="animate-spin" size="16" /><RiArrowUpLine v-else size="16" /></Button>
                         </TooltipTrigger>
                         <TooltipContent>提高整组优先级</TooltipContent>
                       </Tooltip>
@@ -167,9 +191,9 @@ function modelCountLabel(channel: Channel) {
                             variant="ghost"
                             size="icon"
                             aria-label="降低整组优先级"
-                            :disabled="pending || groupIndex === groups.length - 1"
+                            :disabled="busy(groupKey(group.baseUrl, 'move-down')) || groupIndex === groups.length - 1"
                             @click="emit('moveGroup', group.baseUrl, 'down')"
-                            ><RiArrowDownLine size="16" /></Button>
+                            ><RiLoader4Line v-if="busy(groupKey(group.baseUrl, 'move-down'))" class="animate-spin" size="16" /><RiArrowDownLine v-else size="16" /></Button>
                         </TooltipTrigger>
                         <TooltipContent>降低整组优先级</TooltipContent>
                       </Tooltip>
@@ -179,9 +203,9 @@ function modelCountLabel(channel: Channel) {
                             variant="ghost"
                             size="icon"
                             aria-label="删除整组"
-                            :disabled="pending"
+                            :disabled="busy(groupKey(group.baseUrl, 'remove'))"
                             @click="emit('removeGroup', group.baseUrl)"
-                            ><RiDeleteBinLine size="16" /></Button>
+                            ><RiLoader4Line v-if="busy(groupKey(group.baseUrl, 'remove'))" class="animate-spin" size="16" /><RiDeleteBinLine v-else size="16" /></Button>
                         </TooltipTrigger>
                         <TooltipContent>删除整组（全部 Key）</TooltipContent>
                       </Tooltip>
@@ -200,7 +224,7 @@ function modelCountLabel(channel: Channel) {
                         </div>
                         <div class="flex shrink-0 items-center gap-2">
                           <Badge variant="outline">{{ group.keys.length }} 个 Key</Badge>
-                          <Button variant="outline" size="sm" :disabled="pending" @click="emit('addKey', group.baseUrl)">
+                          <Button variant="outline" size="sm" @click="emit('addKey', group.baseUrl)">
                             <RiAddLine size="16" />添加 Key
                           </Button>
                         </div>
@@ -227,13 +251,15 @@ function modelCountLabel(channel: Channel) {
                             <Badge :variant="keyEnabled(key) ? 'default' : 'secondary'">{{
                               keyEnabled(key) ? '启用' : '禁用'
                             }}</Badge>
-                            <Button variant="outline" size="sm" :disabled="pending" @click="emit('toggleKey', key)">
-                              {{ keyEnabled(key) ? '停用' : '启用' }}
+                            <Button variant="outline" size="sm" :disabled="busy(keyKey(key, 'toggle'))" @click="emit('toggleKey', key)">
+                              <RiLoader4Line v-if="busy(keyKey(key, 'toggle'))" class="animate-spin" size="16" />{{
+                                busy(keyKey(key, 'toggle')) ? '处理中' : keyEnabled(key) ? '停用' : '启用'
+                              }}
                             </Button>
-                            <Button variant="ghost" size="sm" :disabled="pending" @click="emit('refreshKey', key)">
-                              <RiRefreshLine size="16" />刷新模型
+                            <Button variant="ghost" size="sm" :disabled="busy(keyKey(key, 'refresh'))" @click="emit('refreshKey', key)">
+                              <RiLoader4Line v-if="busy(keyKey(key, 'refresh'))" class="animate-spin" size="16" /><RiRefreshLine v-else size="16" />刷新模型
                             </Button>
-                            <Button variant="ghost" size="sm" :disabled="pending" @click="emit('editKey', key)">
+                            <Button variant="ghost" size="sm" @click="emit('editKey', key)">
                               <RiEditLine size="16" />编辑
                             </Button>
                             <TooltipProvider>
@@ -243,9 +269,9 @@ function modelCountLabel(channel: Channel) {
                                     variant="ghost"
                                     size="icon"
                                     aria-label="上移 Key"
-                                    :disabled="pending || keyIndex === 0"
+                                    :disabled="busy(keyKey(key, 'move-up')) || keyIndex === 0"
                                     @click="emit('moveKey', key, 'up')"
-                                    ><RiArrowUpLine size="16" /></Button>
+                                    ><RiLoader4Line v-if="busy(keyKey(key, 'move-up'))" class="animate-spin" size="16" /><RiArrowUpLine v-else size="16" /></Button>
                                 </TooltipTrigger>
                                 <TooltipContent>上移 Key</TooltipContent>
                               </Tooltip>
@@ -255,9 +281,9 @@ function modelCountLabel(channel: Channel) {
                                     variant="ghost"
                                     size="icon"
                                     aria-label="下移 Key"
-                                    :disabled="pending || keyIndex === group.keys.length - 1"
+                                    :disabled="busy(keyKey(key, 'move-down')) || keyIndex === group.keys.length - 1"
                                     @click="emit('moveKey', key, 'down')"
-                                    ><RiArrowDownLine size="16" /></Button>
+                                    ><RiLoader4Line v-if="busy(keyKey(key, 'move-down'))" class="animate-spin" size="16" /><RiArrowDownLine v-else size="16" /></Button>
                                 </TooltipTrigger>
                                 <TooltipContent>下移 Key</TooltipContent>
                               </Tooltip>
@@ -268,9 +294,9 @@ function modelCountLabel(channel: Channel) {
                                   variant="ghost"
                                   size="icon"
                                   aria-label="删除该 Key"
-                                  :disabled="pending"
+                                  :disabled="busy(keyKey(key, 'remove'))"
                                   @click="emit('removeKey', key)"
-                                  ><RiDeleteBinLine size="16" /></Button>
+                                  ><RiLoader4Line v-if="busy(keyKey(key, 'remove'))" class="animate-spin" size="16" /><RiDeleteBinLine v-else size="16" /></Button>
                               </TooltipTrigger>
                               <TooltipContent>删除该 Key</TooltipContent>
                             </Tooltip>

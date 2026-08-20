@@ -228,6 +228,18 @@ CREATE INDEX idx_mcp_servers_position ON mcp_servers(position);
 CREATE INDEX idx_mcp_groups_position ON mcp_groups(position);
 CREATE INDEX idx_gateway_keys_kind ON gateway_keys(kind);
 `,
+}, {
+	version: 6,
+	name:    "channel-name",
+	sql: `
+ALTER TABLE channels ADD COLUMN channel_name TEXT NOT NULL DEFAULT '';
+`,
+}, {
+	version: 7,
+	name:    "api-key-cipher",
+	sql: `
+ALTER TABLE gateway_keys ADD COLUMN api_key_cipher TEXT NOT NULL DEFAULT '';
+`,
 }}
 
 // Migrate applies all pending schema migrations and rejects an incompatible

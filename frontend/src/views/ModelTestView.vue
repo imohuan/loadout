@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import {
   RiAddLine,
+  RiArrowDownSLine,
   RiAttachment2,
   RiCloseLine,
   RiDeleteBinLine,
@@ -10,7 +11,8 @@ import {
   RiRefreshLine,
   RiStopLine,
 } from '@remixicon/vue'
-import { useChannels } from '@/composables/useChannels'
+import { useChannels, groupChannelsByBaseURL } from '@/composables/useChannels'
+import { api } from '@/lib/api'
 import { useListLoader } from '@/composables/useListLoader'
 import { useModelTest } from '@/composables/useModelTest'
 import { useRouteLogs } from '@/composables/useRouteLogs'
@@ -27,7 +29,66 @@ const channelService = useChannels()
 const modelTest = useModelTest()
 const routeLogs = useRouteLogs()
 const { data: channels, loading: channelsLoading } = useListLoader(channelService.list)
-const config = reactive({ channelId: '', baseUrl: '', apiKey: '', model: '' })
+// 预设下拉按 Base URL 分组：组标题 = 渠道名称（channel_name 兜底首个 Key 名），组内 = 各 Key。
+const channelGroups = computed(() => groupChannelsByBaseURL(channels.value || []))
+// 组标题：渠道名 · Key 数量（用于 SelectLabel 与 popover 分组）。
+function groupLabel(group: ReturnType<typeof groupChannelsByBaseURL>[number]) {
+  const first = group.keys[0]
+  const title = first?.channel_name || first?.name || group.baseUrl
+  return `${title} · ${group.keys.length} 个 Key`
+}
+// 当前选中的展示文本：「渠道名 · Key 名」；自带模式显示「Key 名 · Loadout 自带」。空时由模板给占位提示。
+const presetTriggerLabel = computed(() => {
+  const id = config.channelId
+  if (!id) return ''
+  if (id === BUILTIN_CHANNEL) {
+    const sk = skKeys.value.find((k) => k.hash === config.skKeyHash)
+    return sk ? `Loadout 自带 · ${sk.name}` : 'Loadout 自带 API'
+  }
+  for (const group of channelGroups.value) {
+    const first = group.keys[0]
+    const title = first?.channel_name || first?.name || group.baseUrl
+    for (const key of group.keys) {
+      if (key.id === id) return `${title} · ${key.name}`
+    }
+  }
+  return ''
+})
+// 预设下拉的开合状态（用 Popover 而不是 Select——便于自定义 tag 网格布局）。
+const presetOpen = ref(false)
+function choosePreset(id: string) {
+  presetOpen.value = false
+  importChannel(id)
+}
+const config = reactive({ channelId: '', baseUrl: '', apiKey: '', skKeyHash: '', model: '' })
+// 「Loadout 自带」预设：channelId 用此哨兵值标记，API Key 变自建 SK key 下拉。
+const BUILTIN_CHANNEL = '__builtin__'
+// 自建 SK key 列表（settings 页创建；只含 id/name/prefix/hash，后端不回传明文）。
+const skKeys = ref<{ id: string; name: string; prefix: string; hash: string }[]>([])
+async function loadSkKeys() {
+  try {
+    const res = await api<{
+      sk_keys?: { id: string; name: string; prefix: string; hash: string; enabled?: boolean }[]
+    }>('/api/keys')
+    skKeys.value = (res.sk_keys || []).filter((k) => k.hash && k.enabled !== false)
+  } catch {
+    skKeys.value = []
+  }
+}
+onMounted(loadSkKeys)
+// 选中「Loadout 自带 API」下某个 SK key：base_url 由后端按请求 Host 自动补全（前端不传），
+// SK key 由预设下拉直接选定，触发按钮显示该 key 名称，不再要独立的 API Key 输入框。
+function chooseBuiltinKey(hash: string) {
+  presetOpen.value = false
+  config.channelId = BUILTIN_CHANNEL
+  config.baseUrl = '/v1' // 相对路径：后端按请求 Host 自动补全；也可改完整 URL 测自定义域名
+  config.apiKey = ''
+  config.skKeyHash = hash
+  models.value = []
+  modelsError.value = ''
+  // 自带模式没有预设的渠道模型列表，选中后自动探测 /v1/models（后端解析 hash 后调用自家网关）。
+  fetchModels()
+}
 
 // 模型后缀模式：决定上游请求路径的标志符（chat/completions、messages 等）。
 // 不同厂商标志符不同，部分 base URL 带 /v1、部分不带，因此这里只配置 /v1 之后的部分。
@@ -79,10 +140,15 @@ const filteredModels = computed(() => {
 })
 
 // 目标来源：选中渠道时始终带 channel_id（后端以渠道记录为准解析 base_url 与 key）；
+// 「Loadout 自带」时带 base_url + sk_key_hash（后端按哈希解析自建 Key 明文）。
 // 手动输入的 key 优先于渠道存储的 key；suffix_mode 决定上游路径后缀。未选渠道时用临时配置。
 function buildTarget() {
   const target: Record<string, string> = { suffix_mode: suffixMode.value }
-  if (config.channelId) {
+  if (config.channelId === BUILTIN_CHANNEL) {
+    if (config.skKeyHash.trim()) target.sk_key_hash = config.skKeyHash.trim()
+    // base_url：相对路径（/v1）由后端按请求 Host 补全；完整 URL（http(s)://...）直接使用。
+    if (config.baseUrl.trim()) target.base_url = config.baseUrl.trim()
+  } else if (config.channelId) {
     target.channel_id = config.channelId
     if (config.apiKey.trim()) target.api_key = config.apiKey.trim()
   } else {
@@ -94,11 +160,14 @@ function buildTarget() {
 
 function importChannel(id: string) {
   config.channelId = id
+  config.skKeyHash = ''
   const channel = channels.value?.find((item) => item.id === id)
   if (!channel) return
   config.baseUrl = channel.base_url
   config.apiKey = ''
-  models.value = channel.models || []
+  // 直接用渠道已配置的模型清单（models_detail 含禁用的全部候选，回退启用的 models），
+  // 不请求后台；点击「获取所有模型」才真正探测 /v1/models。
+  models.value = channel.models_detail?.map((d) => d.model) || channel.models || []
   modelsError.value = channel.models_error || ''
 }
 
@@ -106,6 +175,10 @@ async function fetchModels() {
   modelsError.value = ''
   if (!config.baseUrl.trim() && !config.channelId) {
     modelsError.value = '请先选择渠道或输入 Base URL'
+    return
+  }
+  if (config.channelId === BUILTIN_CHANNEL && !config.skKeyHash.trim()) {
+    modelsError.value = '请先选择 Loadout 自带 Key'
     return
   }
   modelsLoading.value = true
@@ -215,9 +288,15 @@ function blobUrlToDataUrl(url: string): Promise<string> {
 }
 
 async function send() {
+  // 硬保护：流式未结束禁止重复发送（按钮 disabled 有异步窗口期）
+  if (streaming.value) return
   fetchError.value = ''
   if (!config.baseUrl.trim() && !config.channelId) {
     fetchError.value = '请先选择渠道或输入 Base URL'
+    return
+  }
+  if (config.channelId === BUILTIN_CHANNEL && !config.skKeyHash.trim()) {
+    fetchError.value = '请先选择 Loadout 自带 Key'
     return
   }
   if (!config.model.trim()) {
@@ -265,6 +344,10 @@ async function send() {
 
   const startedAt = new Date()
   assistantReply.value = ''
+  // 本次请求的摘要快照容器（响应头 X-Test-Log / SSE route_log 事件回带）：
+  // onSummary 写入、catch/finally 读取。用对象属性而非局部变量，规避 TS 在
+  // try-catch 中对闭包赋值变量的保守窄化，且天然与本次请求一一对应。
+  const summaryHolder: { value: RouteLog | null } = { value: null }
   streaming.value = true
   const controller = new AbortController()
   abortController.value = controller
@@ -295,10 +378,15 @@ async function send() {
       buildTarget(),
       config.model,
       requestMessages,
-      (delta) => {
-        assistantReply.value += delta
+      {
+        onDelta: (delta) => {
+          assistantReply.value += delta
+        },
+        onSummary: (summary) => {
+          summaryHolder.value = summary
+        },
+        signal: controller.signal,
       },
-      controller.signal,
     )
     entry.request_id = result.request_id || entry.request_id
     entry.result = 'success'
@@ -316,6 +404,9 @@ async function send() {
     ]
   } catch (error) {
     const aborted = error instanceof DOMException && error.name === 'AbortError'
+    // 错误路径：响应回带的摘要可能已到达（throw 前 onSummary），用其真实 request_id
+    // 覆盖占位 id，保证 syncTestLog 能原位替换，避免同一请求在面板出现两行。
+    if (summaryHolder.value?.request_id) entry.request_id = summaryHolder.value.request_id
     entry.result = 'failed'
     entry.duration_ms = Date.now() - startedAt.getTime()
     entry.error_message = aborted ? '已手动停止' : error instanceof Error ? error.message : '请求失败'
@@ -337,21 +428,42 @@ async function send() {
     abortController.value = null
     // 请求结束（成功/失败/停止）后用 detail 接口拉后端真实记录覆盖本地占位，
     // 拿到完整 attempts / error_message 并写回 localStorage；拉取失败保留本地 entry。
-    await syncTestLog(entry)
+    await syncTestLog(entry, summaryHolder.value)
   }
 }
 
-// 用后端 detail 记录替换本地占位，并持久化到浏览器本地缓存。
-async function syncTestLog(entry: RouteLog) {
+// 双源兜底：先用响应回带的摘要（header X-Test-Log / SSE route_log 事件）完整化本地
+// 占位并持久化；再探测后端 detail——拉到（上游是 Loadout 自身服务时 router 会写日志）
+// 就用真实记录覆盖，拉不到（第三方上游本来就不写日志）保留摘要。测试请求不写转发日志。
+async function syncTestLog(entry: RouteLog, summary: RouteLog | null) {
+  let effectiveId = entry.request_id
+  if (summary) {
+    const merged: RouteLog = {
+      ...entry,
+      ...summary,
+      final_channel_id: summary.final_channel_id ?? entry.final_channel_id,
+      attempts: summary.attempts?.length ? summary.attempts : entry.attempts,
+    }
+    effectiveId = merged.request_id
+    // 先按真实 request_id 定位；占位行 id 仍是 test-xxx 时（错误路径）按对象引用原位替换，
+    // 避免 unshift 出重复行。
+    let index = logs.value.findIndex((log) => log.request_id === effectiveId)
+    if (index < 0) index = logs.value.findIndex((log) => log === entry)
+    if (index >= 0) logs.value[index] = merged
+    else logs.value.unshift(merged)
+    saveTestRouteLog(merged)
+  }
   try {
-    const detail = await routeLogs.detail(entry.request_id)
-    const index = logs.value.findIndex((log) => log.request_id === entry.request_id)
+    const detail = await routeLogs.detail(effectiveId)
+    let index = logs.value.findIndex((log) => log.request_id === effectiveId)
+    if (index < 0) index = logs.value.findIndex((log) => log === entry)
     if (index >= 0) logs.value[index] = detail
     else logs.value.unshift(detail)
     saveTestRouteLog(detail)
   } catch {
-    // 后端日志可能尚未落库或不存在，保留本地 entry
-    saveTestRouteLog(entry)
+    // 后端无该记录（第三方上游不写日志 / 日志被清理）：保留摘要 / 本地 entry。
+    // 无摘要时（如手动停止，SSE 事件发不出）也落 localStorage，避免刷新后丢失。
+    if (!summary) saveTestRouteLog(entry)
   }
 }
 
@@ -395,7 +507,7 @@ onBeforeUnmount(() => {
   <div class="space-y-6">
     <PageHeader
       title="模型测试"
-      description="后台代理上游 /models 与 /chat/completions，规避跨域；测试请求会写入转发日志。"
+      description="后台代理上游 /models 与 /chat/completions，规避跨域；测试请求不写转发日志，访问摘要随响应回带，下方面板直接展示。"
     />
 
     <div class="grid gap-6 md:grid-cols-[minmax(22rem,5fr)_minmax(0,7fr)]">
@@ -409,33 +521,93 @@ onBeforeUnmount(() => {
             <div class="grid gap-3 md:grid-cols-2">
               <div class="space-y-2">
                 <Label for="test-channel">预设</Label>
-                <Select
-                  :model-value="config.channelId"
-                  :disabled="channelsLoading"
-                  @update:model-value="importChannel(String($event))"
-                >
-                  <SelectTrigger id="test-channel">
-                    <SelectValue
-                      :placeholder="
-                        channelsLoading
-                          ? '正在加载渠道'
-                          : channels?.length
-                            ? '选择渠道并快速导入'
-                            : '暂无可用渠道'
-                      "
-                    />
-                  </SelectTrigger>
-                  <SelectContent position="popper" side="bottom" align="start" :side-offset="2">
-                    <SelectGroup>
-                      <SelectItem
-                        v-for="channel in channels || []"
-                        :key="channel.id"
-                        :value="channel.id"
-                        >{{ channel.name }}</SelectItem
+                <Popover v-model:open="presetOpen">
+                  <PopoverTrigger as-child>
+                    <Button
+                      id="test-channel"
+                      variant="outline"
+                      :disabled="channelsLoading"
+                      class="w-full justify-between font-normal"
+                    >
+                      <span
+                        :class="
+                          presetTriggerLabel
+                            ? 'text-foreground'
+                            : 'text-muted-foreground'
+                        "
+                        >{{
+                          channelsLoading
+                            ? '正在加载渠道'
+                            : presetTriggerLabel || '选择渠道并快速导入'
+                        }}</span
                       >
-                    </SelectGroup>
-                  </SelectContent>
-                </Select>
+                      <RiArrowDownSLine class="size-4 shrink-0 opacity-50" />
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent
+                    class="w-[var(--reka-popper-anchor-width)] p-3 max-h-80 overflow-y-auto"
+                    align="start"
+                    :side-offset="2"
+                  >
+                    <div class="mb-3">
+                      <p class="mb-1.5 text-xs font-medium text-muted-foreground">
+                        Loadout 自带 API
+                      </p>
+                      <div v-if="skKeys.length" class="flex flex-wrap gap-1.5">
+                        <button
+                          v-for="sk in skKeys"
+                          :key="sk.id"
+                          type="button"
+                          class="rounded-md border px-2 py-1 text-xs font-medium transition-colors"
+                          :class="
+                            config.channelId === BUILTIN_CHANNEL &&
+                            config.skKeyHash === sk.hash
+                              ? 'border-primary bg-primary text-primary-foreground'
+                              : 'border-border bg-background hover:bg-muted'
+                          "
+                          @click="chooseBuiltinKey(sk.hash)"
+                        >
+                          {{ sk.name }}
+                        </button>
+                      </div>
+                      <p
+                        v-else
+                        class="px-2 py-1.5 text-xs text-muted-foreground"
+                      >
+                        暂无可用 Key，请先到「设置」创建
+                      </p>
+                    </div>
+                    <template v-for="group in channelGroups" :key="group.baseUrl">
+                      <div class="mb-3 last:mb-0">
+                        <p class="mb-1.5 text-xs font-medium text-muted-foreground">
+                          {{ groupLabel(group) }}
+                        </p>
+                        <div class="flex flex-wrap gap-1.5">
+                          <button
+                            v-for="key in group.keys"
+                            :key="key.id"
+                            type="button"
+                            class="rounded-md border px-2 py-1 text-xs font-medium transition-colors"
+                            :class="
+                              config.channelId === key.id
+                                ? 'border-primary bg-primary text-primary-foreground'
+                                : 'border-border bg-background hover:bg-muted'
+                            "
+                            @click="choosePreset(key.id)"
+                          >
+                            {{ key.name }}
+                          </button>
+                        </div>
+                      </div>
+                    </template>
+                    <p
+                      v-if="!channelGroups.length"
+                      class="px-2 py-3 text-sm text-muted-foreground"
+                    >
+                      暂无可用渠道
+                    </p>
+                  </PopoverContent>
+                </Popover>
               </div>
               <div class="space-y-2">
                 <Label for="test-suffix">模型后缀</Label>
@@ -458,11 +630,18 @@ onBeforeUnmount(() => {
               ><Input
                 id="test-base-url"
                 v-model="config.baseUrl"
-                placeholder="https://api.example.com/v1"
+                :placeholder="
+                  config.channelId === BUILTIN_CHANNEL
+                    ? '/v1 或 https://your-domain.com/v1'
+                    : 'https://api.example.com/v1'
+                "
                 autocomplete="url"
               />
+              <p v-if="config.channelId === BUILTIN_CHANNEL" class="text-xs text-muted-foreground">
+                相对路径由后台按请求地址自动补全；填完整 URL 则直接使用（测自定义域名）。
+              </p>
             </div>
-            <div class="space-y-2">
+            <div v-if="config.channelId !== BUILTIN_CHANNEL" class="space-y-2">
               <Label for="test-api-key">API Key</Label
               ><Input
                 id="test-api-key"
@@ -493,7 +672,7 @@ onBeforeUnmount(() => {
               />
               <p v-if="modelsError" class="text-xs text-destructive">{{ modelsError }}</p>
               <div
-                v-else-if="models.length"
+                v-if="models.length"
                 class="flex max-h-64 flex-wrap gap-2 overflow-y-auto rounded-md border border-border p-2"
               >
                 <Button
@@ -694,6 +873,7 @@ onBeforeUnmount(() => {
           :logs="displayLogs"
           :channels="channels || []"
           :loading-detail="loadingDetail"
+          :collapsible="false"
           @expand="expand"
         >
           <template #actions>

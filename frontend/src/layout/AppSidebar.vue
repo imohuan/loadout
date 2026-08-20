@@ -12,6 +12,7 @@ import {
   RiRobot2Line,
   RiSettings3Line,
   RiShieldCheckLine,
+  RiSwapLine,
 } from '@remixicon/vue'
 
 const route = useRoute()
@@ -37,6 +38,7 @@ const groups = [
     label: '配置',
     items: [
       { to: '/integrations', label: 'MCP 管理', icon: RiApps2Line },
+      { to: '/unifyai', label: 'UnifyAI 同步', icon: RiSwapLine },
       { to: '/skills', label: 'Skills', icon: RiCpuLine },
       { to: '/settings', label: '设置', icon: RiSettings3Line },
     ],

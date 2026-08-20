@@ -5,6 +5,7 @@ import {
   RiDeleteBinLine,
   RiDownload2Line,
   RiKey2Line,
+  RiLoader4Line,
   RiRefreshLine,
   RiSettings3Line,
   RiUpload2Line,
@@ -31,7 +32,7 @@ const {
   loading: settingsLoading,
   refresh: refreshSettings,
 } = useListLoader(api.settings)
-const { pending, run } = useAsyncTask()
+const { run, isPending } = useAsyncTask()
 const { confirmDialog } = useConfirm()
 const keyDialog = ref(false)
 const exportDialog = ref(false)
@@ -53,7 +54,7 @@ async function refresh() {
   await Promise.all([refreshKeys(), refreshPlugins(), refreshSettings()])
 }
 async function createSkKey() {
-  await run(async () => {
+  await run('create-key', async () => {
     const result = await api.createSkKey({
       name: skForm.name,
       models: skForm.models.split(/[\s,]+/).filter(Boolean),
@@ -66,19 +67,19 @@ async function createSkKey() {
 }
 async function removeSkKey(id: string) {
   if (!(await confirmDialog('删除此模型 API 密钥？'))) return
-  await run(async () => {
+  await run(`key:${id}:remove`, async () => {
     await api.deleteSkKey(id)
     await refreshKeys()
   }, '密钥已删除')
 }
 async function saveSettings() {
-  await run(async () => {
+  await run('save-settings', async () => {
     await api.saveSettings({ ...settingsForm })
     await refreshSettings()
   }, '设置已保存')
 }
 async function changePassword() {
-  await run(async () => {
+  await run('change-password', async () => {
     await api.changePassword({ ...passwordForm })
     Object.assign(passwordForm, { old: '', new: '' })
   }, '密码已修改')
@@ -89,17 +90,17 @@ async function changePassword() {
   <div class="space-y-6">
     <PageHeader title="设置" description="集中管理运行时默认值、模型密钥和插件状态。"
       ><template #actions
-        ><Button variant="outline" :disabled="loading || pending" @click="refresh">
-          <RiRefreshLine size="16" />刷新 </Button
+        ><Button variant="outline" :disabled="loading || isPending('refresh')" @click="refresh">
+          <RiLoader4Line v-if="isPending('refresh')" class="animate-spin" size="16" /><RiRefreshLine v-else size="16" />刷新 </Button
         ><Button
           v-if="activeTab === 'credentials'"
-          :disabled="loading || pending"
+          :disabled="loading || isPending('create-key')"
           @click="keyDialog = true"
         >
-          <RiAddLine size="16" />创建模型 API 密钥 </Button
-        ><Button variant="outline" :disabled="pending" @click="exportDialog = true">
+          <RiLoader4Line v-if="isPending('create-key')" class="animate-spin" size="16" /><RiAddLine v-else size="16" />创建模型 API 密钥 </Button
+        ><Button variant="outline" @click="exportDialog = true">
           <RiDownload2Line size="16" />导出配置 </Button
-        ><Button :disabled="pending" @click="importDialog = true">
+        ><Button @click="importDialog = true">
           <RiUpload2Line size="16" />导入配置
         </Button></template
       ></PageHeader
@@ -144,7 +145,9 @@ async function changePassword() {
                     placeholder="编程向"
                   />
                 </div>
-                <Button type="submit" :disabled="pending">保存设置</Button>
+                <Button type="submit" :disabled="isPending('save-settings')">
+                  <RiLoader4Line v-if="isPending('save-settings')" class="animate-spin" size="16" />保存设置
+                </Button>
               </form>
             </CardContent>
           </Card>
@@ -162,7 +165,9 @@ async function changePassword() {
                   <Label for="new-password">新密码</Label
                   ><Input id="new-password" v-model="passwordForm.new" type="password" required />
                 </div>
-                <Button type="submit" :disabled="pending">修改密码</Button>
+                <Button type="submit" :disabled="isPending('change-password')">
+                  <RiLoader4Line v-if="isPending('change-password')" class="animate-spin" size="16" />修改密码
+                </Button>
               </form>
             </CardContent>
           </Card>
@@ -198,9 +203,10 @@ async function changePassword() {
                                 variant="ghost"
                                 size="icon"
                                 aria-label="删除密钥"
+                                :disabled="isPending(`key:${key.id}:remove`)"
                                 @click="removeSkKey(key.id)"
                               >
-                                <RiDeleteBinLine size="16" /> </Button
+                                <RiLoader4Line v-if="isPending(`key:${key.id}:remove`)" class="animate-spin" size="16" /><RiDeleteBinLine v-else size="16" /> </Button
                             ></TooltipTrigger>
                             <TooltipContent>删除密钥</TooltipContent>
                           </Tooltip>
@@ -283,7 +289,9 @@ async function changePassword() {
             ><Input id="sk-models" v-model="skForm.models" placeholder="逗号或空格分隔" />
           </div>
           <DialogFooter
-            ><Button type="submit" :disabled="pending">创建密钥</Button
+            ><Button type="submit" :disabled="isPending('create-key')">
+              <RiLoader4Line v-if="isPending('create-key')" class="animate-spin" size="16" />创建密钥
+            </Button
             ><Button type="button" variant="outline" @click="keyDialog = false"
               >取消</Button
             ></DialogFooter
