@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { RiDeleteBinLine, RiEditLine, RiLoader4Line } from '@remixicon/vue'
 import type { CapabilityRoute, Channel } from '@/lib/types'
-import { groupChannelsByBaseURL, normalizeBaseURL } from '@/composables/useChannels'
+import { formatChannelRef } from '@/composables/useChannelRef'
 import EmptyState from '@/components/EmptyState.vue'
 
 const props = defineProps<{
@@ -35,40 +35,17 @@ const routeVariant: Record<string, 'outline' | 'default' | 'destructive'> = {
   proxy: 'default',
   error: 'destructive',
 }
-function channelName(channels: Channel[], id?: string) {
-  if (!id) return '自动路由'
-  return channels.find((channel) => channel.id === id)?.name || id
-}
+// 视觉候选展示：模型 + "@渠道名(Keys)"，统一走 formatChannelRef。
+//   渠道级 → "@NewAPi"
+//   单 Key → "@NewAPi(Key1)"
+//   多 Key → "@NewAPi(Key1, Key2)"
 function viaLabel(
   channels: Channel[],
   via: { via_model: string; channel_id?: string; channel_ids?: string[]; channel_base_url?: string },
 ) {
-  if (via.channel_base_url) {
-    const groups = groupChannelsByBaseURL(channels)
-    const group = groups.find(
-      (g) => normalizeBaseURL(g.baseUrl) === normalizeBaseURL(via.channel_base_url!),
-    )
-    if (group) {
-      const first = group.keys[0]
-      return via.via_model + ` @${first?.channel_name || first?.name || group.baseUrl}（${group.keys.length} 个 Key 轮询）`
-    }
-    return via.via_model + ` @${via.channel_base_url}`
-  }
-  const ids = via.channel_ids?.length ? via.channel_ids : via.channel_id ? [via.channel_id] : []
-  if (!ids.length) return via.via_model
-  const idsSet = new Set(ids)
-  const groups = groupChannelsByBaseURL(channels)
-  const fullyGroups = groups.filter(
-    (g) => g.keys.length > 0 && g.keys.every((k) => idsSet.has(k.id)),
-  )
-  if (fullyGroups.length > 0) {
-    const names = fullyGroups.map(
-      (g) => g.keys[0]?.channel_name || g.keys[0]?.name || g.baseUrl,
-    )
-    const total = fullyGroups.reduce((s, g) => s + g.keys.length, 0)
-    return via.via_model + ` @${names.join(' + ')}（${total} 个 Key 轮询）`
-  }
-  return via.via_model + ' @' + ids.map((id) => channelName(channels, id)).join('、')
+  const ref = formatChannelRef(channels, via)
+  if (!ref) return via.via_model
+  return via.via_model + ` @${ref}`
 }
 // 敏感词替换规则摘要：from → to（正则规则加 [正则] 标记）。
 function replacementLabel(r: { from: string; to: string; regex?: boolean }) {

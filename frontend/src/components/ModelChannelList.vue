@@ -12,6 +12,7 @@ import {
 } from '@remixicon/vue'
 import type { Channel, ModelChannelItem } from '@/lib/types'
 import { groupChannelsByBaseURL, normalizeBaseURL } from '@/composables/useChannels'
+import { formatChannelRef } from '@/composables/useChannelRef'
 
 const props = withDefaults(
   defineProps<{
@@ -139,8 +140,18 @@ function selectionOf(index: number): { auto: boolean; ids: Set<string> } {
   return { auto: ids.length === 0, ids: new Set(ids) }
 }
 
+// 当前行是否渠道级选中了指定组（只有 channel_base_url === group.baseUrl 才算渠道级）。
+function isChannelLevelSelected(index: number, group: ReturnType<typeof groupChannelsByBaseURL>[number]) {
+  const item = model.value[index]
+  if (!item?.channel_base_url) return false
+  return normalizeBaseURL(item.channel_base_url) === normalizeBaseURL(group.baseUrl)
+}
+
 // 把勾选态写回 item（后端字段归一化）。
-//   整组全勾 → channel_base_url（渠道级）；部分勾 → channel_ids（Key 多选）；空 → 自动路由。
+// 重要：渠道级（channel_base_url）与 Key 多选（channel_ids）是两个独立概念，互不转换。
+//   - 渠道级：只能由点击渠道组标题触发。
+//   - Key 多选：即使全部 Key 恰好被勾满，也仍然是 channel_ids，不会自动折叠为渠道级。
+//   - 空：自动路由。
 function applySelection(index: number, ids: Set<string>, auto: boolean) {
   const item = model.value[index]
   if (!item) return
@@ -156,31 +167,23 @@ function applySelection(index: number, ids: Set<string>, auto: boolean) {
     const last = [...ids][ids.size - 1]
     ids = new Set([last])
   }
-  // 渠道级折叠：勾选集恰好等于某个组的全部 Key（无组外勾选）才折叠，
-  // 避免跨组勾选时某组全勾导致其他组 Key 被丢弃。
-  if (props.enableChannelLevel) {
-    for (const group of channelGroups.value) {
-      const groupIds = group.keys.map((k) => k.id)
-      if (
-        groupIds.length > 0 &&
-        ids.size === groupIds.length &&
-        groupIds.every((id) => ids.has(id))
-      ) {
-        item.channel_id = ''
-        item.channel_ids = []
-        item.channel_base_url = group.baseUrl
-        if (props.clearModelOnChannelChange) item.model = ''
-        return
-      }
-    }
-  }
-  // Key 多选：按渠道表顺序排列。
+  // Key 多选：按渠道表顺序排列；绝不折叠为 channel_base_url。
   const ordered = channelGroups.value
     .flatMap((g) => g.keys.map((k) => k.id))
     .filter((id) => ids.has(id))
   item.channel_id = ''
   item.channel_ids = ordered
   item.channel_base_url = ''
+  if (props.clearModelOnChannelChange) item.model = ''
+}
+
+// 设为渠道级（点击组标题触发）。再次点击同组 = 取消渠道级。
+function setChannelLevel(index: number, group: ReturnType<typeof groupChannelsByBaseURL>[number]) {
+  const item = model.value[index]
+  if (!item) return
+  item.channel_id = ''
+  item.channel_ids = []
+  item.channel_base_url = group.baseUrl
   if (props.clearModelOnChannelChange) item.model = ''
 }
 
@@ -202,79 +205,42 @@ function toggleKey(index: number, id: string) {
     applySelection(index, new Set([id]), false)
     return
   }
+  // 当前是渠道级 → 切到 Key 多选模式（保留组内所有 Key 的勾选视觉，仅切换当前 Key）。
+  if (model.value[index]?.channel_base_url) {
+    const groupIds = (active?.keys || []).map((k) => k.id)
+    const next = new Set(groupIds)
+    if (next.has(id)) next.delete(id)
+    else next.add(id)
+    applySelection(index, next, false)
+    return
+  }
   if (sel.ids.has(id)) sel.ids.delete(id)
   else sel.ids.add(id)
   applySelection(index, sel.ids, false)
 }
-// 点击组标题 = 整组 toggle：全未勾 → 全勾（折叠为渠道级），有勾 → 全取消。
-// 跨渠道点其他组标题 = 切换到该组整组（清空旧组）。
-// 后端 ExpandCandidateKeys 渠道级按 base_url 动态展开，未来新加 Key 自动包含。
+// 点击组标题 = 设为渠道级（再次点同组 = 取消）。
+// 渠道级是独立概念：点组标题直接写 channel_base_url、清空 channel_ids / channel_id；
+// Key 多选即使全部勾满也不会升级为渠道级。
 function toggleGroup(index: number, group: ReturnType<typeof groupChannelsByBaseURL>[number]) {
-  const sel = selectionOf(index)
-  const groupIds = group.keys.map((k) => k.id)
-  if (groupIds.length === 0) return
-  const active = activeGroupOf(index)
-  if (active && active.baseUrl !== group.baseUrl) {
-    // 切组：选中新组整组
-    applySelection(index, new Set(groupIds), false)
+  if (!group.keys.length) return
+  if (isChannelLevelSelected(index, group)) {
+    applySelection(index, new Set(), true)
     return
   }
-  const allChecked = groupIds.every((id) => sel.ids.has(id))
-  const next = new Set(sel.ids)
-  if (allChecked) {
-    groupIds.forEach((id) => next.delete(id))
-  } else {
-    groupIds.forEach((id) => next.add(id))
-  }
-  applySelection(index, next, false)
+  setChannelLevel(index, group)
 }
 function toggleAuto(index: number) {
   applySelection(index, new Set(), true)
 }
 
-// 整组是否全勾（UI 高亮：组标题加勾）。
-function groupFullyChecked(index: number, group: ReturnType<typeof groupChannelsByBaseURL>[number]) {
-  if (!group.keys.length) return false
-  const { auto, ids } = selectionOf(index)
-  if (auto) return false
-  return group.keys.every((k) => ids.has(k.id))
-}
-
-// 渠道按钮展示文本（单渠道约束：一个目标只属于一个渠道组）。
-//   渠道级（channel_base_url）：「NewAPi（3 个 Key 轮询）」
-//   组内部分勾（channel_ids）：「NewAPi · Key1、Key2」
-//   老单值（channel_id）：「newapi」
+// 渠道按钮展示文本：统一走 formatChannelRef 规范。
+//   渠道级 → NewAPi；单 Key → NewAPi(Key1)；多 Key → NewAPi(Key1, Key2)
 function channelTriggerLabel(index: number) {
   const item = model.value[index]
   if (!item) return props.allowAutoChannel ? '自动路由' : '选择渠道'
-  if (item.channel_base_url) {
-    const group = channelGroups.value.find(
-      (g) => normalizeBaseURL(g.baseUrl) === normalizeBaseURL(item.channel_base_url!),
-    )
-    if (group) {
-      const first = group.keys[0]
-      const title = first?.channel_name || first?.name || group.baseUrl
-      return `${title}（${group.keys.length} 个 Key 轮询）`
-    }
-    return item.channel_base_url
-  }
-  const ids = item.channel_ids?.length
-    ? item.channel_ids
-    : item.channel_id
-      ? [item.channel_id]
-      : []
-  if (!ids.length) return props.allowAutoChannel ? '自动路由（按模型找渠道）' : '选择渠道'
-  // 组内多选：带渠道名前缀，明确归属（避免名字相同时显示成 "volcengine · volcengine"）。
-  const active = activeGroupOf(index)
-  if (active && item.channel_ids?.length) {
-    const title = active.keys[0]?.channel_name || active.keys[0]?.name || active.baseUrl
-    const names = ids.map((id) => props.channels.find((c) => c.id === id)?.name || id)
-    const unique = names.filter((n) => n !== title)
-    if (unique.length === 0) return title
-    return `${title} · ${unique.join('、')}`
-  }
-  // 老单值：保持 Key 名
-  return ids.map((id) => props.channels.find((c) => c.id === id)?.name || id).join('、')
+  const text = formatChannelRef(props.channels, item)
+  if (text) return text
+  return props.allowAutoChannel ? '自动路由（按模型找渠道）' : '选择渠道'
 }
 
 // 模型候选：按当前勾选的 Key 过滤（并集）。
@@ -309,7 +275,7 @@ function modelCandidates(index: number): string[] {
           >
             <span class="truncate">{{ channelTriggerLabel(index) }}</span>
             <RiArrowDropDownLine size="24" class="ml-auto shrink-0 opacity-50" />
-            <RiArrowDownSLine class="size-4 shrink-0 opacity-50" />
+            <RiArrowDownSLine class="ml-auto size-4 shrink-0 opacity-50" />
           </Button>
         </PopoverTrigger>
         <PopoverContent
@@ -331,30 +297,38 @@ function modelCandidates(index: number): string[] {
               自动路由（按模型找渠道）
             </button>
           </div>
-          <template v-for="group in channelGroups" :key="group.baseUrl">
-            <div class="mb-3 last:mb-0">
+          <div class="space-y-1">
+            <template v-for="group in channelGroups" :key="group.baseUrl">
+              <div
+                class="rounded-md border p-1 transition-colors"
+                :class="
+                  isChannelLevelSelected(index, group)
+                    ? 'border-primary/40 bg-primary/5'
+                    : 'border-transparent'
+                "
+              >
               <TooltipProvider>
                 <Tooltip>
                   <TooltipTrigger as-child>
                     <button
                       type="button"
-                      class="mb-1.5 flex w-full items-center gap-1 rounded-md border px-2 py-1 text-left text-xs font-medium transition-colors"
+                      class="flex w-full items-center gap-1 rounded px-1 py-0.5 text-left text-xs font-medium transition-colors"
                       :class="
-                        groupFullyChecked(index, group)
-                          ? 'border-primary bg-primary/15 text-primary'
-                          : 'border-transparent text-muted-foreground hover:border-border hover:bg-muted/50'
+                        isChannelLevelSelected(index, group)
+                          ? 'text-primary'
+                          : 'text-muted-foreground hover:bg-muted/50'
                       "
                       :aria-label="`选择整组：${groupLabel(group)}`"
                       @click="toggleGroup(index, group)"
                     >
                       <RiStackLine
-                        v-if="groupFullyChecked(index, group)"
+                        v-if="isChannelLevelSelected(index, group)"
                         class="size-3.5 shrink-0"
                       />
                       <RiKey2Line v-else class="size-3.5 shrink-0 opacity-50" />
-                      <span class="flex-1">{{ groupLabel(group) }}</span>
+                      <span class="flex-1 truncate">{{ groupLabel(group) }}</span>
                       <RiCheckLine
-                        v-if="groupFullyChecked(index, group)"
+                        v-if="isChannelLevelSelected(index, group)"
                         class="size-3.5 shrink-0"
                       />
                     </button>
@@ -362,12 +336,12 @@ function modelCandidates(index: number): string[] {
                   <TooltipContent>点击选择整个渠道（含未来新增的 Key）</TooltipContent>
                 </Tooltip>
               </TooltipProvider>
-              <div class="flex flex-wrap gap-1.5">
+              <div class="mt-0.5 flex flex-wrap gap-1">
                 <button
                   v-for="key in group.keys"
                   :key="key.id"
                   type="button"
-                  class="rounded-md border px-2 py-1 text-xs font-medium transition-colors"
+                  class="rounded border px-1.5 py-0.5 text-xs font-medium transition-colors"
                   :class="
                     selectionOf(index).ids.has(key.id)
                       ? 'border-primary bg-primary text-primary-foreground'
@@ -378,8 +352,9 @@ function modelCandidates(index: number): string[] {
                   {{ key.name }}
                 </button>
               </div>
-            </div>
-          </template>
+              </div>
+            </template>
+          </div>
           <p v-if="!channelGroups.length" class="px-2 py-3 text-sm text-muted-foreground">
             暂无可用渠道
           </p>
@@ -396,7 +371,7 @@ function modelCandidates(index: number): string[] {
             :disabled="requireChannelForModel && !item.channel_id && !item.channel_ids?.length && !item.channel_base_url"
           >
             <span class="truncate">{{ item.model || placeholder }}</span>
-            <RiArrowDownSLine class="size-4 shrink-0 opacity-50" />
+            <RiArrowDownSLine class="ml-auto size-4 shrink-0 opacity-50" />
           </Button>
         </PopoverTrigger>
         <PopoverContent class="w-80 p-0" align="start">

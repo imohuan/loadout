@@ -4,6 +4,7 @@ import { RiArrowDownSLine, RiArrowRightSLine } from '@remixicon/vue'
 import type { Channel, RouteLog } from '@/lib/types'
 import { BUILTIN_CHANNEL } from '@/lib/constants'
 import { formatDate, formatDuration } from '@/lib/format'
+import { formatChannelRef } from '@/composables/useChannelRef'
 import EmptyState from '@/components/EmptyState.vue'
 import DataPagination from '@/components/DataPagination.vue'
 
@@ -19,9 +20,9 @@ const props = withDefaults(
 )
 const emit = defineEmits<{ expand: [log: RouteLog] }>()
 const expanded = ref(new Set<string>())
-function channelName(channels: Channel[], id?: string) {
-  return id ? channels.find((channel) => channel.id === id)?.name || id : '-'
-}
+// 直接调用共享的 formatChannelRef：触发器/列表/日志统一为「渠道名(Key1)」。
+const channelRefText = (channels: Channel[], channelId?: string) =>
+  formatChannelRef(channels, channelId ? { channel_id: channelId } : undefined)
 // 自带模式哨兵（与 ModelTestView 一致）：final_channel_id 持有此值时显示为「自带」+ key 名。
 function finalTargetLabel(channelId?: string, skKeyName?: string) {
   if (channelId === BUILTIN_CHANNEL) {
@@ -194,7 +195,7 @@ function cacheRatio(x: { prompt_tokens?: number; cached_tokens?: number }) {
                   ><span v-if="log.final_channel_id === BUILTIN_CHANNEL" class="text-muted-foreground"
                     >@ {{ finalTargetLabel(log.final_channel_id, log.sk_key_name) }}</span
                   ><span v-else-if="log.final_channel_id" class="text-muted-foreground"
-                    >@ {{ channelName(channels, log.final_channel_id) }}</span
+                    >@ {{ channelRefText(channels, log.final_channel_id) }}</span
                   ></TableCell
                 ><TableCell
                   ><Badge :class="resultTone(log.result)">{{ resultLabel(log.result) }}</Badge></TableCell
@@ -260,7 +261,7 @@ function cacheRatio(x: { prompt_tokens?: number; cached_tokens?: number }) {
                           <span class="font-medium tabular-nums">{{ attempt.step_no }}.</span
                           ><span class="font-mono text-xs">{{ attempt.model }}</span
                           ><span class="text-muted-foreground"
-                            >@ {{ channelName(channels, attempt.channel_id) }}</span
+                            >@ {{ channelRefText(channels, attempt.channel_id) }}</span
                           ><Badge
                             variant="outline"
                             :class="['shrink-0 border', actionTone(attempt.action)]"

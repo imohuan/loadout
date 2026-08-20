@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { RiDeleteBinLine, RiEditLine, RiFileCopyLine, RiLoader4Line } from '@remixicon/vue'
 import type { Aggregate, AggregateTarget, Channel } from '@/lib/types'
-import { groupChannelsByBaseURL, normalizeBaseURL } from '@/composables/useChannels'
+import { formatChannelRef } from '@/composables/useChannelRef'
 import EmptyState from '@/components/EmptyState.vue'
 
 const props = defineProps<{
@@ -14,42 +14,8 @@ const emit = defineEmits<{
   remove: [aggregate: Aggregate]
   duplicate: [aggregate: Aggregate]
 }>()
-// 目标渠道显示：渠道级 → 渠道名（N 个 Key 轮询）；Key 多选 → 各 Key 名；单 Key（老兼容）→ Key 名。
-function resolveTargetDisplay(channels: Channel[], target: AggregateTarget): string {
-  if (target.channel_base_url) {
-    const groups = groupChannelsByBaseURL(channels)
-    const group = groups.find(
-      (g) => normalizeBaseURL(g.baseUrl) === normalizeBaseURL(target.channel_base_url!),
-    )
-    if (group) {
-      const first = group.keys[0]
-      const title = first?.channel_name || first?.name || group.baseUrl
-      return `${title}（${group.keys.length} 个 Key 轮询）`
-    }
-    return target.channel_base_url
-  }
-  const ids = target.channel_ids?.length
-    ? target.channel_ids
-    : target.channel_id
-      ? [target.channel_id]
-      : []
-  const idsSet = new Set(ids)
-  // 多渠道整组全勾：合并显示为「NewAPi + 像素星空（4 个 Key 轮询）」
-  const groups = groupChannelsByBaseURL(channels)
-  const fullyGroups = groups.filter(
-    (g) => g.keys.length > 0 && g.keys.every((k) => idsSet.has(k.id)),
-  )
-  if (fullyGroups.length > 0) {
-    const names = fullyGroups.map(
-      (g) => g.keys[0]?.channel_name || g.keys[0]?.name || g.baseUrl,
-    )
-    const total = fullyGroups.reduce((s, g) => s + g.keys.length, 0)
-    return `${names.join(' + ')}（${total} 个 Key 轮询）`
-  }
-  return ids
-    .map((id) => channels.find((channel) => channel.id === id)?.name || id)
-    .join('、')
-}
+const resolveTargetDisplay = (channels: Channel[], target: AggregateTarget) =>
+  formatChannelRef(channels, target)
 // 与 AggregatesView.remove() 的 key 规则一致：aggregate:{name}:remove
 function busy(aggregate: Aggregate, action: string) {
   return props.isPending ? props.isPending(`aggregate:${aggregate.name}:${action}`) : false
