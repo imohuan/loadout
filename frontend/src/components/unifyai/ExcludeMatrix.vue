@@ -4,6 +4,7 @@ import {
   RiCheckLine,
   RiCloseLine,
   RiDeleteBinLine,
+  RiEditLine,
   RiFilterLine,
   RiFilterOffLine,
   RiInformationLine,
@@ -26,6 +27,8 @@ const emit = defineEmits<{
   'update:disabled': [value: Set<string>]
   /** 删除服务器 */
   remove: [name: string]
+  /** 编辑单个服务器 */
+  edit: [server: McpServerInfo]
 }>()
 
 /** 展示「只显示被排除项」 */
@@ -237,6 +240,22 @@ const excludedCount = computed(() => {
                       </Button></TooltipTrigger
                     >
                     <TooltipContent>删除</TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger as-child
+                      ><Button
+                        variant="ghost"
+                        size="icon"
+                        class="size-7 text-muted-foreground hover:text-foreground"
+                        :aria-label="`编辑 ${server.name}`"
+                        @click="emit('edit', server)"
+                      >
+                        <RiEditLine size="14" />
+                      </Button></TooltipTrigger
+                    >
+                    <TooltipContent>编辑</TooltipContent>
                   </Tooltip>
                 </TooltipProvider>
               </div>
