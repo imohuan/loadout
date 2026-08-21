@@ -50,6 +50,46 @@ function shouldRefreshDetail(log: RouteLog): boolean {
   return true
 }
 
+// 自我修复触发器：前端把"看起来卡死的 running"行主动告诉后端，让详情接口命中补全。
+// 转发日志的列表数据是后端主导，前端只是展示；detailsMap 仅缓存 attempts/error_message，
+// 顶层字段（result/duration_ms/final_model）只能等 list 刷新。这里调 detail 不只是为了前端，
+// 主要是给后端 SelfHeal 一个触发点：后端配置项 LOADOUT_ROUTE_LOG_SELF_HEAL_TIMEOUT>0 时，
+// 会把卡死记录就地补 finished_at/duration/result。用户不必展开行也能享受修复。
+// 60 秒阈值与后端默认值对齐；通过 SET-SCHEDULE 去重避免短时间内反复打 detail。
+const SELF_HEAL_AGE_MS = 60_000
+const SELF_HEAL_DEDUPE_MS = 60_000
+const selfHealScheduled = new Set<string>()
+
+function shouldSelfHeal(log: RouteLog): boolean {
+  if (log.result !== 'running') return false
+  const startMs = new Date(log.started_at).getTime()
+  if (!Number.isFinite(startMs)) return false
+  return Date.now() - startMs > SELF_HEAL_AGE_MS
+}
+
+async function selfHealStuckLogs() {
+  const list = logs.value || []
+  for (const log of list) {
+    if (!shouldSelfHeal(log)) continue
+    if (selfHealScheduled.has(log.request_id)) continue
+    selfHealScheduled.add(log.request_id)
+    service
+      .detail(log.request_id)
+      .then((detail) => {
+        // 把补完后的顶层字段同步进 detailsMap，displayLogs 渲染时合并。
+        // 顶层 result/duration_ms 要等下一次 list 刷新覆盖（这里是 attempts/error_message 视角）。
+        detailsMap.set(log.request_id, detail)
+      })
+      .catch(() => {
+        // 静默：失败不阻塞；下个 tick 仍可能命中
+      })
+      .finally(() => {
+        // 防抖：60s 内不再对同一 request_id 重复触发；旧的卡死记录可能在多次自愈前一直处于 running。
+        setTimeout(() => selfHealScheduled.delete(log.request_id), SELF_HEAL_DEDUPE_MS)
+      })
+  }
+}
+
 const displayLogs = computed(() => {
   const list = logs.value || []
   return list.map((log) => {
@@ -113,6 +153,7 @@ function startAutoRefresh() {
     void (async () => {
       await refresh({ silentError: true })
       await refreshActiveDetails()
+      await selfHealStuckLogs()
     })()
   }, AUTO_REFRESH_INTERVAL)
 }

@@ -176,4 +176,10 @@ type RouteLog interface {
 	List(context.Context, RouteLogFilter) ([]RouteRequestView, error)
 	Detail(context.Context, string) (RouteRequestView, error)
 	Clear(context.Context, time.Time) error
+	// SelfHeal 兜底：用于"Start 写 running 但 Finish 异常中断"的卡死记录。
+	// 当 result='running' 且 finished_at 为空 且距 started_at 超过 threshold 时，
+	// 把 finished_at 设为 now、duration_ms 设为 now-started_at、result 设为
+	// stream_interrupted 并写一条明确的 error_message，返回的 Detail 会拿到完整字段。
+	// 其它情况 no-op。错误返回仅作日志参考，不影响主路径。
+	SelfHeal(ctx context.Context, requestID string, threshold time.Duration) error
 }

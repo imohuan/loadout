@@ -251,8 +251,10 @@ func (r rawPackage) looksLikeArkFreePackage() bool {
 
 // normalizeModelName 从 product_name 提取用于 UI 显示与匹配的 model 标签。
 //
-// 策略：去掉全部空格与 "豆包" / "方舟" / "·" 等修饰，保留字母数字与短横线下划线。
-// 例："豆包·Doubao-pro-32k" → "doubao-pro-32k"，"方舟 Doubao 1.5 lite 32k" → "doubao1.5lite32k"。
+// 策略：去掉全部空格与 "豆包" / "方舟" / "·" 等修饰，保留字母数字与短横线下划线；
+// 点（"."）归一化为短横线——code 里的版本号 "2.1" 与 API 模型名的 "2-1" 写法不同，
+// 归一化后双向包含才能命中（"doubao-seed-2.1-pro" ↔ "doubao-seed-2-1-pro-260628"）。
+// 例："豆包·Doubao-pro-32k" → "doubao-pro-32k"，"方舟 Doubao 1.5 lite 32k" → "doubao1-5lite32k"。
 func normalizeModelName(name string) string {
 	if name == "" {
 		return ""
@@ -269,7 +271,7 @@ func normalizeModelName(name string) string {
 		case r >= '0' && r <= '9':
 			b.WriteRune(r)
 		case r == '-' || r == '_' || r == '.':
-			b.WriteRune(r)
+			b.WriteRune('-')
 		}
 	}
 	s := b.String()

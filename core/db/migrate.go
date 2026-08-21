@@ -394,6 +394,18 @@ CREATE TABLE volc_quota_packages (
 );
 CREATE INDEX idx_volc_quota_packages_product ON volc_quota_packages(account_id, product);
 `,
+	}, {
+		version: 15,
+		name:    "volc-quota-packages-local-remaining",
+		sql: `
+-- 资源包级本地扣减余额：扣减锚点从 volc_quota_models（Product 聚合名，匹配不上 API 模型名）
+-- 改为 volc_quota_packages（configuration_code 提取名）。每个资源包行独立维护
+-- initial_total（首次刷新总额）与 local_remaining（每次请求扣减），UI 逐条展示。
+-- model 列：从 configuration_code 提取的模型名（去资源包类型后缀），扣减/拦截的匹配锚点。
+ALTER TABLE volc_quota_packages ADD COLUMN model TEXT NOT NULL DEFAULT '';
+ALTER TABLE volc_quota_packages ADD COLUMN initial_total INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE volc_quota_packages ADD COLUMN local_remaining INTEGER NOT NULL DEFAULT 0;
+`,
 	}}
 
 // Migrate applies all pending schema migrations and rejects an incompatible

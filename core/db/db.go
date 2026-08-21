@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 
 	_ "modernc.org/sqlite"
 )
@@ -39,8 +40,15 @@ func Open(path string) (*sql.DB, error) {
 }
 
 // OpenMemory opens an isolated database for tests.
+//
+// 用唯一名（进程内原子计数）而不是固定 "loadout-test"：named shared-memory 库
+// 在最后一个连接关闭前一直存活，固定名会让不同测试复用残留的旧 schema（比如
+// 加 v15 列后老测试库没跑迁移就报 "no such column"）。唯一名保证每次全新。
+var memDBCounter int64
+
 func OpenMemory() (*sql.DB, error) {
-	return Open("file:loadout-test?mode=memory&cache=shared")
+	n := atomic.AddInt64(&memDBCounter, 1)
+	return Open(fmt.Sprintf("file:loadout-test-%d?mode=memory&cache=shared", n))
 }
 
 func configure(d *sql.DB) error {

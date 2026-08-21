@@ -17,10 +17,11 @@ func TestNormalizeModelName(t *testing.T) {
 		want string
 	}{
 		{"豆包·Doubao-pro-32k", "doubao-pro-32k"},
-		{"方舟 Doubao 1.5 lite 32k", "doubao1.5lite32k"},
+		{"方舟 Doubao 1.5 lite 32k", "doubao1-5lite32k"},
 		{"", ""},
 		{"doubao-1-5-pro-32k-250115", "doubao-1-5-pro-32k-250115"},
 		{"豆包大模型·Doubao-lite-4k(2025-03-01)", "doubao-lite-4k2025-03-01"},
+		{"Doubao_Seed_2.1_pro_data_collaboration", "doubao-seed-2-1-pro-data-collaboration"},
 	}
 	for _, c := range cases {
 		if got := normalizeModelName(c.in); got != c.want {
@@ -187,8 +188,11 @@ func newTestService(t *testing.T) *Service {
 	mustExec(`INSERT INTO channels(id, name, base_url, created_at, updated_at) VALUES ('ch1', 'ark1', 'https://ark.cn-beijing.volces.com/api/v3', 'now', 'now')`)
 	mustExec(`INSERT INTO volc_quota_config(channel_id, access_key, account_id, secret_key_cipher, enabled, force_block, updated_at)
 		VALUES ('ch1', 'AKxxx', ?, 'cipher', 1, 1, 'now')`, aid)
-	mustExec(`INSERT INTO volc_quota_models(account_id, model, product_name, total_amount, available_amount, used_amount, initial_total, local_remaining, unit, status, synced_at)
-		VALUES (?, 'doubao-pro-32k', '豆包·Doubao-pro-32k', 2000000, 2000000, 0, 2000000, 2000000, 'Tokens', 'ok', 'now')`, aid)
+	// v15 起扣减/拦截锚点是 volc_quota_packages.model（configuration_code 提取名）。
+	mustExec(`INSERT INTO volc_quota_packages(account_id, instance_no, product, product_name, configuration_code,
+	       configuration_name, model, total_amount, available_amount, used_amount, initial_total, local_remaining, unit, status, synced_at)
+		VALUES (?, 'inst-1', 'ark_bd', '豆包·Doubao-pro-32k', 'Doubao_Pro_32k_data_collaboration', 'Doubao-pro-32k协作奖励计划资源包',
+		        'doubao-pro-32k', 2000000, 2000000, 0, 2000000, 2000000, 'Tokens', 'Effective', 'now')`, aid)
 	return svc
 }
 
@@ -199,25 +203,25 @@ func TestDecrementLocalRemaining(t *testing.T) {
 	svc.decrementLocalRemaining(aid, "doubao-1-5-pro-32k-250115", 500000)
 	var remaining int64
 	var status string
-	if err := svc.db.QueryRow(`SELECT local_remaining, status FROM volc_quota_models WHERE account_id=? AND model='doubao-pro-32k'`, aid).Scan(&remaining, &status); err != nil {
+	if err := svc.db.QueryRow(`SELECT local_remaining, status FROM volc_quota_packages WHERE account_id=? AND model= 'doubao-pro-32k'`, aid).Scan(&remaining, &status); err != nil {
 		t.Fatal(err)
 	}
 	if remaining != 1500000 {
 		t.Errorf("第一次扣减后 local_remaining = %d, want 1500000", remaining)
 	}
-	if status != "ok" {
-		t.Errorf("第一次扣减后 status = %q, want ok", status)
+	if status != "Effective" {
+		t.Errorf("第一次扣减后 status = %q, want Effective", status)
 	}
-	// 第二次扣 1600k，超过剩余 → 归零 + exhausted。
+	// 第二次扣 1600k，超过剩余 → 归零 + UsedUp。
 	svc.decrementLocalRemaining(aid, "doubao-1-5-pro-32k-250115", 1600000)
-	if err := svc.db.QueryRow(`SELECT local_remaining, status FROM volc_quota_models WHERE account_id=? AND model='doubao-pro-32k'`, aid).Scan(&remaining, &status); err != nil {
+	if err := svc.db.QueryRow(`SELECT local_remaining, status FROM volc_quota_packages WHERE account_id=? AND model= 'doubao-pro-32k'`, aid).Scan(&remaining, &status); err != nil {
 		t.Fatal(err)
 	}
 	if remaining != 0 {
 		t.Errorf("超额扣减后 local_remaining = %d, want 0", remaining)
 	}
-	if status != "exhausted" {
-		t.Errorf("超额扣减后 status = %q, want exhausted", status)
+	if status != "UsedUp" {
+		t.Errorf("超额扣减后 status = %q, want UsedUp", status)
 	}
 }
 
@@ -264,7 +268,7 @@ func TestHandleProxyUpstreamSucceededDecrements(t *testing.T) {
 		t.Fatal(err)
 	}
 	var remaining int64
-	if err := svc.db.QueryRow(`SELECT local_remaining FROM volc_quota_models WHERE account_id=? AND model='doubao-pro-32k'`, aid).Scan(&remaining); err != nil {
+	if err := svc.db.QueryRow(`SELECT local_remaining FROM volc_quota_packages WHERE account_id=? AND model= 'doubao-pro-32k'`, aid).Scan(&remaining); err != nil {
 		t.Fatal(err)
 	}
 	if remaining != 1800000 {
@@ -277,5 +281,63 @@ func TestHandleProxyUpstreamSucceededDecrements(t *testing.T) {
 	}
 	if count != 1 {
 		t.Errorf("use_count = %d, want 1", count)
+	}
+}
+
+func TestModelNameFromConfigCode(t *testing.T) {
+	cases := []struct {
+		code, product, want string
+	}{
+		{"DeepSeek_V4_flash_0731_data_collaboration_resource_pack", "ark_open_source_llm", "deepseek-v4-flash-0731"},
+		{"Doubao_Seed3D_1.0_pack_free_infer", "ark_bd", "doubao-seed3d-1-0"},
+		{"Doubao_Seed_2.1_pro_data_collaboration", "ark_bd", "doubao-seed-2-1-pro"},
+		{"ym-rodin-gen2-free", "ark_ym_sanfang", "ym-rodin-gen2"},
+		{"hitem3D-2.0-free", "ark_sm_sanfang", "hitem3d-2-0"},
+		{"", "ark_bd", "ark-bd"},
+	}
+	for _, c := range cases {
+		if got := modelNameFromConfigCode(c.code, c.product); got != c.want {
+			t.Errorf("modelNameFromConfigCode(%q, %q) = %q, want %q", c.code, c.product, got, c.want)
+		}
+	}
+}
+
+func TestSameDateToken(t *testing.T) {
+	cases := []struct {
+		a, b string
+		want bool
+	}{
+		{"0731", "260731", true},   // code 月日 ↔ API 年月日
+		{"260731", "0731", true},   // 反向
+		{"0731", "0731", true},     // 同 4 位
+		{"260731", "260731", true}, // 同 6 位
+		{"32", "128", false},       // 非日期不相等
+		{"0731", "260801", false},  // 不同日
+		{"260731", "260801", false},
+	}
+	for _, c := range cases {
+		if got := sameDateToken(c.a, c.b); got != c.want {
+			t.Errorf("sameDateToken(%q, %q) = %v, want %v", c.a, c.b, got, c.want)
+		}
+	}
+}
+
+func TestMatchOneConfigCodeToAPIModel(t *testing.T) {
+	cases := []struct {
+		quota, api string // quota=code 提取名(已归一化), api=请求模型名(未归一化)
+		want       bool
+	}{
+		{"deepseek-v4-flash-0731", "deepseek-v4-flash-ga-260731", true}, // 日期归一化 + ga 修饰
+		{"deepseek-v4-flash-0731", "deepseek-v4-flash-260731", true},    // 日期归一化
+		{"deepseek-v4-flash", "deepseek-v4-flash-ga-260731", true},      // 双向包含
+		{"glm-5-2", "glm-5-2-250922", true},                             // 双向包含
+		{"doubao-seed-2-1-pro", "doubao-seed-2-1-pro-260628", true},     // 双向包含
+		{"gpt-4o", "deepseek-v4-flash-ga-260731", false},                // 完全无关
+		{"doubao-pro-32k", "doubao-pro-128k", false},                    // 不同规格
+	}
+	for _, c := range cases {
+		if got := matchOne(c.quota, c.api); got != c.want {
+			t.Errorf("matchOne(%q, %q) = %v, want %v", c.quota, c.api, got, c.want)
+		}
 	}
 }

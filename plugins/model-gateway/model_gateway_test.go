@@ -346,6 +346,9 @@ func (m *mockRouteLog) Detail(ctx context.Context, id string) (contracts.RouteRe
 	return contracts.RouteRequestView{}, nil
 }
 func (m *mockRouteLog) Clear(ctx context.Context, t time.Time) error { return nil }
+func (m *mockRouteLog) SelfHeal(ctx context.Context, requestID string, threshold time.Duration) error {
+	return nil
+}
 
 // TestHandleProxyRejectedBeforeUpstreamWritesLog 回归：before-upstream 前置拒绝
 // （聚合模型"无可用目标"、熔断拦截等）必须写入 failed 路由日志，不能无声消失。

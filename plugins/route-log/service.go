@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -61,6 +62,53 @@ func (s *Service) Attempt(ctx context.Context, attempt contracts.RouteAttempt) (
 
 func (s *Service) Finish(ctx context.Context, finish contracts.RouteFinish) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE route_requests SET finished_at=?, result=?, final_model=NULLIF(?, ''), final_channel_id=NULLIF(?, ''), http_status=NULLIF(?, 0), duration_ms=?, error_message=?, stream=?, prompt_tokens=?, completion_tokens=?, cached_tokens=? WHERE request_id=?`, finish.FinishedAt.UTC().Format(time.RFC3339Nano), finish.Result, finish.FinalModel, finish.FinalChannelID, finish.HTTPStatus, finish.Duration.Milliseconds(), redact(finish.ErrorMessage), boolToInt(finish.Stream), finish.PromptTokens, finish.CompletionTokens, finish.CachedTokens, finish.RequestID)
+	return err
+}
+
+// SelfHeal 兜底收尾：Start 写 running 但 Finish 异常中断时，记录会永久卡 running。
+// 当 result='running' 且 finished_at 为空 且距 started_at 超过 threshold 时，
+// 自动补 finished_at=now、duration_ms=now-started_at、result=stream_interrupted，
+// 并写一条明确的 error_message（只在原本为空时填，避免覆盖真实错误）。
+// 行为是幂等的：threshold<=0 或上述条件任一不满足都直接 no-op。
+func (s *Service) SelfHeal(ctx context.Context, requestID string, threshold time.Duration) error {
+	if threshold <= 0 {
+		return nil
+	}
+	row := s.db.QueryRowContext(ctx, `SELECT started_at, result, finished_at FROM route_requests WHERE request_id = ?`, requestID)
+	var startedStr string
+	var result string
+	var finished sql.NullString
+	if err := row.Scan(&startedStr, &result, &finished); err != nil {
+		// 记录不存在：no-op，不算错（detail 路径会返回 404）
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		return err
+	}
+	if result != "running" || finished.Valid {
+		return nil
+	}
+	started, err := time.Parse(time.RFC3339Nano, startedStr)
+	if err != nil {
+		return err
+	}
+	// 仍在 threshold 内：保护真正在跑的请求，不误杀
+	if time.Since(started) < threshold {
+		return nil
+	}
+	now := time.Now().UTC()
+	inferred := now.Sub(started)
+	_, err = s.db.ExecContext(ctx,
+		`UPDATE route_requests
+		 SET finished_at = ?, result = 'stream_interrupted', duration_ms = ?,
+		     error_message = COALESCE(NULLIF(error_message, ''), ?)
+		 WHERE request_id = ? AND result = 'running' AND finished_at IS NULL`,
+		now.Format(time.RFC3339Nano), inferred.Milliseconds(),
+		"后端自我修复：写入流程异常中断，已基于 started_at 自动收尾（前端 detail 命中触发）",
+		requestID)
+	if err != nil {
+		s.lg.Warn("route-log self-heal failed", "request_id", requestID, "err", err)
+	}
 	return err
 }
 

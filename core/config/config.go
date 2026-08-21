@@ -141,6 +141,16 @@ var VisionMaxImageBytes = 25 * 1024 * 1024 // env: LOADOUT_VISION_MAX_IMAGE_BYTE
 // VisionMaxImages 单次请求图片张数上限（25MB × N 的 base64 + 解码内存峰值）。
 var VisionMaxImages = 10 // env: LOADOUT_VISION_MAX_IMAGES
 
+// ============ 转发日志自愈 ============
+
+// RouteLogSelfHealTimeout 启用转发日志"卡死 running"自愈：
+// 前端 /api/route-logs/{id} 命中"started_at 之后超过该阈值仍卡在 running 且
+// finished_at 为空"的记录时，后端推断 finished_at=now、duration_ms=now-started_at、
+// result=stream_interrupted，并写回 DB；返回的详情会反映已修复的字段。
+// 修复仅在 result='running' 且 finished_at 为空且 age>threshold 时生效，
+// 不影响正常结束的请求。设为 0 或负值禁用。env: LOADOUT_ROUTE_LOG_SELF_HEAL_TIMEOUT
+var RouteLogSelfHealTimeout = 60 * time.Second
+
 // ReasoningInjectionStyle 流式注入风格：reasoning_content（DeepSeek 系）。
 var ReasoningInjectionStyle = "reasoning_content" // env: LOADOUT_REASONING_INJECTION_STYLE
 

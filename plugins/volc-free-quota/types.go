@@ -114,12 +114,17 @@ type Package struct {
 	ProductName       string `json:"product_name,omitempty"`
 	ConfigurationCode string `json:"configuration_code,omitempty"`
 	ConfigurationName string `json:"configuration_name,omitempty"`
-	TotalAmount       int64  `json:"total_amount"`
-	AvailableAmount   int64  `json:"available_amount"`
-	UsedAmount        int64  `json:"used_amount"`
-	Unit              string `json:"unit"`
-	Status            string `json:"status"`
-	EffectiveTime     string `json:"effective_time,omitempty"`
-	ExpiryTime        string `json:"expiry_time,omitempty"`
-	SyncedAt          string `json:"synced_at,omitempty"`
+	// Model 从 configuration_code 提取的模型名（去资源包类型后缀），扣减/拦截的匹配锚点。
+	// 如 "DeepSeek_V4_flash_0731_data_collaboration_resource_pack" → "deepseek-v4-flash-0731"。
+	Model           string `json:"model,omitempty"`
+	TotalAmount     int64  `json:"total_amount"`
+	AvailableAmount int64  `json:"available_amount"`
+	UsedAmount      int64  `json:"used_amount"`
+	InitialTotal    int64  `json:"initial_total"`   // v15 本地递减：首次刷新写入的总额
+	LocalRemaining  int64  `json:"local_remaining"` // v15 本地递减：每次请求成功后扣减
+	Unit            string `json:"unit"`
+	Status          string `json:"status"`
+	EffectiveTime   string `json:"effective_time,omitempty"`
+	ExpiryTime      string `json:"expiry_time,omitempty"`
+	SyncedAt        string `json:"synced_at,omitempty"`
 }

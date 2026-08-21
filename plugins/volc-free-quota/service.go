@@ -141,38 +141,39 @@ func (s *Service) HandleProxyUpstreamSucceeded(payload any) (any, error) {
 	return payload, nil
 }
 
-// decrementLocalRemaining 从该账号所有匹配该 API 模型的 volc_quota_models 行扣减 tokens。
+// decrementLocalRemaining 从该账号所有匹配该 API 模型的资源包行扣减 tokens。
 //
-// 匹配复用 matchOne 模糊匹配（与刷新时同一套逻辑）：请求的 API 模型名
-// （如 doubao-1-5-pro-32k-250115）需映射到库里的归一化 product 名（如 doubao-pro-32k）。
-// 扣减到 <= 0 时置 status='exhausted'；local_remaining 下限 0（不出现负数）。
+// 匹配锚点是 volc_quota_packages.model（configuration_code 提取名，如
+// "deepseek-v4-flash-0731"），与请求的 API 模型名（如 "deepseek-v4-flash-ga-260731"）
+// 用 matchOne 模糊匹配（含日期归一化）。扣减到 <= 0 时置 status='exhausted'；
+// local_remaining 下限 0（不出现负数）。
 func (s *Service) decrementLocalRemaining(accountID, apiModel string, tokens int) {
 	if accountID == "" || apiModel == "" || tokens <= 0 {
 		return
 	}
-	rows, err := s.db.Query(`SELECT model FROM volc_quota_models WHERE account_id = ?`, accountID)
+	rows, err := s.db.Query(`SELECT instance_no, model FROM volc_quota_packages WHERE account_id = ? AND initial_total > 0`, accountID)
 	if err != nil {
-		s.lg.Warn("volc-free-quota: 查询本地余额失败", "account_id", accountID, "model", apiModel, "err", err)
+		s.lg.Warn("volc-free-quota: 查询资源包余额失败", "account_id", accountID, "model", apiModel, "err", err)
 		return
 	}
 	defer rows.Close()
 	var matched []string
 	for rows.Next() {
-		var qModel string
-		if err := rows.Scan(&qModel); err == nil && qModel != "" && matchOne(qModel, apiModel) {
-			matched = append(matched, qModel)
+		var instanceNo, model string
+		if err := rows.Scan(&instanceNo, &model); err == nil && model != "" && matchOne(model, apiModel) {
+			matched = append(matched, instanceNo)
 		}
 	}
-	for _, m := range matched {
+	for _, inst := range matched {
 		// MAX(local_remaining - tokens, 0)，扣到 0 为止；status 联动 exhausted。
 		if _, err := s.db.Exec(`
-			UPDATE volc_quota_models
+			UPDATE volc_quota_packages
 			SET local_remaining = MAX(local_remaining - ?, 0),
-			    status = CASE WHEN local_remaining - ? <= 0 THEN 'exhausted' ELSE status END,
+			    status = CASE WHEN local_remaining - ? <= 0 THEN 'UsedUp' ELSE status END,
 			    synced_at = ?  -- 复用 synced_at 记录最近一次本地扣减时间（展示用）
-			WHERE account_id = ? AND model = ?`,
-			tokens, tokens, time.Now().UTC().Format(time.RFC3339Nano), accountID, m); err != nil {
-			s.lg.Warn("volc-free-quota: 扣减本地余额失败", "account_id", accountID, "model", m, "tokens", tokens, "err", err)
+			WHERE account_id = ? AND instance_no = ?`,
+			tokens, tokens, time.Now().UTC().Format(time.RFC3339Nano), accountID, inst); err != nil {
+			s.lg.Warn("volc-free-quota: 扣减资源包余额失败", "account_id", accountID, "instance_no", inst, "tokens", tokens, "err", err)
 		}
 	}
 }
@@ -316,19 +317,19 @@ func (s *Service) checkAllCandidatesExhausted(candidateIDs []string, requestMode
 	if len(accountIDs) == 0 {
 		return false, false, nil
 	}
-	// 取出候选账号中所有匹配该 model 的本地余额记录。
+	// 取出候选账号中所有匹配该 model 的资源包本地余额记录。
 	placeholders := strings.Repeat("?,", len(accountIDs))
 	placeholders = strings.TrimSuffix(placeholders, ",")
 	args := make([]any, 0, len(accountIDs))
 	for _, id := range accountIDs {
 		args = append(args, id)
 	}
-	rows, err := s.db.Query(`SELECT account_id, model, initial_total, local_remaining FROM volc_quota_models WHERE account_id IN (`+placeholders+`)`, args...)
+	rows, err := s.db.Query(`SELECT account_id, model, initial_total, local_remaining FROM volc_quota_packages WHERE account_id IN (`+placeholders+`) AND initial_total > 0`, args...)
 	if err != nil {
 		return false, false, err
 	}
 	defer rows.Close()
-	// map[account_id] -> 该账号是否有匹配且本地余额耗尽的 model 记录
+	// map[account_id] -> 该账号是否有匹配且本地余额耗尽的资源包记录
 	accountExhausted := make(map[string]bool)
 	for rows.Next() {
 		var aid, quotaModel string
@@ -568,7 +569,8 @@ func (s *Service) ListUsage(ctx context.Context, accountID string) ([]Usage, err
 func (s *Service) ListPackages(ctx context.Context, accountID string) ([]Package, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT account_id, instance_no, product, product_name, configuration_code, configuration_name,
-		       total_amount, available_amount, used_amount, unit, status, effective_time, expiry_time, synced_at
+		       model, total_amount, available_amount, used_amount, initial_total, local_remaining,
+		       unit, status, effective_time, expiry_time, synced_at
 		FROM volc_quota_packages WHERE account_id = ?
 		ORDER BY (status = 'Effective') DESC, available_amount DESC, configuration_name`, accountID)
 	if err != nil {
@@ -579,8 +581,9 @@ func (s *Service) ListPackages(ctx context.Context, accountID string) ([]Package
 	for rows.Next() {
 		var p Package
 		if err := rows.Scan(&p.AccountID, &p.InstanceNo, &p.Product, &p.ProductName,
-			&p.ConfigurationCode, &p.ConfigurationName, &p.TotalAmount, &p.AvailableAmount,
-			&p.UsedAmount, &p.Unit, &p.Status, &p.EffectiveTime, &p.ExpiryTime, &p.SyncedAt); err != nil {
+			&p.ConfigurationCode, &p.ConfigurationName, &p.Model, &p.TotalAmount, &p.AvailableAmount,
+			&p.UsedAmount, &p.InitialTotal, &p.LocalRemaining, &p.Unit, &p.Status,
+			&p.EffectiveTime, &p.ExpiryTime, &p.SyncedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
@@ -771,12 +774,13 @@ func (s *Service) refreshOne(ctx context.Context, cfg Config) ([]string, error) 
 		}
 	}
 
-	// 逐条写资源包明细（volc_quota_packages）：同 Product 下几十种模型配置各有额度，
-	// 聚合 model 行只用于扣减/拦截，展示要靠明细。全量覆盖该账号（DELETE 旧明细再插入），
-	// 因为 billing API 返回的是该账号全量资源包，直接以本次结果为准。
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM volc_quota_packages WHERE account_id = ?`, aid); err != nil {
-		return nil, err
-	}
+	// 逐条 UPSERT 资源包明细（volc_quota_packages）：
+	//   - model 用 configuration_code 提取名（去掉资源包类型后缀），扣减锚点，
+	//     如 "DeepSeek_V4_flash_0731_data_collaboration_resource_pack" → "deepseek-v4-flash-0731"
+	//   - initial_total / local_remaining 只在首次写入时设置（旧值>0 保留），
+	//     否则 billing 刷新会把本地扣减抹掉；local_remaining clamp 到 ≤ 新总额。
+	//   - 不再 DELETE 重建（billing API 返回全量，但本地余额必须跨刷新保留）。
+	//   - 本次 billing 已不返回的旧包（过期/删除）保留不动，由旧数据清理兜底。
 	for _, p := range pkgs {
 		if !p.looksLikeArkFreePackage() {
 			continue
@@ -784,14 +788,36 @@ func (s *Service) refreshOne(ctx context.Context, cfg Config) ([]string, error) 
 		if p.InstanceNo == "" {
 			continue // 无唯一标识的包不入明细（理论上不会发生）
 		}
+		totalAmt := parseAmount(p.TotalAmount)
+		availAmt := parseAmount(p.AvailableAmount)
+		usedAmt := parseAmount(p.UsedAmount)
 		if _, err := s.db.ExecContext(ctx, `
 			INSERT INTO volc_quota_packages(account_id, instance_no, product, product_name, configuration_code,
-			       configuration_name, total_amount, available_amount, used_amount, unit, status,
-			       effective_time, expiry_time, synced_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			       configuration_name, model, total_amount, available_amount, used_amount, unit, status,
+			       effective_time, expiry_time, initial_total, local_remaining, synced_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(account_id, instance_no) DO UPDATE SET
+				product = excluded.product,
+				product_name = excluded.product_name,
+				configuration_code = excluded.configuration_code,
+				configuration_name = excluded.configuration_name,
+				model = excluded.model,
+				total_amount = excluded.total_amount,
+				available_amount = excluded.available_amount,
+				used_amount = excluded.used_amount,
+				unit = excluded.unit,
+				status = excluded.status,
+				effective_time = excluded.effective_time,
+				expiry_time = excluded.expiry_time,
+				-- 本地余额只在首次写入（旧值=0），后续保留；clamp 到 ≤ 新总额。
+				initial_total = CASE WHEN volc_quota_packages.initial_total = 0 THEN excluded.initial_total ELSE volc_quota_packages.initial_total END,
+				local_remaining = MIN(volc_quota_packages.local_remaining, excluded.total_amount),
+				synced_at = excluded.synced_at`,
 			aid, p.InstanceNo, p.Product, p.ProductName, p.ConfigurationCode, p.ConfigurationName,
-			parseAmount(p.TotalAmount), parseAmount(p.AvailableAmount), parseAmount(p.UsedAmount),
-			p.Unit, p.Status, p.EffectiveTime, p.ExpiryTime, now); err != nil {
+			modelNameFromConfigCode(p.ConfigurationCode, p.Product),
+			totalAmt, availAmt, usedAmt, p.Unit, p.Status, p.EffectiveTime, p.ExpiryTime,
+			totalAmt, totalAmt, // initial_total, local_remaining（首次写入=总额）
+			now); err != nil {
 			return nil, err
 		}
 	}
@@ -904,7 +930,7 @@ func shareSignificantToken(a, b string) bool {
 	hit := false
 	for _, x := range ta {
 		for _, y := range tb {
-			if x == y {
+			if x == y || sameDateToken(x, y) {
 				hit = true
 				break
 			}
@@ -916,7 +942,65 @@ func shareSignificantToken(a, b string) bool {
 	if !hit {
 		return false
 	}
-	return equalStrings(alphaTokens(a), alphaTokens(b))
+	return equalStrings(filterModifiers(alphaTokens(a)), filterModifiers(alphaTokens(b)))
+}
+
+// 模型名修饰段：与型号无关，比较字母序列时忽略（API 模型名比 resource 包 code 提取名
+// 多出的正式版/预览标记）。如 "deepseek-v4-flash-ga-260731" 的 "ga"。
+// 注意：lite/turbo/pro 等是型号的一部分，绝不能过滤。
+var modelModifierSegs = map[string]bool{
+	"ga":      true,
+	"preview": true,
+	"latest":  true,
+	"beta":    true,
+}
+
+// filterModifiers 从字母段序列中去掉模型修饰词（ga/preview/latest/beta）。
+func filterModifiers(segs []string) []string {
+	out := make([]string, 0, len(segs))
+	for _, s := range segs {
+		if modelModifierSegs[s] {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+// sameDateToken 判断两个纯数字 token 是否是同一天（4 位 MMdd vs 6 位 YYMMdd）。
+//
+// 场景：resource 包 code 用 "0731"（月日），API 模型名用 "260731"（年月日），
+// 都是 2026-07-31。判定规则：
+//   - 同为 4 位：相等才算（如 "0731" vs "0731"）。
+//   - 同为 6 位：相等才算（如 "260731" vs "260731"）。
+//   - 4 位 vs 6 位：6 位去掉前 2 位年份后与 4 位相等才算（"0731" ↔ "260731"）。
+//
+// 非 4/6 位长度的纯数字 token（如 "32"、"128"）直接 false。
+func sameDateToken(a, b string) bool {
+	// 必须纯数字。
+	for i := 0; i < len(a); i++ {
+		if !isDigit(a[i]) {
+			return false
+		}
+	}
+	for i := 0; i < len(b); i++ {
+		if !isDigit(b[i]) {
+			return false
+		}
+	}
+	la, lb := len(a), len(b)
+	switch {
+	case la == 4 && lb == 4:
+		return a == b
+	case la == 6 && lb == 6:
+		return a == b
+	case la == 4 && lb == 6:
+		return a == b[2:] // "0731" ↔ "260731"（去掉 "26"）
+	case la == 6 && lb == 4:
+		return a[2:] == b
+	default:
+		return false
+	}
 }
 
 // alphaTokens 提取串中的纯字母连续段（顺序保持，去重）。
@@ -979,6 +1063,69 @@ func significantTokens(s string) []string {
 func isDigit(c byte) bool { return c >= '0' && c <= '9' }
 
 func isAlpha(c byte) bool { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') }
+
+// 资源包类型后缀：configuration_code 中用于区分"这是什么包"的段，
+// 提取模型名时丢弃（这些段与 API 模型名无关）。
+var configCodeSuffixes = []string{
+	"data_collaboration",
+	"resource_pack",
+	"pack",
+	"free_inference",
+	"free_infer",
+	"collaboration",
+}
+
+// modelNameFromConfigCode 从 configuration_code 提取模型名（扣减/拦截的匹配锚点）。
+//
+// 例："DeepSeek_V4_flash_0731_data_collaboration_resource_pack" → "deepseek-v4-flash-0731"
+//      "Doubao_Seed3D_1.0_pack_free_infer" → "doubao-seed3d-1.0"
+//      "ym-rodin-gen2-free" → "ym-rodin-gen2"
+//
+// 策略：按 "_" 切段，从后往前逐个去掉"资源包类型后缀段"（段本身或其组合，
+// 如 data_collaboration、resource_pack、free_infer 等），剩余段用 "-" 拼接 + 归一化。
+// 全部被吃掉（理论上不会）时退回 product 归一化。
+func modelNameFromConfigCode(configCode, product string) string {
+	if configCode != "" {
+		parts := strings.Split(configCode, "_")
+		// 从尾部开始吞"资源包类型后缀段"（_ 分隔的整段：data/collaboration/resource/pack/free/infer...）。
+		for len(parts) > 1 {
+			tail := parts[len(parts)-1]
+			if !isConfigCodeSuffix(tail) {
+				break
+			}
+			parts = parts[:len(parts)-1]
+		}
+		joined := strings.Join(parts, "-")
+		// 处理 "-" 分隔的尾段后缀（ym-rodin-gen2-free → ym-rodin-gen2）：
+		// 只去掉尾部 -free / -infer / -pack 这类明确后缀，避免误伤模型名（如 doubao-seed-code）。
+		for {
+			idx := strings.LastIndexByte(joined, '-')
+			if idx <= 0 {
+				break
+			}
+			tail := joined[idx+1:]
+			if !isConfigCodeSuffix(tail) {
+				break
+			}
+			joined = joined[:idx]
+		}
+		if n := normalizeModelName(joined); n != "" {
+			return n
+		}
+	}
+	// 回退：product 归一化（ark_bd / ark_open_source_llm）。
+	return normalizeModelName(product)
+}
+
+// isConfigCodeSuffix 判断单段是否是资源包类型后缀。
+// 注意：code 不是后缀（Doubao_Seed_2.0_code_pack 的 code 是模型名一部分）。
+func isConfigCodeSuffix(seg string) bool {
+	switch strings.ToLower(seg) {
+	case "data", "collaboration", "resource", "pack", "free", "inference", "infer":
+		return true
+	}
+	return false
+}
 
 // disableModelForFreeQuota 在 model_states 写入免费额度耗尽导致的临时禁用：
 //

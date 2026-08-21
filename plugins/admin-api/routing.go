@@ -854,7 +854,15 @@ func (s *Service) handleRouteLogDetail(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "route-log 未装配")
 		return
 	}
-	value, err := s.routeLog.Detail(r.Context(), r.PathValue("request_id"))
+	requestID := r.PathValue("request_id")
+	// 自我修复：配置开启时，前端主动调 detail 触发后端兜底补卡死的 running 记录。
+	// 仅当 result='running' 且 finished_at 为空且 age>threshold 时才动，其它 no-op。
+	if threshold := config.RouteLogSelfHealTimeout; threshold > 0 {
+		if err := s.routeLog.SelfHeal(r.Context(), requestID, threshold); err != nil {
+			s.lg.Warn("route-log self-heal failed", "request_id", requestID, "err", err)
+		}
+	}
+	value, err := s.routeLog.Detail(r.Context(), requestID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "转发日志不存在")
 		return

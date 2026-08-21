@@ -273,9 +273,12 @@ export interface VolcQuotaPackage {
   product_name?: string
   configuration_code?: string
   configuration_name?: string
+  model?: string // v15 从 configuration_code 提取的模型名，扣减/拦截锚点
   total_amount: number
   available_amount: number
   used_amount: number
+  initial_total: number // v15 本地递减：首次刷新写入的总额
+  local_remaining: number // v15 本地递减：每次请求成功后扣减
   unit: string
   status: string // Effective / UsedUp / Expired / ...
   effective_time?: string
