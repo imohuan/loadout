@@ -855,11 +855,14 @@ func (s *Service) handleRouteLogDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	requestID := r.PathValue("request_id")
-	// 自我修复：配置开启时，前端主动调 detail 触发后端兜底补卡死的 running 记录。
-	// 仅当 result='running' 且 finished_at 为空且 age>threshold 时才动，其它 no-op。
-	if threshold := config.RouteLogSelfHealTimeout; threshold > 0 {
-		if err := s.routeLog.SelfHeal(r.Context(), requestID, threshold); err != nil {
-			s.lg.Warn("route-log self-heal failed", "request_id", requestID, "err", err)
+	// 自我修复：仅当前端带 repair=1 主动触发时，先让后端兜底卡死的 running 记录。
+	// 判定 = 活跃登记表（IsActive false → 转发已结束/进程已崩/超时兜底）+ 时间兜底
+	// （started_at 超阈值仍 running）。仅当 result='running' 且 finished_at 为空才动。
+	if r.URL.Query().Get("repair") == "1" {
+		if threshold := config.RouteLogSelfHealTimeout; threshold > 0 {
+			if err := s.routeLog.SelfHeal(r.Context(), requestID, threshold); err != nil {
+				s.lg.Warn("route-log self-heal failed", "request_id", requestID, "err", err)
+			}
 		}
 	}
 	value, err := s.routeLog.Detail(r.Context(), requestID)

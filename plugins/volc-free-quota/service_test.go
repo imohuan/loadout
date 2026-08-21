@@ -193,10 +193,6 @@ func newTestService(t *testing.T) *Service {
 	       configuration_name, model, total_amount, available_amount, used_amount, initial_total, local_remaining, unit, status, synced_at)
 		VALUES (?, 'inst-1', 'ark_bd', '豆包·Doubao-pro-32k', 'Doubao_Pro_32k_data_collaboration', 'Doubao-pro-32k协作奖励计划资源包',
 		        'doubao-pro-32k', 2000000, 2000000, 0, 2000000, 2000000, 'Tokens', 'Effective', 'now')`, aid)
-	// UI 本地余额卡片读 volc_quota_models 聚合行（Product 级），扣减需同步。
-	mustExec(`INSERT INTO volc_quota_models(account_id, model, product_name, total_amount, available_amount, used_amount,
-	       initial_total, local_remaining, unit, status, synced_at)
-		VALUES (?, 'ark_bd', '豆包·Doubao-pro-32k', 2000000, 2000000, 0, 2000000, 2000000, 'Tokens', 'ok', 'now')`, aid)
 	return svc
 }
 
@@ -227,13 +223,63 @@ func TestDecrementLocalRemaining(t *testing.T) {
 	if status != "UsedUp" {
 		t.Errorf("超额扣减后 status = %q, want UsedUp", status)
 	}
-	// models 聚合行同步扣减（UI 本地余额卡片数据源）。
-	var mRemaining int64
-	if err := svc.db.QueryRow(`SELECT local_remaining FROM volc_quota_models WHERE account_id=? AND model='ark_bd'`, aid).Scan(&mRemaining); err != nil {
+}
+
+// TestDecrementLocalRemainingSharesAcrossPackages 回归：同 model 多个资源包时，
+// 一次请求的 tokens 必须按余额分摊（先扣大的，扣到 0 再扣下一个），
+// 不能每个包都扣全量（P1 修复前会重复扣减）。
+func TestDecrementLocalRemainingSharesAcrossPackages(t *testing.T) {
+	svc := newTestService(t)
+	aid := accountID("AKxxx")
+	mustExec := func(q string, args ...any) {
+		t.Helper()
+		if _, err := svc.db.Exec(q, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// 同 model（deepseek-v4-flash-0731）两个包，余额分别为 300 和 100。
+	for _, c := range []struct{ inst string; bal int64 }{
+		{"inst-a", 300}, {"inst-b", 100},
+	} {
+		mustExec(`INSERT INTO volc_quota_packages(account_id, instance_no, product, product_name, configuration_code,
+		       configuration_name, model, total_amount, available_amount, used_amount, initial_total, local_remaining, unit, status, synced_at)
+			VALUES (?, ?, 'ark_bd', 'x', 'DeepSeek_V4_flash_0731_data_collaboration_resource_pack', 'pack', 'deepseek-v4-flash-0731',
+			        ?, ?, 0, ?, ?, 'Tokens', 'Effective', 'now')`,
+			aid, c.inst, c.bal, c.bal, c.bal, c.bal)
+	}
+	// 一次请求扣 250：先扣余额大的 inst-a(300→50)，inst-b 不动（100）。
+	// 分摊策略=优先扣余额大的包，扣完还有剩余才动下一个。
+	svc.decrementLocalRemaining(aid, "deepseek-v4-flash-ga-260731", 250)
+	var a, b int64
+	if err := svc.db.QueryRow(`SELECT local_remaining FROM volc_quota_packages WHERE account_id=? AND instance_no='inst-a'`, aid).Scan(&a); err != nil {
 		t.Fatal(err)
 	}
-	if mRemaining != 0 {
-		t.Errorf("models 同步后 local_remaining = %d, want 0", mRemaining)
+	if err := svc.db.QueryRow(`SELECT local_remaining FROM volc_quota_packages WHERE account_id=? AND instance_no='inst-b'`, aid).Scan(&b); err != nil {
+		t.Fatal(err)
+	}
+	if a != 50 {
+		t.Errorf("inst-a local_remaining = %d, want 50（应扣 250）", a)
+	}
+	if b != 100 {
+		t.Errorf("inst-b local_remaining = %d, want 100（inst-a 未扣完不动它）", b)
+	}
+	// 总额守恒：300+100-250 = 150 = 50+100。
+	if a+b != 150 {
+		t.Errorf("总额不守恒: a+b=%d, want 150", a+b)
+	}
+	// 再扣 100：此时 inst-b(100) 余额最大 → 先扣它 100 归零 UsedUp，inst-a(50) 不动。
+	svc.decrementLocalRemaining(aid, "deepseek-v4-flash-ga-260731", 100)
+	if err := svc.db.QueryRow(`SELECT local_remaining FROM volc_quota_packages WHERE account_id=? AND instance_no='inst-a'`, aid).Scan(&a); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.db.QueryRow(`SELECT local_remaining FROM volc_quota_packages WHERE account_id=? AND instance_no='inst-b'`, aid).Scan(&b); err != nil {
+		t.Fatal(err)
+	}
+	if a != 50 {
+		t.Errorf("第二次后 inst-a local_remaining = %d, want 50（非最大余额不动）", a)
+	}
+	if b != 0 {
+		t.Errorf("第二次后 inst-b local_remaining = %d, want 0（余额最大先扣完）", b)
 	}
 }
 

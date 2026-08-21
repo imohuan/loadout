@@ -238,24 +238,10 @@ export interface VolcQuotaConfig {
   access_key: string
   secret_key?: string // 列表/读取接口不回显明文
   enabled: boolean
-  force_block: boolean // 强制关停：开启后即使 model_states 手动恢复，也按 volc_quota_models 状态拦截
+  force_block: boolean // 强制关停：开启后即使 model_states 手动恢复，也按 volc_quota_packages 状态拦截
   last_synced_at?: string
   last_error?: string
   updated_at?: string
-}
-
-export interface VolcQuotaModel {
-  account_id: string // 后端 v11 后主键为 (account_id, model)
-  model: string
-  product_name?: string
-  total_amount: number
-  available_amount: number
-  used_amount: number
-  initial_total: number // v13 本地递减：首次刷新写入的总额（token）
-  local_remaining: number // v13 本地递减：每次请求成功后扣减 total_tokens
-  unit: string
-  status: 'ok' | 'exhausted' | 'unknown' | string
-  synced_at?: string
 }
 
 export interface VolcQuotaUsage {
@@ -288,7 +274,6 @@ export interface VolcQuotaPackage {
 
 export interface VolcQuotaConfigDetails {
   config: VolcQuotaConfig
-  models: VolcQuotaModel[]
   usage?: VolcQuotaUsage[]
   packages?: VolcQuotaPackage[]
 }

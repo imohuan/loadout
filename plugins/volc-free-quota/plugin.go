@@ -6,7 +6,8 @@
 //   - 额度耗尽的免费模型：在 model_states 写入 冷却至次日 0:00 的禁用状态，
 //     并在 before-upstream 钩子检测到目标模型全部候选渠道本地余额耗尽时直接报 "模型免费额度用完"。
 //
-// 数据存储：DB 迁移 v10 三张表（volc_quota_config / volc_quota_models / volc_quota_usage）。
+// 数据存储：DB 迁移 v10 三张表（volc_quota_config / volc_quota_packages / volc_quota_usage，
+// v17 删除 volc_quota_models 聚合表，全部走 packages）。
 package volcfreequota
 
 import (

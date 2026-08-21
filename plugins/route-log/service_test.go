@@ -116,3 +116,137 @@ func TestRouteLogRetryMergesSameRequestID(t *testing.T) {
 }
 
 func pointer(value time.Time) *time.Time { return &value }
+
+// ---- 活跃登记表 + SelfHeal 自愈 ----
+
+func TestIsActiveLifecycle(t *testing.T) {
+	service := NewService(logDB(t), nil)
+	ctx := context.Background()
+
+	// Start 前：不存在 → 不活跃
+	if service.IsActive("r-active", time.Minute) {
+		t.Fatal("未 Start 的 id 不应活跃")
+	}
+	// Start 后：活跃
+	if err := service.Start(ctx, contracts.RouteRequest{RequestID: "r-active", RequestedModel: "m", StartedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if !service.IsActive("r-active", time.Minute) {
+		t.Fatal("Start 后应活跃")
+	}
+	// 空 id / 未知 id → 不活跃
+	if service.IsActive("", time.Minute) {
+		t.Fatal("空 id 不应活跃")
+	}
+	if service.IsActive("r-unknown", time.Minute) {
+		t.Fatal("未知 id 不应活跃")
+	}
+	// Finish 后：注销
+	if err := service.Finish(ctx, contracts.RouteFinish{RequestID: "r-active", FinishedAt: time.Now(), Result: "success"}); err != nil {
+		t.Fatal(err)
+	}
+	if service.IsActive("r-active", time.Minute) {
+		t.Fatal("Finish 后应注销")
+	}
+}
+
+func TestIsActiveMaxAge(t *testing.T) {
+	service := NewService(logDB(t), nil)
+	ctx := context.Background()
+	if err := service.Start(ctx, contracts.RouteRequest{RequestID: "r-old", RequestedModel: "m", StartedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	// 登记时刻往前拨 11 分钟（> config.RouteLogSelfHealMaxAlive=10min）→ 视为死
+	service.mu.Lock()
+	service.activeAt["r-old"] = time.Now().Add(-11 * time.Minute)
+	service.mu.Unlock()
+	if service.IsActive("r-old", 10*time.Minute) {
+		t.Fatal("超过 maxAge 应视为不活跃（死锁兜底）")
+	}
+}
+
+func TestSelfHealSkipsActiveRequest(t *testing.T) {
+	service := NewService(logDB(t), nil)
+	ctx := context.Background()
+	// 刚 Start：登记表活跃 → SelfHeal 应 no-op，即使 started_at 很老
+	old := time.Now().Add(-5 * time.Minute)
+	if err := service.Start(ctx, contracts.RouteRequest{RequestID: "r-live", RequestedModel: "m", StartedAt: old}); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.SelfHeal(ctx, "r-live", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	detail, err := service.Detail(ctx, "r-live")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Result != "running" {
+		t.Fatalf("活跃请求不应被自愈，result=%q", detail.Result)
+	}
+	if detail.FinishedAt != nil {
+		t.Fatal("活跃请求不应有 finished_at")
+	}
+}
+
+func TestSelfHealFinalizesStuckRequest(t *testing.T) {
+	service := NewService(logDB(t), nil)
+	ctx := context.Background()
+	started := time.Now().Add(-5 * time.Minute)
+	if err := service.Start(ctx, contracts.RouteRequest{RequestID: "r-stuck", RequestedModel: "m", StartedAt: started}); err != nil {
+		t.Fatal(err)
+	}
+	// 模拟转发结束但 Finish 未落库：从登记表移除（等同 Finish 已被调用/进程状态丢失）
+	service.mu.Lock()
+	delete(service.activeAt, "r-stuck")
+	service.mu.Unlock()
+
+	if err := service.SelfHeal(ctx, "r-stuck", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	detail, err := service.Detail(ctx, "r-stuck")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Result != "stream_interrupted" {
+		t.Fatalf("卡死请求应收尾为 stream_interrupted，实际 %q", detail.Result)
+	}
+	if detail.FinishedAt == nil {
+		t.Fatal("卡死请求应写 finished_at")
+	}
+	if detail.Duration.Milliseconds() < 4*60*1000 {
+		t.Fatalf("duration 应接近 started_at 到 now（>=4min），实际 %dms", detail.Duration.Milliseconds())
+	}
+	if detail.ErrorMessage == "" {
+		t.Fatal("卡死请求应补 error_message")
+	}
+}
+
+func TestSelfHealNoopForFinishedOrMissing(t *testing.T) {
+	service := NewService(logDB(t), nil)
+	ctx := context.Background()
+	// 已完结：不修
+	if err := service.Start(ctx, contracts.RouteRequest{RequestID: "r-done", RequestedModel: "m", StartedAt: time.Now().Add(-5 * time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Finish(ctx, contracts.RouteFinish{RequestID: "r-done", FinishedAt: time.Now(), Result: "success"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.SelfHeal(ctx, "r-done", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	detail, err := service.Detail(ctx, "r-done")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Result != "success" {
+		t.Fatalf("已完结记录不应被改动，result=%q", detail.Result)
+	}
+	// 不存在的记录：no-op 不报错
+	if err := service.SelfHeal(ctx, "r-missing", time.Minute); err != nil {
+		t.Fatalf("不存在记录应 no-op，err=%v", err)
+	}
+	// threshold<=0：禁用
+	if err := service.SelfHeal(ctx, "r-still-running", 0); err != nil {
+		t.Fatal(err)
+	}
+}

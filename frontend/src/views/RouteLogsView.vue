@@ -56,6 +56,8 @@ function shouldRefreshDetail(log: RouteLog): boolean {
 // 主要是给后端 SelfHeal 一个触发点：后端配置项 LOADOUT_ROUTE_LOG_SELF_HEAL_TIMEOUT>0 时，
 // 会把卡死记录就地补 finished_at/duration/result。用户不必展开行也能享受修复。
 // 60 秒阈值与后端默认值对齐；通过 SET-SCHEDULE 去重避免短时间内反复打 detail。
+// ⚠️ 联动：SELF_HEAL_AGE_MS 必须与后端 config.RouteLogSelfHealTimeout（默认 60s）保持一致，
+// 改一处记得同步另一处（前端在此先触发 repair=1，后端再按自己的阈值做最终判定）。
 const SELF_HEAL_AGE_MS = 60_000
 const SELF_HEAL_DEDUPE_MS = 60_000
 const selfHealScheduled = new Set<string>()
@@ -74,7 +76,7 @@ async function selfHealStuckLogs() {
     if (selfHealScheduled.has(log.request_id)) continue
     selfHealScheduled.add(log.request_id)
     service
-      .detail(log.request_id)
+      .detail(log.request_id, { repair: true }) // 带 repair=1：后端先按登记表+时间兜底自愈，再返回详情
       .then((detail) => {
         // 把补完后的顶层字段同步进 detailsMap，displayLogs 渲染时合并。
         // 顶层 result/duration_ms 要等下一次 list 刷新覆盖（这里是 attempts/error_message 视角）。

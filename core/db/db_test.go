@@ -30,11 +30,11 @@ func TestOpenAppliesSchemaAndSettings(t *testing.T) {
 		t.Fatalf("PRAGMAs = journal_mode:%s foreign_keys:%d busy_timeout:%d", journalMode, foreignKeys, busyTimeout)
 	}
 	var tables int
-	if err := database.QueryRow("SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name IN ('schema_migrations', 'data_imports', 'channels', 'channel_models', 'aggregates', 'aggregate_targets', 'channel_states', 'model_states', 'route_requests', 'route_attempts', 'capability_routes', 'mcp_servers', 'mcp_groups', 'tools_state', 'skills', 'presets', 'settings', 'gateway_keys', 'users', 'volc_quota_config', 'volc_quota_models', 'volc_quota_usage')").Scan(&tables); err != nil {
+	if err := database.QueryRow("SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name IN ('schema_migrations', 'data_imports', 'channels', 'channel_models', 'aggregates', 'aggregate_targets', 'channel_states', 'model_states', 'route_requests', 'route_attempts', 'capability_routes', 'mcp_servers', 'mcp_groups', 'tools_state', 'skills', 'presets', 'settings', 'gateway_keys', 'users', 'volc_quota_config', 'volc_quota_usage')").Scan(&tables); err != nil {
 		t.Fatal(err)
 	}
-	if tables != 22 {
-		t.Fatalf("schema tables = %d, want 22", tables)
+	if tables != 21 {
+		t.Fatalf("schema tables = %d, want 21", tables)
 	}
 }
 
@@ -49,8 +49,8 @@ func TestMigrateIsIdempotent(t *testing.T) {
 	if err := database.QueryRow("SELECT count(*) FROM schema_migrations").Scan(&count); err != nil {
 		t.Fatal(err)
 	}
-	if count != 15 {
-		t.Fatalf("schema_migrations count = %d, want 15", count)
+	if count != 16 {
+		t.Fatalf("schema_migrations count = %d, want 16", count)
 	}
 }
 
@@ -62,8 +62,8 @@ func TestMigrateRejectsIncompatibleHistory(t *testing.T) {
 			}
 		},
 		"newer database": func(database *sql.DB) {
-			// 程序当前有 15 条迁移，插入 version 16 才能模拟"比程序更新"的库。
-			if _, err := database.Exec("INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (16, 'future', 'future', 'now')"); err != nil {
+			// 程序当前有 16 条迁移，插入 version 17 才能模拟"比程序更新"的库。
+			if _, err := database.Exec("INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (17, 'future', 'future', 'now')"); err != nil {
 				t.Fatal(err)
 			}
 		},

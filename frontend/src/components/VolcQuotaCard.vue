@@ -78,23 +78,13 @@ function statusBadge(c: VolcQuotaConfig) {
   if (c.last_synced_at) return { variant: 'default' as const, label: '已同步' }
   return { variant: 'secondary' as const, label: '未同步' }
 }
-/** 模型是否耗尽：本地余额扣到 0（有本地基准）或 billing 快照 exhausted */
-function isExhausted(model: VolcQuotaConfigDetails['models'][number]) {
-  return model.status === 'exhausted' || (hasLocal(model) && model.local_remaining <= 0)
-}
-function exhaustedCount(item: VolcQuotaConfigDetails) {
-  return item.models.filter((m) => isExhausted(m)).length
-}
-/** 本地递减是否生效：initial_total>0 表示至少成功拉取过一次账单，可作本地基准 */
-function hasLocal(model: VolcQuotaConfigDetails['models'][number]) {
-  return model.initial_total > 0
-}
-/** 行内余额文案：本地递减优先，账单作辅助 */
-function balanceText(model: VolcQuotaConfigDetails['models'][number]) {
-  if (hasLocal(model)) {
-    return `本地剩余 ${formatAmount(model.local_remaining)} / 初始 ${formatAmount(model.initial_total)} ${model.unit}`
+/** 资源包耗尽数（v17 后 models 表已删，从 packages 算） */
+function exhaustedCount(item: VolcQuotaConfigDetails): number {
+  let n = 0
+  for (const p of item.packages || []) {
+    if (p.local_remaining <= 0 && p.initial_total > 0) n++
   }
-  return `剩余 ${formatAmount(model.available_amount)} / 共 ${formatAmount(model.total_amount)} ${model.unit}`
+  return n
 }
 /** 大数字缩写：1.2M / 3.4B */
 function formatAmount(n: number) {
@@ -143,16 +133,6 @@ function matchPackage(p: VolcQuotaPackage, kw: string) {
     (p.product_name || '').toLowerCase().includes(k) ||
     (p.product || '').toLowerCase().includes(k)
   )
-}
-
-// ===== 本地余额卡片显隐控制（Collapsible 管理） =====
-/** key = channel_id，true=展开。默认全展开。 */
-const localCardOpen = ref<Record<string, boolean>>({})
-function isLocalCardOpen(channelId: string) {
-  return localCardOpen.value[channelId] ?? true
-}
-function setLocalCardOpen(channelId: string, open: boolean) {
-  localCardOpen.value[channelId] = open
 }
 
 /** 资源包过滤输入（按 channel_id 隔离，多 Key 不互相干扰） */
@@ -451,46 +431,6 @@ const displayName = (ch: Channel) => ch.channel_name || ch.name
             v-if="isExpanded(item.config.channel_id)"
             class="space-y-3 border-t bg-muted/30 px-4 py-4"
           >
-            <!-- 本地余额汇总（按归一化 model 聚合，用于展示本地扣减进度） -->
-            <Collapsible
-              v-if="item.models.length"
-              :open="isLocalCardOpen(item.config.channel_id)"
-              @update:open="(o: boolean) => setLocalCardOpen(item.config.channel_id, o)"
-              class="rounded-md border bg-background/60"
-            >
-              <CollapsibleTrigger as-child>
-                <Button
-                  variant="ghost"
-                  class="flex w-full items-center justify-between gap-2 rounded-md px-3 py-2 text-xs"
-                >
-                  <span class="font-medium text-muted-foreground">
-                    本地余额（按模型聚合，请求实时扣减）
-                  </span>
-                  <RiArrowDownSLine
-                    v-if="isLocalCardOpen(item.config.channel_id)"
-                    class="size-4 shrink-0 text-muted-foreground"
-                  />
-                  <RiArrowRightSLine v-else class="size-4 shrink-0 text-muted-foreground" />
-                </Button>
-              </CollapsibleTrigger>
-              <CollapsibleContent class="border-t px-3 py-2">
-                <div class="space-y-2">
-                  <div v-for="m in item.models" :key="m.model" class="space-y-1">
-                    <div class="flex items-center justify-between gap-2 text-xs">
-                      <span class="truncate font-medium">{{ m.model }}</span>
-                      <span class="shrink-0 text-muted-foreground">
-                        {{ balanceText(m) }}
-                        <span v-if="m.status === 'exhausted'" class="text-destructive"> · 已耗尽</span>
-                      </span>
-                    </div>
-                    <Progress
-                      :model-value="m.initial_total > 0 ? Math.max(0, Math.min(100, Math.round((m.local_remaining / m.initial_total) * 100))) : (m.total_amount > 0 ? Math.max(0, Math.min(100, Math.round((m.available_amount / m.total_amount) * 100))) : 0)"
-                      :class="m.status === 'exhausted' ? 'bg-destructive/20' : ''"
-                    />
-                  </div>
-                </div>
-              </CollapsibleContent>
-            </Collapsible>
 
             <!-- 资源包逐条明细 -->
             <div v-if="item.packages?.length" class="overflow-hidden rounded-md border bg-background/60">
@@ -561,7 +501,7 @@ const displayName = (ch: Channel) => ch.channel_name || ch.name
             </div>
 
             <EmptyState
-              v-else-if="!item.models.length"
+              v-else-if="!item.packages?.length"
               title="暂无额度数据"
               description="点击右侧刷新按钮获取最新额度（账单有延迟，后台每 15 分钟自动刷新）。"
             />

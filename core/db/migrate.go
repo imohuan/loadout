@@ -406,6 +406,14 @@ ALTER TABLE volc_quota_packages ADD COLUMN model TEXT NOT NULL DEFAULT '';
 ALTER TABLE volc_quota_packages ADD COLUMN initial_total INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE volc_quota_packages ADD COLUMN local_remaining INTEGER NOT NULL DEFAULT 0;
 `,
+	}, {
+		version: 16,
+		name:    "drop-volc-quota-models",
+		sql: `
+-- 删除 volc_quota_models 聚合表（用户要求）：扣减/拦截/UI 都改走 volc_quota_packages
+-- （逐条资源包账本 + 同步扣减初始逻辑），聚合视图没必要维护。DROP 而非保留空表。
+DROP TABLE volc_quota_models;
+`,
 	}}
 
 // Migrate applies all pending schema migrations and rejects an incompatible

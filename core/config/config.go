@@ -151,6 +151,12 @@ var VisionMaxImages = 10 // env: LOADOUT_VISION_MAX_IMAGES
 // 不影响正常结束的请求。设为 0 或负值禁用。env: LOADOUT_ROUTE_LOG_SELF_HEAL_TIMEOUT
 var RouteLogSelfHealTimeout = 60 * time.Second
 
+// RouteLogSelfHealMaxAlive 活跃登记表的最大存活时间：proxyForward 开始登记、
+// 结束注销；请求仍活跃且未超该值 → 自愈跳过（可能只是慢）。超过该值即使
+// 登记表里有也按死锁/泄漏判死。进程崩溃时表随进程消失，残留 running 日志
+// 因此天然判死。env: LOADOUT_ROUTE_LOG_SELF_HEAL_MAX_ALIVE
+var RouteLogSelfHealMaxAlive = 10 * time.Minute
+
 // ReasoningInjectionStyle 流式注入风格：reasoning_content（DeepSeek 系）。
 var ReasoningInjectionStyle = "reasoning_content" // env: LOADOUT_REASONING_INJECTION_STYLE
 

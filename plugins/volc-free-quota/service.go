@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -65,7 +66,7 @@ func NewService(database *sql.DB, st *store.Store, lg *slog.Logger) *Service {
 // accountID 计算账号指纹：SHA256(access_key) 前 16 位十六进制。
 //
 // 免费额度按火山账号（AK/SK）归属：同一账号的多个渠道 Key 共享同一份免费额度，
-// 因此所有额度相关记录（volc_quota_models / volc_quota_usage）以 account_id 对齐，
+// 因此所有额度相关记录（volc_quota_packages / volc_quota_usage）以 account_id 对齐，
 // 而不是 channel_id。AK 是明文存储的稳定标识，SHA256 指纹无碰撞风险、不可逆。
 func accountID(accessKey string) string {
 	if accessKey == "" {
@@ -160,17 +161,15 @@ func (s *Service) HandleProxyUpstreamSucceeded(payload any) (any, error) {
 	return payload, nil
 }
 
-// decrementLocalRemaining 从该账号所有匹配该 API 模型的资源包行扣减 tokens，
-// 并同步扣减 volc_quota_models 聚合行（UI 本地余额卡片的数据源）。
+// decrementLocalRemaining 从该账号所有匹配该 API 模型的资源包行扣减 tokens。
 //
 // 匹配锚点是 volc_quota_packages.model（configuration_code 提取名，如
 // "deepseek-v4-flash-0731"），与请求的 API 模型名（如 "deepseek-v4-flash-ga-260731"）
 // 用 matchOne 模糊匹配（含日期归一化）。扣减到 <= 0 时置 status='UsedUp'；
 // local_remaining 下限 0（不出现负数）。
 //
-// 两张表同步：packages 是逐条资源包真实账本，models 是 UI 卡片读的聚合视图。
-// models.model 是 Product 级聚合名（ark_bd 等），与 packages.model（code 提取名）
-// 不同粒度，因此通过 packages.product 反查 models 行同步扣减。
+// v17 起 volc_quota_models 聚合表已删除，扣减只更新 volc_quota_packages
+//（UI 资源包明细表是唯一数据源）。
 //
 // 日志：每次成功扣减记 Info（含扣前/扣后余额），未匹配到任何资源包记 Warn
 // （说明该 API 模型没有对应的免费额度记录，本地扣减没生效，需要排查）。
@@ -178,19 +177,27 @@ func (s *Service) decrementLocalRemaining(accountID, apiModel string, tokens int
 	if accountID == "" || apiModel == "" || tokens <= 0 {
 		return
 	}
-	rows, err := s.db.Query(`SELECT instance_no, model, configuration_name, product, local_remaining FROM volc_quota_packages WHERE account_id = ? AND initial_total > 0`, accountID)
+	rows, err := s.db.Query(`SELECT instance_no, model, configuration_name, local_remaining FROM volc_quota_packages WHERE account_id = ? AND initial_total > 0 ORDER BY local_remaining DESC`, accountID)
 	if err != nil {
 		s.lg.Warn("volc-free-quota: 查询资源包余额失败", "account_id", accountID, "model", apiModel, "err", err)
 		return
 	}
 	defer rows.Close()
-	// matched: instance_no -> [model, configuration_name, product, 扣前余额]
-	matched := make(map[string][4]string)
+	// matched: 按余额从大到小排序的 (instance_no, model, configuration_name, 扣前余额) 列表。
+	// 同 model 提取名可能对应多个资源包（如 DeepSeek_V4_flash 有多个包），
+	// 一次请求的 tokens 要按顺序分摊：先扣余额大的，扣到 0 再扣下一个，
+	// 总扣减恰好等于 tokens，不能每个包都全额扣（P1 修复）。
+	type match struct {
+		instanceNo string
+		model      string
+		confName   string
+		before     int64
+	}
+	var matched []match
 	for rows.Next() {
-		var instanceNo, model, confName, product string
-		var before int64
-		if err := rows.Scan(&instanceNo, &model, &confName, &product, &before); err == nil && model != "" && matchOne(model, apiModel) {
-			matched[instanceNo] = [4]string{model, confName, product, strconv.FormatInt(before, 10)}
+		var m match
+		if err := rows.Scan(&m.instanceNo, &m.model, &m.confName, &m.before); err == nil && m.model != "" && matchOne(m.model, apiModel) {
+			matched = append(matched, m)
 		}
 	}
 	if len(matched) == 0 {
@@ -200,45 +207,45 @@ func (s *Service) decrementLocalRemaining(accountID, apiModel string, tokens int
 		return
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	for inst, mm := range matched {
-		// 1) 扣 packages（逐条资源包真实账本）。
+	remaining := int64(tokens)
+	for i := range matched {
+		if remaining <= 0 {
+			break // tokens 已分摊完，剩余包不动
+		}
+		m := &matched[i]
+		// 本次实际扣这个包的量 = min(剩余待扣, 该包余额)，下限 0。
+		deduct := remaining
+		if deduct > m.before {
+			deduct = m.before
+		}
+		if deduct <= 0 {
+			continue // 该包已耗尽，跳过
+		}
 		_, err := s.db.Exec(`
 			UPDATE volc_quota_packages
 			SET local_remaining = MAX(local_remaining - ?, 0),
 			    status = CASE WHEN local_remaining - ? <= 0 THEN 'UsedUp' ELSE status END,
 			    synced_at = ?  -- 复用 synced_at 记录最近一次本地扣减时间（展示用）
 			WHERE account_id = ? AND instance_no = ?`,
-			tokens, tokens, now, accountID, inst)
+			deduct, deduct, now, accountID, m.instanceNo)
 		if err != nil {
-			s.lg.Warn("volc-free-quota: 扣减资源包余额失败", "account_id", accountID, "instance_no", inst, "model", mm[0], "configuration_name", mm[1], "tokens", tokens, "err", err)
+			s.lg.Warn("volc-free-quota: 扣减资源包余额失败", "account_id", accountID, "instance_no", m.instanceNo, "model", m.model, "configuration_name", m.confName, "deduct", deduct, "err", err)
 			continue
 		}
-		// 2) 同步扣 volc_quota_models 聚合行（UI 本地余额卡片数据源）。
-		//    匹配键：packages.product 归一化（models 的聚合键来源）。
-		//    models.model 历史数据存在 "_" 与 "-" 两种写法（ark_bd / ark-bd），
-		//    用 REPLACE 归一化后比较，避免漏掉。
-		if mm[2] != "" {
-			normProd := normalizeModelName(mm[2])
-			if normProd != "" {
-				if _, err := s.db.Exec(`
-					UPDATE volc_quota_models
-					SET local_remaining = MAX(local_remaining - ?, 0),
-					    status = CASE WHEN local_remaining - ? <= 0 THEN 'exhausted' ELSE status END,
-					    synced_at = ?
-					WHERE account_id = ? AND REPLACE(model, '_', '-') = ?`,
-					tokens, tokens, now, accountID, normProd); err != nil {
-					s.lg.Warn("volc-free-quota: 同步扣减 models 聚合行失败", "account_id", accountID, "product", mm[2], "norm_prod", normProd, "tokens", tokens, "err", err)
-				}
-			}
-		}
+		remaining -= deduct
 		var after int64
-		if err := s.db.QueryRow(`SELECT local_remaining FROM volc_quota_packages WHERE account_id = ? AND instance_no = ?`, accountID, inst).Scan(&after); err != nil {
+		if err := s.db.QueryRow(`SELECT local_remaining FROM volc_quota_packages WHERE account_id = ? AND instance_no = ?`, accountID, m.instanceNo).Scan(&after); err != nil {
 			after = -1
 		}
 		s.lg.Info("volc-free-quota: 本地余额扣减",
-			"account_id", accountID, "api_model", apiModel, "matched_model", mm[0],
-			"configuration_name", mm[1], "instance_no", inst,
-			"tokens", tokens, "before", mm[3], "after", after)
+			"account_id", accountID, "api_model", apiModel, "matched_model", m.model,
+			"configuration_name", m.confName, "instance_no", m.instanceNo,
+			"tokens", deduct, "before", m.before, "after", after)
+	}
+	if remaining > 0 {
+		// 所有匹配包都扣到 0 仍未扣完：说明免费额度已彻底耗尽，剩余部分不记账（日志提醒）。
+		s.lg.Warn("volc-free-quota: 免费额度已扣完，剩余 tokens 未入账",
+			"account_id", accountID, "api_model", apiModel, "unaccounted", remaining)
 	}
 }
 
@@ -300,6 +307,8 @@ func (s *Service) HandleProxyBeforeUpstream(payload any) (any, error) {
 		return payload, nil
 	}
 	// 所有候选渠道本地余额都耗尽 → 阻断并报明确错误。
+	s.lg.Warn("volc-free-quota: 模型免费额度用完，已拦截请求",
+		"model", model, "candidate_channels", len(candidateIDs))
 	return nil, &modelgateway.GatewayError{
 		Status: http.StatusTooManyRequests,
 		Type:   "free_quota_exhausted",
@@ -557,9 +566,6 @@ func (s *Service) SaveConfigs(ctx context.Context, configs []Config) error {
 			return err
 		}
 		// 账号维度快照：全部配置删除后，不再有任何账号被追踪，清空快照/统计。
-		if _, err := tx.ExecContext(ctx, `DELETE FROM volc_quota_models`); err != nil {
-			return err
-		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM volc_quota_usage`); err != nil {
 			return err
 		}
@@ -574,38 +580,11 @@ func (s *Service) SaveConfigs(ctx context.Context, configs []Config) error {
 			return err
 		}
 		// 清理不再被任何剩余配置引用的账号的孤儿快照/统计。
-		if _, err := tx.ExecContext(ctx, `DELETE FROM volc_quota_models WHERE account_id NOT IN (SELECT DISTINCT account_id FROM volc_quota_config WHERE account_id != '')`); err != nil {
-			return err
-		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM volc_quota_usage WHERE account_id NOT IN (SELECT DISTINCT account_id FROM volc_quota_config WHERE account_id != '')`); err != nil {
 			return err
 		}
 	}
 	return tx.Commit()
-}
-
-// ListModels 返回某账号的资源包视图（account_id 维度）。
-func (s *Service) ListModels(ctx context.Context, accountID string) ([]Model, error) {
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT account_id, model, product_name, total_amount, available_amount, used_amount,
-		       initial_total, local_remaining, unit, status, synced_at
-		FROM volc_quota_models WHERE account_id = ? ORDER BY model`, accountID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []Model
-	for rows.Next() {
-		var m Model
-		if err := rows.Scan(&m.AccountID, &m.Model, &m.ProductName,
-			&m.TotalAmount, &m.AvailableAmount, &m.UsedAmount,
-			&m.InitialTotal, &m.LocalRemaining,
-			&m.Unit, &m.Status, &m.SyncedAt); err != nil {
-			return nil, err
-		}
-		out = append(out, m)
-	}
-	return out, rows.Err()
 }
 
 // ListUsage 返回某账号的请求使用统计（account_id 维度）。
@@ -721,10 +700,12 @@ func (s *Service) Refresh(ctx context.Context, channelID string) (RefreshResult,
 	return result, nil
 }
 
-// refreshOne 刷新一个账号的额度并触发自动 disable（按账号对齐）。
+// refreshOne 刷新一个账号的额度（v17 起只写 volc_quota_packages 逐条明细，删除
+// 了 volc_quota_models 聚合表）。
 //
-// 流程：解密 secret_key → 调 SDK → 过滤方舟免费资源包 → 写 volc_quota_models（按账号）→
-// 检测 Available<=0 对该账号关联的所有渠道 Key 写 model_states（冷却到次日 0:00）。
+// 流程：解密 secret_key → 调 SDK → 过滤方舟免费资源包 → 逐条 UPSERT volc_quota_packages
+// → 检测 Available<=0 资源包对应的 API 模型，对该账号关联的所有渠道 Key 写
+// model_states（冷却到次日 0:00）。
 func (s *Service) refreshOne(ctx context.Context, cfg Config) ([]string, error) {
 	cipher := ""
 	if err := s.db.QueryRow(`SELECT secret_key_cipher FROM volc_quota_config WHERE channel_id = ?`, cfg.ChannelID).Scan(&cipher); err != nil {
@@ -748,10 +729,6 @@ func (s *Service) refreshOne(ctx context.Context, cfg Config) ([]string, error) 
 	if aid == "" {
 		aid = accountID(cfg.AccessKey)
 	}
-	// 不直接 DELETE 重建——会丢失 local_remaining 本地递减值。
-	// 改为 UPSERT：首次写入 initial_total + local_remaining（= total_amount），
-	// 后续刷新只更新 billing API 的额度字段，保留 local_remaining 不覆盖。
-	// 对 billing API 已不返回的模型（过期/删除），保留旧记录不动。
 
 	// 该账号下所有渠道 Key 的 API 模型并集（禁用要作用于这些 Key 的模型）。
 	channelIDs := s.channelsForAccount(aid)
@@ -760,81 +737,34 @@ func (s *Service) refreshOne(ctx context.Context, cfg Config) ([]string, error) 
 		return nil, err
 	}
 
-	// 同 model 名可能有多个资源包（如几十个 ark_bd 包，总额度各不相同）：
-	// 先按归一化 model 名在内存累加 total/available/used，再一次 UPSERT。
-	// 不能逐条 UPSERT——主键 (account_id, model) 会让后写覆盖先写，只剩最后一个包。
-	type agg struct {
-		productName string
-		total       int64
-		avail       int64
-		used        int64
-		unit        string
-	}
-	groups := make(map[string]*agg)
-	var order []string // 保持首次出现顺序，输出稳定
+	// v17：扣减/拦截/UI 都从 packages 行直接读，不再维护聚合表。
+	// 禁用判据改为"任何资源包 available=0"→ 把对应 API 模型写入 model_states。
+	disabled := make(map[string]struct{})
+	seenAPIModels := make(map[string]struct{}) // 去重（多个 resource 映射到同一 API 模型）
 	for _, p := range pkgs {
 		if !p.looksLikeArkFreePackage() {
 			continue
 		}
-		label := normalizeModelName(p.ProductName)
-		if label == "" {
-			label = normalizeModelName(p.Product)
+		availAmt := parseAmount(p.AvailableAmount)
+		if availAmt > 0 {
+			continue // 仅对耗尽资源包做自动 disable
 		}
+		// label 用 configuration_code 提取名（与扣减/拦截锚点一致）。
+		label := modelNameFromConfigCode(p.ConfigurationCode, p.Product)
 		if label == "" {
 			continue
 		}
-		a, ok := groups[label]
-		if !ok {
-			a = &agg{productName: p.ProductName, unit: p.Unit}
-			groups[label] = a
-			order = append(order, label)
-		}
-		a.total += parseAmount(p.TotalAmount)
-		a.avail += parseAmount(p.AvailableAmount)
-		a.used += parseAmount(p.UsedAmount)
-	}
-	var disabled []string
-	for _, label := range order {
-		a := groups[label]
-		status := "ok"
-		if a.avail <= 0 {
-			status = "exhausted"
-		}
-		if _, err := s.db.ExecContext(ctx, `
-			INSERT INTO volc_quota_models(account_id, model, product_name, total_amount, available_amount, used_amount,
-			       initial_total, local_remaining, unit, status, synced_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-			ON CONFLICT(account_id, model) DO UPDATE SET
-				product_name = excluded.product_name,
-				total_amount = excluded.total_amount,
-				available_amount = excluded.available_amount,
-				used_amount = excluded.used_amount,
-				-- initial_total 跟随累加更新（避免旧单包值残留在新累加体系下误导）；
-				-- local_remaining 保留历史递减（不覆盖），同时 clamp 到 ≤ initial_total
-				-- 防止旧 local_remaining 大于新额度池时 UI 进度条反向。
-				initial_total = excluded.initial_total,
-				local_remaining = MIN(volc_quota_models.local_remaining, excluded.initial_total),
-				unit = excluded.unit,
-				-- 本地余额已扣到 0 时保持 exhausted：billing API 可能返回旧的可用量，
-				-- 若直接覆盖 status 会让本地已耗尽的模型"复活"。本地余额优先。
-				status = CASE WHEN volc_quota_models.local_remaining <= 0 THEN 'exhausted' ELSE excluded.status END,
-				synced_at = excluded.synced_at`,
-			aid, label, a.productName, a.total, a.avail, a.used,
-			a.total, a.total, // initial_total, local_remaining（首次写入=累加 total）
-			a.unit, status, now); err != nil {
-			return nil, err
-		}
-		if status == "exhausted" {
-			// 把该 product 映射到该账号所有渠道实际请求用的 API 模型，逐个渠道落 model_states。
-			matched := s.matchQuotaToAPIModels(label, apiModels)
-			for _, m := range matched {
-				for _, chID := range channelIDs {
-					if err := s.disableModelForFreeQuota(ctx, chID, m, untilNextDayMidnightLocal()); err != nil {
-						return nil, err
-					}
-				}
-				disabled = append(disabled, m)
+		for _, m := range s.matchQuotaToAPIModels(label, apiModels) {
+			if _, ok := seenAPIModels[m]; ok {
+				continue
 			}
+			seenAPIModels[m] = struct{}{}
+			for _, chID := range channelIDs {
+				if err := s.disableModelForFreeQuota(ctx, chID, m, untilNextDayMidnightLocal()); err != nil {
+					return nil, err
+				}
+			}
+			disabled[m] = struct{}{}
 		}
 	}
 
@@ -894,7 +824,17 @@ func (s *Service) refreshOne(ctx context.Context, cfg Config) ([]string, error) 
 			return nil, err
 		}
 	}
-	return disabled, nil
+	return append([]string(nil), disabledSorted(disabled)...), nil
+}
+
+// disabledSorted 从 map 收集去重的 API 模型名，按字符串排序（稳定输出）。
+func disabledSorted(set map[string]struct{}) []string {
+	out := make([]string, 0, len(set))
+	for k := range set {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // channelsForAccount 返回该账号（account_id）关联的所有渠道 Key ID。
@@ -1137,17 +1077,6 @@ func isDigit(c byte) bool { return c >= '0' && c <= '9' }
 
 func isAlpha(c byte) bool { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') }
 
-// 资源包类型后缀：configuration_code 中用于区分"这是什么包"的段，
-// 提取模型名时丢弃（这些段与 API 模型名无关）。
-var configCodeSuffixes = []string{
-	"data_collaboration",
-	"resource_pack",
-	"pack",
-	"free_inference",
-	"free_infer",
-	"collaboration",
-}
-
 // modelNameFromConfigCode 从 configuration_code 提取模型名（扣减/拦截的匹配锚点）。
 //
 // 例："DeepSeek_V4_flash_0731_data_collaboration_resource_pack" → "deepseek-v4-flash-0731"
@@ -1242,7 +1171,7 @@ func untilNextDayMidnightLocal() time.Time {
 
 // ListStatus 一次性返回所有配置 + 每条配置下（按账号聚合）的免费模型 + 使用统计 + 资源包明细。
 //
-// 注意：volc_quota_models / volc_quota_usage / volc_quota_packages 按 account_id 归属，
+// 注意：volc_quota_usage / volc_quota_packages 按 account_id 归属，
 // 同一账号下多渠道 Key 共享快照；前端按 channel 行展示，同账号各行回填同一份数据。
 func (s *Service) ListStatus(ctx context.Context) (ListStatusResponse, error) {
 	configs, err := s.ListConfigs(ctx)
@@ -1250,24 +1179,12 @@ func (s *Service) ListStatus(ctx context.Context) (ListStatusResponse, error) {
 		return ListStatusResponse{}, err
 	}
 	resp := ListStatusResponse{Configs: make([]ConfigWithDetails, 0, len(configs))}
-	modelsCache := make(map[string][]Model)
 	usageCache := make(map[string][]Usage)
 	packagesCache := make(map[string][]Package)
 	for _, cfg := range configs {
 		aid := cfg.AccountID
 		if aid == "" {
 			aid = accountID(cfg.AccessKey)
-		}
-		models, ok := modelsCache[aid]
-		if !ok && aid != "" {
-			models, err = s.ListModels(ctx, aid)
-			if err != nil {
-				return resp, err
-			}
-			modelsCache[aid] = models
-		}
-		if models == nil {
-			models = []Model{}
 		}
 		usage, ok := usageCache[aid]
 		if !ok && aid != "" {
@@ -1293,7 +1210,6 @@ func (s *Service) ListStatus(ctx context.Context) (ListStatusResponse, error) {
 		}
 		resp.Configs = append(resp.Configs, ConfigWithDetails{
 			Config:   cfg,
-			Models:   models,
 			Usage:    usage,
 			Packages: pkgs,
 		})

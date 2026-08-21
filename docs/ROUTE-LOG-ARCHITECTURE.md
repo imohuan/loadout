@@ -342,22 +342,39 @@ setInterval(async () => {
 
 后端 `Start` 写 running 占位后，若 `Finish` 因进程崩溃 / 异常中断 / 写入失败而未执行，该请求会**永久卡在 running**，UI 显示「进行中 0 ms」。
 
-### 8.2 已实现（当前代码，v1 单条判定）
+### 8.2 已实现（当前代码，登记表 + 时间兜底）
 
-- 后端配置：`core/config/config.go` `RouteLogSelfHealTimeout`（默认 60s，`LOADOUT_ROUTE_LOG_SELF_HEAL_TIMEOUT`，<=0 禁用）；
-- 契约：`plugins/contracts/routing.go` `RouteLog` 接口新增 `SelfHeal(ctx, requestID, threshold)`；
-- 实现：`plugins/route-log/service.go` `SelfHeal`：
-  - 条件：`result='running' && finished_at IS NULL && time.Since(started_at) >= threshold`；
-  - 动作：`UPDATE SET finished_at=now, result='stream_interrupted', duration_ms=now-started, error_message='后端自我修复…'`，带 `WHERE result='running' AND finished_at IS NULL` 防并发；
-  - 幂等：条件不满足直接 no-op，记录不存在静默；
-- HTTP 接入：`plugins/admin-api/routing.go` `handleRouteLogDetail` 先调 `SelfHeal` 再 `Detail`；
-- 前端触发：`RouteLogsView.vue` `selfHealStuckLogs()`——发现 `result='running' && age>60s` 的行，主动调 `service.detail(request_id)`（60s 去重），后端借此触发自愈，列表靠 3s 刷新自然覆盖。
+后端配置：
+- `core/config/config.go`：
+  - `RouteLogSelfHealTimeout`（默认 60s，`LOADOUT_ROUTE_LOG_SELF_HEAL_TIMEOUT`，<=0 禁用）——时间兜底阈值；
+  - `RouteLogSelfHealMaxAlive`（默认 10 分钟，`LOADOUT_ROUTE_LOG_SELF_HEAL_MAX_ALIVE`）——活跃登记表最大存活时间。
 
-**局限**：只按单条 request 的超时判定，不感知「组」内其他请求的状态。
+活跃登记表（`plugins/route-log/service.go`）：
+- `Service` 新增 `activeAt map[request_id]registeredAt` + mutex；
+- `Start` 写入登记（UPSERT 幂等，重复 Start 刷新登记时刻）；
+- `Finish` 删除登记（转发结束无论成败）；
+- `IsActive(requestID, maxAge)`：表里有且未超 maxAge → true；表里没有 → false（转发已结束/进程已崩溃）；超时 → false（死锁兜底）。
 
-### 8.3 演进方向（用户提出的组级状态机方案）
+自愈判定（`SelfHeal`，两层）：
+```
+1. IsActive false → 事实判死（转发已结束/进程崩溃/超时兜底）
+2. 时间兜底：result='running' && finished_at 为空 && age >= threshold
+两层都认为「还活着」才 no-op；修复动作 UPDATE 带 WHERE 防并发。
+```
 
-用户要求按「组」判断，而非单条超时：
+HTTP 接入（`plugins/admin-api/routing.go` `handleRouteLogDetail`）：
+- 仅 `?repair=1` 时调用 `SelfHeal`（普通查看详情不触发修复，行为可观察）。
+
+前端触发（`RouteLogsView.vue`）：
+- `selfHealStuckLogs()`：发现 `result='running' && age>60s` 的行，调 `service.detail(id, { repair: true })`（60s 去重）；
+- `useRouteLogs.ts` `detail` 支持 `{ repair?: boolean }` → 拼 `?repair=1`；
+- 后端修复后列表靠 3s 刷新自然覆盖。
+
+### 8.3 ~~演进方向（组级状态机方案）~~ 已否决
+
+> ⚠️ **已否决（2026-08-21）**：该方案在评审中被废弃。原因：逻辑复杂（组内推断依赖跨请求状态），且服务崩溃时无法预料——进程一死所有内存状态消失，组内推断失去意义。最终采用 §8.2 的**活跃登记表**方案（只判断单条请求的转发是否还活着，进程崩溃自动判死）。以下保留仅作历史记录，勿再实现。
+
+用户曾要求按「组」判断，而非单条超时：
 
 ```
 前端：检测 running > 60s 的行 → 调详情接口（带修复参数）
@@ -371,7 +388,7 @@ setInterval(async () => {
 后台在请求发生时创建一个「状态器」，跟踪这个模型任务请求是否还在继续
 ```
 
-**待确认的分组键**：
+**当时的待确认分组键**：
 
 | 候选 | 优点 | 缺点 |
 |---|---|---|
@@ -379,19 +396,10 @@ setInterval(async () => {
 | `virtual_model` | 聚合场景下把多次「运行」聚为一组（如连续多次请求 auto） | 普通模型无 virtual_model 值；跨请求语义需补充 |
 | `requested_model` | 普通 + 聚合都非空 | 聚合请求的 requested_model 已被改写为虚拟名，与真实模型混层 |
 
-**状态器的实现位置候选**：
-
-| 位置 | 覆盖 | 说明 |
-|---|---|---|
-| route-log 服务内部（`Start/Attempt/Finish` 入口） | 三类全覆盖（视觉也调 `routeLog.Attempt`） | 每次写日志时登记/更新/收尾，天然与 DB 一致 |
-| HandleProxy 入口 + routeLog.Finish 出口 | 主链路为主 | 视觉不经过 proxyForward，需额外挂 vision 事件 |
-
-**关键设计结论（调研得出）**：
+**当时的调研结论**（仍有参考价值）：
 
 - 视觉请求**不走 proxyForward**，走独立 `callVision`（`vision/service.go:517` 自己 `new http.Client`）；
-- 真正三类都经过的共同点是 **route-log 服务的 `Start/Attempt/Finish`**；
-- 所以「状态器」挂在 route-log 服务内部最稳，视觉自动纳入；
-- 状态器判断「是否继续」不应依赖进程内存（重启即失），应以 DB 为准——查该组是否有 `started_at` 更新且仍 `running` 的记录。
+- 真正三类都经过的共同点是 **route-log 服务的 `Start/Attempt/Finish`**。
 
 ---
 

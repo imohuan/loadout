@@ -2,7 +2,7 @@ package volcfreequota
 
 // 火山引擎免费额度插件的核心数据结构。
 //
-// 内存模型与 DB 表一一对应：Config 对应 volc_quota_config，Model 对应 volc_quota_models，
+// 内存模型与 DB 表一一对应：Config 对应 volc_quota_config，Package 对应 volc_quota_packages。
 // Usage 对应 volc_quota_usage。前端 JSON 直接序列化这些类型，避免重复定义。
 
 // Config 一条配置：关联一个火山引擎渠道 Key + 一对 AK/SK。
@@ -29,29 +29,6 @@ type Config struct {
 	UpdatedAt    string `json:"updated_at,omitempty"`
 }
 
-// Model 一个免费模型在某个账号（AccountID）下的配额快照。
-//
-//   - AccountID：账号指纹（SHA256(access_key) 前 16 位）。同一账号的多个 Key 共享同一账号额度。
-//   - Model 为归一化的标识（资源包 product 名称去前后缀，用于模糊匹配真实 API 模型名）。
-//   - Total / Available / Used 与资源包字段一一对应；多数免费额度的 Available 字段即为
-//     "剩余 Token 数"（unit = "Tokens"），所以 UI 直接展示数字。
-//   - InitialTotal / LocalRemaining：本地递减余额。initial_total 来自 billing API 首次写入，
-//     local_remaining 每次 API 响应成功后扣减 total_tokens。不依赖 billing API 实时性。
-//   - Status: "ok" / "exhausted" / "unknown"。
-type Model struct {
-	AccountID       string `json:"account_id"`
-	Model           string `json:"model"`
-	ProductName     string `json:"product_name,omitempty"`
-	TotalAmount     int64  `json:"total_amount"`
-	AvailableAmount int64  `json:"available_amount"`
-	UsedAmount      int64  `json:"used_amount"`
-	InitialTotal    int64  `json:"initial_total"`
-	LocalRemaining  int64  `json:"local_remaining"`
-	Unit            string `json:"unit"`
-	Status          string `json:"status"` // ok / exhausted / unknown
-	SyncedAt        string `json:"synced_at,omitempty"`
-}
-
 // Usage 一条 (account_id, model) 的请求使用记录（仅作展示与匹配辅助）。
 type Usage struct {
 	AccountID  string `json:"account_id"`
@@ -73,12 +50,11 @@ type ListStatusResponse struct {
 	Configs []ConfigWithDetails `json:"configs"`
 }
 
-// ConfigWithDetails 一条配置 + 它关联的渠道信息 + 该渠道下的免费模型列表 + 使用记录。
+// ConfigWithDetails 一条配置 + 它关联的渠道信息 + 使用记录 + 资源包逐条明细。
 //
 // 用于设置页一次性渲染折叠面板，避免前端分多次请求。
 type ConfigWithDetails struct {
 	Config   Config    `json:"config"`
-	Models   []Model   `json:"models"`
 	Usage    []Usage   `json:"usage,omitempty"`
 	Packages []Package `json:"packages,omitempty"` // 资源包逐条明细（v14）
 }
@@ -104,8 +80,7 @@ type RecentUsageResponse struct {
 
 // Package 一条资源包逐条明细（volc_quota_packages）。
 //
-// 与 Model 的区别：Model 是按归一化 model 名聚合的额度行（用于本地扣减/拦截），
-// Package 保留 billing API 返回的每个资源包原始信息（ConfigurationName/Status/时间），
+// 保留 billing API 返回的每个资源包原始信息（ConfigurationName/Status/时间），
 // 供 UI 像 main.go 输出那样逐条展示"哪个模型还有多少额度"。
 type Package struct {
 	AccountID         string `json:"account_id"`

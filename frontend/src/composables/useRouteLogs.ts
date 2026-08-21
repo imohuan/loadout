@@ -25,7 +25,11 @@ export function useRouteLogs() {
     if (toISOString(filters.to)) search.set('to', toISOString(filters.to)!)
     return api<RouteLog[]>(`/api/route-logs${search.size ? `?${search}` : ''}`)
   }
-  const detail = (requestId: string) => api<RouteLog>(`/api/route-logs/${requestId}`)
+  // detail：默认纯读；带 repair: true 时加 ?repair=1，触发后端对卡死 running 记录的自愈收尾。
+  const detail = (requestId: string, options?: { repair?: boolean }) =>
+    api<RouteLog>(
+      `/api/route-logs/${requestId}${options?.repair ? '?repair=1' : ''}`,
+    )
   const clear = () => request<void>('/api/route-logs', 'DELETE')
   return { list, detail, clear }
 }
