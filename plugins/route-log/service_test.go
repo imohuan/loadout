@@ -250,3 +250,133 @@ func TestSelfHealNoopForFinishedOrMissing(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestSelfHealPromotesSuccessfulAttempt：最后一次非视觉 attempt 是 success 时，
+// 整条请求应升级为 success 并复用 attempt 的 final_model / channel / tokens /
+// duration 等数据（而非粗暴标 stream_interrupted）。视觉 attempt 不算数。
+func TestSelfHealPromotesSuccessfulAttempt(t *testing.T) {
+	service := NewService(logDB(t), nil)
+	ctx := context.Background()
+	started := time.Now().Add(-10 * time.Minute)
+	if err := service.Start(ctx, contracts.RouteRequest{RequestID: "r-promote", RequestedModel: "auto", StartedAt: started}); err != nil {
+		t.Fatal(err)
+	}
+	// 视觉 attempt（应被排除，不算数）
+	visionEnd := started.Add(3 * time.Second)
+	if _, err := service.Attempt(ctx, contracts.RouteAttempt{
+		RequestID: "r-promote", StepNo: 1, Action: "视觉识别", Model: "qwen-vl",
+		ChannelID: "ch-v", StartedAt: started, FinishedAt: &visionEnd, Result: "success",
+		Duration: contracts.DurationMS(3 * time.Second),
+		Metadata: map[string]any{"capability": "vision", "image_count": 1},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// 主链路：第一次失败
+	failStart := started.Add(3 * time.Second)
+	failEnd := failStart.Add(2 * time.Second)
+	if _, err := service.Attempt(ctx, contracts.RouteAttempt{
+		RequestID: "r-promote", StepNo: 2, Action: "首次尝试", Model: "deepseek-x", ChannelID: "ch-x",
+		StartedAt: failStart, FinishedAt: &failEnd, Result: "failed",
+		FailureClass: "upstream_5xx", StatusCode: 502,
+		Duration: contracts.DurationMS(2 * time.Second), ErrorMessage: "bad gateway",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// 主链路：第二次成功（应是最后一次非视觉 attempt）
+	okStart := failEnd.Add(time.Millisecond)
+	okEnd := okStart.Add(3*time.Second + 110*time.Millisecond)
+	if _, err := service.Attempt(ctx, contracts.RouteAttempt{
+		RequestID: "r-promote", StepNo: 3, Action: "切换渠道", Model: "glm-5", ChannelID: "ch-y",
+		StartedAt: okStart, FinishedAt: &okEnd, Result: "success",
+		StatusCode: 200, Stream: true,
+		PromptTokens: 1500, CompletionTokens: 320, CachedTokens: 80,
+		Duration: contracts.DurationMS(3*time.Second + 110*time.Millisecond),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// 模拟崩溃：登记表移除（等同进程死）
+	service.mu.Lock()
+	delete(service.activeAt, "r-promote")
+	service.mu.Unlock()
+	// 自愈
+	if err := service.SelfHeal(ctx, "r-promote", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	detail, err := service.Detail(ctx, "r-promote")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Result != "success" {
+		t.Fatalf("最后一次成功 attempt 应触发升级为 success，实际 %q", detail.Result)
+	}
+	if detail.FinalModel != "glm-5" {
+		t.Errorf("final_model 应取最后成功 attempt 的 model = glm-5，实际 %q", detail.FinalModel)
+	}
+	if detail.FinalChannelID != "ch-y" {
+		t.Errorf("final_channel_id 应取最后成功 attempt 的 channel = ch-y，实际 %q", detail.FinalChannelID)
+	}
+	if detail.HTTPStatus != 200 {
+		t.Errorf("http_status 应取最后成功 attempt 的 status_code = 200，实际 %d", detail.HTTPStatus)
+	}
+	if detail.PromptTokens != 1500 || detail.CompletionTokens != 320 || detail.CachedTokens != 80 {
+		t.Errorf("tokens 应复用 last attempt 的，实际 p=%d c=%d cache=%d",
+			detail.PromptTokens, detail.CompletionTokens, detail.CachedTokens)
+	}
+	if !detail.Stream {
+		t.Errorf("stream 应复用 last attempt 的 stream=true")
+	}
+	if detail.ErrorMessage != "" {
+		t.Errorf("升级为 success 应清空 error_message，实际 %q", detail.ErrorMessage)
+	}
+	if detail.FinishedAt == nil {
+		t.Fatal("应写 finished_at")
+	}
+	// duration 应为最后一次成功 attempt 结束到请求 started 的总时长
+	wantDur := okEnd.Sub(started).Milliseconds()
+	if got := detail.Duration.Milliseconds(); got < wantDur-100 || got > wantDur+100 {
+		t.Errorf("duration 应约 %dms（含失败重试时间），实际 %dms", wantDur, got)
+	}
+}
+
+// TestSelfHealIgnoresVisionOnlyAttempts：所有非视觉 attempt 都失败了（或没有），）
+// 即使视觉 attempt 成功，也走原 stream_interrupted 收尾。
+func TestSelfHealIgnoresVisionOnlyAttempts(t *testing.T) {
+	service := NewService(logDB(t), nil)
+	ctx := context.Background()
+	started := time.Now().Add(-5 * time.Minute)
+	if err := service.Start(ctx, contracts.RouteRequest{RequestID: "r-visonly", RequestedModel: "m", StartedAt: started}); err != nil {
+		t.Fatal(err)
+	}
+	// 视觉成功
+	visionEnd := started.Add(time.Second)
+	if _, err := service.Attempt(ctx, contracts.RouteAttempt{
+		RequestID: "r-visonly", StepNo: 1, Action: "视觉识别", Model: "qwen-vl",
+		ChannelID: "ch-v", StartedAt: started, FinishedAt: &visionEnd, Result: "success",
+		Duration: contracts.DurationMS(time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// 主链路失败
+	mainStart := visionEnd.Add(time.Millisecond)
+	mainEnd := mainStart.Add(time.Second)
+	if _, err := service.Attempt(ctx, contracts.RouteAttempt{
+		RequestID: "r-visonly", StepNo: 2, Action: "首次尝试", Model: "x", ChannelID: "ch-x",
+		StartedAt: mainStart, FinishedAt: &mainEnd, Result: "failed", StatusCode: 500,
+		Duration: contracts.DurationMS(time.Second), ErrorMessage: "boom",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	service.mu.Lock()
+	delete(service.activeAt, "r-visonly")
+	service.mu.Unlock()
+	if err := service.SelfHeal(ctx, "r-visonly", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	detail, err := service.Detail(ctx, "r-visonly")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Result != "stream_interrupted" {
+		t.Fatalf("视觉成功但主链路失败时不应被升级，仍走 stream_interrupted，实际 %q", detail.Result)
+	}
+}

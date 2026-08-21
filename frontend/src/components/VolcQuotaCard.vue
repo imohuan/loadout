@@ -117,8 +117,13 @@ function pkgExpiry(p: VolcQuotaPackage) {
   if (!p.expiry_time) return ''
   return formatTime(p.expiry_time)
 }
-/** 资源包剩余进度（0~100） */
+/** 资源包剩余进度（0~100）—— 本地口径：用 local_remaining / initial_total。
+ * 首次刷新建底数 local_remaining=initial_total=available_amount，后续请求扣减。
+ * 剩余=0 视为已耗尽（即使 billing 短暂显示有余额，本地优先拦截）。 */
 function pkgProgress(p: VolcQuotaPackage) {
+  if (p.initial_total > 0) {
+    return Math.max(0, Math.min(100, Math.round((p.local_remaining / p.initial_total) * 100)))
+  }
   if (p.total_amount <= 0) return 0
   return Math.max(0, Math.min(100, Math.round((p.available_amount / p.total_amount) * 100)))
 }
@@ -450,7 +455,7 @@ const displayName = (ch: Channel) => ch.channel_name || ch.name
                   <TableRow class="bg-muted/30 hover:bg-muted/30">
                     <TableHead>资源包</TableHead>
                     <TableHead class="text-right">总额</TableHead>
-                    <TableHead class="w-[30%]">剩余进度</TableHead>
+                    <TableHead class="w-[30%]">剩余（本地）</TableHead>
                     <TableHead class="text-right">已用</TableHead>
                     <TableHead>状态</TableHead>
                     <TableHead>到期</TableHead>
@@ -473,14 +478,14 @@ const displayName = (ch: Channel) => ch.channel_name || ch.name
                       <div class="flex items-center gap-2">
                         <Progress
                           :model-value="pkgProgress(p)"
-                          :class="p.available_amount <= 0 ? 'bg-destructive/20' : (p.total_amount > 0 && p.available_amount / p.total_amount < 0.2 ? 'bg-amber-500/20' : '')"
+                          :class="p.local_remaining <= 0 && p.initial_total > 0 ? 'bg-destructive/20' : (p.total_amount > 0 && p.available_amount / p.total_amount < 0.2 ? 'bg-amber-500/20' : '')"
                           class="h-1.5 flex-1"
                         />
                         <span
-                          class="w-20 shrink-0 text-right tabular-nums"
-                          :class="p.available_amount <= 0 ? 'text-destructive' : ''"
+                          class="w-24 shrink-0 text-right tabular-nums"
+                          :class="p.local_remaining <= 0 && p.initial_total > 0 ? 'text-destructive' : ''"
                         >
-                          {{ formatAmount(p.available_amount) }}
+                          {{ formatAmount(p.local_remaining) }}<span v-if="p.initial_total > 0" class="text-muted-foreground">/{{ formatAmount(p.initial_total) }}</span>
                         </span>
                       </div>
                     </TableCell>

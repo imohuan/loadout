@@ -106,7 +106,12 @@ func (s *Service) IsActive(requestID string, maxAge time.Duration) bool {
 //  1. 活跃登记表：IsActive 为 false（转发已结束/进程已崩溃/超时兜底）——事实判死；
 //  2. 时间兜底：result='running' 且 finished_at 为空 且距 started_at 超过 threshold。
 // 两层都认为「还活着」时才 no-op，最大限度避免误杀真正在跑的请求。
-// 修复动作幂等：UPDATE 带 WHERE result='running' AND finished_at IS NULL 防并发。
+//
+// 收尾前**额外优化**：查最后一次非视觉 attempt（action != '视觉识别'，视觉是预处理不算）。
+// 若该 attempt 实际成功（说明某次渠道确实成功过，但后续 Finish 异常中断），则把请求
+// 整体升级为 success 并复用该 attempt 的 final_model / channel / tokens / stream / duration
+// / status / finished_at，清空 error_message；否则保持原 stream_interrupted。
+// 修复动作幂等：两条 UPDATE 都带 WHERE result='running' AND finished_at IS NULL 防并发。
 func (s *Service) SelfHeal(ctx context.Context, requestID string, threshold time.Duration) error {
 	if threshold <= 0 {
 		return nil
@@ -136,6 +141,44 @@ func (s *Service) SelfHeal(ctx context.Context, requestID string, threshold time
 	if time.Since(started) < threshold {
 		return nil
 	}
+
+	// 收尾前先看最后一次非视觉 attempt 的结局——若 success 就升级整条请求为成功。
+	if attempt, ok, err := s.lastNonVisionAttempt(ctx, requestID); err != nil {
+		s.lg.Warn("route-log self-heal last-attempt probe failed", "request_id", requestID, "err", err)
+	} else if ok && attempt.result == "success" {
+		// 升级为 success：复用 attempt 的数据，finished_at 用 attempt 结束时刻，
+		// duration 用请求开始到该 attempt 结束的完整时长（含失败重试时间），更诚实。
+		finishedAt := nowOr(attempt.finishedAt, time.Now())
+		_, err = s.db.ExecContext(ctx,
+			`UPDATE route_requests
+			 SET finished_at = ?, result = 'success',
+			     duration_ms = ?,
+			     final_model = NULLIF(?, ''),
+			     final_channel_id = NULLIF(?, ''),
+			     http_status = ?,
+			     error_message = '',
+			     stream = ?,
+			     prompt_tokens = ?,
+			     completion_tokens = ?,
+			     cached_tokens = ?
+			 WHERE request_id = ? AND result = 'running' AND finished_at IS NULL`,
+			finishedAt.UTC().Format(time.RFC3339Nano),
+			finishedAt.Sub(started).Milliseconds(),
+			attempt.model,
+			attempt.channelID,
+			attempt.statusCode,
+			boolToInt(attempt.stream),
+			attempt.promptTokens,
+			attempt.completionTokens,
+			attempt.cachedTokens,
+			requestID)
+		if err != nil {
+			s.lg.Warn("route-log self-heal promote-to-success failed", "request_id", requestID, "err", err)
+		}
+		return err
+	}
+
+	// 默认走 stream_interrupted 收尾
 	now := time.Now().UTC()
 	inferred := now.Sub(started)
 	_, err = s.db.ExecContext(ctx,
@@ -150,6 +193,60 @@ func (s *Service) SelfHeal(ctx context.Context, requestID string, threshold time
 		s.lg.Warn("route-log self-heal failed", "request_id", requestID, "err", err)
 	}
 	return err
+}
+
+// lastAttemptOutcome 描述最后一次非视觉 attempt 的关键字段（用于 SelfHeal 升级判断）。
+type lastAttemptOutcome struct {
+	model            string
+	channelID        string
+	finishedAt       time.Time
+	result           string
+	statusCode       int
+	stream           bool
+	promptTokens     int
+	completionTokens int
+	cachedTokens     int
+}
+
+// lastNonVisionAttempt 取该 request_id 下最后一次非视觉 attempt（排除 action='视觉识别'，
+// 因为视觉识别是预处理/描述，不算主链路的成功信号）。视觉本就是 attempt，只是其
+// metadata.capability=vision + action='视觉识别' 双标识，这里直接用 action 字段最干净。
+// 返回 (outcome, true, nil) 表示找到了；(_, false, nil) 表示没有非视觉 attempt
+// 或最后一次是视觉（此时 ok=false 表示无可复用数据，走原 stream_interrupted 收尾）。
+func (s *Service) lastNonVisionAttempt(ctx context.Context, requestID string) (lastAttemptOutcome, bool, error) {
+	var out lastAttemptOutcome
+	var finished sql.NullString
+	row := s.db.QueryRowContext(ctx,
+		`SELECT model, COALESCE(channel_id, ''), finished_at, result, COALESCE(status_code, 0),
+		        COALESCE(stream, 0), COALESCE(prompt_tokens, 0), COALESCE(completion_tokens, 0), COALESCE(cached_tokens, 0)
+		 FROM route_attempts
+		 WHERE request_id = ? AND action != '视觉识别' AND finished_at IS NOT NULL
+		 ORDER BY step_no DESC LIMIT 1`,
+		requestID)
+	if err := row.Scan(&out.model, &out.channelID, &finished, &out.result, &out.statusCode,
+		&out.stream, &out.promptTokens, &out.completionTokens, &out.cachedTokens); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return out, false, nil
+		}
+		return out, false, err
+	}
+	if !finished.Valid {
+		return out, false, nil
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, finished.String)
+	if err != nil {
+		return out, false, err
+	}
+	out.finishedAt = parsed
+	return out, true, nil
+}
+
+// nowOr fallback：attempt 必有 finished_at（SQL 已 WHERE finished_at IS NOT NULL），兜底仅为类型安全。
+func nowOr(t time.Time, fallback time.Time) time.Time {
+	if t.IsZero() {
+		return fallback
+	}
+	return t
 }
 
 func (s *Service) List(ctx context.Context, filter contracts.RouteLogFilter) ([]contracts.RouteRequestView, error) {
