@@ -47,11 +47,7 @@ function busy(aggregate: Aggregate, action: string) {
                     >
                       <span class="mr-2 tabular-nums">{{ index + 1 }}.</span
                       ><span class="font-mono text-foreground">{{ target.model }}</span>
-                      <ChannelRef
-                        :target="target"
-                        :channels="channels"
-                        class="text-muted-foreground"
-                      />
+                      <ChannelRef :target="target" :channels="channels" />
                     </li>
                   </ol></TableCell
                 ><TableCell
