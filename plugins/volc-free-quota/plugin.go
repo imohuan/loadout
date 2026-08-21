@@ -4,7 +4,7 @@
 //   - 定时 + 手动触发查询 billing.ListResourcePackages，列出每个免费模型的剩余额度。
 //   - 模型请求结束后记录 (channel_id, model) 到 volc_quota_usage，便于人工审计。
 //   - 额度耗尽的免费模型：在 model_states 写入 冷却至次日 0:00 的禁用状态，
-//     并在 before-upstream 钩子检测到目标模型全部候选渠道都耗尽时直接报 "免费额度 失效"。
+//     并在 before-upstream 钩子检测到目标模型全部候选渠道本地余额耗尽时直接报 "模型免费额度用完"。
 //
 // 数据存储：DB 迁移 v10 三张表（volc_quota_config / volc_quota_models / volc_quota_usage）。
 package volcfreequota
@@ -62,7 +62,7 @@ func (p *volcQuota) Apply(ctx plugin.Context) error {
 
 	// 订阅 model-gateway 请求结束事件：记录 (channel_id, model) 使用次数。
 	ctx.On(modelgateway.ProxyUpstreamSucceeded, svc.HandleProxyUpstreamSucceeded)
-	// 拦截前：当目标免费模型在所有候选渠道上都耗尽时，返回 "免费额度 失效"。
+	// 拦截前：当目标免费模型在所有候选渠道上本地余额都耗尽时，返回 "模型免费额度用完"。
 	ctx.On(modelgateway.ProxyBeforeUpstream, svc.HandleProxyBeforeUpstream)
 
 	// 注册管理后台路由（AuthSession 由 core/servercore 自动包装）。
@@ -83,6 +83,12 @@ func (p *volcQuota) Apply(ctx plugin.Context) error {
 		Pattern: "POST /api/volc-quota/refresh",
 		Auth:    plugin.AuthSession,
 		Handler: http.HandlerFunc(svc.HandleRefresh),
+	})
+	ctx.RegisterRoute(plugin.RouteSpec{
+		Method:  http.MethodGet,
+		Pattern: "GET /api/volc-quota/recent-usage",
+		Auth:    plugin.AuthSession,
+		Handler: http.HandlerFunc(svc.HandleRecentUsage),
 	})
 
 	// 启动后台刷新 goroutine：每 15 分钟一次；启动后立刻同步一次以尽快拿到首份数据。

@@ -191,17 +191,16 @@ func (s *Service) accountIDForChannel(channelID string) string {
 //
 // 只有当候选渠道中存在至少一个配置了「强制关停」（force_block=1）的账号时，才会执行拦截：
 //  1. 若请求的 model 对应的本地余额（local_remaining）在所有候选账号上都已耗尽（<=0）
-//     或 billing API 快照 status='exhausted' → 返回 "免费额度 失效" GatewayError
+//     → 返回 "模型免费额度用完" GatewayError
 //  2. 否则放行
 //
-// 本地余额优先：local_remaining 每次 API 响应成功后扣减 total_tokens，不依赖
-// billing API（经常 429）。只有本地有记录（initial_total > 0）时才按本地余额判断；
-// 否则回退到 billing API 快照 status。
+// 判据唯一来源是本地 SQLite 余额（local_remaining）：远程 billing API 数据不准确
+// （经常 429），只作初始底数，不参与拦截判定。
 //
 // 未开启强制关停时，拦截逻辑不生效，由 model_states 冷却机制控制禁用。
 //
 // 返回的 GatewayError 会被 model-gateway 直接写出为
-// {"error":{"message":"免费额度 失效","type":"free_quota_exhausted"}}。
+// {"error":{"message":"模型免费额度用完","type":"free_quota_exhausted"}}。
 func (s *Service) HandleProxyBeforeUpstream(payload any) (any, error) {
 	p, ok := payload.(*modelgateway.ProxyPipeline)
 	if !ok || p == nil || p.Request == nil {
@@ -222,10 +221,10 @@ func (s *Service) HandleProxyBeforeUpstream(payload any) (any, error) {
 	if !s.hasForceBlockEnabled(candidateIDs) {
 		return payload, nil
 	}
-	// 看该 model 在所有候选账号里是否都处于耗尽状态（本地余额或 billing 快照）。
+	// 看该 model 在所有候选账号里是否本地余额都已耗尽。
 	exhausted, allExhausted, err := s.checkAllCandidatesExhausted(candidateIDs, model)
 	if err != nil {
-		s.lg.Warn("volc-free-quota: 检查免费额度状态失败", "model", model, "err", err)
+		s.lg.Warn("volc-free-quota: 检查本地余额状态失败", "model", model, "err", err)
 		return payload, nil
 	}
 	if !exhausted {
@@ -235,11 +234,11 @@ func (s *Service) HandleProxyBeforeUpstream(payload any) (any, error) {
 		// 至少一条候选渠道还有余量 → 放行，让路由选它。
 		return payload, nil
 	}
-	// 所有候选渠道都耗尽 → 阻断并报明确错误。
+	// 所有候选渠道本地余额都耗尽 → 阻断并报明确错误。
 	return nil, &modelgateway.GatewayError{
 		Status: http.StatusTooManyRequests,
 		Type:   "free_quota_exhausted",
-		Msg:    "免费额度 失效",
+		Msg:    "模型免费额度用完",
 	}
 }
 
@@ -300,13 +299,12 @@ func (s *Service) allVolcChannelIDs() []string {
 	return ids
 }
 
-// checkAllCandidatesExhausted 检查候选渠道中此 model 的免费额度状况（按账号对齐）：
+// checkAllCandidatesExhausted 检查候选渠道中此 model 的本地余额是否耗尽（按账号对齐）：
 //
 //   - 免费额度按火山账号（account_id）归属，因此先把候选渠道映射到它们各自的账号，
 //     再去重为「候选账号集合」。
-//   - 耗尽判定双条件（任一命中即算该账号耗尽）：
-//     1) 本地余额 local_remaining <= 0（且 initial_total > 0，即有本地记录）——主判据，
-//        不依赖 billing API；2) billing API 快照 status='exhausted'——补充。
+//   - 耗尽判定唯一来源是本地余额：initial_total > 0（有本地记录）且 local_remaining <= 0。
+//     billing API 的 status='exhausted' 不参与——远程数据不准确，只作初始底数。
 //   - exhausted=true 表示至少一个候选账号耗尽；allExhausted=true 表示所有候选账号都耗尽。
 //   - 采用与刷新时完全一致的 matchOne 模糊匹配逻辑，避免归一化名与 API 模型名脱节。
 func (s *Service) checkAllCandidatesExhausted(candidateIDs []string, requestModel string) (exhausted, allExhausted bool, err error) {
@@ -318,34 +316,31 @@ func (s *Service) checkAllCandidatesExhausted(candidateIDs []string, requestMode
 	if len(accountIDs) == 0 {
 		return false, false, nil
 	}
-	// 取出候选账号中所有匹配该 model 的额度记录（本地余额 + billing 快照一起拉）。
+	// 取出候选账号中所有匹配该 model 的本地余额记录。
 	placeholders := strings.Repeat("?,", len(accountIDs))
 	placeholders = strings.TrimSuffix(placeholders, ",")
 	args := make([]any, 0, len(accountIDs))
 	for _, id := range accountIDs {
 		args = append(args, id)
 	}
-	rows, err := s.db.Query(`SELECT account_id, model, initial_total, local_remaining, status FROM volc_quota_models WHERE account_id IN (`+placeholders+`)`, args...)
+	rows, err := s.db.Query(`SELECT account_id, model, initial_total, local_remaining FROM volc_quota_models WHERE account_id IN (`+placeholders+`)`, args...)
 	if err != nil {
 		return false, false, err
 	}
 	defer rows.Close()
-	// map[account_id] -> 该账号是否有匹配且耗尽的 model 记录
+	// map[account_id] -> 该账号是否有匹配且本地余额耗尽的 model 记录
 	accountExhausted := make(map[string]bool)
 	for rows.Next() {
-		var aid, quotaModel, status string
+		var aid, quotaModel string
 		var initialTotal, localRemaining int64
-		if err := rows.Scan(&aid, &quotaModel, &initialTotal, &localRemaining, &status); err != nil {
+		if err := rows.Scan(&aid, &quotaModel, &initialTotal, &localRemaining); err != nil {
 			continue
 		}
 		if !matchOne(quotaModel, requestModel) {
 			continue
 		}
 		// 本地余额主判据：有本地记录（initial_total > 0）且已扣到 0。
-		localExhausted := initialTotal > 0 && localRemaining <= 0
-		// billing 快照补充判据。
-		billingExhausted := status == "exhausted"
-		if localExhausted || billingExhausted {
+		if initialTotal > 0 && localRemaining <= 0 {
 			accountExhausted[aid] = true
 		}
 	}
@@ -568,6 +563,31 @@ func (s *Service) ListUsage(ctx context.Context, accountID string) ([]Usage, err
 	return out, rows.Err()
 }
 
+// ListPackages 返回某账号的资源包逐条明细（account_id 维度，v14）。
+// 按 available_amount 降序，耗尽/过期排后面，前端一眼看到"哪个模型还有额度"。
+func (s *Service) ListPackages(ctx context.Context, accountID string) ([]Package, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT account_id, instance_no, product, product_name, configuration_code, configuration_name,
+		       total_amount, available_amount, used_amount, unit, status, effective_time, expiry_time, synced_at
+		FROM volc_quota_packages WHERE account_id = ?
+		ORDER BY (status = 'Effective') DESC, available_amount DESC, configuration_name`, accountID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Package
+	for rows.Next() {
+		var p Package
+		if err := rows.Scan(&p.AccountID, &p.InstanceNo, &p.Product, &p.ProductName,
+			&p.ConfigurationCode, &p.ConfigurationName, &p.TotalAmount, &p.AvailableAmount,
+			&p.UsedAmount, &p.Unit, &p.Status, &p.EffectiveTime, &p.ExpiryTime, &p.SyncedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
 // ===== 手动 + 定时刷新 =====
 
 // Refresh 刷新额度：channelID 非空只刷该渠道；否则全量遍历所有 enabled 配置。
@@ -591,8 +611,15 @@ func (s *Service) Refresh(ctx context.Context, channelID string) (RefreshResult,
 			continue
 		}
 		if cfg.AccountID == "" {
-			// 旧数据或 AK 为空：直接按 AK 现算（兼容无 account_id 的历史行）。
+			// 旧数据（v11 迁移前的行）或 AK 为空：按 AK 现算指纹，并写回 DB 修复，
+			// 否则后面 `WHERE account_id = ?` 更新 last_error/last_synced_at 永远匹配不到行
+			// （UI 上会残留僵尸 last_error、last_synced_at 不更新）。
 			cfg.AccountID = accountID(cfg.AccessKey)
+			if cfg.AccountID != "" {
+				_, _ = s.db.ExecContext(ctx,
+					`UPDATE volc_quota_config SET account_id = ? WHERE channel_id = ? AND (account_id = '' OR account_id IS NULL)`,
+					cfg.AccountID, cfg.ChannelID)
+			}
 		}
 		if cfg.AccountID == "" {
 			continue // 连 AK 都没有，无法查询
@@ -665,7 +692,19 @@ func (s *Service) refreshOne(ctx context.Context, cfg Config) ([]string, error) 
 	if err != nil {
 		return nil, err
 	}
-	var disabled []string
+
+	// 同 model 名可能有多个资源包（如几十个 ark_bd 包，总额度各不相同）：
+	// 先按归一化 model 名在内存累加 total/available/used，再一次 UPSERT。
+	// 不能逐条 UPSERT——主键 (account_id, model) 会让后写覆盖先写，只剩最后一个包。
+	type agg struct {
+		productName string
+		total       int64
+		avail       int64
+		used        int64
+		unit        string
+	}
+	groups := make(map[string]*agg)
+	var order []string // 保持首次出现顺序，输出稳定
 	for _, p := range pkgs {
 		if !p.looksLikeArkFreePackage() {
 			continue
@@ -677,11 +716,21 @@ func (s *Service) refreshOne(ctx context.Context, cfg Config) ([]string, error) 
 		if label == "" {
 			continue
 		}
-		totalAmt := parseAmount(p.TotalAmount)
-		availAmt := parseAmount(p.AvailableAmount)
-		usedAmt := parseAmount(p.UsedAmount)
+		a, ok := groups[label]
+		if !ok {
+			a = &agg{productName: p.ProductName, unit: p.Unit}
+			groups[label] = a
+			order = append(order, label)
+		}
+		a.total += parseAmount(p.TotalAmount)
+		a.avail += parseAmount(p.AvailableAmount)
+		a.used += parseAmount(p.UsedAmount)
+	}
+	var disabled []string
+	for _, label := range order {
+		a := groups[label]
 		status := "ok"
-		if availAmt <= 0 {
+		if a.avail <= 0 {
 			status = "exhausted"
 		}
 		if _, err := s.db.ExecContext(ctx, `
@@ -693,16 +742,19 @@ func (s *Service) refreshOne(ctx context.Context, cfg Config) ([]string, error) 
 				total_amount = excluded.total_amount,
 				available_amount = excluded.available_amount,
 				used_amount = excluded.used_amount,
-				-- initial_total 只在首次写入时设置（旧值=0 才覆盖），后续不覆盖
-				initial_total = CASE WHEN volc_quota_models.initial_total = 0 THEN excluded.initial_total ELSE volc_quota_models.initial_total END,
+				-- initial_total 跟随累加更新（避免旧单包值残留在新累加体系下误导）；
+				-- local_remaining 保留历史递减（不覆盖），同时 clamp 到 ≤ initial_total
+				-- 防止旧 local_remaining 大于新额度池时 UI 进度条反向。
+				initial_total = excluded.initial_total,
+				local_remaining = MIN(volc_quota_models.local_remaining, excluded.initial_total),
 				unit = excluded.unit,
 				-- 本地余额已扣到 0 时保持 exhausted：billing API 可能返回旧的可用量，
 				-- 若直接覆盖 status 会让本地已耗尽的模型"复活"。本地余额优先。
 				status = CASE WHEN volc_quota_models.local_remaining <= 0 THEN 'exhausted' ELSE excluded.status END,
 				synced_at = excluded.synced_at`,
-			aid, label, p.ProductName, totalAmt, availAmt, usedAmt,
-			totalAmt, totalAmt, // initial_total, local_remaining（首次写入=total_amount）
-			p.Unit, status, now); err != nil {
+			aid, label, a.productName, a.total, a.avail, a.used,
+			a.total, a.total, // initial_total, local_remaining（首次写入=累加 total）
+			a.unit, status, now); err != nil {
 			return nil, err
 		}
 		if status == "exhausted" {
@@ -716,6 +768,31 @@ func (s *Service) refreshOne(ctx context.Context, cfg Config) ([]string, error) 
 				}
 				disabled = append(disabled, m)
 			}
+		}
+	}
+
+	// 逐条写资源包明细（volc_quota_packages）：同 Product 下几十种模型配置各有额度，
+	// 聚合 model 行只用于扣减/拦截，展示要靠明细。全量覆盖该账号（DELETE 旧明细再插入），
+	// 因为 billing API 返回的是该账号全量资源包，直接以本次结果为准。
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM volc_quota_packages WHERE account_id = ?`, aid); err != nil {
+		return nil, err
+	}
+	for _, p := range pkgs {
+		if !p.looksLikeArkFreePackage() {
+			continue
+		}
+		if p.InstanceNo == "" {
+			continue // 无唯一标识的包不入明细（理论上不会发生）
+		}
+		if _, err := s.db.ExecContext(ctx, `
+			INSERT INTO volc_quota_packages(account_id, instance_no, product, product_name, configuration_code,
+			       configuration_name, total_amount, available_amount, used_amount, unit, status,
+			       effective_time, expiry_time, synced_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			aid, p.InstanceNo, p.Product, p.ProductName, p.ConfigurationCode, p.ConfigurationName,
+			parseAmount(p.TotalAmount), parseAmount(p.AvailableAmount), parseAmount(p.UsedAmount),
+			p.Unit, p.Status, p.EffectiveTime, p.ExpiryTime, now); err != nil {
+			return nil, err
 		}
 	}
 	return disabled, nil
@@ -907,14 +984,14 @@ func isAlpha(c byte) bool { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= '
 //
 //   - status='cooling'，让 model-health 的 CheckNow 在 disabled_until 到期后自动恢复。
 //   - manual_enabled 保留原值（CONFLICT 不更新）；用户手动启停的偏好不被覆盖。
-//   - last_error 写 "免费额度 失效"，UI 在 model-status 页面会展示这条信息。
+//   - last_error 写 "模型免费额度用完"，UI 在 model-status 页面会展示这条信息。
 //   - 冷却到次日 0:00（本地时区）——火山引擎账单资源包每日重置。
 func (s *Service) disableModelForFreeQuota(ctx context.Context, channelID, model string, until time.Time) error {
 	untilStr := until.UTC().Format(time.RFC3339Nano)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO model_states(channel_id, model, manual_enabled, status, disabled_until, last_error, last_failure_class, last_checked_at, updated_at)
-		VALUES (?, ?, 1, 'cooling', ?, '免费额度 失效', 'free_quota_exhausted', ?, ?)
+		VALUES (?, ?, 1, 'cooling', ?, '模型免费额度用完', 'free_quota_exhausted', ?, ?)
 		ON CONFLICT(channel_id, model) DO UPDATE SET
 			status='cooling',
 			disabled_until=excluded.disabled_until,
@@ -943,10 +1020,10 @@ func untilNextDayMidnightLocal() time.Time {
 
 // ===== ListStatus 聚合（设置页用） =====
 
-// ListStatus 一次性返回所有配置 + 每条配置下（按账号聚合）的免费模型 + 使用统计。
+// ListStatus 一次性返回所有配置 + 每条配置下（按账号聚合）的免费模型 + 使用统计 + 资源包明细。
 //
-// 注意：volc_quota_models / volc_quota_usage 主键为 (account_id, model)，同一账号下
-// 多渠道 Key 共享快照；前端按 channel 行展示，同账号各行回填同一份 models/usage。
+// 注意：volc_quota_models / volc_quota_usage / volc_quota_packages 按 account_id 归属，
+// 同一账号下多渠道 Key 共享快照；前端按 channel 行展示，同账号各行回填同一份数据。
 func (s *Service) ListStatus(ctx context.Context) (ListStatusResponse, error) {
 	configs, err := s.ListConfigs(ctx)
 	if err != nil {
@@ -955,6 +1032,7 @@ func (s *Service) ListStatus(ctx context.Context) (ListStatusResponse, error) {
 	resp := ListStatusResponse{Configs: make([]ConfigWithDetails, 0, len(configs))}
 	modelsCache := make(map[string][]Model)
 	usageCache := make(map[string][]Usage)
+	packagesCache := make(map[string][]Package)
 	for _, cfg := range configs {
 		aid := cfg.AccountID
 		if aid == "" {
@@ -982,10 +1060,22 @@ func (s *Service) ListStatus(ctx context.Context) (ListStatusResponse, error) {
 		if usage == nil {
 			usage = []Usage{}
 		}
+		pkgs, ok := packagesCache[aid]
+		if !ok && aid != "" {
+			pkgs, err = s.ListPackages(ctx, aid)
+			if err != nil {
+				return resp, err
+			}
+			packagesCache[aid] = pkgs
+		}
+		if pkgs == nil {
+			pkgs = []Package{}
+		}
 		resp.Configs = append(resp.Configs, ConfigWithDetails{
-			Config: cfg,
-			Models: models,
-			Usage:  usage,
+			Config:   cfg,
+			Models:   models,
+			Usage:    usage,
+			Packages: pkgs,
 		})
 	}
 	return resp, nil
@@ -1018,6 +1108,75 @@ func (s *Service) HandleListStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeJSON(w, http.StatusOK, resp)
+}
+
+// HandleRecentUsage GET /api/volc-quota/recent-usage?channel_id=&minutes=10
+// 返回某渠道（base_url）近 N 分钟的请求日志状态，供「刷新远程」前的安全提示用。
+// channel_id 为空时统计全部火山引擎渠道。
+func (s *Service) HandleRecentUsage(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	channelID := q.Get("channel_id")
+	minutes := 10
+	if v := q.Get("minutes"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			minutes = n
+		}
+	}
+	resp, err := s.recentUsage(r.Context(), channelID, minutes)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "查询请求日志失败: "+err.Error())
+		return
+	}
+	s.writeJSON(w, http.StatusOK, resp)
+}
+
+// recentUsage 统计某渠道（base_url 维度）近 N 分钟的 route_attempts 请求记录。
+//
+//   - channelID 为空 → 统计所有 base_url 命中 ark.cn-beijing.volces.com 的渠道。
+//   - 否则按该渠道的 base_url 统计（同一 base_url 下可能有多个 Key，共享同一批请求日志）。
+//   - started_at 存 RFC3339Nano（UTC），直接用字符串比较（字典序 == 时间序）。
+func (s *Service) recentUsage(ctx context.Context, channelID string, minutes int) (RecentUsageResponse, error) {
+	resp := RecentUsageResponse{ChannelID: channelID, Minutes: minutes}
+
+	// 确定 base_url 范围。
+	var baseURL string
+	if channelID != "" {
+		if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(base_url, '') FROM channels WHERE id = ?`, channelID).Scan(&baseURL); err != nil {
+			return resp, err
+		}
+	}
+	resp.BaseURL = baseURL
+
+	// 统计近 N 分钟的请求条数 + 最后请求时间。
+	threshold := time.Now().UTC().Add(-time.Duration(minutes) * time.Minute).Format(time.RFC3339Nano)
+	var (
+		count   int
+		lastAt  string
+		scanErr error
+	)
+	if baseURL != "" {
+		scanErr = s.db.QueryRowContext(ctx, `
+			SELECT COUNT(*), COALESCE(MAX(a.started_at), '')
+			FROM route_attempts a
+			JOIN channels c ON c.id = a.channel_id
+			WHERE c.base_url = ? AND a.started_at >= ?`,
+			baseURL, threshold).Scan(&count, &lastAt)
+	} else {
+		// 全量：所有火山引擎渠道。
+		scanErr = s.db.QueryRowContext(ctx, `
+			SELECT COUNT(*), COALESCE(MAX(a.started_at), '')
+			FROM route_attempts a
+			JOIN channels c ON c.id = a.channel_id
+			WHERE c.base_url LIKE '%ark.cn-beijing.volces.com%' AND a.started_at >= ?`,
+			threshold).Scan(&count, &lastAt)
+	}
+	if scanErr != nil {
+		return resp, scanErr
+	}
+	resp.RequestCount = count
+	resp.LastRequestAt = lastAt
+	resp.HasRecent = count > 0
+	return resp, nil
 }
 
 // HandleSaveConfigs PUT /api/volc-quota/config

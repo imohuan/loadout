@@ -265,10 +265,29 @@ export interface VolcQuotaUsage {
   last_used_at?: string
 }
 
+// v14 资源包逐条明细：同 Product（ark_bd）下几十种模型配置各有额度。
+export interface VolcQuotaPackage {
+  account_id: string
+  instance_no: string
+  product?: string
+  product_name?: string
+  configuration_code?: string
+  configuration_name?: string
+  total_amount: number
+  available_amount: number
+  used_amount: number
+  unit: string
+  status: string // Effective / UsedUp / Expired / ...
+  effective_time?: string
+  expiry_time?: string
+  synced_at?: string
+}
+
 export interface VolcQuotaConfigDetails {
   config: VolcQuotaConfig
   models: VolcQuotaModel[]
   usage?: VolcQuotaUsage[]
+  packages?: VolcQuotaPackage[]
 }
 
 export interface VolcQuotaStatusResponse {
@@ -280,4 +299,13 @@ export interface VolcQuotaRefreshResult {
   configs_checked: number
   failed_channels?: string[]
   disabled_models?: string[]
+}
+
+export interface VolcQuotaRecentUsage {
+  channel_id: string
+  base_url: string
+  minutes: number
+  has_recent: boolean
+  request_count: number
+  last_request_at: string
 }

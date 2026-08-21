@@ -367,6 +367,33 @@ ALTER TABLE volc_quota_config ADD COLUMN force_block INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE volc_quota_models ADD COLUMN initial_total INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE volc_quota_models ADD COLUMN local_remaining INTEGER NOT NULL DEFAULT 0;
 `,
+	}, {
+		version: 14,
+		name:    "volc-quota-packages",
+		sql: `
+-- 资源包逐条明细：同 Product（如 ark_bd）下包含几十种不同模型配置
+-- （ConfigurationCode 如 Doubao_Seed_2.1_pro_data_collaboration / DeepSeek_V4_flash...），
+-- 聚合到 model 会丢失"哪个模型还有额度"的信息。此表按 InstanceNo 逐条保存，
+-- 供 UI 像 main.go 输出那样展示每个资源包的 ConfigurationName / Status / 额度。
+CREATE TABLE volc_quota_packages (
+  account_id TEXT NOT NULL,
+  instance_no TEXT NOT NULL,
+  product TEXT NOT NULL DEFAULT '',
+  product_name TEXT NOT NULL DEFAULT '',
+  configuration_code TEXT NOT NULL DEFAULT '',
+  configuration_name TEXT NOT NULL DEFAULT '',
+  total_amount INTEGER NOT NULL DEFAULT 0,
+  available_amount INTEGER NOT NULL DEFAULT 0,
+  used_amount INTEGER NOT NULL DEFAULT 0,
+  unit TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT '',
+  effective_time TEXT NOT NULL DEFAULT '',
+  expiry_time TEXT NOT NULL DEFAULT '',
+  synced_at TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (account_id, instance_no)
+);
+CREATE INDEX idx_volc_quota_packages_product ON volc_quota_packages(account_id, product);
+`,
 	}}
 
 // Migrate applies all pending schema migrations and rejects an incompatible

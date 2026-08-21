@@ -4,6 +4,11 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"loadout/core/db"
+	"loadout/core/store"
+	"loadout/plugins/contracts"
+	modelgateway "loadout/plugins/model-gateway"
 )
 
 func TestNormalizeModelName(t *testing.T) {
@@ -154,5 +159,123 @@ func TestNewVolcBillingClientDefaults(t *testing.T) {
 	}
 	if c.maxPages > 20 {
 		t.Errorf("maxPages = %d, 超过用户要求的 20 页上限", c.maxPages)
+	}
+}
+
+// newTestService 构造内存库 Service（含迁移），测试本地递减/耗尽判定用。
+func newTestService(t *testing.T) *Service {
+	t.Helper()
+	database, err := db.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { database.Close() })
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(database, st, nil)
+	// 账号指纹必须用真实计算值：accountIDForChannel 按 AK 算 SHA256 指纹。
+	aid := accountID("AKxxx")
+	// 预置一条渠道 + 配额配置 + 额度记录，绕过 refreshOne 的火山 SDK 调用。
+	mustExec := func(q string, args ...any) {
+		t.Helper()
+		if _, err := database.Exec(q, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustExec(`INSERT INTO channels(id, name, base_url, created_at, updated_at) VALUES ('ch1', 'ark1', 'https://ark.cn-beijing.volces.com/api/v3', 'now', 'now')`)
+	mustExec(`INSERT INTO volc_quota_config(channel_id, access_key, account_id, secret_key_cipher, enabled, force_block, updated_at)
+		VALUES ('ch1', 'AKxxx', ?, 'cipher', 1, 1, 'now')`, aid)
+	mustExec(`INSERT INTO volc_quota_models(account_id, model, product_name, total_amount, available_amount, used_amount, initial_total, local_remaining, unit, status, synced_at)
+		VALUES (?, 'doubao-pro-32k', '豆包·Doubao-pro-32k', 2000000, 2000000, 0, 2000000, 2000000, 'Tokens', 'ok', 'now')`, aid)
+	return svc
+}
+
+func TestDecrementLocalRemaining(t *testing.T) {
+	svc := newTestService(t)
+	aid := accountID("AKxxx")
+	// 第一次扣 500k，剩 1500k。
+	svc.decrementLocalRemaining(aid, "doubao-1-5-pro-32k-250115", 500000)
+	var remaining int64
+	var status string
+	if err := svc.db.QueryRow(`SELECT local_remaining, status FROM volc_quota_models WHERE account_id=? AND model='doubao-pro-32k'`, aid).Scan(&remaining, &status); err != nil {
+		t.Fatal(err)
+	}
+	if remaining != 1500000 {
+		t.Errorf("第一次扣减后 local_remaining = %d, want 1500000", remaining)
+	}
+	if status != "ok" {
+		t.Errorf("第一次扣减后 status = %q, want ok", status)
+	}
+	// 第二次扣 1600k，超过剩余 → 归零 + exhausted。
+	svc.decrementLocalRemaining(aid, "doubao-1-5-pro-32k-250115", 1600000)
+	if err := svc.db.QueryRow(`SELECT local_remaining, status FROM volc_quota_models WHERE account_id=? AND model='doubao-pro-32k'`, aid).Scan(&remaining, &status); err != nil {
+		t.Fatal(err)
+	}
+	if remaining != 0 {
+		t.Errorf("超额扣减后 local_remaining = %d, want 0", remaining)
+	}
+	if status != "exhausted" {
+		t.Errorf("超额扣减后 status = %q, want exhausted", status)
+	}
+}
+
+func TestCheckAllCandidatesExhaustedLocalFirst(t *testing.T) {
+	svc := newTestService(t)
+	aid := accountID("AKxxx")
+	// 本地余额还有 → 不拦截。
+	exhausted, allExhausted, err := svc.checkAllCandidatesExhausted([]string{"ch1"}, "doubao-1-5-pro-32k-250115")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exhausted || allExhausted {
+		t.Errorf("本地余额未耗尽时应放行, got exhausted=%v allExhausted=%v", exhausted, allExhausted)
+	}
+	// 扣到 0 → 拦截。
+	svc.decrementLocalRemaining(aid, "doubao-1-5-pro-32k-250115", 2000000)
+	exhausted, allExhausted, err = svc.checkAllCandidatesExhausted([]string{"ch1"}, "doubao-1-5-pro-32k-250115")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !exhausted || !allExhausted {
+		t.Errorf("本地余额耗尽时应拦截, got exhausted=%v allExhausted=%v", exhausted, allExhausted)
+	}
+	// 不匹配的 model 不受影响。
+	exhausted, _, err = svc.checkAllCandidatesExhausted([]string{"ch1"}, "gpt-4o")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exhausted {
+		t.Error("不匹配的 model 不应判定耗尽")
+	}
+}
+
+func TestHandleProxyUpstreamSucceededDecrements(t *testing.T) {
+	svc := newTestService(t)
+	aid := accountID("AKxxx")
+	// 模拟一次成功响应：model 用真实 API 名，usage.total_tokens=200000。
+	_, err := svc.HandleProxyUpstreamSucceeded(&modelgateway.ProxySuccessPayload{
+		ChannelID: "ch1",
+		Model:     "doubao-1-5-pro-32k-250115",
+		Usage:     contracts.TokenUsage{TotalTokens: 200000},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var remaining int64
+	if err := svc.db.QueryRow(`SELECT local_remaining FROM volc_quota_models WHERE account_id=? AND model='doubao-pro-32k'`, aid).Scan(&remaining); err != nil {
+		t.Fatal(err)
+	}
+	if remaining != 1800000 {
+		t.Errorf("success 后 local_remaining = %d, want 1800000", remaining)
+	}
+	// 使用记录也应写入。
+	var count int64
+	if err := svc.db.QueryRow(`SELECT use_count FROM volc_quota_usage WHERE account_id=? AND model='doubao-1-5-pro-32k-250115'`, aid).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Errorf("use_count = %d, want 1", count)
 	}
 }

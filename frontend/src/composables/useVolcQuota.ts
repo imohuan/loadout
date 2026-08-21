@@ -1,6 +1,7 @@
 import { api, request } from '@/lib/api'
 import type {
   VolcQuotaConfig,
+  VolcQuotaRecentUsage,
   VolcQuotaRefreshResult,
   VolcQuotaStatusResponse,
 } from '@/lib/types'
@@ -19,5 +20,10 @@ export function useVolcQuota() {
       'POST',
       channelId ? { channel_id: channelId } : {},
     )
-  return { status, save, refresh }
+  /** 查询某渠道 base_url 近 N 分钟的请求日志（刷新远程前的安全提示） */
+  const recentUsage = (channelId: string, minutes = 10) =>
+    api<VolcQuotaRecentUsage>(
+      `/api/volc-quota/recent-usage?channel_id=${encodeURIComponent(channelId)}&minutes=${minutes}`,
+    )
+  return { status, save, refresh, recentUsage }
 }

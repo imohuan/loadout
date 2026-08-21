@@ -77,9 +77,10 @@ type ListStatusResponse struct {
 //
 // 用于设置页一次性渲染折叠面板，避免前端分多次请求。
 type ConfigWithDetails struct {
-	Config Config   `json:"config"`
-	Models []Model  `json:"models"`
-	Usage  []Usage  `json:"usage,omitempty"`
+	Config   Config    `json:"config"`
+	Models   []Model   `json:"models"`
+	Usage    []Usage   `json:"usage,omitempty"`
+	Packages []Package `json:"packages,omitempty"` // 资源包逐条明细（v14）
 }
 
 // SaveConfigRequest PUT /api/volc-quota/config 请求体：批量覆盖配置（enable=false 的条目需省略）。
@@ -87,4 +88,38 @@ type ConfigWithDetails struct {
 // SecretKey 为空字符串时保留库内既有密文（前端编辑时不回显明文）。
 type SaveConfigRequest struct {
 	Configs []Config `json:"configs"`
+}
+
+// RecentUsageResponse GET /api/volc-quota/recent-usage 返回体：某 base_url 近 N 分钟的请求日志状态。
+//
+// 用于「刷新远程」前的安全检查：提醒用户该渠道近期仍有模型请求，刷新可能互相干扰。
+type RecentUsageResponse struct {
+	ChannelID     string `json:"channel_id"`
+	BaseURL       string `json:"base_url"`
+	Minutes       int    `json:"minutes"`
+	HasRecent     bool   `json:"has_recent"`      // 近 N 分钟是否有请求
+	RequestCount  int    `json:"request_count"`   // 近 N 分钟请求条数
+	LastRequestAt string `json:"last_request_at"` // 最后一条请求时间（RFC3339Nano，空表示无）
+}
+
+// Package 一条资源包逐条明细（volc_quota_packages）。
+//
+// 与 Model 的区别：Model 是按归一化 model 名聚合的额度行（用于本地扣减/拦截），
+// Package 保留 billing API 返回的每个资源包原始信息（ConfigurationName/Status/时间），
+// 供 UI 像 main.go 输出那样逐条展示"哪个模型还有多少额度"。
+type Package struct {
+	AccountID         string `json:"account_id"`
+	InstanceNo        string `json:"instance_no"`
+	Product           string `json:"product,omitempty"`
+	ProductName       string `json:"product_name,omitempty"`
+	ConfigurationCode string `json:"configuration_code,omitempty"`
+	ConfigurationName string `json:"configuration_name,omitempty"`
+	TotalAmount       int64  `json:"total_amount"`
+	AvailableAmount   int64  `json:"available_amount"`
+	UsedAmount        int64  `json:"used_amount"`
+	Unit              string `json:"unit"`
+	Status            string `json:"status"`
+	EffectiveTime     string `json:"effective_time,omitempty"`
+	ExpiryTime        string `json:"expiry_time,omitempty"`
+	SyncedAt          string `json:"synced_at,omitempty"`
 }

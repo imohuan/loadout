@@ -10,7 +10,7 @@ import {
   RiLoader4Line,
   RiRefreshLine,
 } from '@remixicon/vue'
-import type { Channel, VolcQuotaConfig, VolcQuotaConfigDetails } from '@/lib/types'
+import type { Channel, VolcQuotaConfig, VolcQuotaConfigDetails, VolcQuotaPackage } from '@/lib/types'
 import { useChannels } from '@/composables/useChannels'
 import { useVolcQuota } from '@/composables/useVolcQuota'
 import { useConfirm } from '@/composables/useConfirm'
@@ -26,7 +26,6 @@ const arkChannels = ref<Channel[]>([])
 const loading = ref(false)
 const saving = ref(false)
 const refreshingAll = ref(false)
-const refreshingOne = ref('') // 正在刷新的 channel_id
 const loaded = ref(false)
 
 async function loadStatus(showSpinner = true) {
@@ -90,32 +89,12 @@ function exhaustedCount(item: VolcQuotaConfigDetails) {
 function hasLocal(model: VolcQuotaConfigDetails['models'][number]) {
   return model.initial_total > 0
 }
-/** 进度百分比：优先本地递减余额（不依赖账单 API），无本地基准时退回账单余额 */
-function percent(model: VolcQuotaConfigDetails['models'][number]) {
-  if (hasLocal(model)) {
-    // 本地余额 = local_remaining / initial_total，扣到 0 即显示 0%。
-    const base = model.initial_total > 0 ? model.initial_total : 1
-    const p = Math.round((model.local_remaining / base) * 100)
-    return Math.max(0, Math.min(100, p))
-  }
-  if (model.total_amount <= 0) return 0
-  const p = Math.round((model.available_amount / model.total_amount) * 100)
-  return Math.max(0, Math.min(100, p))
-}
 /** 行内余额文案：本地递减优先，账单作辅助 */
 function balanceText(model: VolcQuotaConfigDetails['models'][number]) {
   if (hasLocal(model)) {
     return `本地剩余 ${formatAmount(model.local_remaining)} / 初始 ${formatAmount(model.initial_total)} ${model.unit}`
   }
   return `剩余 ${formatAmount(model.available_amount)} / 共 ${formatAmount(model.total_amount)} ${model.unit}`
-}
-/** 底部辅助信息：本地模式展示账单/用量/同步时间，账单模式展示用量/同步时间 */
-function metaText(model: VolcQuotaConfigDetails['models'][number]) {
-  const synced = `同步于 ${formatTime(model.synced_at)}`
-  if (hasLocal(model)) {
-    return `账单剩余 ${formatAmount(model.available_amount)} · 已用 ${formatAmount(model.used_amount)} · ${synced}`
-  }
-  return `已用 ${formatAmount(model.used_amount)} · ${synced}`
 }
 /** 大数字缩写：1.2M / 3.4B */
 function formatAmount(n: number) {
@@ -131,11 +110,80 @@ function formatTime(iso?: string) {
   return d.toLocaleString()
 }
 
+// ===== 资源包明细展示（v14） =====
+
+/** 资源包显示名：优先 ConfigurationName，退回 ProductName/Product */
+function pkgName(p: VolcQuotaPackage) {
+  return p.configuration_name || p.product_name || p.product || p.instance_no
+}
+/** 资源包状态徽章：Effective=绿，UsedUp=红，其他（Expired等）=灰 */
+function pkgBadge(p: VolcQuotaPackage) {
+  if (p.status === 'Effective') return { variant: 'secondary' as const, label: '有效' }
+  if (p.status === 'UsedUp') return { variant: 'destructive' as const, label: '已用完' }
+  return { variant: 'outline' as const, label: p.status || '未知' }
+}
+/** 资源包过期时间友好显示 */
+function pkgExpiry(p: VolcQuotaPackage) {
+  if (!p.expiry_time) return ''
+  return formatTime(p.expiry_time)
+}
+
 // ===== 刷新 =====
-async function refreshAll() {
+// 刷新本地：只重查 SQLite 现有数据，刷新 UI（不碰远程 API）。
+async function refreshLocal() {
   refreshingAll.value = true
   try {
-    const result = await quota.refresh()
+    await loadStatus(false)
+    toast.success('本地数据已刷新')
+  } catch (e) {
+    toast.error(e instanceof Error ? e.message : '刷新失败')
+  } finally {
+    refreshingAll.value = false
+  }
+}
+
+// 刷新远程：先弹 dialog 检查近 10 分钟请求日志 → 用户确认后真正拉远程。
+const remoteDialogOpen = ref(false)
+const remoteChecking = ref(false)
+const remoteTarget = ref('') // 空 = 全量；否则 channel_id
+const remoteTargetName = ref('')
+const recentUsage = ref<{ has_recent: boolean; request_count: number; last_request_at: string } | null>(null)
+
+function openRemoteRefresh(channelId = '') {
+  remoteTarget.value = channelId
+  if (channelId) {
+    const item = configs.value.find((c) => c.config.channel_id === channelId)
+    remoteTargetName.value = item ? title(item) : channelId
+  } else {
+    remoteTargetName.value = '全部 Key'
+  }
+  remoteDialogOpen.value = true
+  checkRecentUsage()
+}
+
+async function checkRecentUsage() {
+  remoteChecking.value = true
+  recentUsage.value = null
+  try {
+    const data = await quota.recentUsage(remoteTarget.value, 10)
+    recentUsage.value = {
+      has_recent: data.has_recent,
+      request_count: data.request_count,
+      last_request_at: data.last_request_at,
+    }
+  } catch {
+    // 查询失败不阻断，让用户自行判断。
+    recentUsage.value = { has_recent: false, request_count: 0, last_request_at: '' }
+  } finally {
+    remoteChecking.value = false
+  }
+}
+
+async function confirmRemoteRefresh() {
+  remoteDialogOpen.value = false
+  refreshingAll.value = true
+  try {
+    const result = await quota.refresh(remoteTarget.value || undefined)
     applyRefreshResult(result.configs_checked, result.failed_channels, result.disabled_models)
     await loadStatus(false)
   } catch (e) {
@@ -146,16 +194,8 @@ async function refreshAll() {
 }
 
 async function refreshOne(channelId: string) {
-  refreshingOne.value = channelId
-  try {
-    const result = await quota.refresh(channelId)
-    applyRefreshResult(result.configs_checked, result.failed_channels, result.disabled_models)
-    await loadStatus(false)
-  } catch (e) {
-    toast.error(e instanceof Error ? e.message : '刷新失败')
-  } finally {
-    refreshingOne.value = ''
-  }
+  // 单个 Key 的刷新也是远程刷新，走 dialog 检查流程。
+  openRemoteRefresh(channelId)
 }
 
 function applyRefreshResult(
@@ -266,7 +306,7 @@ const displayName = (ch: Channel) => ch.channel_name || ch.name
     <CardHeader>
       <CardTitle class="text-base">火山引擎免费额度</CardTitle>
       <CardDescription>
-        为方舟渠道 Key 配置 AK/SK（火山引擎控制台访问授权），自动查询免费模型额度；每次请求按 total_tokens 本地扣减余额（不依赖账单接口，账单 429 也能拦截）；额度耗尽后自动禁用该模型（冷却至次日 0 点，错误信息「免费额度 失效」）。
+        为方舟渠道 Key 配置 AK/SK（火山引擎控制台访问授权），自动查询免费模型额度；每次请求按 total_tokens 本地扣减余额（不依赖账单接口，账单 429 也能拦截）；额度耗尽后自动禁用该模型（冷却至次日 0 点，错误信息「模型免费额度用完」）。
       </CardDescription>
     </CardHeader>
     <CardContent class="space-y-3">
@@ -278,12 +318,20 @@ const displayName = (ch: Channel) => ch.channel_name || ch.name
           <Button
             variant="outline"
             size="sm"
-            :disabled="refreshingAll || refreshingOne !== ''"
-            @click="refreshAll"
+            :disabled="refreshingAll"
+            @click="refreshLocal"
+          >
+            <RiRefreshLine size="16" />
+            刷新本地
+          </Button>
+          <Button
+            size="sm"
+            :disabled="refreshingAll"
+            @click="openRemoteRefresh()"
           >
             <RiLoader4Line v-if="refreshingAll" class="animate-spin" size="16" />
             <RiRefreshLine v-else size="16" />
-            刷新全部
+            刷新远程
           </Button>
           <Button size="sm" @click="openCreate">
             <RiAddLine size="16" />
@@ -329,11 +377,10 @@ const displayName = (ch: Channel) => ch.channel_name || ch.name
                   size="icon"
                   class="size-8"
                   aria-label="刷新此 Key 额度"
-                  :disabled="refreshingAll || refreshingOne !== ''"
+                  :disabled="refreshingAll"
                   @click="refreshOne(item.config.channel_id)"
                 >
-                  <RiLoader4Line v-if="refreshingOne === item.config.channel_id" class="animate-spin" size="16" />
-                  <RiRefreshLine v-else size="16" />
+                  <RiRefreshLine size="16" />
                 </Button>
                 <Button
                   variant="ghost"
@@ -357,32 +404,67 @@ const displayName = (ch: Channel) => ch.channel_name || ch.name
             </div>
           </div>
 
-          <!-- 展开行：模型额度进度条 -->
+          <!-- 展开行：资源包逐条明细（v14，同 main.go 输出粒度） -->
           <div
             v-if="isExpanded(item.config.channel_id)"
             class="space-y-3 border-t bg-muted/30 px-4 py-4"
           >
-            <div v-if="item.models.length" class="space-y-3">
-              <div v-for="m in item.models" :key="m.model" class="space-y-1">
-                <div class="flex items-center justify-between gap-2">
-                  <span class="truncate text-sm font-medium">{{ m.model }}</span>
-                  <span class="shrink-0 text-xs text-muted-foreground">
-                    {{ balanceText(m) }}
-                  </span>
-                </div>
-                <Progress
-                  :model-value="percent(m)"
-                  :class="isExhausted(m) ? 'bg-destructive/20' : ''"
-                />
-                <div class="flex items-center justify-between gap-2 text-xs text-muted-foreground">
-                  <span>{{ metaText(m) }}</span>
-                  <Badge :variant="isExhausted(m) ? 'destructive' : 'secondary'">
-                    {{ isExhausted(m) ? '已耗尽（免费额度 失效）' : '正常' }}
-                  </Badge>
-                </div>
+            <!-- 本地余额汇总（按归一化 model 聚合，用于展示本地扣减进度） -->
+            <div v-if="item.models.length" class="space-y-1 rounded-md border bg-background/60 p-3">
+              <div class="text-xs font-medium text-muted-foreground">本地余额（按模型聚合，请求实时扣减）</div>
+              <div v-for="m in item.models" :key="m.model" class="flex items-center justify-between gap-2 text-xs">
+                <span class="truncate font-medium">{{ m.model }}</span>
+                <span class="shrink-0 text-muted-foreground">
+                  {{ balanceText(m) }}
+                  <span v-if="m.status === 'exhausted'" class="text-destructive"> · 已耗尽</span>
+                </span>
               </div>
             </div>
-            <EmptyState v-else title="暂无额度数据" description="点击右侧刷新按钮获取最新额度（账单有延迟，后台每 15 分钟自动刷新）。" />
+
+            <!-- 资源包逐条明细 -->
+            <div v-if="item.packages?.length" class="overflow-hidden rounded-md border bg-background/60">
+              <table class="w-full text-xs">
+                <thead>
+                  <tr class="border-b bg-muted/50 text-left text-muted-foreground">
+                    <th class="px-3 py-2 font-medium">资源包</th>
+                    <th class="px-2 py-2 text-right font-medium">总额</th>
+                    <th class="px-2 py-2 text-right font-medium">剩余</th>
+                    <th class="px-2 py-2 text-right font-medium">已用</th>
+                    <th class="px-2 py-2 font-medium">状态</th>
+                    <th class="px-3 py-2 font-medium">到期</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr
+                    v-for="p in item.packages"
+                    :key="p.instance_no"
+                    class="border-b last:border-0 hover:bg-muted/30"
+                  >
+                    <td class="px-3 py-1.5">
+                      <div class="truncate font-medium" :title="pkgName(p)">{{ pkgName(p) }}</div>
+                      <div class="truncate font-mono text-[10px] text-muted-foreground" :title="p.configuration_code">
+                        {{ p.configuration_code || p.product || '' }}
+                      </div>
+                    </td>
+                    <td class="px-2 py-1.5 text-right tabular-nums">{{ formatAmount(p.total_amount) }}</td>
+                    <td class="px-2 py-1.5 text-right tabular-nums" :class="p.available_amount <= 0 ? 'text-destructive' : ''">
+                      {{ formatAmount(p.available_amount) }}
+                    </td>
+                    <td class="px-2 py-1.5 text-right tabular-nums text-muted-foreground">{{ formatAmount(p.used_amount) }}</td>
+                    <td class="px-2 py-1.5">
+                      <Badge :variant="pkgBadge(p).variant">{{ pkgBadge(p).label }}</Badge>
+                    </td>
+                    <td class="px-3 py-1.5 text-muted-foreground">{{ pkgExpiry(p) }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <EmptyState
+              v-else-if="!item.models.length"
+              title="暂无额度数据"
+              description="点击右侧刷新按钮获取最新额度（账单有延迟，后台每 15 分钟自动刷新）。"
+            />
           </div>
         </div>
       </div>
@@ -396,7 +478,7 @@ const displayName = (ch: Channel) => ch.channel_name || ch.name
   </Card>
 
   <Dialog v-model:open="dialogOpen">
-    <DialogContent>
+    <DialogContent class="max-w-xl!">
       <DialogHeader>
         <DialogTitle>{{ editing ? '编辑额度配置' : '添加额度配置' }}</DialogTitle>
         <DialogDescription>
@@ -451,6 +533,51 @@ const displayName = (ch: Channel) => ch.channel_name || ch.name
           <Button type="button" variant="outline" @click="dialogOpen = false">取消</Button>
         </DialogFooter>
       </form>
+    </DialogContent>
+  </Dialog>
+
+  <!-- 远程刷新确认：先查近 10 分钟请求日志，有请求则提醒用户 -->
+  <Dialog v-model:open="remoteDialogOpen">
+    <DialogContent class="max-w-xl!">
+      <DialogHeader>
+        <DialogTitle>刷新远程额度</DialogTitle>
+        <DialogDescription>
+          将重新调用火山引擎账单接口拉取最新免费额度（{{ remoteTargetName }}）。
+        </DialogDescription>
+      </DialogHeader>
+      <div class="space-y-3">
+        <div class="rounded-md border bg-muted/40 p-3 text-sm">
+          <div v-if="remoteChecking" class="flex items-center gap-2 text-muted-foreground">
+            <RiLoader4Line class="animate-spin" size="16" />
+            正在查询近 10 分钟请求日志…
+          </div>
+          <div v-else-if="recentUsage && recentUsage.has_recent" class="space-y-1">
+            <div class="flex items-center gap-2 font-medium text-amber-600">
+              <span class="inline-block size-2 rounded-full bg-amber-500"></span>
+              该 base_url 近 10 分钟有 {{ recentUsage.request_count }} 次模型请求
+            </div>
+            <div class="text-xs text-muted-foreground">
+              最后一次请求于 {{ formatTime(recentUsage.last_request_at) }}。
+              刷新期间请求可能互相干扰，建议等请求空闲后再刷新。
+            </div>
+          </div>
+          <div v-else class="flex items-center gap-2 font-medium text-emerald-600">
+            <span class="inline-block size-2 rounded-full bg-emerald-500"></span>
+            近 10 分钟无请求，可以安全刷新
+          </div>
+        </div>
+      </div>
+      <DialogFooter>
+        <Button
+          type="button"
+          :disabled="remoteChecking || refreshingAll"
+          @click="confirmRemoteRefresh"
+        >
+          <RiLoader4Line v-if="refreshingAll" class="animate-spin" size="16" />
+          确认刷新
+        </Button>
+        <Button type="button" variant="outline" @click="remoteDialogOpen = false">取消</Button>
+      </DialogFooter>
     </DialogContent>
   </Dialog>
 </template>

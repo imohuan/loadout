@@ -68,6 +68,11 @@ func newVolcBillingClient(lg *slog.Logger) *volcBillingClient {
 //     解析失败记为 0，单位保留 SDK 返回的原始串。
 //   - ProductName：用作 model 标识归一化的主源；Product 作辅助。
 //   - InstanceNo：去重键，同一资源包翻页可能重复返回。
+//
+// Status 过滤：SDK 的 Status 是单值，statusFilter 有 N 个状态就分 N 次独立翻页
+// 查询（各自维护 NextToken），再按 InstanceNo 全局去重合并——保证 Effective 和
+// UsedUp 的包都能拿到（UsedUp 的包 available=0 但 total 计入模型总额，漏掉会让
+// 累加总额偏小）。
 func (c *volcBillingClient) FetchPackages(ctx context.Context, accessKey, secretKey string) ([]rawPackage, error) {
 	if accessKey == "" || secretKey == "" {
 		return nil, fmt.Errorf("missing volcengine credentials")
@@ -97,81 +102,104 @@ func (c *volcBillingClient) FetchPackages(ctx context.Context, accessKey, secret
 
 	resourceType := "Package"
 	maxResults := "20"
-	var nextToken *string
+	// statusFilter 为空 = 不过滤（一次全量翻页）；否则每个状态独立翻页一次。
+	filters := c.statusFilter
+	if len(filters) == 0 {
+		filters = []string{""}
+	}
 	var out []rawPackage
 	seen := make(map[string]bool)
-	for page := 1; page <= c.maxPages; page++ {
-		// 翻页节流：等待 limiter 令牌；超时(5s)则放弃整次刷新（保护后台 goroutine 不堆积）。
-		if err := c.limiter.Wait(ctx); err != nil {
-			return nil, fmt.Errorf("rate limit wait: %w", err)
-		}
-		if c.pageDelay > 0 {
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-time.After(c.pageDelay):
+	for _, status := range filters {
+		var nextToken *string
+		for page := 1; page <= c.maxPages; page++ {
+			// 翻页节流：等待 limiter 令牌；超时(5s)则放弃整次刷新（保护后台 goroutine 不堆积）。
+			if err := c.limiter.Wait(ctx); err != nil {
+				return nil, fmt.Errorf("rate limit wait: %w", err)
 			}
-		}
-		req := &billing.ListResourcePackagesInput{
-			ResourceType: &resourceType,
-			MaxResults:   &maxResults,
-			NextToken:    nextToken,
-		}
-		// 服务端按状态过滤：只拉会参与额度判断的包，减少翻页与流量（Effective/UsedUp）。
-		if len(c.statusFilter) > 0 {
-			req.Status = volcengine.String(c.statusFilter[0])
-		}
-		resp, err := client.ListResourcePackages(req)
-		if err != nil {
-			return nil, fmt.Errorf("list resource packages page %d: %w", page, err)
-		}
-	// 统计本页去重后实际新增的条数：0 条说明后面大概率也是空，直接停（防无限翻页）。
-	added := 0
-	if resp.List != nil {
-		for _, p := range resp.List {
-			if p == nil {
-				continue
-			}
-			key := ptrToString(p.InstanceNo)
-			if key != "" {
-				if seen[key] {
-					continue
+			if c.pageDelay > 0 {
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(c.pageDelay):
 				}
-				seen[key] = true
 			}
-			added++
-			out = append(out, rawPackage{
-				Product:         ptrToString(p.Product),
-				ProductName:     ptrToString(p.ProductName),
-				TotalAmount:     ptrToString(p.TotalAmount),
-				AvailableAmount: ptrToString(p.AvailableAmount),
-				// SDK 不返回 UsedAmount，按 Total - Available 计算（同一单位，展示用）。
-				UsedAmount: calcUsedAmount(ptrToString(p.TotalAmount), ptrToString(p.AvailableAmount)),
-				Unit:            ptrToString(p.Unit),
-				Status:          ptrToString(p.Status),
-				InstanceNo:      key,
-			})
+			req := &billing.ListResourcePackagesInput{
+				ResourceType: &resourceType,
+				MaxResults:   &maxResults,
+				NextToken:    nextToken,
+			}
+			// 服务端按状态过滤：只拉会参与额度判断的包，减少翻页与流量。
+			if status != "" {
+				req.Status = volcengine.String(status)
+			}
+			resp, err := client.ListResourcePackages(req)
+			if err != nil {
+				return nil, fmt.Errorf("list resource packages page %d (status=%s): %w", page, status, err)
+			}
+			// 统计本页去重后实际新增的条数：0 条说明后面大概率也是空，直接停（防无限翻页）。
+			added := 0
+			if resp.List != nil {
+				for _, p := range resp.List {
+					if p == nil {
+						continue
+					}
+					key := ptrToString(p.InstanceNo)
+					if key != "" {
+						if seen[key] {
+							continue
+						}
+						seen[key] = true
+					}
+					added++
+					out = append(out, rawPackage{
+						Product:            ptrToString(p.Product),
+						ProductName:        ptrToString(p.ProductName),
+						TotalAmount:        ptrToString(p.TotalAmount),
+						AvailableAmount:    ptrToString(p.AvailableAmount),
+						// SDK 不返回 UsedAmount，按 Total - Available 计算（同一单位，展示用）。
+						UsedAmount:          calcUsedAmount(ptrToString(p.TotalAmount), ptrToString(p.AvailableAmount)),
+						Unit:                ptrToString(p.Unit),
+						Status:              ptrToString(p.Status),
+						InstanceNo:          key,
+						ConfigurationCode:   ptrToString(p.ConfigurationCode),
+						ConfigurationName:   ptrToString(p.ConfigurationName),
+						EffectiveTime:       ptrToString(p.EffectiveTime),
+						ExpiryTime:          ptrToString(p.ExpiryTime),
+						Specification:       ptrToString(p.Specification),
+						SpecificationUnit:   ptrToString(p.SpecificationUnit),
+						ResetPeriod:         ptrToString(p.ResetPeriod),
+						ResetByNaturalMonth: ptrToString(p.ResetByNaturalMonth),
+					})
+				}
+			}
+			// 终止条件：本页 0 条（含全被去重）或 NextToken 为空 → 后面没有数据了。
+			if added == 0 || resp.NextToken == nil || *resp.NextToken == "" {
+				break
+			}
+			nextToken = resp.NextToken
 		}
 	}
-	// 终止条件：本页 0 条（含全被去重）或 NextToken 为空 → 后面没有数据了。
-	if added == 0 || resp.NextToken == nil || *resp.NextToken == "" {
-		break
-	}
-	nextToken = resp.NextToken
-}
 	return out, nil
 }
 
 // rawPackage 资源包 SDK 输出的扁平化字段，避免直接暴露 SDK 类型到上层。
 type rawPackage struct {
-	Product         string
-	ProductName     string
-	TotalAmount     string
-	AvailableAmount string
-	UsedAmount      string
-	Unit            string
-	Status          string
-	InstanceNo      string
+	Product            string
+	ProductName        string
+	TotalAmount        string
+	AvailableAmount    string
+	UsedAmount         string
+	Unit               string
+	Status             string
+	InstanceNo         string
+	ConfigurationCode  string
+	ConfigurationName  string
+	EffectiveTime      string
+	ExpiryTime         string
+	Specification      string
+	SpecificationUnit  string
+	ResetPeriod        string
+	ResetByNaturalMonth string
 }
 
 // ptrToString 把 SDK 返回的 *string 安全地转 string。
