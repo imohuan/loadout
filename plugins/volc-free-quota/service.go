@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"loadout/core/config"
 	"loadout/core/store"
 	modelgateway "loadout/plugins/model-gateway"
 )
@@ -377,8 +378,9 @@ func (s *Service) allVolcChannelIDs() []string {
 //
 //   - 免费额度按火山账号（account_id）归属，因此先把候选渠道映射到它们各自的账号，
 //     再去重为「候选账号集合」。
-//   - 耗尽判定唯一来源是本地余额：initial_total > 0（有本地记录）且 local_remaining <= 0。
-//     billing API 的 status='exhausted' 不参与——远程数据不准确，只作初始底数。
+//   - 耗尽判定唯一来源是本地余额：initial_total > 0（有本地记录）且
+//     local_remaining <= core/config.VolcQuotaMinRemaining（默认 0 = 扣到 0；
+//     可配 10000 提前停）。billing API 的 status='exhausted' 不参与——远程数据不准确。
 //   - exhausted=true 表示至少一个候选账号耗尽；allExhausted=true 表示所有候选账号都耗尽。
 //   - 采用与刷新时完全一致的 matchOne 模糊匹配逻辑，避免归一化名与 API 模型名脱节。
 func (s *Service) checkAllCandidatesExhausted(candidateIDs []string, requestModel string) (exhausted, allExhausted bool, err error) {
@@ -390,6 +392,8 @@ func (s *Service) checkAllCandidatesExhausted(candidateIDs []string, requestMode
 	if len(accountIDs) == 0 {
 		return false, false, nil
 	}
+	// 全局最低保留阈值（core/config 程序级配置，非 per-渠道）。
+	minRemaining := int64(config.VolcQuotaMinRemaining)
 	// 取出候选账号中所有匹配该 model 的资源包本地余额记录。
 	placeholders := strings.Repeat("?,", len(accountIDs))
 	placeholders = strings.TrimSuffix(placeholders, ",")
@@ -402,7 +406,7 @@ func (s *Service) checkAllCandidatesExhausted(candidateIDs []string, requestMode
 		return false, false, err
 	}
 	defer rows.Close()
-	// map[account_id] -> 该账号是否有匹配且本地余额耗尽的资源包记录
+	// map[account_id] -> 该账号是否有匹配且本地余额低于阈值的资源包记录
 	accountExhausted := make(map[string]bool)
 	for rows.Next() {
 		var aid, quotaModel string
@@ -413,8 +417,8 @@ func (s *Service) checkAllCandidatesExhausted(candidateIDs []string, requestMode
 		if !matchOne(quotaModel, requestModel) {
 			continue
 		}
-		// 本地余额主判据：有本地记录（initial_total > 0）且已扣到 0。
-		if initialTotal > 0 && localRemaining <= 0 {
+		// 本地余额主判据：有本地记录（initial_total > 0）且扣到 ≤ 阈值。
+		if initialTotal > 0 && localRemaining <= minRemaining {
 			accountExhausted[aid] = true
 		}
 	}
@@ -1140,7 +1144,7 @@ func (s *Service) disableModelForFreeQuota(ctx context.Context, channelID, model
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO model_states(channel_id, model, manual_enabled, status, disabled_until, last_error, last_failure_class, last_checked_at, updated_at)
-		VALUES (?, ?, 1, 'cooling', ?, '模型免费额度用完', 'free_quota_exhausted', ?, ?)
+		VALUES (?, ?, 1, 'cooling', ?, '模型免费额度 到达限制 ', 'free_quota_exhausted', ?, ?)
 		ON CONFLICT(channel_id, model) DO UPDATE SET
 			status='cooling',
 			disabled_until=excluded.disabled_until,

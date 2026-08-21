@@ -481,15 +481,21 @@ const displayName = (ch: Channel) => ch.channel_name || ch.name
                           :class="p.local_remaining <= 0 && p.initial_total > 0 ? 'bg-destructive/20' : (p.total_amount > 0 && p.available_amount / p.total_amount < 0.2 ? 'bg-amber-500/20' : '')"
                           class="h-1.5 flex-1"
                         />
+                        <!-- 本地余额精确显示（千分位），否则 formatAmount(1999811)="2M" 看不到扣减差异 -->
                         <span
-                          class="w-24 shrink-0 text-right tabular-nums"
+                          class="w-32 shrink-0 text-right tabular-nums"
                           :class="p.local_remaining <= 0 && p.initial_total > 0 ? 'text-destructive' : ''"
+                          :title="`本地剩余 ${p.local_remaining} / 初始 ${p.initial_total}`"
                         >
-                          {{ formatAmount(p.local_remaining) }}<span v-if="p.initial_total > 0" class="text-muted-foreground">/{{ formatAmount(p.initial_total) }}</span>
+                          {{ p.local_remaining.toLocaleString() }}<span v-if="p.initial_total > 0" class="text-muted-foreground">/{{ p.initial_total.toLocaleString() }}</span>
                         </span>
                       </div>
                     </TableCell>
-                    <TableCell class="py-1.5 text-right tabular-nums text-muted-foreground">{{ formatAmount(p.used_amount) }}</TableCell>
+                    <!-- 已用：本地口径（initial_total - local_remaining），不是 billing used_amount
+                         （billing 是 total-available，本地扣的不会算进去）。 -->
+                    <TableCell class="py-1.5 text-right tabular-nums text-muted-foreground">
+                      {{ (p.initial_total > 0 ? p.initial_total - p.local_remaining : p.used_amount).toLocaleString() }}
+                    </TableCell>
                     <TableCell class="py-1.5">
                       <Badge :variant="pkgBadge(p).variant">{{ pkgBadge(p).label }}</Badge>
                     </TableCell>
@@ -599,7 +605,7 @@ const displayName = (ch: Channel) => ch.channel_name || ch.name
           <div v-else-if="recentUsage && recentUsage.has_recent" class="space-y-1">
             <div class="flex items-center gap-2 font-medium text-amber-600">
               <span class="inline-block size-2 rounded-full bg-amber-500"></span>
-              该 base_url 近 10 分钟有 {{ recentUsage.request_count }} 次模型请求
+              该 账户 近 10 分钟有 {{ recentUsage.request_count }} 次模型请求
             </div>
             <div class="text-xs text-muted-foreground">
               最后一次请求于 {{ formatTime(recentUsage.last_request_at) }}。

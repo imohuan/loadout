@@ -117,6 +117,13 @@ var SessionTTLHours = 24 * 7 // env: LOADOUT_SESSION_TTL_HOURS
 // var DefaultVisionModel = "qwen-vl-max" // env: LOADOUT_DEFAULT_VISION_MODEL
 var DefaultVisionModel = "qwen3.7-flash-2026-07-15" // env: LOADOUT_DEFAULT_VISION_MODEL
 
+// ============ 火山引擎免费额度 ============
+
+// VolcQuotaMinRemaining 本地免费额度最低保留阈值：local_remaining <= 该值即视为
+// "耗尽"并拦截（volc-free-quota 插件，force_block=1 生效）。默认 0 = 扣到 0 才拦；
+// 配 10000 则剩余不足 1 万就停止，防止额度冲成负数。
+var VolcQuotaMinRemaining = 10000 // env: LOADOUT_VOLC_QUOTA_MIN_REMAINING
+
 // VisionDescriptionPrompt 视觉描述提示词（多图合并描述）。
 // 空字符串时使用 vision 插件内置的结构化板块模板（plugins/vision/prompt.go）。
 // 设过旧版自由文本提示词的部署在升级后需清掉该 env，否则结构化输出不生效。
@@ -240,6 +247,7 @@ func Load() {
 	SessionTTLHours = intEnv("LOADOUT_SESSION_TTL_HOURS", 24*7)
 
 	DefaultVisionModel = strEnv("LOADOUT_DEFAULT_VISION_MODEL", "qwen-vl-max")
+	VolcQuotaMinRemaining = intEnv("LOADOUT_VOLC_QUOTA_MIN_REMAINING", 0)
 	VisionDescriptionPrompt = strEnv("LOADOUT_VISION_DESCRIPTION_PROMPT", "")
 	VisionCompressEnabled = boolEnv("LOADOUT_VISION_COMPRESS_ENABLED", true)
 	VisionCompressMinBytes = intEnv("LOADOUT_VISION_COMPRESS_MIN_BYTES", 512*1024)
