@@ -106,11 +106,18 @@ function invertAll() {
 function clearAll() {
   form.models = []
 }
+// 支持空格 / 换行 / 逗号分隔批量添加自定义模型
 function addCustomModel() {
-  const name = modelSearch.value.trim()
-  if (!name) return
-  if (!candidateModels.value.includes(name)) form.model_candidates.push(name)
-  if (!form.models.includes(name)) form.models.push(name)
+  // 用一个或多个空白字符、逗号切分，覆盖空格 / Tab / 换行 / 英文逗号 / 中文逗号
+  const tokens = modelSearch.value
+    .split(/[\s,，]+/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+  if (!tokens.length) return
+  for (const name of tokens) {
+    if (!candidateModels.value.includes(name)) form.model_candidates.push(name)
+    if (!form.models.includes(name)) form.models.push(name)
+  }
   modelSearch.value = ''
 }
 function onModelSearchEnter() {
@@ -233,7 +240,7 @@ function submit() {
                 <div class="flex items-center gap-2">
                   <Input
                     v-model="modelSearch"
-                    placeholder="搜索模型，回车添加自定义…"
+                    placeholder="搜索或批量粘贴模型名（空格 / 换行 / 逗号分隔，回车添加自定义…）"
                     class="flex-1"
                     @keydown.esc="modelOpen = false"
                     @keydown.enter.prevent="onModelSearchEnter"

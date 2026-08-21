@@ -263,7 +263,8 @@ func (s *Service) accountIDForChannel(channelID string) string {
 // HandleProxyBeforeUpstream 在转发上游前检测：
 //
 // 只有当候选渠道中存在至少一个配置了「强制关停」（force_block=1）的账号时，才会执行拦截：
-//  1. 若请求的 model 对应的本地余额（local_remaining）在所有候选账号上都已耗尽（<=0）
+//  1. 若请求的 model 对应的本地余额（聚合 SUM(local_remaining)）在所有候选账号上
+//     都已低于最低保留阈值（core/config.VolcQuotaMinRemaining，默认 0）
 //     → 返回 "模型免费额度用完" GatewayError
 //  2. 否则放行
 //
@@ -378,9 +379,10 @@ func (s *Service) allVolcChannelIDs() []string {
 //
 //   - 免费额度按火山账号（account_id）归属，因此先把候选渠道映射到它们各自的账号，
 //     再去重为「候选账号集合」。
-//   - 耗尽判定唯一来源是本地余额：initial_total > 0（有本地记录）且
-//     local_remaining <= core/config.VolcQuotaMinRemaining（默认 0 = 扣到 0；
-//     可配 10000 提前停）。billing API 的 status='exhausted' 不参与——远程数据不准确。
+//   - 耗尽判定唯一来源是本地余额：匹配该 API 模型的**所有资源包聚合剩余**
+//     SUM(local_remaining) <= core/config.VolcQuotaMinRemaining（默认 0 = 扣到 0；
+//     可配 10000 提前停）。按聚合判断而不是任一包，避免"一个包剩 5000 其余 200 万"
+//     时误拦整个模型。billing API 的 status='exhausted' 不参与——远程数据不准确。
 //   - exhausted=true 表示至少一个候选账号耗尽；allExhausted=true 表示所有候选账号都耗尽。
 //   - 采用与刷新时完全一致的 matchOne 模糊匹配逻辑，避免归一化名与 API 模型名脱节。
 func (s *Service) checkAllCandidatesExhausted(candidateIDs []string, requestModel string) (exhausted, allExhausted bool, err error) {
@@ -406,8 +408,8 @@ func (s *Service) checkAllCandidatesExhausted(candidateIDs []string, requestMode
 		return false, false, err
 	}
 	defer rows.Close()
-	// map[account_id] -> 该账号是否有匹配且本地余额低于阈值的资源包记录
-	accountExhausted := make(map[string]bool)
+	// map[account_id] -> 该账号匹配该 model 的聚合剩余（多个包求和）
+	accountRemaining := make(map[string]int64)
 	for rows.Next() {
 		var aid, quotaModel string
 		var initialTotal, localRemaining int64
@@ -417,13 +419,21 @@ func (s *Service) checkAllCandidatesExhausted(candidateIDs []string, requestMode
 		if !matchOne(quotaModel, requestModel) {
 			continue
 		}
-		// 本地余额主判据：有本地记录（initial_total > 0）且扣到 ≤ 阈值。
-		if initialTotal > 0 && localRemaining <= minRemaining {
+		accountRemaining[aid] += localRemaining
+	}
+	if len(accountRemaining) == 0 {
+		// 没有任何账号有匹配的资源包
+		return false, false, nil
+	}
+	// map[account_id] -> 该账号聚合剩余是否 ≤ 阈值
+	accountExhausted := make(map[string]bool)
+	for aid, sum := range accountRemaining {
+		if sum <= minRemaining {
 			accountExhausted[aid] = true
 		}
 	}
 	if len(accountExhausted) == 0 {
-		// 没有任何账号有匹配的耗尽 model
+		// 没有任何账号的聚合剩余低于阈值
 		return false, false, nil
 	}
 	exhausted = true
@@ -813,10 +823,12 @@ func (s *Service) refreshOne(ctx context.Context, cfg Config) ([]string, error) 
 				expiry_time = excluded.expiry_time,
 				-- initial_total 只在首次写入（定基准），后续不动
 				initial_total = CASE WHEN volc_quota_packages.initial_total = 0 THEN excluded.initial_total ELSE volc_quota_packages.initial_total END,
-				-- local_remaining：首次=总额；已耗尽不复活；否则用 billing 校准
+				-- local_remaining：首次=总额；已耗尽不复活；已低于最低保留阈值（min_remaining）不校准
+				-- （防止 billing 滞后把已触发拦截的余额拉回，绕过阈值防线）；否则用 billing 校准。
 				local_remaining = CASE
 					WHEN volc_quota_packages.initial_total = 0 THEN excluded.local_remaining
 					WHEN volc_quota_packages.local_remaining <= 0 THEN 0
+					WHEN volc_quota_packages.local_remaining <= ? THEN volc_quota_packages.local_remaining
 					ELSE excluded.available_amount
 				END,
 				synced_at = excluded.synced_at`,
@@ -824,7 +836,7 @@ func (s *Service) refreshOne(ctx context.Context, cfg Config) ([]string, error) 
 			modelNameFromConfigCode(p.ConfigurationCode, p.Product),
 			totalAmt, availAmt, usedAmt, p.Unit, p.Status, p.EffectiveTime, p.ExpiryTime,
 			totalAmt, availAmt, // initial_total, local_remaining（首次写入=总额/可用）
-			now); err != nil {
+			now, int64(config.VolcQuotaMinRemaining)); err != nil {
 			return nil, err
 		}
 	}

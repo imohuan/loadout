@@ -313,6 +313,55 @@ func TestCheckAllCandidatesExhaustedLocalFirst(t *testing.T) {
 	}
 }
 
+// TestCheckAllCandidatesExhaustedAggregatesAcrossPackages 回归：同模型多包时，
+// 耗尽判据 = 聚合剩余 SUM(local_remaining)，不是任一包（避免"一个包剩 5000 其余 200 万"误拦）。
+func TestCheckAllCandidatesExhaustedAggregatesAcrossPackages(t *testing.T) {
+	svc := newTestService(t)
+	aid := accountID("AKxxx")
+	mustExec := func(q string, args ...any) {
+		t.Helper()
+		if _, err := svc.db.Exec(q, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// 同 model 两包：余额 500 和 400000。
+	for _, c := range []struct{ inst string; bal int64 }{
+		{"inst-x", 500}, {"inst-y", 400000},
+	} {
+		mustExec(`INSERT INTO volc_quota_packages(account_id, instance_no, product, product_name, configuration_code,
+		       configuration_name, model, total_amount, available_amount, used_amount, initial_total, local_remaining, unit, status, synced_at)
+			VALUES (?, ?, 'ark_bd', 'x', 'DeepSeek_V4_flash_0731_data_collaboration_resource_pack', 'pack', 'deepseek-v4-flash-0731',
+			        ?, ?, 0, ?, ?, 'Tokens', 'Effective', 'now')`,
+			aid, c.inst, c.bal, c.bal, c.bal, c.bal)
+	}
+	// 聚合剩余 = 500 + 400000 = 400500，远超阈值 → 不拦截。
+	exhausted, allExhausted, err := svc.checkAllCandidatesExhausted([]string{"ch1"}, "deepseek-v4-flash-ga-260731")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exhausted || allExhausted {
+		t.Errorf("聚合剩余充足时应放行, got exhausted=%v allExhausted=%v", exhausted, allExhausted)
+	}
+	// 把大包扣光：聚合剩余 = 500 + 0 = 500 > 默认阈值 0 → 仍不拦（小包还有余量）。
+	svc.decrementLocalRemaining(aid, "deepseek-v4-flash-ga-260731", 400000)
+	exhausted, allExhausted, err = svc.checkAllCandidatesExhausted([]string{"ch1"}, "deepseek-v4-flash-ga-260731")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exhausted || allExhausted {
+		t.Errorf("聚合剩余 500 > 阈值 0 时应放行, got exhausted=%v allExhausted=%v", exhausted, allExhausted)
+	}
+	// 小包也扣光：聚合剩余 = 0 ≤ 阈值 0 → 拦截。
+	svc.decrementLocalRemaining(aid, "deepseek-v4-flash-ga-260731", 500)
+	exhausted, allExhausted, err = svc.checkAllCandidatesExhausted([]string{"ch1"}, "deepseek-v4-flash-ga-260731")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !exhausted || !allExhausted {
+		t.Errorf("聚合剩余归零时应拦截, got exhausted=%v allExhausted=%v", exhausted, allExhausted)
+	}
+}
+
 func TestHandleProxyUpstreamSucceededDecrements(t *testing.T) {
 	svc := newTestService(t)
 	aid := accountID("AKxxx")

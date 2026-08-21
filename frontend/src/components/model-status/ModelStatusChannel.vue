@@ -283,9 +283,19 @@ function busy(action: string) {
                     hide-when-available
                   />
                 </TableCell>
-                <TableCell class="max-w-64 whitespace-normal text-xs text-muted-foreground">{{
-                  model.last_error || model.reason || '-'
-                }}</TableCell>
+                <TableCell class="max-w-64 text-xs text-muted-foreground">
+                  <Tooltip v-if="model.last_error || model.reason">
+                    <TooltipTrigger as-child>
+                      <span class="block w-full truncate">{{
+                        model.last_error || model.reason
+                      }}</span>
+                    </TooltipTrigger>
+                    <TooltipContent class="max-w-md whitespace-normal break-words">{{
+                      model.last_error || model.reason
+                    }}</TooltipContent>
+                  </Tooltip>
+                  <span v-else>-</span>
+                </TableCell>
                 <TableCell class="tabular-nums">{{ model.fail_count || 0 }}</TableCell>
                 <TableCell class="whitespace-nowrap text-xs text-muted-foreground">{{
                   formatDate(model.last_success_at)
