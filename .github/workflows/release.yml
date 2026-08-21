@@ -1,0 +1,81 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  linux-server:
+    name: Linux server (无 UI)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - name: build frontend
+        working-directory: frontend
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm run build
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.3"
+      - name: build server binary
+        working-directory: apps/server
+        run: |
+          mkdir -p ../../release/loadout-server
+          CGO_ENABLED=0 go build -trimpath -ldflags "-w -s" -o ../../release/loadout-server/loadout .
+      - name: package tarball (binary + systemd unit)
+        working-directory: release
+        run: |
+          cp ../apps/server/loadout.service loadout-server/
+          tar -czf loadout-server-linux-amd64.tar.gz loadout-server/
+      - name: upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/loadout-server-linux-amd64.tar.gz
+
+  windows-desktop:
+    name: Windows desktop (exe)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - name: build frontend
+        working-directory: frontend
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm run build
+      - name: copy dist to desktop embed dir
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force apps/desktop/frontend/dist | Out-Null
+          Copy-Item -Recurse -Force frontend/dist/* apps/desktop/frontend/dist/
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.3"
+      - name: build exe
+        working-directory: apps/desktop
+        shell: pwsh
+        run: |
+          $env:CGO_ENABLED = "0"
+          go build -tags production -trimpath -ldflags "-w -s -H windowsgui" -o dist/loadout-desktop.exe .
+          New-Item -ItemType Directory -Force $env:RUNNER_TEMP/release | Out-Null
+          Copy-Item dist/loadout-desktop.exe $env:RUNNER_TEMP/release/loadout-desktop-windows-amd64.exe
+      - name: upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ runner.temp }}/release/loadout-desktop-windows-amd64.exe

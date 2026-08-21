@@ -1,0 +1,23 @@
+{
+  "name": "loadout",
+  "description": "Loadout Desktop",
+  "author": {},
+  "custom": {
+    "window": {
+      "title": "Loadout",
+      "width": 1100,
+      "height": 720,
+      "minWidth": 900,
+      "minHeight": 600,
+      "frameless": false
+    },
+    "server": {
+      "port": 8866
+    },
+    "icons": {
+      "exe": "icons/appicon.ico",
+      "taskbar": "icons/appicon.ico",
+      "titlebar": "frontend/public/appicon-16x16.png"
+    }
+  }
+}

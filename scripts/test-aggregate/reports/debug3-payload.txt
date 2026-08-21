@@ -1,0 +1,10 @@
+PAYLOAD: {
+  "name": "auto-demo",
+  "targets": [
+    {
+      "model": "claude-haiku-4-5-20251001",
+      "channel_id": "ch-fake"
+    }
+  ],
+  "enabled": true
+}
