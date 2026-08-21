@@ -127,6 +127,48 @@ function pkgExpiry(p: VolcQuotaPackage) {
   if (!p.expiry_time) return ''
   return formatTime(p.expiry_time)
 }
+/** 资源包剩余进度（0~100） */
+function pkgProgress(p: VolcQuotaPackage) {
+  if (p.total_amount <= 0) return 0
+  return Math.max(0, Math.min(100, Math.round((p.available_amount / p.total_amount) * 100)))
+}
+
+/** 资源包过滤：按 configuration_name / configuration_code / product 模糊匹配 */
+function matchPackage(p: VolcQuotaPackage, kw: string) {
+  if (!kw) return true
+  const k = kw.toLowerCase()
+  return (
+    (p.configuration_name || '').toLowerCase().includes(k) ||
+    (p.configuration_code || '').toLowerCase().includes(k) ||
+    (p.product_name || '').toLowerCase().includes(k) ||
+    (p.product || '').toLowerCase().includes(k)
+  )
+}
+
+// ===== 本地余额卡片显隐控制（Collapsible 管理） =====
+/** key = channel_id，true=展开。默认全展开。 */
+const localCardOpen = ref<Record<string, boolean>>({})
+function isLocalCardOpen(channelId: string) {
+  return localCardOpen.value[channelId] ?? true
+}
+function setLocalCardOpen(channelId: string, open: boolean) {
+  localCardOpen.value[channelId] = open
+}
+
+/** 资源包过滤输入（按 channel_id 隔离，多 Key 不互相干扰） */
+const pkgFilter = ref<Record<string, string>>({})
+function setPkgFilter(channelId: string, v: string) {
+  pkgFilter.value[channelId] = v
+}
+function getPkgFilter(channelId: string) {
+  return pkgFilter.value[channelId] || ''
+}
+function filteredPackages(item: { config: { channel_id: string }; packages?: VolcQuotaPackage[] }) {
+  const kw = getPkgFilter(item.config.channel_id)
+  const list = item.packages || []
+  if (!kw) return list
+  return list.filter((p) => matchPackage(p, kw))
+}
 
 // ===== 刷新 =====
 // 刷新本地：只重查 SQLite 现有数据，刷新 UI（不碰远程 API）。
@@ -410,54 +452,112 @@ const displayName = (ch: Channel) => ch.channel_name || ch.name
             class="space-y-3 border-t bg-muted/30 px-4 py-4"
           >
             <!-- 本地余额汇总（按归一化 model 聚合，用于展示本地扣减进度） -->
-            <div v-if="item.models.length" class="space-y-1 rounded-md border bg-background/60 p-3">
-              <div class="text-xs font-medium text-muted-foreground">本地余额（按模型聚合，请求实时扣减）</div>
-              <div v-for="m in item.models" :key="m.model" class="flex items-center justify-between gap-2 text-xs">
-                <span class="truncate font-medium">{{ m.model }}</span>
-                <span class="shrink-0 text-muted-foreground">
-                  {{ balanceText(m) }}
-                  <span v-if="m.status === 'exhausted'" class="text-destructive"> · 已耗尽</span>
-                </span>
-              </div>
-            </div>
+            <Collapsible
+              v-if="item.models.length"
+              :open="isLocalCardOpen(item.config.channel_id)"
+              @update:open="(o: boolean) => setLocalCardOpen(item.config.channel_id, o)"
+              class="rounded-md border bg-background/60"
+            >
+              <CollapsibleTrigger as-child>
+                <Button
+                  variant="ghost"
+                  class="flex w-full items-center justify-between gap-2 rounded-md px-3 py-2 text-xs"
+                >
+                  <span class="font-medium text-muted-foreground">
+                    本地余额（按模型聚合，请求实时扣减）
+                  </span>
+                  <RiArrowDownSLine
+                    v-if="isLocalCardOpen(item.config.channel_id)"
+                    class="size-4 shrink-0 text-muted-foreground"
+                  />
+                  <RiArrowRightSLine v-else class="size-4 shrink-0 text-muted-foreground" />
+                </Button>
+              </CollapsibleTrigger>
+              <CollapsibleContent class="border-t px-3 py-2">
+                <div class="space-y-2">
+                  <div v-for="m in item.models" :key="m.model" class="space-y-1">
+                    <div class="flex items-center justify-between gap-2 text-xs">
+                      <span class="truncate font-medium">{{ m.model }}</span>
+                      <span class="shrink-0 text-muted-foreground">
+                        {{ balanceText(m) }}
+                        <span v-if="m.status === 'exhausted'" class="text-destructive"> · 已耗尽</span>
+                      </span>
+                    </div>
+                    <Progress
+                      :model-value="m.initial_total > 0 ? Math.max(0, Math.min(100, Math.round((m.local_remaining / m.initial_total) * 100))) : (m.total_amount > 0 ? Math.max(0, Math.min(100, Math.round((m.available_amount / m.total_amount) * 100))) : 0)"
+                      :class="m.status === 'exhausted' ? 'bg-destructive/20' : ''"
+                    />
+                  </div>
+                </div>
+              </CollapsibleContent>
+            </Collapsible>
 
             <!-- 资源包逐条明细 -->
             <div v-if="item.packages?.length" class="overflow-hidden rounded-md border bg-background/60">
-              <table class="w-full text-xs">
-                <thead>
-                  <tr class="border-b bg-muted/50 text-left text-muted-foreground">
-                    <th class="px-3 py-2 font-medium">资源包</th>
-                    <th class="px-2 py-2 text-right font-medium">总额</th>
-                    <th class="px-2 py-2 text-right font-medium">剩余</th>
-                    <th class="px-2 py-2 text-right font-medium">已用</th>
-                    <th class="px-2 py-2 font-medium">状态</th>
-                    <th class="px-3 py-2 font-medium">到期</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr
-                    v-for="p in item.packages"
+              <div class="flex items-center justify-between gap-2 border-b bg-muted/50 px-3 py-1.5">
+                <span class="text-xs font-medium text-muted-foreground">
+                  资源包（{{ filteredPackages(item).length }} / {{ item.packages.length }}）
+                </span>
+                <Input
+                  :model-value="getPkgFilter(item.config.channel_id)"
+                  placeholder="过滤：模型名 / code / 关键字…"
+                  class="h-7 w-56 text-xs"
+                  @update:model-value="(v: string) => setPkgFilter(item.config.channel_id, v)"
+                />
+              </div>
+              <Table class="w-full text-xs">
+                <TableHeader>
+                  <TableRow class="bg-muted/30 hover:bg-muted/30">
+                    <TableHead>资源包</TableHead>
+                    <TableHead class="text-right">总额</TableHead>
+                    <TableHead class="w-[30%]">剩余进度</TableHead>
+                    <TableHead class="text-right">已用</TableHead>
+                    <TableHead>状态</TableHead>
+                    <TableHead>到期</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  <TableRow
+                    v-for="p in filteredPackages(item)"
                     :key="p.instance_no"
-                    class="border-b last:border-0 hover:bg-muted/30"
+                    class="hover:bg-muted/30"
                   >
-                    <td class="px-3 py-1.5">
+                    <TableCell class="py-1.5 align-top">
                       <div class="truncate font-medium" :title="pkgName(p)">{{ pkgName(p) }}</div>
                       <div class="truncate font-mono text-[10px] text-muted-foreground" :title="p.configuration_code">
                         {{ p.configuration_code || p.product || '' }}
                       </div>
-                    </td>
-                    <td class="px-2 py-1.5 text-right tabular-nums">{{ formatAmount(p.total_amount) }}</td>
-                    <td class="px-2 py-1.5 text-right tabular-nums" :class="p.available_amount <= 0 ? 'text-destructive' : ''">
-                      {{ formatAmount(p.available_amount) }}
-                    </td>
-                    <td class="px-2 py-1.5 text-right tabular-nums text-muted-foreground">{{ formatAmount(p.used_amount) }}</td>
-                    <td class="px-2 py-1.5">
+                    </TableCell>
+                    <TableCell class="py-1.5 text-right tabular-nums">{{ formatAmount(p.total_amount) }}</TableCell>
+                    <TableCell class="py-1.5">
+                      <div class="flex items-center gap-2">
+                        <Progress
+                          :model-value="pkgProgress(p)"
+                          :class="p.available_amount <= 0 ? 'bg-destructive/20' : (p.total_amount > 0 && p.available_amount / p.total_amount < 0.2 ? 'bg-amber-500/20' : '')"
+                          class="h-1.5 flex-1"
+                        />
+                        <span
+                          class="w-20 shrink-0 text-right tabular-nums"
+                          :class="p.available_amount <= 0 ? 'text-destructive' : ''"
+                        >
+                          {{ formatAmount(p.available_amount) }}
+                        </span>
+                      </div>
+                    </TableCell>
+                    <TableCell class="py-1.5 text-right tabular-nums text-muted-foreground">{{ formatAmount(p.used_amount) }}</TableCell>
+                    <TableCell class="py-1.5">
                       <Badge :variant="pkgBadge(p).variant">{{ pkgBadge(p).label }}</Badge>
-                    </td>
-                    <td class="px-3 py-1.5 text-muted-foreground">{{ pkgExpiry(p) }}</td>
-                  </tr>
-                </tbody>
-              </table>
+                    </TableCell>
+                    <TableCell class="py-1.5 text-muted-foreground">{{ pkgExpiry(p) }}</TableCell>
+                  </TableRow>
+                </TableBody>
+              </Table>
+              <div
+                v-if="filteredPackages(item).length === 0"
+                class="px-3 py-4 text-center text-xs text-muted-foreground"
+              >
+                没有匹配「{{ getPkgFilter(item.config.channel_id) }}」的资源包
+              </div>
             </div>
 
             <EmptyState

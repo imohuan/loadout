@@ -749,29 +749,32 @@ onBeforeUnmount(() => {
             <div
               v-for="(message, index) in messages"
               :key="message.id"
-              class="grid grid-cols-[110px_minmax(0,1fr)_36px] items-start gap-2 rounded-md border border-border p-3"
+              class="@container flex flex-col gap-2 rounded-md border border-border p-3 @md:grid @md:grid-cols-[110px_minmax(0,1fr)_36px] @md:items-start @md:gap-2"
             >
-              <Select v-model="message.role">
-                <SelectTrigger class="w-[110px] shrink-0">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent position="popper" side="bottom" :side-offset="2">
-                  <SelectGroup>
-                    <SelectItem value="system">system</SelectItem>
-                    <SelectItem value="user">user</SelectItem>
-                    <SelectItem value="assistant">assistant</SelectItem>
-                  </SelectGroup>
-                </SelectContent>
-              </Select>
-              <Textarea v-model="message.content" class="min-w-0" placeholder="输入消息内容" />
-              <Button
-                size="icon"
-                variant="ghost"
-                aria-label="删除消息"
-                @click="removeMessage(index)"
-              >
-                <RiCloseLine size="16" />
-              </Button>
+              <div class="flex items-center justify-between gap-2 @md:contents">
+                <Select v-model="message.role" class="w-[110px] shrink-0">
+                  <SelectTrigger class="w-[110px] shrink-0">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent position="popper" side="bottom" :side-offset="2">
+                    <SelectGroup>
+                      <SelectItem value="system">system</SelectItem>
+                      <SelectItem value="user">user</SelectItem>
+                      <SelectItem value="assistant">assistant</SelectItem>
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  class="shrink-0"
+                  aria-label="删除消息"
+                  @click="removeMessage(index)"
+                >
+                  <RiCloseLine size="16" />
+                </Button>
+              </div>
+              <Textarea v-model="message.content" class="min-h-20 min-w-0 max-h-64" placeholder="输入消息内容" />
             </div>
           </CardContent>
         </Card>
