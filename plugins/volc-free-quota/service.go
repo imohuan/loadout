@@ -35,6 +35,12 @@ type Service struct {
 	mu                sync.Mutex
 	lastChannelCache  map[string]channelSnapshot
 	lastChannelCacheT time.Time
+
+	// debounce 远程刷新（v16）：请求成功后 scheduleRefresh() 重置计时器，
+	// interval 内无新请求才刷一次 billing（比固定 ticker 准且省请求）。
+	refreshMu       sync.Mutex
+	refreshInterval time.Duration
+	refreshTimer    *time.Timer
 }
 
 // channelSnapshot 渠道关键字段（model_states 写入需要的）。
@@ -69,42 +75,52 @@ func accountID(accessKey string) string {
 	return hex.EncodeToString(sum[:])[:16]
 }
 
-// StartBackgroundRefresh 启动后台定时刷新。
+// StartBackgroundRefresh 启动"静默 debounce"远程刷新。
 //
-//   - interval <= 0 表示不启动定时（仍可手动调用 Refresh）。
-//   - runNow=true 立即触发一次刷新（推荐，便于插件装配完成后尽早拿到首份数据）。
+//   - interval <= 0 表示不启动（仍可手动调用 Refresh）。
+//   - runNow=true 启动时立即触发一次刷新（拿到首份数据建底数）。
+//
+// 与固定 ticker 不同：每次模型请求成功（HandleProxyUpstreamSucceeded）都会调用
+// scheduleRefresh() 重置计时器——请求活动期间不刷远程（billing 结算未完成，拉到的
+// 数据不准且易 429），请求停止后静默 interval（默认 15 分钟）才刷一次，此时数据可靠。
+// 本地 token 扣减（local_remaining）是实时的，不依赖这次刷新。
 //
 // 返回 Disposer（unload 时调用）。
 func (s *Service) StartBackgroundRefresh(interval time.Duration, runNow bool) func() {
-	if interval <= 0 {
-		return func() {}
+	s.refreshMu.Lock()
+	s.refreshInterval = interval
+	s.refreshMu.Unlock()
+	if runNow {
+		if _, err := s.Refresh(context.Background(), ""); err != nil {
+			s.lg.Warn("volc-free-quota: 启动首次刷新失败", "err", err)
+		}
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		if runNow {
-			if _, err := s.Refresh(context.Background(), ""); err != nil {
-				s.lg.Warn("volc-free-quota: 启动首次刷新失败", "err", err)
-			}
-		}
-		t := time.NewTicker(interval)
-		defer t.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-t.C:
-				if _, err := s.Refresh(context.Background(), ""); err != nil {
-					s.lg.Warn("volc-free-quota: 定时刷新失败", "err", err)
-				}
-			}
-		}
-	}()
 	return func() {
-		cancel()
-		<-done
+		s.refreshMu.Lock()
+		if s.refreshTimer != nil {
+			s.refreshTimer.Stop()
+			s.refreshTimer = nil
+		}
+		s.refreshMu.Unlock()
 	}
+}
+
+// scheduleRefresh 重置 debounce 计时器：请求成功后调用，interval 内无新请求才刷远程。
+// 热路径（每请求一次），只做 timer 重置，开销可忽略。
+func (s *Service) scheduleRefresh() {
+	s.refreshMu.Lock()
+	defer s.refreshMu.Unlock()
+	if s.refreshInterval <= 0 {
+		return // 未启用 debounce
+	}
+	if s.refreshTimer != nil {
+		s.refreshTimer.Stop()
+	}
+	s.refreshTimer = time.AfterFunc(s.refreshInterval, func() {
+		if _, err := s.Refresh(context.Background(), ""); err != nil {
+			s.lg.Warn("volc-free-quota: 静默刷新失败", "err", err)
+		}
+	})
 }
 
 // ===== 事件钩子 =====
@@ -138,43 +154,91 @@ func (s *Service) HandleProxyUpstreamSucceeded(payload any) (any, error) {
 		s.lg.Warn("volc-free-quota: 记录使用次数失败", "channel_id", p.ChannelID, "model", p.Model, "err", err)
 	}
 	s.decrementLocalRemaining(aid, p.Model, p.Usage.TotalTokens)
+	// 请求成功 → 重置 debounce 计时器：billing 结算未完成，静默 interval 后再刷远程，
+	// 期间本地扣减（上面那行）已实时反映消耗。
+	s.scheduleRefresh()
 	return payload, nil
 }
 
-// decrementLocalRemaining 从该账号所有匹配该 API 模型的资源包行扣减 tokens。
+// decrementLocalRemaining 从该账号所有匹配该 API 模型的资源包行扣减 tokens，
+// 并同步扣减 volc_quota_models 聚合行（UI 本地余额卡片的数据源）。
 //
 // 匹配锚点是 volc_quota_packages.model（configuration_code 提取名，如
 // "deepseek-v4-flash-0731"），与请求的 API 模型名（如 "deepseek-v4-flash-ga-260731"）
-// 用 matchOne 模糊匹配（含日期归一化）。扣减到 <= 0 时置 status='exhausted'；
+// 用 matchOne 模糊匹配（含日期归一化）。扣减到 <= 0 时置 status='UsedUp'；
 // local_remaining 下限 0（不出现负数）。
+//
+// 两张表同步：packages 是逐条资源包真实账本，models 是 UI 卡片读的聚合视图。
+// models.model 是 Product 级聚合名（ark_bd 等），与 packages.model（code 提取名）
+// 不同粒度，因此通过 packages.product 反查 models 行同步扣减。
+//
+// 日志：每次成功扣减记 Info（含扣前/扣后余额），未匹配到任何资源包记 Warn
+// （说明该 API 模型没有对应的免费额度记录，本地扣减没生效，需要排查）。
 func (s *Service) decrementLocalRemaining(accountID, apiModel string, tokens int) {
 	if accountID == "" || apiModel == "" || tokens <= 0 {
 		return
 	}
-	rows, err := s.db.Query(`SELECT instance_no, model FROM volc_quota_packages WHERE account_id = ? AND initial_total > 0`, accountID)
+	rows, err := s.db.Query(`SELECT instance_no, model, configuration_name, product, local_remaining FROM volc_quota_packages WHERE account_id = ? AND initial_total > 0`, accountID)
 	if err != nil {
 		s.lg.Warn("volc-free-quota: 查询资源包余额失败", "account_id", accountID, "model", apiModel, "err", err)
 		return
 	}
 	defer rows.Close()
-	var matched []string
+	// matched: instance_no -> [model, configuration_name, product, 扣前余额]
+	matched := make(map[string][4]string)
 	for rows.Next() {
-		var instanceNo, model string
-		if err := rows.Scan(&instanceNo, &model); err == nil && model != "" && matchOne(model, apiModel) {
-			matched = append(matched, instanceNo)
+		var instanceNo, model, confName, product string
+		var before int64
+		if err := rows.Scan(&instanceNo, &model, &confName, &product, &before); err == nil && model != "" && matchOne(model, apiModel) {
+			matched[instanceNo] = [4]string{model, confName, product, strconv.FormatInt(before, 10)}
 		}
 	}
-	for _, inst := range matched {
-		// MAX(local_remaining - tokens, 0)，扣到 0 为止；status 联动 exhausted。
-		if _, err := s.db.Exec(`
+	if len(matched) == 0 {
+		s.lg.Warn("volc-free-quota: 未匹配到免费额度资源包，本地不扣减",
+			"account_id", accountID, "api_model", apiModel, "tokens", tokens,
+			"hint", "该 API 模型没有对应的 volc_quota_packages 行（model 为 configuration_code 提取名），请检查渠道是否已刷新远程额度")
+		return
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	for inst, mm := range matched {
+		// 1) 扣 packages（逐条资源包真实账本）。
+		_, err := s.db.Exec(`
 			UPDATE volc_quota_packages
 			SET local_remaining = MAX(local_remaining - ?, 0),
 			    status = CASE WHEN local_remaining - ? <= 0 THEN 'UsedUp' ELSE status END,
 			    synced_at = ?  -- 复用 synced_at 记录最近一次本地扣减时间（展示用）
 			WHERE account_id = ? AND instance_no = ?`,
-			tokens, tokens, time.Now().UTC().Format(time.RFC3339Nano), accountID, inst); err != nil {
-			s.lg.Warn("volc-free-quota: 扣减资源包余额失败", "account_id", accountID, "instance_no", inst, "tokens", tokens, "err", err)
+			tokens, tokens, now, accountID, inst)
+		if err != nil {
+			s.lg.Warn("volc-free-quota: 扣减资源包余额失败", "account_id", accountID, "instance_no", inst, "model", mm[0], "configuration_name", mm[1], "tokens", tokens, "err", err)
+			continue
 		}
+		// 2) 同步扣 volc_quota_models 聚合行（UI 本地余额卡片数据源）。
+		//    匹配键：packages.product 归一化（models 的聚合键来源）。
+		//    models.model 历史数据存在 "_" 与 "-" 两种写法（ark_bd / ark-bd），
+		//    用 REPLACE 归一化后比较，避免漏掉。
+		if mm[2] != "" {
+			normProd := normalizeModelName(mm[2])
+			if normProd != "" {
+				if _, err := s.db.Exec(`
+					UPDATE volc_quota_models
+					SET local_remaining = MAX(local_remaining - ?, 0),
+					    status = CASE WHEN local_remaining - ? <= 0 THEN 'exhausted' ELSE status END,
+					    synced_at = ?
+					WHERE account_id = ? AND REPLACE(model, '_', '-') = ?`,
+					tokens, tokens, now, accountID, normProd); err != nil {
+					s.lg.Warn("volc-free-quota: 同步扣减 models 聚合行失败", "account_id", accountID, "product", mm[2], "norm_prod", normProd, "tokens", tokens, "err", err)
+				}
+			}
+		}
+		var after int64
+		if err := s.db.QueryRow(`SELECT local_remaining FROM volc_quota_packages WHERE account_id = ? AND instance_no = ?`, accountID, inst).Scan(&after); err != nil {
+			after = -1
+		}
+		s.lg.Info("volc-free-quota: 本地余额扣减",
+			"account_id", accountID, "api_model", apiModel, "matched_model", mm[0],
+			"configuration_name", mm[1], "instance_no", inst,
+			"tokens", tokens, "before", mm[3], "after", after)
 	}
 }
 
@@ -777,8 +841,12 @@ func (s *Service) refreshOne(ctx context.Context, cfg Config) ([]string, error) 
 	// 逐条 UPSERT 资源包明细（volc_quota_packages）：
 	//   - model 用 configuration_code 提取名（去掉资源包类型后缀），扣减锚点，
 	//     如 "DeepSeek_V4_flash_0731_data_collaboration_resource_pack" → "deepseek-v4-flash-0731"
-	//   - initial_total / local_remaining 只在首次写入时设置（旧值>0 保留），
-	//     否则 billing 刷新会把本地扣减抹掉；local_remaining clamp 到 ≤ 新总额。
+	//   - initial_total 只在首次写入（定下扣减基准后不动，用户要求保留）。
+	//   - local_remaining 校准策略（v16）：
+	//       * 首次写入（旧 initial_total=0）→ = 本次总额（建底数）
+	//       * 本地已耗尽（local_remaining<=0 且旧 initial_total>0）→ 保持 0，不复活
+	//         （billing 可能滞后返回旧可用量，直接覆盖会让已耗尽的模型"复活"）
+	//       * 正常 → 用 billing available_amount 校准（billing 是权威，本地扣减只是间隔期兜底）
 	//   - 不再 DELETE 重建（billing API 返回全量，但本地余额必须跨刷新保留）。
 	//   - 本次 billing 已不返回的旧包（过期/删除）保留不动，由旧数据清理兜底。
 	for _, p := range pkgs {
@@ -809,14 +877,19 @@ func (s *Service) refreshOne(ctx context.Context, cfg Config) ([]string, error) 
 				status = excluded.status,
 				effective_time = excluded.effective_time,
 				expiry_time = excluded.expiry_time,
-				-- 本地余额只在首次写入（旧值=0），后续保留；clamp 到 ≤ 新总额。
+				-- initial_total 只在首次写入（定基准），后续不动
 				initial_total = CASE WHEN volc_quota_packages.initial_total = 0 THEN excluded.initial_total ELSE volc_quota_packages.initial_total END,
-				local_remaining = MIN(volc_quota_packages.local_remaining, excluded.total_amount),
+				-- local_remaining：首次=总额；已耗尽不复活；否则用 billing 校准
+				local_remaining = CASE
+					WHEN volc_quota_packages.initial_total = 0 THEN excluded.local_remaining
+					WHEN volc_quota_packages.local_remaining <= 0 THEN 0
+					ELSE excluded.available_amount
+				END,
 				synced_at = excluded.synced_at`,
 			aid, p.InstanceNo, p.Product, p.ProductName, p.ConfigurationCode, p.ConfigurationName,
 			modelNameFromConfigCode(p.ConfigurationCode, p.Product),
 			totalAmt, availAmt, usedAmt, p.Unit, p.Status, p.EffectiveTime, p.ExpiryTime,
-			totalAmt, totalAmt, // initial_total, local_remaining（首次写入=总额）
+			totalAmt, availAmt, // initial_total, local_remaining（首次写入=总额/可用）
 			now); err != nil {
 			return nil, err
 		}

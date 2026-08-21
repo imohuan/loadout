@@ -193,6 +193,10 @@ func newTestService(t *testing.T) *Service {
 	       configuration_name, model, total_amount, available_amount, used_amount, initial_total, local_remaining, unit, status, synced_at)
 		VALUES (?, 'inst-1', 'ark_bd', '豆包·Doubao-pro-32k', 'Doubao_Pro_32k_data_collaboration', 'Doubao-pro-32k协作奖励计划资源包',
 		        'doubao-pro-32k', 2000000, 2000000, 0, 2000000, 2000000, 'Tokens', 'Effective', 'now')`, aid)
+	// UI 本地余额卡片读 volc_quota_models 聚合行（Product 级），扣减需同步。
+	mustExec(`INSERT INTO volc_quota_models(account_id, model, product_name, total_amount, available_amount, used_amount,
+	       initial_total, local_remaining, unit, status, synced_at)
+		VALUES (?, 'ark_bd', '豆包·Doubao-pro-32k', 2000000, 2000000, 0, 2000000, 2000000, 'Tokens', 'ok', 'now')`, aid)
 	return svc
 }
 
@@ -222,6 +226,14 @@ func TestDecrementLocalRemaining(t *testing.T) {
 	}
 	if status != "UsedUp" {
 		t.Errorf("超额扣减后 status = %q, want UsedUp", status)
+	}
+	// models 聚合行同步扣减（UI 本地余额卡片数据源）。
+	var mRemaining int64
+	if err := svc.db.QueryRow(`SELECT local_remaining FROM volc_quota_models WHERE account_id=? AND model='ark_bd'`, aid).Scan(&mRemaining); err != nil {
+		t.Fatal(err)
+	}
+	if mRemaining != 0 {
+		t.Errorf("models 同步后 local_remaining = %d, want 0", mRemaining)
 	}
 }
 
