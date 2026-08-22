@@ -10,8 +10,10 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"loadout/core/config"
+	"loadout/plugins/contracts"
 	modelgateway "loadout/plugins/model-gateway"
 	"loadout/plugins/types"
 )
@@ -190,6 +192,10 @@ func (s *Service) toolStreamWriter(pipe *modelgateway.ProxyPipeline, format visi
 }
 
 // executeToolLoop 工具循环：执行工具 → 按格式构造消息 → 新请求（复用原渠道）→ 续流 → 检测新调用。
+// 视觉识别 attempt 的 step 按主链路 __route_step+1 分配（主请求=1、视觉识别=2、续流=3），
+// 每次识别先写 running 占位、结束再 success/failed 覆盖（db 按 request_id+step_no UPSERT）。
+// 续流由 vision_v2 直接 doUpstream（不走 model-gateway 主链路），故续流结束后补一条
+// 主链路语义的 attempt（Action=首次尝试）推进 __route_step，保证"1 主请求 → 2 识别 → 3 续流"完整呈现。
 func (s *Service) executeToolLoop(pipe *modelgateway.ProxyPipeline, st *toolLoopState) (bool, error) {
 	var bodyMap map[string]any
 	dec := json.NewDecoder(bytes.NewReader(pipe.Request.Body))
@@ -201,11 +207,31 @@ func (s *Service) executeToolLoop(pipe *modelgateway.ProxyPipeline, st *toolLoop
 	if len(messages) == 0 {
 		return false, errors.New("vision_v2: 消息数组为空")
 	}
+	ctx := context.Background()
+	if pipe.HTTPRequest != nil && pipe.HTTPRequest.Context() != nil {
+		ctx = pipe.HTTPRequest.Context()
+	}
 	for st.round < maxToolRounds {
 		calls := st.calls
 		if len(calls) == 0 {
 			return true, nil
 		}
+		names := make([]string, 0, len(calls))
+		for _, c := range calls {
+			names = append(names, c.Name)
+		}
+		s.lg.Info("工具调用检测", "req", pipe.RequestID, "round", st.round, "call_count", len(calls), "names", names)
+
+		route, _ := pipe.Metadata["__vision_v2_route"].(*types.CapabilityRoute)
+		if route == nil {
+			return false, errors.New("vision_v2: 缺少视觉路由")
+		}
+		// step 分配：视觉识别 = 主链路当前 step + 1（主请求=1、视觉识别=2、续流=3）。
+		// 一次工具循环（可含多个 look_at_image 调用）合并分配一个 step，全部识别视为一次视觉动作。
+		step, _ := pipe.Metadata["__route_step"].(int)
+		step++
+		pipe.Metadata["__route_step"] = step
+
 		// 1. 执行工具（识别）
 		var toolResults []any
 		handled := false
@@ -214,23 +240,36 @@ func (s *Service) executeToolLoop(pipe *modelgateway.ProxyPipeline, st *toolLoop
 				continue
 			}
 			handled = true
-			route, _ := pipe.Metadata["__vision_v2_route"].(*types.CapabilityRoute)
-			if route == nil {
-				return false, errors.New("vision_v2: 缺少视觉路由")
+			start := time.Now()
+			// running 占位：UI 实时看到"工具调用中"
+			extra := map[string]any{
+				"called_via_tool": true,
+				"tool":            c.Name,
+				"image_id":        c.ImageID,
+				"prompt":          c.Prompt,
 			}
-			ctx := context.Background()
-			if pipe.HTTPRequest != nil && pipe.HTTPRequest.Context() != nil {
-				ctx = pipe.HTTPRequest.Context()
-			}
-			text, _, err := s.describeWithFailover(ctx, c.ImageID, c.Prompt, s.toolStreamWriter(pipe, st.format), route)
+			s.visionAttempt(ctx, pipe.RequestID, step, viaModelOf(route), start, 0, "running", "", "", 1, extra)
+			s.lg.Info("视觉识别开始", "req", pipe.RequestID, "step", step, "tool", c.Name, "image_id", c.ImageID, "prompt", c.Prompt)
+
+			text, chID, err := s.describeWithFailover(ctx, c.ImageID, c.Prompt, s.toolStreamWriter(pipe, st.format), route)
 			if err != nil {
+				extra["cache_hit"] = false
+				s.visionAttempt(ctx, pipe.RequestID, step, viaModelOf(route), start, time.Since(start), "failed", "", err.Error(), 1, extra)
+				s.lg.Warn("视觉识别失败", "req", pipe.RequestID, "step", step, "image_id", c.ImageID, "err", err)
 				return false, err
 			}
+			extra["cache_hit"] = (chID == "")
+			if chID != "" {
+				extra["via_channel"] = chID
+			}
+			s.visionAttempt(ctx, pipe.RequestID, step, viaModelOf(route), start, time.Since(start), "success", chID, "", 1, extra)
+			s.lg.Info("视觉识别完成", "req", pipe.RequestID, "step", step, "image_id", c.ImageID, "cache_hit", chID == "", "duration_ms", time.Since(start).Milliseconds())
 			toolResults = append(toolResults, buildToolResultMessage(c, text, st.format))
 		}
 		if !handled {
 			return true, nil // 本轮没有 look_at_image：不接管
 		}
+		s.lg.Info("工具结果写回", "req", pipe.RequestID, "round", st.round, "tool_calls", len(calls), "results", len(toolResults))
 		// 2. 构造 assistant 工具消息 + 结果，追加。
 		//    chat/claude：全部调用合并进一条 assistant 消息；
 		//    responses：input 里每个 function_call 是独立 item，逐条追加。
@@ -247,6 +286,11 @@ func (s *Service) executeToolLoop(pipe *modelgateway.ProxyPipeline, st *toolLoop
 		reqBody, err := json.Marshal(bodyMap)
 		if err != nil {
 			return false, err
+		}
+		continuationStart := time.Now()
+		var continuationChID string
+		if contCh := s.mainChannelForContinuation(pipe); contCh != nil {
+			continuationChID = contCh.ID
 		}
 		resp, err := s.doUpstream(pipe, reqBody)
 		if err != nil {
@@ -274,6 +318,29 @@ func (s *Service) executeToolLoop(pipe *modelgateway.ProxyPipeline, st *toolLoop
 			}
 		}
 		resp.Body.Close()
+		// 续流结束：写主链路 attempt（step = __route_step + 1，action=首次尝试）。
+		// 续流不走 model-gateway 主链路（vision_v2 直接 doUpstream），由这里补日志并推进 step。
+		contStep, _ := pipe.Metadata["__route_step"].(int)
+		pipe.Metadata["__route_step"] = contStep + 1
+		contModel := ""
+		if pipe.Request != nil {
+			contModel = pipe.Request.Model
+		}
+		if s.routeLog != nil {
+			_, _ = s.routeLog.Attempt(ctx, contracts.RouteAttempt{
+				RequestID:  pipe.RequestID,
+				StepNo:     contStep + 1,
+				Action:     "首次尝试",
+				Model:      contModel,
+				ChannelID:  continuationChID,
+				StartedAt:  continuationStart,
+				FinishedAt: pointerTime(time.Now()),
+				Result:     "success",
+				Stream:     true,
+				Duration:   contracts.DurationMS(time.Since(continuationStart)),
+			})
+		}
+		s.lg.Info("续流", "req", pipe.RequestID, "step", contStep+1, "status", 200, "new_calls", len(newCalls))
 		if len(newCalls) == 0 {
 			return true, nil
 		}
@@ -281,6 +348,16 @@ func (s *Service) executeToolLoop(pipe *modelgateway.ProxyPipeline, st *toolLoop
 		st.round++
 	}
 	return false, fmt.Errorf("vision_v2: 工具循环超过 %d 轮", maxToolRounds)
+}
+
+// viaModelOf 取路由第一个候选的视觉模型名（attempt 的 Model 字段展示用）。
+func viaModelOf(route *types.CapabilityRoute) string {
+	if route != nil && len(route.ViaOptions) > 0 {
+		if m := route.ViaOptions[0].ViaModel; m != "" {
+			return m
+		}
+	}
+	return config.DefaultVisionModel
 }
 
 // toolArguments 工具参数 JSON 结构（chat/responses 的 arguments 用）。

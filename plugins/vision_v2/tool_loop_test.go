@@ -183,6 +183,8 @@ func TestToolLoopStreamChat(t *testing.T) {
 	}
 	svc.repo = repo
 	svc.st = st
+	rl := &mockVisionRouteLog{}
+	svc.SetRouteLog(rl)
 	if err := repo.ReplaceChannels(context.Background(), []db.Channel{
 		{ID: "bailian", Name: "百炼", BaseURL: vision.URL, ManualEnabled: true},
 		{ID: "main", Name: "主模型", BaseURL: main.URL, ManualEnabled: true},
@@ -204,6 +206,7 @@ func TestToolLoopStreamChat(t *testing.T) {
 		ResponseWriter: rr,
 		HTTPRequest:    httpReq,
 		Metadata: map[string]any{
+			"__route_step":       1, // 模拟主链路已写 step1（主请求首次尝试）
 			"__current_channel":  "main",
 			"__vision_v2_active": true,
 			"__vision_v2_route": &types.CapabilityRoute{ViaOptions: []types.ViaOption{
@@ -253,6 +256,187 @@ func TestToolLoopStreamChat(t *testing.T) {
 	}
 	if mainCalls.Load() != 2 {
 		t.Errorf("主上游应被调 2 次（原始流+续流），实际 %d", mainCalls.Load())
+	}
+	// route-log 断言：step 序列 = 1 主请求 → 2 视觉识别 → 3 续流。
+	// mock 按 append 记录（running 占位 + success 覆盖各一条），取 step 的末条即最终态。
+	var visionStep, contStep *contracts.RouteAttempt
+	for i := range rl.attempts {
+		a := &rl.attempts[i]
+		switch a.StepNo {
+		case 2:
+			visionStep = a
+		case 3:
+			contStep = a
+		}
+	}
+	if visionStep == nil {
+		t.Error("缺少 step=2 的视觉识别 attempt")
+	} else {
+		if visionStep.Action != "视觉识别" || visionStep.Result != "success" {
+			t.Errorf("step2 = %+v, want Action=视觉识别 Result=success", *visionStep)
+		}
+		if v, _ := visionStep.Metadata["called_via_tool"].(bool); !v {
+			t.Errorf("step2 called_via_tool = %v, want true", visionStep.Metadata["called_via_tool"])
+		}
+		if v, _ := visionStep.Metadata["tool"].(string); v != "look_at_image" {
+			t.Errorf("step2 tool = %v, want look_at_image", visionStep.Metadata["tool"])
+		}
+		if v, _ := visionStep.Metadata["image_id"].(string); v != imgID {
+			t.Errorf("step2 image_id = %v, want %q", visionStep.Metadata["image_id"], imgID)
+		}
+		if v, _ := visionStep.Metadata["prompt"].(string); v != "看颜色" {
+			t.Errorf("step2 prompt = %v, want 看颜色", visionStep.Metadata["prompt"])
+		}
+		if v, _ := visionStep.Metadata["cache_hit"].(bool); v {
+			t.Error("step2 cache_hit = true, want false（本测试未预写缓存）")
+		}
+		if v, _ := visionStep.Metadata["via_channel"].(string); v != "bailian" {
+			t.Errorf("step2 via_channel = %v, want bailian", visionStep.Metadata["via_channel"])
+		}
+		if visionStep.Model != "qwen3-vl-flash-2026-01-22" {
+			t.Errorf("step2 Model = %q, want qwen3-vl-flash-2026-01-22", visionStep.Model)
+		}
+	}
+	if contStep == nil {
+		t.Error("缺少 step=3 的续流 attempt")
+	} else {
+		if contStep.Action != "首次尝试" || contStep.Result != "success" {
+			t.Errorf("step3 = %+v, want Action=首次尝试 Result=success", *contStep)
+		}
+		if contStep.ChannelID != "main" {
+			t.Errorf("step3 ChannelID = %q, want main（续流复用主链路渠道）", contStep.ChannelID)
+		}
+		if !contStep.Stream {
+			t.Error("step3 Stream = false, want true（续流为 SSE 流式）")
+		}
+	}
+	// __route_step 应停在 3（识别推进到 2、续流推进到 3）。
+	if v, _ := pipe.Metadata["__route_step"].(int); v != 3 {
+		t.Errorf("__route_step = %v, want 3", pipe.Metadata["__route_step"])
+	}
+}
+
+// TestVisionAttemptStepSequence 验证视觉识别 attempt 的 step 按主链路 __route_step+1 分配：
+// 起始 __route_step=1 → 识别写 step=2（running 占位 + success 覆盖）→ 续流写 step=3（首次尝试），
+// 最终 __route_step=3。直接调 executeToolLoop（绕过 HandleProxyStreamChunk 主链路）。
+func TestVisionAttemptStepSequence(t *testing.T) {
+	setVisionConfig(t)
+
+	svc := NewService(nil, nil, slog.Default())
+	svc.cacheDir = t.TempDir()
+	imgID, err := svc.SaveImageDataURI(tinyPNGDataURI)
+	if err != nil {
+		t.Fatalf("SaveImageDataURI: %v", err)
+	}
+
+	vision := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"图片描述\"}}]}\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer vision.Close()
+
+	var mainCalls atomic.Int32
+	main := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mainCalls.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"最终回答\"}}]}\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer main.Close()
+
+	database, err := db.OpenMemory()
+	if err != nil {
+		t.Fatalf("db.OpenMemory: %v", err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	repo, err := db.NewRepository(database)
+	if err != nil {
+		t.Fatalf("db.NewRepository: %v", err)
+	}
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	svc.repo = repo
+	svc.st = st
+	rl := &mockVisionRouteLog{}
+	svc.SetRouteLog(rl)
+	if err := repo.ReplaceChannels(context.Background(), []db.Channel{
+		{ID: "bailian", Name: "百炼", BaseURL: vision.URL, ManualEnabled: true},
+		{ID: "main", Name: "主模型", BaseURL: main.URL, ManualEnabled: true},
+	}); err != nil {
+		t.Fatalf("ReplaceChannels: %v", err)
+	}
+
+	rr := httptest.NewRecorder()
+	httpReq := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	pipe := &modelgateway.ProxyPipeline{
+		RequestID: "req-step-1",
+		Request: &modelgateway.ProxyRequest{
+			Method: "POST", Path: "chat/completions",
+			Body:   []byte(`{"model":"gpt-4o","stream":true,"messages":[{"role":"user","content":"这图里有啥"}]}`),
+			Model:  "gpt-4o",
+			Stream: true,
+		},
+		ResponseWriter: rr,
+		HTTPRequest:    httpReq,
+		Metadata: map[string]any{
+			"__route_step":       1, // 主请求已写 step1，视觉识别从 2 开始
+			"__current_channel":  "main",
+			"__vision_v2_active": true,
+			"__vision_v2_route": &types.CapabilityRoute{ViaOptions: []types.ViaOption{
+				{ChannelIDs: []string{"bailian"}, ViaModel: "qwen3-vl-flash-2026-01-22"},
+			}},
+		},
+	}
+	st0 := &toolLoopState{
+		format: formatChat,
+		calls:  []ToolCall{{ID: "call_1", Name: "look_at_image", ImageID: imgID, Prompt: "看颜色"}},
+		round:  0,
+	}
+
+	handled, err := svc.executeToolLoop(pipe, st0)
+	if err != nil {
+		t.Fatalf("executeToolLoop 报错: %v", err)
+	}
+	if !handled {
+		t.Error("executeToolLoop 应返回 handled=true（本轮有 look_at_image）")
+	}
+	if len(rl.attempts) != 3 {
+		t.Fatalf("attempts = %d 条, want 3（step2 running + step2 success + step3 续流）", len(rl.attempts))
+	}
+	// step2：running 占位在前，success 覆盖在后。
+	run := rl.attempts[0]
+	if run.StepNo != 2 || run.Action != "视觉识别" || run.Result != "running" {
+		t.Errorf("attempts[0] = %+v, want StepNo=2 Action=视觉识别 Result=running（running 占位）", run)
+	}
+	visionStep := rl.attempts[1]
+	if visionStep.StepNo != 2 || visionStep.Action != "视觉识别" || visionStep.Result != "success" {
+		t.Errorf("attempts[1] = %+v, want StepNo=2 Action=视觉识别 Result=success", visionStep)
+	}
+	if v, _ := visionStep.Metadata["called_via_tool"].(bool); !v {
+		t.Errorf("视觉识别 called_via_tool = %v, want true", visionStep.Metadata["called_via_tool"])
+	}
+	if v, _ := visionStep.Metadata["tool"].(string); v != "look_at_image" {
+		t.Errorf("视觉识别 tool = %v, want look_at_image", visionStep.Metadata["tool"])
+	}
+	if v, _ := visionStep.Metadata["cache_hit"].(bool); v {
+		t.Error("视觉识别 cache_hit = true, want false")
+	}
+	// step3：续流 = __route_step(2)+1，证明识别后 __route_step 已推进到 2。
+	contStep := rl.attempts[2]
+	if contStep.StepNo != 3 || contStep.Action != "首次尝试" || contStep.Result != "success" {
+		t.Errorf("attempts[2] = %+v, want StepNo=3 Action=首次尝试 Result=success", contStep)
+	}
+	if contStep.ChannelID != "main" {
+		t.Errorf("续流 ChannelID = %q, want main", contStep.ChannelID)
+	}
+	if v, _ := pipe.Metadata["__route_step"].(int); v != 3 {
+		t.Errorf("__route_step = %v, want 3（识别推进到 2、续流推进到 3）", pipe.Metadata["__route_step"])
+	}
+	if mainCalls.Load() != 1 {
+		t.Errorf("主上游应被调 1 次（仅续流），实际 %d", mainCalls.Load())
 	}
 }
 
