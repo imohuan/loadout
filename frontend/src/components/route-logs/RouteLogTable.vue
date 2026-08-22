@@ -1,23 +1,13 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { RiArrowDownSLine, RiArrowRightSLine } from '@remixicon/vue'
-import {
-  HoverCard,
-  HoverCardContent,
-  HoverCardTrigger,
-} from 'shadcn-vue-cdn'
 import type { Channel, RouteAttempt, RouteLog } from '@/lib/types'
 import { BUILTIN_CHANNEL } from '@/lib/constants'
 import { formatDate, formatDuration } from '@/lib/format'
-import { extractErrorSummary } from '@/lib/errorExtract'
 import ChannelRef from '@/components/ChannelRef.vue'
 import EmptyState from '@/components/EmptyState.vue'
 import DataPagination from '@/components/DataPagination.vue'
-import RouteLogErrorBody from '@/components/route-logs/RouteLogErrorBody.vue'
-
-// 表格里"错误摘要"列里默认展示的最大字符数。
-// 简短提示直接读完，详细 JSON 通过 Popover 看，避免撑爆列宽。
-const ERROR_SUMMARY_MAX_LEN = 70
+import RouteLogErrorCell from '@/components/route-logs/RouteLogErrorCell.vue'
 
 const props = withDefaults(
   defineProps<{
@@ -219,303 +209,162 @@ function cacheRatio(x: { prompt_tokens?: number; cached_tokens?: number }) {
   if (prompt <= 0 || cached <= 0) return ''
   return `${Math.round((cached / prompt) * 100)}%`
 }
-// 错误展示助手：浓缩一行 + 弹出详情。
-//   - 列表行默认显示一行摘要，避免失败态看不出原因、要一个个去展开详情。
-//   - hover / focus 触发的 Popover 里再展开完整 JSON + error_message + failure_class。
-// 仅在 result 失败/中断等终态错误时显示；successful / running 不渲染浪费行宽。
-function errorSummaryFor(item: { error_body?: string; error_message?: string }) {
-  return extractErrorSummary(item.error_body, item.error_message, ERROR_SUMMARY_MAX_LEN)
-}
+// 错误列展示范围：仅在失败/中断等终态错误时渲染；successful / running 显示占位符。
 function isFailureResult(result?: string) {
   return result === 'failed' || result === 'stream_interrupted'
-}
-// 复制 error_body 到剪贴板。剪贴板权限被拒（http/非 secure context）时静默吞异常。
-async function copyErrorBody(log: RouteLog, ev?: Event) {
-  ev?.stopPropagation()
-  if (!log.error_body) return
-  try {
-    await navigator.clipboard.writeText(log.error_body as string)
-  } catch {
-    /* noop */
-  }
-}
-// Popover 里的"完整 JSON"展示：能解析则漂亮缩进，解析不动则原样兜底。
-// 避免上游把多行 JSON 压成单行时阅读体验崩坏。
-function prettyJson(raw?: string): string {
-  const s = (raw || '').trim()
-  if (!s) return ''
-  if (s.startsWith('{') || s.startsWith('[')) {
-    try {
-      return JSON.stringify(JSON.parse(s), null, 2)
-    } catch {
-      return s
-    }
-  }
-  return s
 }
 </script>
 
 <template>
-  <Card class="rounded-md pb-0!"
-    ><CardHeader class="flex flex-row items-start justify-between gap-3 space-y-0"
-      ><div>
-        <CardTitle class="text-base">请求记录</CardTitle
-        ><CardDescription>展开一条请求可查看每一次真实上游尝试和被跳过的候选。</CardDescription>
+  <Card class="rounded-md pb-0!">
+    <CardHeader class="flex flex-row items-start justify-between gap-3 space-y-0">
+      <div>
+        <CardTitle class="text-base">请求记录</CardTitle>
+        <CardDescription>展开一条请求可查看每一次真实上游尝试和被跳过的候选。</CardDescription>
       </div>
-      <slot name="actions" /> </CardHeader
-    ><CardContent class="p-0"
-      ><div v-if="pagedLogs.length" class="overflow-x-auto">
-        <Table
-          ><TableHeader
-            ><TableRow
-><TableHead class="w-10"></TableHead><TableHead>时间</TableHead
-            ><TableHead>请求模型</TableHead><TableHead>最终目标</TableHead
-            ><TableHead>结果</TableHead><TableHead class="max-w-60">错误</TableHead
-            ><TableHead>流</TableHead><TableHead>Tokens</TableHead
-            ><TableHead>缓存</TableHead><TableHead>耗时</TableHead></TableRow
-            ></TableHeader
-          ><TableBody
-            ><template v-for="log in pagedLogs" :key="log.request_id"
-              ><TableRow
-                :class="props.collapsible !== false ? 'cursor-pointer' : ''"
-                @click="props.collapsible !== false && toggle(log)"
-              ><TableCell
-                  ><component
-                    v-if="props.collapsible !== false"
-                    :is="isExpanded(log) ? RiArrowDownSLine : RiArrowRightSLine"
-                    size="18"
-                    class="text-muted-foreground" /></TableCell
-                ><TableCell class="whitespace-nowrap text-xs text-muted-foreground">{{
+      <slot name="actions" />
+    </CardHeader>
+    <CardContent class="p-0">
+      <div v-if="pagedLogs.length" class="overflow-x-auto">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead class="w-10"></TableHead>
+              <TableHead>时间</TableHead>
+              <TableHead>请求模型</TableHead>
+              <TableHead>最终目标</TableHead>
+              <TableHead>结果</TableHead>
+              <TableHead class="max-w-60">错误</TableHead>
+              <TableHead>流</TableHead>
+              <TableHead>Tokens</TableHead>
+              <TableHead>缓存</TableHead>
+              <TableHead>耗时</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody><template v-for="log in pagedLogs" :key="log.request_id">
+              <TableRow :class="props.collapsible !== false ? 'cursor-pointer' : ''"
+                @click="props.collapsible !== false && toggle(log)">
+                <TableCell>
+                  <component v-if="props.collapsible !== false"
+                    :is="isExpanded(log) ? RiArrowDownSLine : RiArrowRightSLine" size="18"
+                    class="text-muted-foreground" />
+                </TableCell>
+                <TableCell class="whitespace-nowrap text-xs text-muted-foreground">{{
                   formatDate(log.started_at)
-                }}</TableCell
-                ><TableCell
-                  ><p class="font-mono text-xs font-medium">{{ log.requested_model }}</p>
+                }}</TableCell>
+                <TableCell>
+                  <p class="font-mono text-xs font-medium">{{ log.requested_model }}</p>
                   <p class="mt-1 max-w-40 truncate font-mono text-[11px] text-muted-foreground">
                     {{ log.request_id }}
-                  </p></TableCell
-                ><TableCell class="text-sm"
-                  ><span class="inline-flex items-center gap-0.5"
-                    ><span class="font-mono">{{ log.final_model || '-' }}</span
-                    ><template v-if="log.final_model"
-                      ><span
-                        v-if="log.final_channel_id === BUILTIN_CHANNEL"
-                        class="text-muted-foreground"
-                        >@ {{ finalTargetLabel(log.final_channel_id, log.sk_key_name) }}</span
-                      ><ChannelRef
-                        v-else-if="finalChannelRef(log)"
-                        :target="finalChannelRef(log)"
-                        :channels="channels" /></template></span
-                  ></TableCell
-                ><TableCell
-                  ><Badge :class="resultTone(log.result)">{{ resultLabel(log.result) }}</Badge></TableCell
-                ><TableCell class="max-w-60"
-                  ><HoverCard
-                    v-if="isFailureResult(log.result) && errorSummaryFor(log)"
-                    :open-delay="150"
-                    :close-delay="100"
-                  ><HoverCardTrigger as-child
-                      ><button
-                        type="button"
-                        class="-mx-1 inline-flex max-w-full items-center gap-1 rounded px-1 text-left text-xs text-destructive hover:bg-destructive/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-destructive/40"
-                        :title="errorSummaryFor(log)"
-                        @click.stop
-                        ><span class="truncate">{{ errorSummaryFor(log) }}</span></button
-                      ></HoverCardTrigger
-                    ><HoverCardContent
-                      align="start"
-                      :side-offset="6"
-                      class="w-[min(420px,calc(100vw-2rem))] p-3"
-                    >
-                      <div class="space-y-2">
-                        <div class="flex items-center justify-between gap-2">
-                          <p class="text-xs font-medium text-muted-foreground">错误详情</p>
-                          <button
-                            v-if="log.error_body"
-                            type="button"
-                            class="text-[10px] text-muted-foreground hover:text-foreground"
-                            @click.stop="copyErrorBody(log, $event)"
-                          >
-                            复制 JSON
-                          </button>
-                        </div>
-                        <p
-                          v-if="log.error_message"
-                          class="break-all whitespace-pre-wrap text-xs"
-                        >
-                          {{ log.error_message }}
-                        </p>
-                        <pre
-                          v-if="log.error_body"
-                          class="max-h-72 overflow-auto rounded bg-muted/60 p-2 font-mono text-[11px] leading-relaxed break-all whitespace-pre-wrap"
-                        >{{ prettyJson(log.error_body) }}</pre>
-                        <p
-                          v-else
-                          class="text-xs text-muted-foreground"
-                        >
-                          无上游原始响应体
-                        </p>
-                      </div> </HoverCardContent
-                  ></HoverCard
-                  ><span v-else class="text-xs text-muted-foreground">-</span></TableCell
-                ><TableCell class="whitespace-nowrap text-xs"
-                  ><span
-                    v-if="log.stream"
-                    class="inline-flex items-center gap-1 rounded border border-sky-500/30 bg-sky-500/10 px-1.5 py-0.5 text-[10px] font-medium text-sky-700 dark:text-sky-300"
-                    >流<template v-if="streamTps(log)"
-                      ><span class="opacity-60">·</span
-                      ><span class="tabular-nums">{{ streamTps(log) }}</span
-                      ><span class="opacity-60">t/s</span></template
-                    ></span
-                  ><span
+                  </p>
+                </TableCell>
+                <TableCell class="text-sm"><span class="inline-flex items-center gap-0.5"><span class="font-mono">{{
+                  log.final_model || '-' }}</span><template v-if="log.final_model"><span
+                        v-if="log.final_channel_id === BUILTIN_CHANNEL" class="text-muted-foreground">@ {{
+                          finalTargetLabel(log.final_channel_id, log.sk_key_name) }}</span>
+                      <ChannelRef v-else-if="finalChannelRef(log)" :target="finalChannelRef(log)"
+                        :channels="channels" />
+                    </template></span></TableCell>
+                <TableCell>
+                  <Badge :class="resultTone(log.result)">{{ resultLabel(log.result) }}</Badge>
+                </TableCell>
+                <TableCell class="max-w-60">
+                  <RouteLogErrorCell v-if="isFailureResult(log.result) && (log.error_body || log.error_message)"
+                    :json="log.error_body" :message="log.error_message" label="上游原始响应（最后一次失败）" />
+                  <span v-else class="text-xs text-muted-foreground">-</span>
+                </TableCell>
+                <TableCell class="whitespace-nowrap text-xs"><span v-if="log.stream"
+                    class="inline-flex items-center gap-1 rounded border border-sky-500/30 bg-sky-500/10 px-1.5 py-0.5 text-[10px] font-medium text-sky-700 dark:text-sky-300">流<template
+                      v-if="streamTps(log)"><span class="opacity-60">·</span><span class="tabular-nums">{{
+                        streamTps(log) }}</span><span class="opacity-60">t/s</span></template></span><span
                     v-else-if="hasTokens(log)"
-                    class="inline-flex items-center rounded border border-slate-500/30 bg-slate-500/10 px-1.5 py-0.5 text-[10px] font-medium text-slate-700 dark:text-slate-300"
-                    >非流</span
-                  ><span v-else class="text-muted-foreground">-</span></TableCell
-                ><TableCell class="whitespace-nowrap text-xs tabular-nums"
-                  ><template v-if="hasTokens(log)"
-                    ><span class="font-medium text-foreground"
-                      >{{ formatTokens(log.prompt_tokens) }} /
-                      {{ formatTokens(log.completion_tokens) }}</span
-                    ><span
+                    class="inline-flex items-center rounded border border-slate-500/30 bg-slate-500/10 px-1.5 py-0.5 text-[10px] font-medium text-slate-700 dark:text-slate-300">非流</span><span
+                    v-else class="text-muted-foreground">-</span></TableCell>
+                <TableCell class="whitespace-nowrap text-xs tabular-nums"><template v-if="hasTokens(log)"><span
+                      class="font-medium text-foreground">{{ formatTokens(log.prompt_tokens) }} /
+                      {{ formatTokens(log.completion_tokens) }}</span><span
                       v-if="log.cached_tokens && log.cached_tokens > 0"
-                      class="ml-1 text-[10px] text-violet-600 dark:text-violet-300"
-                      >缓存 ↓ {{ formatTokens(log.cached_tokens) }}</span
-                    ></template
-                  ><span v-else class="text-muted-foreground">-</span></TableCell
-                ><TableCell class="whitespace-nowrap text-xs tabular-nums"
-                  ><template v-if="cacheRatio(log)"
-                    ><span class="font-medium text-violet-600 dark:text-violet-300">{{
-                      cacheRatio(log)
-                    }}</span></template
-                  ><span v-else class="text-muted-foreground">-</span></TableCell
-                ><TableCell class="whitespace-nowrap tabular-nums text-sm">{{
+                      class="ml-1 text-[10px] text-violet-600 dark:text-violet-300">缓存 ↓ {{
+                        formatTokens(log.cached_tokens) }}</span></template><span v-else
+                    class="text-muted-foreground">-</span></TableCell>
+                <TableCell class="whitespace-nowrap text-xs tabular-nums"><template v-if="cacheRatio(log)"><span
+                      class="font-medium text-violet-600 dark:text-violet-300">{{
+                        cacheRatio(log)
+                      }}</span></template><span v-else class="text-muted-foreground">-</span></TableCell>
+                <TableCell class="whitespace-nowrap tabular-nums text-sm">{{
                   formatDuration(log.duration_ms)
-                }}</TableCell></TableRow
-              ><TableRow v-if="showDetails(log)"
-                ><TableCell colspan="10" class="bg-muted/30 p-4"
-                  ><div
-                    v-if="loadingDetail === log.request_id"
-                    class="text-sm text-muted-foreground"
-                  >
+                }}</TableCell>
+              </TableRow>
+              <TableRow v-if="showDetails(log)">
+                <TableCell colspan="10" class="bg-muted/30 p-4">
+                  <div v-if="loadingDetail === log.request_id" class="text-sm text-muted-foreground">
                     正在加载时间线...
                   </div>
                   <div v-else class="min-w-0 space-y-2 break-words">
-                    <p
-                      v-if="log.error_message"
-                      class="break-all whitespace-pre-wrap text-sm text-destructive"
-                    >
-                      {{ log.error_message }}
-                    </p>
-                    <RouteLogErrorBody
-                      v-if="log.error_body"
-                      label="上游原始响应（最后一次失败）"
-                      :body="log.error_body"
-                    />
+                    <RouteLogErrorCell v-if="log.error_message || log.error_body" :json="log.error_body"
+                      :message="log.error_message" label="上游原始响应（最后一次失败）" />
                     <ol v-if="log.attempts?.length" class="space-y-2 border-l border-border pl-4">
-                      <li
-                        v-for="attempt in log.attempts"
-                        :key="attempt.step_no"
-                        class="relative text-sm"
-                      >
-                        <span
-                          class="absolute -left-[21px] top-1.5 size-2 rounded-full bg-primary"
-                        ></span>
+                      <li v-for="attempt in log.attempts" :key="attempt.step_no" class="relative text-sm">
+                        <span class="absolute -left-[21px] top-1.5 size-2 rounded-full bg-primary"></span>
                         <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
-                          <span class="font-medium tabular-nums">{{ attempt.step_no }}.</span
-                          ><span class="inline-flex items-center gap-0.5"
-                            ><span class="font-mono text-xs">{{ attempt.model }}</span
-                            ><ChannelRef
-                              :target="channelRefFor(attempt)"
-                              :channels="channels" /></span
-                          ><Badge
-                            variant="outline"
-                            :class="['shrink-0 border', actionTone(attempt.action)]"
-                            >{{ actionLabel(attempt.action) }}</Badge
-                          ><Badge
-                            v-if="attempt.metadata?.called_via_tool"
-                            variant="outline"
-                            class="shrink-0 border border-sky-500/40 bg-sky-500/10 font-mono text-[10px] font-medium text-sky-700 dark:text-sky-300"
-                            >MCP-{{ attempt.metadata.tool || 'tool' }}</Badge
-                          ><Badge
-                            :class="['shrink-0 border', resultTone(attempt.result)]"
-                            >{{ resultLabel(attempt.result) }}</Badge
-                          ><span class="text-xs text-muted-foreground">{{
+                          <span class="font-medium tabular-nums">{{ attempt.step_no }}.</span><span
+                            class="inline-flex items-center gap-0.5"><span class="font-mono text-xs">{{ attempt.model
+                              }}</span>
+                            <ChannelRef :target="channelRefFor(attempt)" :channels="channels" />
+                          </span>
+                          <Badge variant="outline" :class="['shrink-0 border', actionTone(attempt.action)]">{{
+                            actionLabel(attempt.action) }}</Badge>
+                          <Badge v-if="attempt.metadata?.called_via_tool" variant="outline"
+                            class="shrink-0 border border-sky-500/40 bg-sky-500/10 font-mono text-[10px] font-medium text-sky-700 dark:text-sky-300">
+                            MCP-{{ attempt.metadata.tool || 'tool' }}</Badge>
+                          <Badge :class="['shrink-0 border', resultTone(attempt.result)]">{{ resultLabel(attempt.result)
+                            }}</Badge>
+                          <span class="text-xs text-muted-foreground">{{
                             formatDuration(attempt.duration_ms)
-                          }}</span
-                          ><span
-                            v-if="
+                          }}</span><span v-if="
                               props.liveProgress &&
                               attempt.stream &&
                               attempt.result === 'running' &&
                               (phaseTimes(attempt).waiting || phaseTimes(attempt).streaming)
-                            "
-                            class="text-xs text-muted-foreground tabular-nums"
-                            ><template v-if="phaseTimes(attempt).waiting"
-                              >⏳ 等待响应 {{ phaseTimes(attempt).waiting }}</template
-                            ><template v-if="phaseTimes(attempt).streaming"
-                              ><template v-if="phaseTimes(attempt).waiting"> → </template
-                              >输出中 {{ phaseTimes(attempt).streaming }}</template
-                            ><template v-if="attempt.completion_tokens"
-                              ><span class="opacity-60">·</span
-                              >已输出 {{ formatTokens(attempt.completion_tokens) }} tok（估算）</template
-                            ></span
-                          ><span
+                            " class="text-xs text-muted-foreground tabular-nums"><template
+                              v-if="phaseTimes(attempt).waiting">⏳ 等待响应 {{ phaseTimes(attempt).waiting
+                              }}</template><template v-if="phaseTimes(attempt).streaming"><template
+                                v-if="phaseTimes(attempt).waiting"> → </template>输出中 {{
+                              phaseTimes(attempt).streaming }}</template><template
+                              v-if="attempt.completion_tokens"><span class="opacity-60">·</span>已输出 {{
+                                formatTokens(attempt.completion_tokens) }} tok（估算）</template></span><span
                             v-if="attempt.stream"
-                            class="inline-flex items-center gap-1 rounded border border-sky-500/30 bg-sky-500/10 px-1.5 py-0.5 text-[10px] font-medium text-sky-700 dark:text-sky-300"
-                            >流<template v-if="streamTps(attempt)"
-                              ><span class="opacity-60">·</span
-                              ><span class="tabular-nums">{{ streamTps(attempt) }}</span
-                              ><span class="opacity-60">t/s</span></template
-                            ></span
-                          ><span
+                            class="inline-flex items-center gap-1 rounded border border-sky-500/30 bg-sky-500/10 px-1.5 py-0.5 text-[10px] font-medium text-sky-700 dark:text-sky-300">流<template
+                              v-if="streamTps(attempt)"><span class="opacity-60">·</span><span class="tabular-nums">{{
+                                streamTps(attempt) }}</span><span class="opacity-60">t/s</span></template></span><span
                             v-else-if="hasTokens(attempt)"
-                            class="inline-flex items-center gap-1 rounded border border-slate-500/30 bg-slate-500/10 px-1.5 py-0.5 text-[10px] font-medium text-slate-700 dark:text-slate-300"
-                            >非流</span
-                          ><span
+                            class="inline-flex items-center gap-1 rounded border border-slate-500/30 bg-slate-500/10 px-1.5 py-0.5 text-[10px] font-medium text-slate-700 dark:text-slate-300">非流</span><span
                             v-if="hasTokens(attempt)"
-                            class="inline-flex flex-row items-center gap-1 rounded border border-violet-500/30 bg-violet-500/10 px-1.5 py-0.5 text-[10px] font-medium text-violet-700 dark:text-violet-300"
-                            ><span class="tabular-nums"
-                              >{{ formatTokens(attempt.prompt_tokens) }} /
-                              {{ formatTokens(attempt.completion_tokens) }}</span
-                            ><span
+                            class="inline-flex flex-row items-center gap-1 rounded border border-violet-500/30 bg-violet-500/10 px-1.5 py-0.5 text-[10px] font-medium text-violet-700 dark:text-violet-300"><span
+                              class="tabular-nums">{{ formatTokens(attempt.prompt_tokens) }} /
+                              {{ formatTokens(attempt.completion_tokens) }}</span><span
                               v-if="attempt.cached_tokens && attempt.cached_tokens > 0"
-                              class="text-[9px] font-normal opacity-80"
-                              >缓存 ↓ {{ formatTokens(attempt.cached_tokens) }}</span
-                            ></span
-                          >
+                              class="text-[9px] font-normal opacity-80">缓存 ↓
+                              {{ formatTokens(attempt.cached_tokens) }}</span></span>
                         </div>
-                        <p
-                          v-if="attempt.error_message"
-                          class="mt-1 break-all whitespace-pre-wrap text-xs text-muted-foreground"
-                        >
-                          {{ attempt.failure_class ? `${attempt.failure_class}: ` : ''
-                          }}{{ attempt.error_message }}
-                        </p>
-                        <RouteLogErrorBody
-                          v-if="attempt.error_body"
-                          label="上游原始响应"
-                          :body="attempt.error_body"
-                          compact
-                        />
+                        <RouteLogErrorCell v-if="attempt.error_message || attempt.error_body" :json="attempt.error_body"
+                          :message="attempt.failure_class
+                              ? `${attempt.failure_class}: ${attempt.error_message || ''}`
+                              : attempt.error_message
+                            " label="上游原始响应" compact />
                       </li>
                     </ol>
                     <p v-else class="text-sm text-muted-foreground">暂无步骤详情。</p>
-                  </div></TableCell
-                ></TableRow
-              ></template
-            ></TableBody
-          ></Table
-        >
+                  </div>
+                </TableCell>
+              </TableRow>
+            </template></TableBody>
+        </Table>
       </div>
-      <EmptyState
-        v-else
-        title="还没有请求记录"
-        description="发生模型请求后，这里会按 request_id 展示完整路由过程。" />
+      <EmptyState v-else title="还没有请求记录" description="发生模型请求后，这里会按 request_id 展示完整路由过程。" />
       <div v-if="logs.length" class="border-t border-border p-3">
-        <DataPagination
-          v-model:page="page"
-          v-model:page-size="pageSize"
-          :total="logs.length"
-        /></div></CardContent
-  ></Card>
+        <DataPagination v-model:page="page" v-model:page-size="pageSize" :total="logs.length" />
+      </div>
+    </CardContent>
+  </Card>
 </template>
