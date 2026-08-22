@@ -105,8 +105,9 @@ func (s *Service) requestChannelBaseURL(channelID string) string {
 	return ""
 }
 
-// HandleProxyBeforeUpstream 透明代理输入 hook：对请求体做敏感词过滤。
-// 仅处理合法 JSON body（非 JSON 原样透传，避免误伤二进制/表单）；未命中路由、native 路由原样透传。
+// HandleProxyBeforeUpstream 每次渠道尝试安检 hook（proxy:before-attempt）：
+// 对请求体做敏感词过滤。仅处理合法 JSON body（非 JSON 原样透传，避免误伤二进制/表单）；
+// 未命中路由、native 路由原样透传。
 // proxy：整体 stringify → 逐条替换 → 校验；若整体替换破坏 JSON（如替换词含引号/换行），
 // 自动降级为「只替换 messages 下的文本字段」再放行，绝不报错拒绝请求。
 // error：命中任一敏感词直接拒绝。

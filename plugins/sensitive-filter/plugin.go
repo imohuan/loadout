@@ -60,6 +60,8 @@ func (p *sensitiveFilterPlugin) Apply(ctx plugin.Context) error {
 		}
 	}
 	ctx.Set("sensitive-filter", svc)
-	ctx.On(modelgateway.ProxyBeforeUpstream, svc.HandleProxyBeforeUpstream)
+	// 订阅每次渠道尝试安检事件（proxy:before-attempt）：切换渠道/切换模型后
+	// 敏感词过滤仍按当前渠道上下文重新匹配路由执行。
+	ctx.On(modelgateway.ProxyBeforeAttempt, svc.HandleProxyBeforeUpstream)
 	return nil
 }
