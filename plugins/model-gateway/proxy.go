@@ -960,6 +960,10 @@ func (s *Service) proxyAttemptLog(r *http.Request, pipe *ProxyPipeline, model, c
 	step, _ := pipe.Metadata["__route_step"].(int)
 	step++
 	pipe.Metadata["__route_step"] = step
+	// 主链路段（顶层编号）：视觉插件读它拼子段（视觉识别=1.1、续流=1.2）。
+	// 新主段开始时重置子段计数器，保证每个主链路段从 .1 重新数。
+	pipe.Metadata["__main_step"] = step
+	pipe.Metadata["__vision_sub_step"] = 0
 	// 主链路内部步数（不计视觉），用于独立判断「首次尝试 vs 切换渠道/模型」。
 	mainStep, _ := pipe.Metadata["__main_route_step"].(int)
 	pipe.Metadata["__main_route_step"] = mainStep + 1
@@ -1025,6 +1029,10 @@ func (s *Service) proxyStreamAttempt(r *http.Request, pipe *ProxyPipeline, model
 		//（视觉识别/续流）推进后的运行时 __route_step 撞号覆盖其它 attempt，
 		// 同时保证主请求 attempt（step1）的 running→success 收尾落在自己 step 上。
 		pipe.Metadata["__stream_step"] = step
+		// 主链路段（顶层编号）+ 重置子段：视觉插件读 __main_step 拼子段
+		//（视觉识别=1.1、续流=1.2），新主段从 .1 重新数。
+		pipe.Metadata["__main_step"] = step
+		pipe.Metadata["__vision_sub_step"] = 0
 		mainStep, _ := pipe.Metadata["__main_route_step"].(int)
 		pipe.Metadata["__main_route_step"] = mainStep + 1
 		if mainStep > 0 {

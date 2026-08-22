@@ -65,6 +65,22 @@ function replacementLabel(r: { from: string; to: string; regex?: boolean }) {
 function proxyReplacementsLabel(route: CapabilityRoute) {
   return (route.replacements || []).map((r) => replacementLabel(r)).join('\n')
 }
+// field_filter 的字段过滤规则摘要：非空项逐行输出「方向+动作: 字段路径」，空项省略。
+function fieldRulesLabel(route: CapabilityRoute): string {
+  const r = route.field_rules
+  if (!r) return ''
+  const lines: string[] = []
+  const push = (label: string, list?: string[]) => {
+    if (list && list.length) lines.push(`${label}: ${list.join(', ')}`)
+  }
+  push('请求体剔除', r.request_strip)
+  push('请求体保留', r.request_keep)
+  push('请求头剔除', r.request_header_strip)
+  push('响应体剔除', r.response_strip)
+  push('响应体保留', r.response_keep)
+  push('响应头剔除', r.response_header_strip)
+  return lines.join('\n')
+}
 // 目标渠道展示：空 / 含 `*`（老数据全匹配）= 全渠道；否则按 base_url 分组聚合「渠道名(Key1, Key2)」
 // （渠道级段无括号、Key 级段带括号——与 ChannelRef 组件规范一致）。
 function channelScopeLabel(channels: Channel[], ids?: string[], baseURLs?: string[]) {
@@ -160,10 +176,13 @@ function channelScopeLabel(channels: Channel[], ids?: string[], baseURLs?: strin
                   <Tooltip>
                     <TooltipTrigger as-child>
                       <div
-                        class="whitespace-pre-wrap break-words [display:-webkit-box] [-webkit-line-clamp:2] [-webkit-box-orient:vertical] overflow-hidden"
+                        class="w-fit whitespace-pre-wrap break-words [display:-webkit-box] [-webkit-line-clamp:2] [-webkit-box-orient:vertical] overflow-hidden"
                       >
                         <template v-if="route.capability === 'sensitive_filter'">
                           {{ proxyReplacementsLabel(route) || '—' }}
+                        </template>
+                        <template v-else-if="route.capability === 'field_filter'">
+                          {{ fieldRulesLabel(route) || '—' }}
                         </template>
                         <template v-else>
                           <template v-for="(o, i) in viaOptions(route)" :key="i">
@@ -177,9 +196,12 @@ function channelScopeLabel(channels: Channel[], ids?: string[], baseURLs?: strin
                         </template>
                       </div>
                     </TooltipTrigger>
-                    <TooltipContent>
+                    <TooltipContent side="top" align="start">
                       <template v-if="route.capability === 'sensitive_filter'">
                         {{ proxyReplacementsLabel(route) || '—' }}
+                      </template>
+                      <template v-else-if="route.capability === 'field_filter'">
+                        <span class="whitespace-pre-wrap">{{ fieldRulesLabel(route) || '—' }}</span>
                       </template>
                       <template v-else>
                         <div class="flex flex-col items-start gap-1">

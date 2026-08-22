@@ -222,11 +222,18 @@ func (s *Service) executeToolLoop(pipe *modelgateway.ProxyPipeline, st *toolLoop
 		if route == nil {
 			return false, errors.New("vision_v2: 缺少视觉路由")
 		}
-		// step 分配：视觉识别 = 主链路当前 step + 1（主请求=1、视觉识别=2、续流=3）。
+		// step 分配（点分层级）：视觉识别 = 主链路段(顶层编号).子段，如 "1.1"。
+		// 主链路段来自 __main_step（model-gateway 写主 attempt 时设置），
+		// 子段用 __vision_sub_step 计数器（识别/续流共享递增：1.1、1.2、1.3...）。
 		// 一次工具循环（可含多个 look_at_image 调用）合并分配一个 step，全部识别视为一次视觉动作。
-		step, _ := pipe.Metadata["__route_step"].(int)
-		step++
-		pipe.Metadata["__route_step"] = step
+		mainStep, _ := pipe.Metadata["__main_step"].(int)
+		if mainStep == 0 {
+			// 兜底：model-gateway 未写 __main_step（如测试/旧链路），退回 __route_step。
+			mainStep, _ = pipe.Metadata["__route_step"].(int)
+		}
+		subStep := s.nextVisionSubStep(pipe)
+		step := fmt.Sprintf("%d.%d", mainStep, subStep)
+		_ = step
 
 		// 1. 执行工具（识别）
 		var toolResults []any
@@ -244,13 +251,13 @@ func (s *Service) executeToolLoop(pipe *modelgateway.ProxyPipeline, st *toolLoop
 				"image_id":        c.ImageID,
 				"prompt":          c.Prompt,
 			}
-			s.visionAttempt(ctx, pipe.RequestID, fmt.Sprintf("%d", step), viaModelOf(route), start, 0, "running", "", "", 1, extra)
+			s.visionAttempt(ctx, pipe.RequestID, step, viaModelOf(route), start, 0, "running", "", "", 1, extra)
 			s.lg.Info("视觉识别开始", "req", pipe.RequestID, "step", step, "tool", c.Name, "image_id", c.ImageID, "prompt", c.Prompt)
 
 			text, chID, err := s.describeWithFailover(ctx, c.ImageID, c.Prompt, s.toolStreamWriter(pipe, st.format), route)
 			if err != nil {
 				extra["cache_hit"] = false
-				s.visionAttempt(ctx, pipe.RequestID, fmt.Sprintf("%d", step), viaModelOf(route), start, time.Since(start), "failed", "", err.Error(), 1, extra)
+				s.visionAttempt(ctx, pipe.RequestID, step, viaModelOf(route), start, time.Since(start), "failed", "", err.Error(), 1, extra)
 				s.lg.Warn("视觉识别失败", "req", pipe.RequestID, "step", step, "image_id", c.ImageID, "err", err)
 				return false, err
 			}
@@ -258,7 +265,7 @@ func (s *Service) executeToolLoop(pipe *modelgateway.ProxyPipeline, st *toolLoop
 			if chID != "" {
 				extra["via_channel"] = chID
 			}
-			s.visionAttempt(ctx, pipe.RequestID, fmt.Sprintf("%d", step), viaModelOf(route), start, time.Since(start), "success", chID, "", 1, extra)
+			s.visionAttempt(ctx, pipe.RequestID, step, viaModelOf(route), start, time.Since(start), "success", chID, "", 1, extra)
 			s.lg.Info("视觉识别完成", "req", pipe.RequestID, "step", step, "image_id", c.ImageID, "cache_hit", chID == "", "duration_ms", time.Since(start).Milliseconds())
 			toolResults = append(toolResults, buildToolResultMessage(c, text, st.format))
 		}
@@ -314,10 +321,15 @@ func (s *Service) executeToolLoop(pipe *modelgateway.ProxyPipeline, st *toolLoop
 			}
 		}
 		resp.Body.Close()
-		// 续流结束：写主链路 attempt（step = __route_step + 1，action=首次尝试）。
-		// 续流不走 model-gateway 主链路（vision_v2 直接 doUpstream），由这里补日志并推进 step。
-		contStep, _ := pipe.Metadata["__route_step"].(int)
-		pipe.Metadata["__route_step"] = contStep + 1
+		// 续流结束：写主链路 attempt（点分层级，如 "1.2"——主请求的子步骤，与视觉识别兄弟）。
+		// 续流不走 model-gateway 主链路（vision_v2 直接 doUpstream），由这里补日志。
+		// 主链路段不推进（仍是 __main_step），子段计数器继续递增。
+		mainStep2, _ := pipe.Metadata["__main_step"].(int)
+		if mainStep2 == 0 {
+			mainStep2, _ = pipe.Metadata["__route_step"].(int)
+		}
+		subStep2 := s.nextVisionSubStep(pipe)
+		contStep := fmt.Sprintf("%d.%d", mainStep2, subStep2)
 		contModel := ""
 		if pipe.Request != nil {
 			contModel = pipe.Request.Model
@@ -325,7 +337,7 @@ func (s *Service) executeToolLoop(pipe *modelgateway.ProxyPipeline, st *toolLoop
 		if s.routeLog != nil {
 			_, _ = s.routeLog.Attempt(ctx, contracts.RouteAttempt{
 				RequestID:  pipe.RequestID,
-				StepNo:     fmt.Sprintf("%d", contStep+1),
+				StepNo:     contStep,
 				Action:     "首次尝试",
 				Model:      contModel,
 				ChannelID:  continuationChID,
@@ -336,7 +348,7 @@ func (s *Service) executeToolLoop(pipe *modelgateway.ProxyPipeline, st *toolLoop
 				Duration:   contracts.DurationMS(time.Since(continuationStart)),
 			})
 		}
-		s.lg.Info("续流", "req", pipe.RequestID, "step", contStep+1, "status", 200, "new_calls", len(newCalls))
+		s.lg.Info("续流", "req", pipe.RequestID, "step", contStep, "status", 200, "new_calls", len(newCalls))
 		if len(newCalls) == 0 {
 			return true, nil
 		}
@@ -354,6 +366,15 @@ func viaModelOf(route *types.CapabilityRoute) string {
 		}
 	}
 	return config.DefaultVisionModel
+}
+
+// nextVisionSubStep 取下一个视觉子段号并递增（识别/续流共享计数器）：
+// 视觉识别=1.1、续流=1.2、下一轮识别=1.3...。主链路段由 __main_step 提供，
+// 新主段开始时 model-gateway 会把计数器重置为 0。
+func (s *Service) nextVisionSubStep(pipe *modelgateway.ProxyPipeline) int {
+	n, _ := pipe.Metadata["__vision_sub_step"].(int)
+	pipe.Metadata["__vision_sub_step"] = n + 1
+	return n + 1
 }
 
 // toolArguments 工具参数 JSON 结构（chat/responses 的 arguments 用）。

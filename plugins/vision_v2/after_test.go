@@ -194,6 +194,7 @@ func TestAfterUpstreamToolLoopChat(t *testing.T) {
 		HTTPRequest: httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
 		Metadata: map[string]any{
 			"__route_step":      1, // 模拟主链路已写 step1（主请求首次尝试）
+			"__main_step":       1, // 主链路段：视觉识别=1.1、续流=1.2
 			"__current_channel": "main",
 			"__vision_v2_route": &types.CapabilityRoute{ViaOptions: []types.ViaOption{
 				{ChannelIDs: []string{"vision"}, ViaModel: "qwen3-vl-flash-2026-01-22"},
@@ -229,57 +230,60 @@ func TestAfterUpstreamToolLoopChat(t *testing.T) {
 	if mainCalls.Load() != 1 {
 		t.Errorf("主上游应被调 1 次（仅续流），实际 %d", mainCalls.Load())
 	}
-	// route-log 断言：主请求=1 → 视觉识别=2 → 续流=3。
-	// running 占位被 success UPSERT 覆盖（request_id+step_no），Detail 里 step2 只剩最终态。
+	// route-log 断言：主请求=1 → 视觉识别=1.1 → 续流=1.2（点分，兄弟关系）。
+	// running 占位被 success UPSERT 覆盖（request_id+step_no），Detail 里 step1.1 只剩最终态。
 	detail, err := rl.Detail(context.Background(), pipe.RequestID)
 	if err != nil {
 		t.Fatalf("rl.Detail: %v", err)
 	}
 	if len(detail.Attempts) != 2 {
-		t.Fatalf("attempts = %d 条, want 2（step2 视觉识别 + step3 续流）: %+v", len(detail.Attempts), detail.Attempts)
+		t.Fatalf("attempts = %d 条, want 2（step1.1 视觉识别 + step1.2 续流）: %+v", len(detail.Attempts), detail.Attempts)
 	}
 	var visionStep, contStep *contracts.RouteAttempt
 	for i := range detail.Attempts {
 		a := &detail.Attempts[i]
 		switch a.StepNo {
-		case "2":
+		case "1.1":
 			visionStep = a
-		case "3":
+		case "1.2":
 			contStep = a
 		}
 	}
 	if visionStep == nil {
-		t.Error("缺少 step=2 的视觉识别 attempt")
+		t.Error("缺少 step=1.1 的视觉识别 attempt")
 	} else {
 		if visionStep.Action != "视觉识别" || visionStep.Result != "success" {
-			t.Errorf("step2 = %+v, want Action=视觉识别 Result=success", *visionStep)
+			t.Errorf("step1.1 = %+v, want Action=视觉识别 Result=success", *visionStep)
 		}
 		if v, _ := visionStep.Metadata["called_via_tool"].(bool); !v {
-			t.Errorf("step2 called_via_tool = %v, want true", visionStep.Metadata["called_via_tool"])
+			t.Errorf("step1.1 called_via_tool = %v, want true", visionStep.Metadata["called_via_tool"])
 		}
 		if v, _ := visionStep.Metadata["tool"].(string); v != "look_at_image" {
-			t.Errorf("step2 tool = %v, want look_at_image", visionStep.Metadata["tool"])
+			t.Errorf("step1.1 tool = %v, want look_at_image", visionStep.Metadata["tool"])
 		}
 		if v, _ := visionStep.Metadata["cache_hit"].(bool); v {
-			t.Error("step2 cache_hit = true, want false（本测试未预写缓存）")
+			t.Error("step1.1 cache_hit = true, want false（本测试未预写缓存）")
 		}
 	}
 	if contStep == nil {
-		t.Error("缺少 step=3 的续流 attempt")
+		t.Error("缺少 step=1.2 的续流 attempt")
 	} else {
 		if contStep.Action != "首次尝试" || contStep.Result != "success" {
-			t.Errorf("step3 = %+v, want Action=首次尝试 Result=success", *contStep)
+			t.Errorf("step1.2 = %+v, want Action=首次尝试 Result=success", *contStep)
 		}
 		if contStep.ChannelID != "main" {
-			t.Errorf("step3 ChannelID = %q, want main（续流复用主链路渠道）", contStep.ChannelID)
+			t.Errorf("step1.2 ChannelID = %q, want main（续流复用主链路渠道）", contStep.ChannelID)
 		}
 		if contStep.Stream {
-			t.Error("step3 Stream = true, want false（非流式续流）")
+			t.Error("step1.2 Stream = true, want false（非流式续流）")
 		}
 	}
-	// __route_step 应停在 3（识别推进到 2、续流推进到 3）。
-	if v, _ := pipe.Metadata["__route_step"].(int); v != 3 {
-		t.Errorf("__route_step = %v, want 3", pipe.Metadata["__route_step"])
+	// 主链路段不被视觉推进（__route_step 仍 1），子段计数器到 2。
+	if v, _ := pipe.Metadata["__route_step"].(int); v != 1 {
+		t.Errorf("__route_step = %v, want 1（主链路段不被视觉子步骤推进）", pipe.Metadata["__route_step"])
+	}
+	if v, _ := pipe.Metadata["__vision_sub_step"].(int); v != 2 {
+		t.Errorf("__vision_sub_step = %v, want 2（识别+续流两个子步骤）", pipe.Metadata["__vision_sub_step"])
 	}
 }
 
@@ -342,6 +346,7 @@ func TestAfterUpstreamErrorNoFailover(t *testing.T) {
 		HTTPRequest: httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
 		Metadata: map[string]any{
 			"__route_step":      1, // 模拟主链路已写 step1（主请求首次尝试）
+			"__main_step":       1, // 主链路段：视觉识别=1.1、续流=1.2
 			"__current_channel": "main",
 			"__vision_v2_route": &types.CapabilityRoute{ViaOptions: []types.ViaOption{
 				{ChannelIDs: []string{"vision"}, ViaModel: "qwen3-vl-flash-2026-01-22"},

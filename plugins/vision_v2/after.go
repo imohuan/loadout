@@ -145,11 +145,14 @@ func (s *Service) toolLoopNonStream(pipe *modelgateway.ProxyPipeline, calls []To
 		if len(calls) == 0 {
 			break
 		}
-		// step 分配：视觉识别 = 主链路当前 step + 1（主请求=1、视觉识别=2、续流=3）。
-		// 一次工具循环（可含多个 look_at_image 调用）合并分配一个 step，全部识别视为一次视觉动作。
-		step, _ := pipe.Metadata["__route_step"].(int)
-		step++
-		pipe.Metadata["__route_step"] = step
+		// step 分配（点分层级）：视觉识别 = 主链路段.子段（如 "1.1"），与 executeToolLoop 对齐。
+		// 主链路段来自 __main_step，子段用 __vision_sub_step 计数器（识别/续流共享递增）。
+		mainStep, _ := pipe.Metadata["__main_step"].(int)
+		if mainStep == 0 {
+			mainStep, _ = pipe.Metadata["__route_step"].(int) // 兜底
+		}
+		subStep := s.nextVisionSubStep(pipe)
+		step := fmt.Sprintf("%d.%d", mainStep, subStep)
 
 		// 1. 执行工具（识别）
 		var toolResults []any
@@ -165,19 +168,19 @@ func (s *Service) toolLoopNonStream(pipe *modelgateway.ProxyPipeline, calls []To
 				"image_id":        c.ImageID,
 				"prompt":          c.Prompt,
 			}
-			s.visionAttempt(ctx, pipe.RequestID, fmt.Sprintf("%d", step), viaModelOf(route), start, 0, "running", "", "", 1, extra)
+			s.visionAttempt(ctx, pipe.RequestID, step, viaModelOf(route), start, 0, "running", "", "", 1, extra)
 			s.lg.Info("视觉识别开始", "req", pipe.RequestID, "step", step, "tool", c.Name, "image_id", c.ImageID)
 			text, chID, err := s.describeWithFailover(ctx, c.ImageID, c.Prompt, nil, route)
 			if err != nil {
 				extra["cache_hit"] = false
-				s.visionAttempt(ctx, pipe.RequestID, fmt.Sprintf("%d", step), viaModelOf(route), start, time.Since(start), "failed", "", err.Error(), 1, extra)
+				s.visionAttempt(ctx, pipe.RequestID, step, viaModelOf(route), start, time.Since(start), "failed", "", err.Error(), 1, extra)
 				return nil, err
 			}
 			extra["cache_hit"] = (chID == "")
 			if chID != "" {
 				extra["via_channel"] = chID
 			}
-			s.visionAttempt(ctx, pipe.RequestID, fmt.Sprintf("%d", step), viaModelOf(route), start, time.Since(start), "success", chID, "", 1, extra)
+			s.visionAttempt(ctx, pipe.RequestID, step, viaModelOf(route), start, time.Since(start), "success", chID, "", 1, extra)
 			s.lg.Info("视觉识别完成", "req", pipe.RequestID, "step", step, "image_id", c.ImageID, "cache_hit", chID == "", "duration_ms", time.Since(start).Milliseconds())
 			toolResults = append(toolResults, buildToolResultMessage(c, text, format))
 		}
@@ -209,10 +212,14 @@ func (s *Service) toolLoopNonStream(pipe *modelgateway.ProxyPipeline, calls []To
 			respBody, _ = io.ReadAll(resp.Body)
 			resp.Body.Close()
 		}
-		// 4. 续流结束：补写主链路 attempt（step = __route_step + 1，action=首次尝试）。
-		//    续流不走 model-gateway 主链路（vision_v2 直接 doUpstream），由这里补日志并推进 step。
-		contStep, _ := pipe.Metadata["__route_step"].(int)
-		pipe.Metadata["__route_step"] = contStep + 1
+		// 4. 续流结束：补写主链路 attempt（点分层级，如 "1.2"——主请求的子步骤，与视觉识别兄弟）。
+		//    续流不走 model-gateway 主链路（vision_v2 直接 doUpstream），由这里补日志。
+		mainStep2, _ := pipe.Metadata["__main_step"].(int)
+		if mainStep2 == 0 {
+			mainStep2, _ = pipe.Metadata["__route_step"].(int)
+		}
+		subStep2 := s.nextVisionSubStep(pipe)
+		contStep := fmt.Sprintf("%d.%d", mainStep2, subStep2)
 		result, errMsg := "success", ""
 		if resp.StatusCode >= 400 {
 			result, errMsg = "failed", summarizeContinuationError(respBody)
@@ -220,7 +227,7 @@ func (s *Service) toolLoopNonStream(pipe *modelgateway.ProxyPipeline, calls []To
 		if s.routeLog != nil {
 			if _, lerr := s.routeLog.Attempt(ctx, contracts.RouteAttempt{
 				RequestID:    pipe.RequestID,
-				StepNo:       fmt.Sprintf("%d", contStep+1),
+				StepNo:       contStep,
 				Action:       "首次尝试",
 				Model:        pipe.Request.Model,
 				ChannelID:    chID,
@@ -234,7 +241,7 @@ func (s *Service) toolLoopNonStream(pipe *modelgateway.ProxyPipeline, calls []To
 				s.lg.Warn("route log 续流 attempt failed", "err", lerr)
 			}
 		}
-		s.lg.Info("续流完成", "req", pipe.RequestID, "step", contStep+1, "status", resp.StatusCode, "new_calls", 0)
+		s.lg.Info("续流完成", "req", pipe.RequestID, "step", contStep, "status", resp.StatusCode, "new_calls", 0)
 		if resp.StatusCode >= 400 {
 			return nil, fmt.Errorf("vision_v2: 非流式续流失败(%d): %s", resp.StatusCode, errMsg)
 		}
