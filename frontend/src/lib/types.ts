@@ -89,6 +89,9 @@ export interface RouteAttempt {
   /** 收到上游响应头的时刻（流式 TTFB），前端据此算"等待响应 Xs" */
   first_byte_at?: string
   finished_at?: string
+  /** 结构化扩展信息（如视觉识别的 called_via_tool/tool/image_id/prompt），
+   *  called_via_tool=true 时 UI 渲染 MCP-{tool} 标签 */
+  metadata?: Record<string, unknown>
 }
 
 export interface RouteLog {

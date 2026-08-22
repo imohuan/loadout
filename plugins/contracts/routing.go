@@ -131,7 +131,9 @@ type RouteAttempt struct {
 	PromptTokens      int            `json:"prompt_tokens,omitempty"`
 	CompletionTokens  int            `json:"completion_tokens,omitempty"`
 	CachedTokens      int            `json:"cached_tokens,omitempty"`
-	Metadata          map[string]any `json:"-"`
+	// Metadata 结构化扩展信息（如视觉识别的 called_via_tool/tool/image_id/prompt）。
+	// 序列化给前端：UI 据此渲染 MCP 工具调用标签；内容由各插件写入，应只放展示级字段。
+	Metadata          map[string]any `json:"metadata,omitempty"`
 }
 
 // TokenUsage 描述一次上游响应里的 usage 字段，四项均为 OpenAI 标准键名。

@@ -1,13 +1,23 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { RiArrowDownSLine, RiArrowRightSLine } from '@remixicon/vue'
+import {
+  HoverCard,
+  HoverCardContent,
+  HoverCardTrigger,
+} from 'shadcn-vue-cdn'
 import type { Channel, RouteAttempt, RouteLog } from '@/lib/types'
 import { BUILTIN_CHANNEL } from '@/lib/constants'
 import { formatDate, formatDuration } from '@/lib/format'
+import { extractErrorSummary } from '@/lib/errorExtract'
 import ChannelRef from '@/components/ChannelRef.vue'
 import EmptyState from '@/components/EmptyState.vue'
 import DataPagination from '@/components/DataPagination.vue'
 import RouteLogErrorBody from '@/components/route-logs/RouteLogErrorBody.vue'
+
+// 表格里"错误摘要"列里默认展示的最大字符数。
+// 简短提示直接读完，详细 JSON 通过 Popover 看，避免撑爆列宽。
+const ERROR_SUMMARY_MAX_LEN = 70
 
 const props = withDefaults(
   defineProps<{
@@ -209,6 +219,40 @@ function cacheRatio(x: { prompt_tokens?: number; cached_tokens?: number }) {
   if (prompt <= 0 || cached <= 0) return ''
   return `${Math.round((cached / prompt) * 100)}%`
 }
+// 错误展示助手：浓缩一行 + 弹出详情。
+//   - 列表行默认显示一行摘要，避免失败态看不出原因、要一个个去展开详情。
+//   - hover / focus 触发的 Popover 里再展开完整 JSON + error_message + failure_class。
+// 仅在 result 失败/中断等终态错误时显示；successful / running 不渲染浪费行宽。
+function errorSummaryFor(item: { error_body?: string; error_message?: string }) {
+  return extractErrorSummary(item.error_body, item.error_message, ERROR_SUMMARY_MAX_LEN)
+}
+function isFailureResult(result?: string) {
+  return result === 'failed' || result === 'stream_interrupted'
+}
+// 复制 error_body 到剪贴板。剪贴板权限被拒（http/非 secure context）时静默吞异常。
+async function copyErrorBody(log: RouteLog, ev?: Event) {
+  ev?.stopPropagation()
+  if (!log.error_body) return
+  try {
+    await navigator.clipboard.writeText(log.error_body as string)
+  } catch {
+    /* noop */
+  }
+}
+// Popover 里的"完整 JSON"展示：能解析则漂亮缩进，解析不动则原样兜底。
+// 避免上游把多行 JSON 压成单行时阅读体验崩坏。
+function prettyJson(raw?: string): string {
+  const s = (raw || '').trim()
+  if (!s) return ''
+  if (s.startsWith('{') || s.startsWith('[')) {
+    try {
+      return JSON.stringify(JSON.parse(s), null, 2)
+    } catch {
+      return s
+    }
+  }
+  return s
+}
 </script>
 
 <template>
@@ -224,10 +268,11 @@ function cacheRatio(x: { prompt_tokens?: number; cached_tokens?: number }) {
         <Table
           ><TableHeader
             ><TableRow
-              ><TableHead class="w-10"></TableHead><TableHead>时间</TableHead
-              ><TableHead>请求模型</TableHead><TableHead>最终目标</TableHead
-              ><TableHead>结果</TableHead><TableHead>流</TableHead><TableHead>Tokens</TableHead
-              ><TableHead>缓存</TableHead><TableHead>耗时</TableHead></TableRow
+><TableHead class="w-10"></TableHead><TableHead>时间</TableHead
+            ><TableHead>请求模型</TableHead><TableHead>最终目标</TableHead
+            ><TableHead>结果</TableHead><TableHead class="max-w-60">错误</TableHead
+            ><TableHead>流</TableHead><TableHead>Tokens</TableHead
+            ><TableHead>缓存</TableHead><TableHead>耗时</TableHead></TableRow
             ></TableHeader
           ><TableBody
             ><template v-for="log in pagedLogs" :key="log.request_id"
@@ -263,6 +308,55 @@ function cacheRatio(x: { prompt_tokens?: number; cached_tokens?: number }) {
                   ></TableCell
                 ><TableCell
                   ><Badge :class="resultTone(log.result)">{{ resultLabel(log.result) }}</Badge></TableCell
+                ><TableCell class="max-w-60"
+                  ><HoverCard
+                    v-if="isFailureResult(log.result) && errorSummaryFor(log)"
+                    :open-delay="150"
+                    :close-delay="100"
+                  ><HoverCardTrigger as-child
+                      ><button
+                        type="button"
+                        class="-mx-1 inline-flex max-w-full items-center gap-1 rounded px-1 text-left text-xs text-destructive hover:bg-destructive/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-destructive/40"
+                        :title="errorSummaryFor(log)"
+                        @click.stop
+                        ><span class="truncate">{{ errorSummaryFor(log) }}</span></button
+                      ></HoverCardTrigger
+                    ><HoverCardContent
+                      align="start"
+                      :side-offset="6"
+                      class="w-[min(420px,calc(100vw-2rem))] p-3"
+                    >
+                      <div class="space-y-2">
+                        <div class="flex items-center justify-between gap-2">
+                          <p class="text-xs font-medium text-muted-foreground">错误详情</p>
+                          <button
+                            v-if="log.error_body"
+                            type="button"
+                            class="text-[10px] text-muted-foreground hover:text-foreground"
+                            @click.stop="copyErrorBody(log, $event)"
+                          >
+                            复制 JSON
+                          </button>
+                        </div>
+                        <p
+                          v-if="log.error_message"
+                          class="break-all whitespace-pre-wrap text-xs"
+                        >
+                          {{ log.error_message }}
+                        </p>
+                        <pre
+                          v-if="log.error_body"
+                          class="max-h-72 overflow-auto rounded bg-muted/60 p-2 font-mono text-[11px] leading-relaxed break-all whitespace-pre-wrap"
+                        >{{ prettyJson(log.error_body) }}</pre>
+                        <p
+                          v-else
+                          class="text-xs text-muted-foreground"
+                        >
+                          无上游原始响应体
+                        </p>
+                      </div> </HoverCardContent
+                  ></HoverCard
+                  ><span v-else class="text-xs text-muted-foreground">-</span></TableCell
                 ><TableCell class="whitespace-nowrap text-xs"
                   ><span
                     v-if="log.stream"
@@ -298,7 +392,7 @@ function cacheRatio(x: { prompt_tokens?: number; cached_tokens?: number }) {
                   formatDuration(log.duration_ms)
                 }}</TableCell></TableRow
               ><TableRow v-if="showDetails(log)"
-                ><TableCell colspan="9" class="bg-muted/30 p-4"
+                ><TableCell colspan="10" class="bg-muted/30 p-4"
                   ><div
                     v-if="loadingDetail === log.request_id"
                     class="text-sm text-muted-foreground"
@@ -337,6 +431,11 @@ function cacheRatio(x: { prompt_tokens?: number; cached_tokens?: number }) {
                             variant="outline"
                             :class="['shrink-0 border', actionTone(attempt.action)]"
                             >{{ actionLabel(attempt.action) }}</Badge
+                          ><Badge
+                            v-if="attempt.metadata?.called_via_tool"
+                            variant="outline"
+                            class="shrink-0 border border-sky-500/40 bg-sky-500/10 font-mono text-[10px] font-medium text-sky-700 dark:text-sky-300"
+                            >MCP-{{ attempt.metadata.tool || 'tool' }}</Badge
                           ><Badge
                             :class="['shrink-0 border', resultTone(attempt.result)]"
                             >{{ resultLabel(attempt.result) }}</Badge
