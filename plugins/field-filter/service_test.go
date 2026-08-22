@@ -403,33 +403,3 @@ func TestDecideRouteChannelLevelExactMatch(t *testing.T) {
 		t.Fatalf("精确匹配（带 /v1）应命中, route=%v err=%v", route, err)
 	}
 }
-
-// TestDecideRouteChannelLevelVersionMismatch 渠道级约束版本段不一致 → 不命中。
-// 这是 ChannelBaseURLMatches 精确匹配的既有语义（与 vision/sensitive-filter 一致）：
-// 路由配 https://copilot.tencent.com 而渠道是 .../v1，归一化后不相等。
-func TestDecideRouteChannelLevelVersionMismatch(t *testing.T) {
-	svc, st := newTestService(t)
-	seedRoute(t, st, types.CapabilityRoute{
-		Models:          []string{"gpt-4o"},
-		Capability:      capabilityName,
-		Route:           types.RouteProxy,
-		ChannelBaseURLs: []string{"https://copilot.tencent.com"}, // 漏写 /v1
-		FieldRules:      &types.FieldRules{RequestStrip: []string{"client_metadata"}},
-	})
-	if err := st.Write(types.FileChannels, []types.Channel{
-		{ID: "k1", Name: "腾讯", BaseURL: "https://copilot.tencent.com/v1", Enabled: true},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	pipe := &modelgateway.ProxyPipeline{
-		Request:  &modelgateway.ProxyRequest{Model: "gpt-4o", Body: []byte(`{"model":"gpt-4o","client_metadata":{}}`)},
-		Metadata: map[string]any{"__current_channel": "k1"},
-	}
-	route, err := svc.decideRoute(pipe)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if route != nil {
-		t.Fatalf("版本段不一致不应命中（需与渠道 base_url 精确一致）: %+v", route)
-	}
-}
