@@ -288,11 +288,12 @@ func (s *Service) callVision(ctx context.Context, dataURI, prompt string, ch mod
 // readVisionStream、visionAttempt、pointerTime（route-log 用）。
 
 // visionAttempt 写一条视觉识别 attempt 到 route-log。
-// stepNo 由调用方按主链路 __route_step+1 分配（主请求=1、视觉识别=2、续流=3，与主链路共享单调递增空间）。
+// stepNo 由调用方按主链路 __route_step+1 分配（主请求="1"、视觉识别="2"、续流="3"，与主链路共享单调递增空间；
+// 点分层级如 "1.1" 由后续任务生成）。
 // extra 为额外 metadata（called_via_tool/tool/image_id/prompt/cache_hit 等），与 capability/image_count 合并写入。
-// routeLog 为 nil（测试/旧管线）或 stepNo <= 0（非法值）时静默跳过。
-func (s *Service) visionAttempt(ctx context.Context, requestID string, stepNo int, model string, startedAt time.Time, dur time.Duration, result, channelID, errMsg string, imageCount int, extra map[string]any) {
-	if s.routeLog == nil || requestID == "" || stepNo <= 0 {
+// routeLog 为 nil（测试/旧管线）或 stepNo == ""（非法值）时静默跳过。
+func (s *Service) visionAttempt(ctx context.Context, requestID string, stepNo string, model string, startedAt time.Time, dur time.Duration, result, channelID, errMsg string, imageCount int, extra map[string]any) {
+	if s.routeLog == nil || requestID == "" || stepNo == "" {
 		return
 	}
 	meta := map[string]any{"capability": "vision", "image_count": imageCount}

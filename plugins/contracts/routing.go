@@ -99,7 +99,7 @@ type RouteRequest struct {
 type RouteAttempt struct {
 	RequestID         string         `json:"request_id"`
 	PreviousAttemptID *int64         `json:"previous_attempt_id,omitempty"`
-	StepNo            int            `json:"step_no"`
+	StepNo            string         `json:"step_no"`
 	Action            string         `json:"action"`
 	Model             string         `json:"model"`
 	// Channel 三种粒度（与 AggregateTarget 对齐）：ChannelID（单 Key 兼容）>

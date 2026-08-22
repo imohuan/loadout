@@ -458,7 +458,7 @@ if !pipe.Request.Stream {
 				}
 				fin := time.Now()
 				_, _ = s.routeLog.Attempt(context.WithoutCancel(r.Context()), contracts.RouteAttempt{
-					RequestID: pipe.RequestID, StepNo: snap, Action: stepAction,
+					RequestID: pipe.RequestID, StepNo: fmt.Sprintf("%d", snap), Action: stepAction,
 					Model: model, ChannelID: ch.ID, ChannelName: ch.ChannelName,
 					StartedAt: attemptStarted, FinishedAt: &fin, Result: "failed",
 					StatusCode: resp.StatusCode, ErrorMessage: herr.Error(),
@@ -571,7 +571,7 @@ func (s *Service) proxyStream(w http.ResponseWriter, resp *http.Response, pipe *
 		usage.CompletionTokens = estTokens
 		ctx := context.WithoutCancel(pipe.HTTPRequest.Context())
 		_, _ = s.routeLog.Attempt(ctx, contracts.RouteAttempt{
-			RequestID: pipe.RequestID, StepNo: step, Action: action,
+			RequestID: pipe.RequestID, StepNo: fmt.Sprintf("%d", step), Action: action,
 			Model: model, ChannelID: channelID, ChannelName: channelName, StartedAt: startedAt,
 			Result: "running", Stream: true, CompletionTokens: estTokens,
 		})
@@ -976,7 +976,7 @@ func (s *Service) proxyAttemptLog(r *http.Request, pipe *ProxyPipeline, model, c
 	}
 	if _, logErr := s.routeLog.Attempt(r.Context(), contracts.RouteAttempt{
 		RequestID:        pipe.RequestID,
-		StepNo:           step,
+		StepNo:           fmt.Sprintf("%d", step),
 		Action:           action,
 		Model:            model,
 		ChannelID:        channelID,
@@ -1059,7 +1059,7 @@ func (s *Service) proxyStreamAttempt(r *http.Request, pipe *ProxyPipeline, model
 	attemptCtx := context.WithoutCancel(r.Context())
 	if _, logErr := s.routeLog.Attempt(attemptCtx, contracts.RouteAttempt{
 		RequestID:        pipe.RequestID,
-		StepNo:           step,
+		StepNo:           fmt.Sprintf("%d", step),
 		Action:           action,
 		Model:            model,
 		ChannelID:        channelID,

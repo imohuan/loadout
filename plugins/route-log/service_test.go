@@ -28,7 +28,7 @@ func TestRouteLogReconstructsTimeline(t *testing.T) {
 	if err := service.Start(ctx, contracts.RouteRequest{RequestID: "r1", RequestedModel: "auto", StartedAt: started}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.Attempt(ctx, contracts.RouteAttempt{RequestID: "r1", StepNo: 1, Model: "m", ChannelID: "c", StartedAt: started, FinishedAt: pointer(time.Now()), Result: "failed", ErrorMessage: "balance", Metadata: map[string]any{"safe": "value"}}); err != nil {
+	if _, err := service.Attempt(ctx, contracts.RouteAttempt{RequestID: "r1", StepNo: "1", Model: "m", ChannelID: "c", StartedAt: started, FinishedAt: pointer(time.Now()), Result: "failed", ErrorMessage: "balance", Metadata: map[string]any{"safe": "value"}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := service.Finish(ctx, contracts.RouteFinish{RequestID: "r1", FinishedAt: time.Now(), Result: "failed", ErrorMessage: "done"}); err != nil {
@@ -38,7 +38,7 @@ func TestRouteLogReconstructsTimeline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(detail.Attempts) != 1 || detail.Attempts[0].StepNo != 1 {
+	if len(detail.Attempts) != 1 || detail.Attempts[0].StepNo != "1" {
 		t.Fatalf("timeline not reconstructed: %+v", detail)
 	}
 }
@@ -48,7 +48,7 @@ func TestRouteLogRejectsSensitiveMetadata(t *testing.T) {
 	if err := service.Start(context.Background(), contracts.RouteRequest{RequestID: "r2", RequestedModel: "m", StartedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.Attempt(context.Background(), contracts.RouteAttempt{RequestID: "r2", StepNo: 1, Model: "m", StartedAt: time.Now(), Metadata: map[string]any{"Authorization": "secret"}}); err == nil {
+	if _, err := service.Attempt(context.Background(), contracts.RouteAttempt{RequestID: "r2", StepNo: "1", Model: "m", StartedAt: time.Now(), Metadata: map[string]any{"Authorization": "secret"}}); err == nil {
 		t.Fatal("sensitive metadata was accepted")
 	}
 }
@@ -64,7 +64,7 @@ func TestRouteLogRetryMergesSameRequestID(t *testing.T) {
 	if err := service.Start(ctx, contracts.RouteRequest{RequestID: "r-retry", RequestedModel: "auto-demo", VirtualModel: "auto-demo", StartedAt: started}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.Attempt(ctx, contracts.RouteAttempt{RequestID: "r-retry", StepNo: 1, Model: "model-x", ChannelID: "ch-x", StartedAt: started, Result: "skipped", FailureClass: "no_available"}); err != nil {
+	if _, err := service.Attempt(ctx, contracts.RouteAttempt{RequestID: "r-retry", StepNo: "1", Model: "model-x", ChannelID: "ch-x", StartedAt: started, Result: "skipped", FailureClass: "no_available"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := service.Finish(ctx, contracts.RouteFinish{RequestID: "r-retry", FinishedAt: time.Now(), Result: "failed", ErrorMessage: "第一次失败"}); err != nil {
@@ -75,10 +75,10 @@ func TestRouteLogRetryMergesSameRequestID(t *testing.T) {
 	if err := service.Start(ctx, contracts.RouteRequest{RequestID: "r-retry", RequestedModel: "auto-demo", VirtualModel: "auto-demo", StartedAt: time.Now()}); err != nil {
 		t.Fatalf("重试 Start 不应报主键冲突: %v", err)
 	}
-	if _, err := service.Attempt(ctx, contracts.RouteAttempt{RequestID: "r-retry", StepNo: 1, Model: "model-x", ChannelID: "ch-x", StartedAt: time.Now(), Result: "skipped", FailureClass: "no_available"}); err != nil {
+	if _, err := service.Attempt(ctx, contracts.RouteAttempt{RequestID: "r-retry", StepNo: "1", Model: "model-x", ChannelID: "ch-x", StartedAt: time.Now(), Result: "skipped", FailureClass: "no_available"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.Attempt(ctx, contracts.RouteAttempt{RequestID: "r-retry", StepNo: 2, Model: "model-y", ChannelID: "ch-y", StartedAt: time.Now(), Result: "skipped", FailureClass: "no_available"}); err != nil {
+	if _, err := service.Attempt(ctx, contracts.RouteAttempt{RequestID: "r-retry", StepNo: "2", Model: "model-y", ChannelID: "ch-y", StartedAt: time.Now(), Result: "skipped", FailureClass: "no_available"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := service.Finish(ctx, contracts.RouteFinish{RequestID: "r-retry", FinishedAt: time.Now(), Result: "failed", ErrorMessage: "重试后仍失败"}); err != nil {
@@ -128,7 +128,7 @@ func TestAttemptFirstByteAt(t *testing.T) {
 	}
 	// 1) 首次不传 FirstByteAt → 读回应为 nil（写 NULL 而非空串）。
 	if _, err := svc.Attempt(ctx, contracts.RouteAttempt{
-		RequestID: "r-fb", StepNo: 1, Action: "首次尝试", Model: "m", ChannelID: "c",
+		RequestID: "r-fb", StepNo: "1", Action: "首次尝试", Model: "m", ChannelID: "c",
 		StartedAt: now, Result: "running", Stream: true,
 	}); err != nil {
 		t.Fatalf("Attempt(running no-fb): %v", err)
@@ -140,14 +140,14 @@ func TestAttemptFirstByteAt(t *testing.T) {
 	}
 	// 2) running 占位带 first_byte_at。
 	if _, err := svc.Attempt(ctx, contracts.RouteAttempt{
-		RequestID: "r-fb", StepNo: 1, Action: "首次尝试", Model: "m", ChannelID: "c",
+		RequestID: "r-fb", StepNo: "1", Action: "首次尝试", Model: "m", ChannelID: "c",
 		StartedAt: now, Result: "running", Stream: true, FirstByteAt: &fb,
 	}); err != nil {
 		t.Fatalf("Attempt(running): %v", err)
 	}
 	// 3) success UPSERT 不传 FirstByteAt → 旧值保留（COALESCE 生效）。
 	if _, err := svc.Attempt(ctx, contracts.RouteAttempt{
-		RequestID: "r-fb", StepNo: 1, Action: "首次尝试", Model: "m", ChannelID: "c",
+		RequestID: "r-fb", StepNo: "1", Action: "首次尝试", Model: "m", ChannelID: "c",
 		StartedAt: now, FinishedAt: pointer(now.Add(10 * time.Second)), Result: "success", Stream: true,
 	}); err != nil {
 		t.Fatalf("Attempt(success): %v", err)
@@ -166,7 +166,7 @@ func TestAttemptFirstByteAt(t *testing.T) {
 	// 4) success UPSERT 显式传新 FirstByteAt → 覆盖旧值。
 	newFB := now.Add(-1 * time.Second)
 	if _, err := svc.Attempt(ctx, contracts.RouteAttempt{
-		RequestID: "r-fb", StepNo: 1, Action: "首次尝试", Model: "m", ChannelID: "c",
+		RequestID: "r-fb", StepNo: "1", Action: "首次尝试", Model: "m", ChannelID: "c",
 		StartedAt: now, FinishedAt: pointer(now.Add(10 * time.Second)), Result: "success", Stream: true,
 		FirstByteAt: &newFB,
 	}); err != nil {
@@ -328,7 +328,7 @@ func TestSelfHealPromotesSuccessfulAttempt(t *testing.T) {
 	// 视觉 attempt（应被排除，不算数）
 	visionEnd := started.Add(3 * time.Second)
 	if _, err := service.Attempt(ctx, contracts.RouteAttempt{
-		RequestID: "r-promote", StepNo: 1, Action: "视觉识别", Model: "qwen-vl",
+		RequestID: "r-promote", StepNo: "1", Action: "视觉识别", Model: "qwen-vl",
 		ChannelID: "ch-v", StartedAt: started, FinishedAt: &visionEnd, Result: "success",
 		Duration: contracts.DurationMS(3 * time.Second),
 		Metadata: map[string]any{"capability": "vision", "image_count": 1},
@@ -339,7 +339,7 @@ func TestSelfHealPromotesSuccessfulAttempt(t *testing.T) {
 	failStart := started.Add(3 * time.Second)
 	failEnd := failStart.Add(2 * time.Second)
 	if _, err := service.Attempt(ctx, contracts.RouteAttempt{
-		RequestID: "r-promote", StepNo: 2, Action: "首次尝试", Model: "deepseek-x", ChannelID: "ch-x",
+		RequestID: "r-promote", StepNo: "2", Action: "首次尝试", Model: "deepseek-x", ChannelID: "ch-x",
 		StartedAt: failStart, FinishedAt: &failEnd, Result: "failed",
 		FailureClass: "upstream_5xx", StatusCode: 502,
 		Duration: contracts.DurationMS(2 * time.Second), ErrorMessage: "bad gateway",
@@ -350,7 +350,7 @@ func TestSelfHealPromotesSuccessfulAttempt(t *testing.T) {
 	okStart := failEnd.Add(time.Millisecond)
 	okEnd := okStart.Add(3*time.Second + 110*time.Millisecond)
 	if _, err := service.Attempt(ctx, contracts.RouteAttempt{
-		RequestID: "r-promote", StepNo: 3, Action: "切换渠道", Model: "glm-5", ChannelID: "ch-y",
+		RequestID: "r-promote", StepNo: "3", Action: "切换渠道", Model: "glm-5", ChannelID: "ch-y",
 		StartedAt: okStart, FinishedAt: &okEnd, Result: "success",
 		StatusCode: 200, Stream: true,
 		PromptTokens: 1500, CompletionTokens: 320, CachedTokens: 80,
@@ -414,7 +414,7 @@ func TestSelfHealIgnoresVisionOnlyAttempts(t *testing.T) {
 	// 视觉成功
 	visionEnd := started.Add(time.Second)
 	if _, err := service.Attempt(ctx, contracts.RouteAttempt{
-		RequestID: "r-visonly", StepNo: 1, Action: "视觉识别", Model: "qwen-vl",
+		RequestID: "r-visonly", StepNo: "1", Action: "视觉识别", Model: "qwen-vl",
 		ChannelID: "ch-v", StartedAt: started, FinishedAt: &visionEnd, Result: "success",
 		Duration: contracts.DurationMS(time.Second),
 	}); err != nil {
@@ -424,7 +424,7 @@ func TestSelfHealIgnoresVisionOnlyAttempts(t *testing.T) {
 	mainStart := visionEnd.Add(time.Millisecond)
 	mainEnd := mainStart.Add(time.Second)
 	if _, err := service.Attempt(ctx, contracts.RouteAttempt{
-		RequestID: "r-visonly", StepNo: 2, Action: "首次尝试", Model: "x", ChannelID: "ch-x",
+		RequestID: "r-visonly", StepNo: "2", Action: "首次尝试", Model: "x", ChannelID: "ch-x",
 		StartedAt: mainStart, FinishedAt: &mainEnd, Result: "failed", StatusCode: 500,
 		Duration: contracts.DurationMS(time.Second), ErrorMessage: "boom",
 	}); err != nil {
@@ -442,5 +442,71 @@ func TestSelfHealIgnoresVisionOnlyAttempts(t *testing.T) {
 	}
 	if detail.Result != "stream_interrupted" {
 		t.Fatalf("视觉成功但主链路失败时不应被升级，仍走 stream_interrupted，实际 %q", detail.Result)
+	}
+}
+
+// TestCompareStepNo：点分 step 数值比较语义（符号即顺序）。
+func TestCompareStepNo(t *testing.T) {
+	less := []struct{ a, b string }{
+		{"1", "1.1"},
+		{"1.1", "1.2"},
+		{"1.2", "2"},
+		{"2", "2.1"},
+		{"1", "2"},
+		{"1.1", "1.10"},
+		{"1.2", "1.10"}, // 点分段数值比较：2 < 10（非字典序）
+	}
+	for _, c := range less {
+		if got := compareStepNo(c.a, c.b); got >= 0 {
+			t.Errorf("compareStepNo(%q, %q) = %d, want < 0", c.a, c.b, got)
+		}
+		if got := compareStepNo(c.b, c.a); got <= 0 {
+			t.Errorf("compareStepNo(%q, %q) = %d, want > 0", c.b, c.a, got)
+		}
+	}
+	equal := []struct{ a, b string }{
+		{"1", "1"},
+		{"1.2", "1.2"},
+	}
+	for _, c := range equal {
+		if got := compareStepNo(c.a, c.b); got != 0 {
+			t.Errorf("compareStepNo(%q, %q) = %d, want 0（同层相等）", c.a, c.b, got)
+		}
+	}
+}
+
+// TestDetailSortsByStepNo：step_no 为 TEXT 后 SQL ORDER BY 字典序错误（"1.10" < "1.2"），
+// Detail 应在 Go 侧按点分数值比较排序。乱序插入 "1"、"1.2"、"1.1"、"2" → 返回 1 < 1.1 < 1.2 < 2。
+func TestDetailSortsByStepNo(t *testing.T) {
+	service := NewService(logDB(t), nil)
+	ctx := context.Background()
+	if err := service.Start(ctx, contracts.RouteRequest{RequestID: "r-sort", RequestedModel: "m", StartedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	for _, stepNo := range []string{"1", "1.2", "1.1", "2"} {
+		if _, err := service.Attempt(ctx, contracts.RouteAttempt{
+			RequestID: "r-sort", StepNo: stepNo, Action: "首次尝试", Model: "m",
+			StartedAt: now, FinishedAt: pointer(now.Add(time.Second)), Result: "success",
+		}); err != nil {
+			t.Fatalf("Attempt(step=%s): %v", stepNo, err)
+		}
+	}
+	detail, err := service.Detail(ctx, "r-sort")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var steps []string
+	for _, a := range detail.Attempts {
+		steps = append(steps, a.StepNo)
+	}
+	want := []string{"1", "1.1", "1.2", "2"}
+	if len(steps) != len(want) {
+		t.Fatalf("attempts step 序列 = %v, want %v", steps, want)
+	}
+	for i := range want {
+		if steps[i] != want[i] {
+			t.Fatalf("attempts step 序列 = %v, want %v", steps, want)
+		}
 	}
 }

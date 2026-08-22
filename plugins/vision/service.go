@@ -78,7 +78,7 @@ func (s *Service) visionAttempt(ctx context.Context, requestID string, stepNo in
 	}
 	if _, err := s.routeLog.Attempt(ctx, contracts.RouteAttempt{
 		RequestID:    requestID,
-		StepNo:       stepNo,
+		StepNo:       fmt.Sprintf("%d", stepNo),
 		Action:       "视觉识别",
 		Model:        model,
 		ChannelID:    channelID,

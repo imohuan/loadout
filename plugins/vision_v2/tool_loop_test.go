@@ -263,9 +263,9 @@ func TestToolLoopStreamChat(t *testing.T) {
 	for i := range rl.attempts {
 		a := &rl.attempts[i]
 		switch a.StepNo {
-		case 2:
+		case "2":
 			visionStep = a
-		case 3:
+		case "3":
 			contStep = a
 		}
 	}
@@ -408,11 +408,11 @@ func TestVisionAttemptStepSequence(t *testing.T) {
 	}
 	// step2：running 占位在前，success 覆盖在后。
 	run := rl.attempts[0]
-	if run.StepNo != 2 || run.Action != "视觉识别" || run.Result != "running" {
+	if run.StepNo != "2" || run.Action != "视觉识别" || run.Result != "running" {
 		t.Errorf("attempts[0] = %+v, want StepNo=2 Action=视觉识别 Result=running（running 占位）", run)
 	}
 	visionStep := rl.attempts[1]
-	if visionStep.StepNo != 2 || visionStep.Action != "视觉识别" || visionStep.Result != "success" {
+	if visionStep.StepNo != "2" || visionStep.Action != "视觉识别" || visionStep.Result != "success" {
 		t.Errorf("attempts[1] = %+v, want StepNo=2 Action=视觉识别 Result=success", visionStep)
 	}
 	if v, _ := visionStep.Metadata["called_via_tool"].(bool); !v {
@@ -426,7 +426,7 @@ func TestVisionAttemptStepSequence(t *testing.T) {
 	}
 	// step3：续流 = __route_step(2)+1，证明识别后 __route_step 已推进到 2。
 	contStep := rl.attempts[2]
-	if contStep.StepNo != 3 || contStep.Action != "首次尝试" || contStep.Result != "success" {
+	if contStep.StepNo != "3" || contStep.Action != "首次尝试" || contStep.Result != "success" {
 		t.Errorf("attempts[2] = %+v, want StepNo=3 Action=首次尝试 Result=success", contStep)
 	}
 	if contStep.ChannelID != "main" {

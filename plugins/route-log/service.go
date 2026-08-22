@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -233,7 +235,7 @@ func (s *Service) lastNonVisionAttempt(ctx context.Context, requestID string) (l
 		        COALESCE(stream, 0), COALESCE(prompt_tokens, 0), COALESCE(completion_tokens, 0), COALESCE(cached_tokens, 0)
 		 FROM route_attempts
 		 WHERE request_id = ? AND action != '视觉识别' AND finished_at IS NOT NULL
-		 ORDER BY step_no DESC LIMIT 1`,
+		 ORDER BY id DESC LIMIT 1`,
 		requestID)
 	if err := row.Scan(&out.model, &out.channelID, &out.channelName, &finished, &out.result, &out.statusCode,
 		&out.stream, &out.promptTokens, &out.completionTokens, &out.cachedTokens); err != nil {
@@ -315,7 +317,7 @@ func (s *Service) Detail(ctx context.Context, requestID string) (contracts.Route
 	if err != nil {
 		return contracts.RouteRequestView{}, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id, request_id, previous_attempt_id, step_no, action, model, COALESCE(channel_id, ''), COALESCE(channel_ids_json, '[]'), COALESCE(channel_base_url, ''), COALESCE(channel_name, ''), started_at, finished_at, first_byte_at, result, failure_class, COALESCE(status_code, 0), error_message, COALESCE(error_body, ''), COALESCE(duration_ms, 0), COALESCE(stream, 0), COALESCE(prompt_tokens, 0), COALESCE(completion_tokens, 0), COALESCE(cached_tokens, 0), metadata_json FROM route_attempts WHERE request_id=? ORDER BY step_no`, requestID)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, request_id, previous_attempt_id, step_no, action, model, COALESCE(channel_id, ''), COALESCE(channel_ids_json, '[]'), COALESCE(channel_base_url, ''), COALESCE(channel_name, ''), started_at, finished_at, first_byte_at, result, failure_class, COALESCE(status_code, 0), error_message, COALESCE(error_body, ''), COALESCE(duration_ms, 0), COALESCE(stream, 0), COALESCE(prompt_tokens, 0), COALESCE(completion_tokens, 0), COALESCE(cached_tokens, 0), metadata_json FROM route_attempts WHERE request_id=?`, requestID)
 	if err != nil {
 		return contracts.RouteRequestView{}, err
 	}
@@ -357,7 +359,28 @@ func (s *Service) Detail(ctx context.Context, requestID string) (contracts.Route
 		_ = json.Unmarshal([]byte(metadata), &attempt.Metadata)
 		view.Attempts = append(view.Attempts, attempt)
 	}
+	// step_no 已是 TEXT：SQL ORDER BY step_no 按字典序（"1.10" < "1.2"）错误，
+	// 改为 Go 侧点分段数值比较排序（1 < 1.1 < 1.2 < 2）。
+	sort.Slice(view.Attempts, func(i, j int) bool {
+		return compareStepNo(view.Attempts[i].StepNo, view.Attempts[j].StepNo) < 0
+	})
 	return view, rows.Err()
+}
+
+// compareStepNo 点分 step 数值比较：1 < 1.1 < 1.2 < 2 < 2.1
+func compareStepNo(a, b string) int {
+	as, bs := strings.Split(a, "."), strings.Split(b, ".")
+	for i := 0; i < len(as) && i < len(bs); i++ {
+		an, err1 := strconv.Atoi(as[i])
+		bn, err2 := strconv.Atoi(bs[i])
+		if err1 != nil || err2 != nil {
+			return strings.Compare(a, b) // 兜底字典序
+		}
+		if an != bn {
+			return an - bn
+		}
+	}
+	return len(as) - len(bs)
 }
 
 // Clear 清空全部转发日志（route_attempts 由外键 ON DELETE CASCADE 级联删除）。

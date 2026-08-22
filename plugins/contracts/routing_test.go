@@ -16,7 +16,7 @@ func TestRouteAttemptJSONFieldNames(t *testing.T) {
 	attempt := RouteAttempt{
 		RequestID:         "req-1",
 		PreviousAttemptID: &previous,
-		StepNo:            1,
+		StepNo:            "1",
 		Action:            "首次尝试",
 		Model:             "claude-haiku-4-5-20251001",
 		ChannelID:         "b89c685dac7402fd",
@@ -71,7 +71,7 @@ func TestRouteAttemptJSONFieldNames(t *testing.T) {
 
 func TestRouteAttemptOmitEmptyUsage(t *testing.T) {
 	attempt := RouteAttempt{
-		RequestID: "req-1", StepNo: 1, Action: "首次尝试", Model: "m",
+		RequestID: "req-1", StepNo: "1", Action: "首次尝试", Model: "m",
 		StartedAt: time.Now(), Duration: DurationMS(time.Second),
 	}
 	raw, err := json.Marshal(attempt)

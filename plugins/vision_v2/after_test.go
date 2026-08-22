@@ -242,9 +242,9 @@ func TestAfterUpstreamToolLoopChat(t *testing.T) {
 	for i := range detail.Attempts {
 		a := &detail.Attempts[i]
 		switch a.StepNo {
-		case 2:
+		case "2":
 			visionStep = a
-		case 3:
+		case "3":
 			contStep = a
 		}
 	}

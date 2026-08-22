@@ -244,13 +244,13 @@ func (s *Service) executeToolLoop(pipe *modelgateway.ProxyPipeline, st *toolLoop
 				"image_id":        c.ImageID,
 				"prompt":          c.Prompt,
 			}
-			s.visionAttempt(ctx, pipe.RequestID, step, viaModelOf(route), start, 0, "running", "", "", 1, extra)
+			s.visionAttempt(ctx, pipe.RequestID, fmt.Sprintf("%d", step), viaModelOf(route), start, 0, "running", "", "", 1, extra)
 			s.lg.Info("视觉识别开始", "req", pipe.RequestID, "step", step, "tool", c.Name, "image_id", c.ImageID, "prompt", c.Prompt)
 
 			text, chID, err := s.describeWithFailover(ctx, c.ImageID, c.Prompt, s.toolStreamWriter(pipe, st.format), route)
 			if err != nil {
 				extra["cache_hit"] = false
-				s.visionAttempt(ctx, pipe.RequestID, step, viaModelOf(route), start, time.Since(start), "failed", "", err.Error(), 1, extra)
+				s.visionAttempt(ctx, pipe.RequestID, fmt.Sprintf("%d", step), viaModelOf(route), start, time.Since(start), "failed", "", err.Error(), 1, extra)
 				s.lg.Warn("视觉识别失败", "req", pipe.RequestID, "step", step, "image_id", c.ImageID, "err", err)
 				return false, err
 			}
@@ -258,7 +258,7 @@ func (s *Service) executeToolLoop(pipe *modelgateway.ProxyPipeline, st *toolLoop
 			if chID != "" {
 				extra["via_channel"] = chID
 			}
-			s.visionAttempt(ctx, pipe.RequestID, step, viaModelOf(route), start, time.Since(start), "success", chID, "", 1, extra)
+			s.visionAttempt(ctx, pipe.RequestID, fmt.Sprintf("%d", step), viaModelOf(route), start, time.Since(start), "success", chID, "", 1, extra)
 			s.lg.Info("视觉识别完成", "req", pipe.RequestID, "step", step, "image_id", c.ImageID, "cache_hit", chID == "", "duration_ms", time.Since(start).Milliseconds())
 			toolResults = append(toolResults, buildToolResultMessage(c, text, st.format))
 		}
@@ -325,7 +325,7 @@ func (s *Service) executeToolLoop(pipe *modelgateway.ProxyPipeline, st *toolLoop
 		if s.routeLog != nil {
 			_, _ = s.routeLog.Attempt(ctx, contracts.RouteAttempt{
 				RequestID:  pipe.RequestID,
-				StepNo:     contStep + 1,
+				StepNo:     fmt.Sprintf("%d", contStep+1),
 				Action:     "首次尝试",
 				Model:      contModel,
 				ChannelID:  continuationChID,
