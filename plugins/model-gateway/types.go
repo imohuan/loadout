@@ -175,13 +175,19 @@ func extractImageURL(raw json.RawMessage) string {
 // ---- 透明代理（proxy）管线 ----
 //
 // HandleProxy 对 /v1/{path...} 任意路径做透明转发：请求体原字节、参数原样
-// 透传，不做字段白名单清洗。插件通过三个 waterfall 事件介入：
+// 透传，不做字段白名单清洗。插件通过四个 waterfall 事件介入：
 //   - ProxyBeforeUpstream：转发前拦截/修改输入（Body/Path/Query/Header）
+//   - ProxyBeforeAttempt：每次渠道尝试前拦截/修改输入（安检能力）
 //   - ProxyAfterUpstream：非流式响应返回后拦截/修改输出（状态码/Header/Body）
 //   - ProxyStreamChunk：流式响应逐块拦截/修改/删除（返回 nil 删除该块）
 
 // ProxyBeforeUpstream 转发上游前触发的 waterfall 事件（输入拦截/修改）。
 const ProxyBeforeUpstream = "proxy:before-upstream"
+
+// ProxyBeforeAttempt 每次上游渠道尝试前触发的 waterfall 事件（输入安检/修改）。
+// 与 ProxyBeforeUpstream 的区别：后者只在请求入口执行一次（聚合改写、额度拦截），
+// 本事件在 proxyForward 的每个渠道尝试前执行，保证切换渠道/切换模型后安检仍然生效。
+const ProxyBeforeAttempt = "proxy:before-attempt"
 
 // ProxyAfterUpstream 上游非流式响应返回后触发的 waterfall 事件（输出拦截/修改）。
 const ProxyAfterUpstream = "proxy:after-upstream"
