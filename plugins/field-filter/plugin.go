@@ -50,7 +50,9 @@ func (p *fieldFilterPlugin) Apply(ctx plugin.Context) error {
 		}
 	}
 	ctx.Set("field-filter", svc)
-	ctx.On(modelgateway.ProxyBeforeUpstream, svc.HandleProxyBeforeUpstream)
+	// 请求方向安检挂在每次渠道尝试事件（proxy:before-attempt）：切换渠道/模型后
+	// 字段规则按当前渠道上下文重新匹配；响应方向保持 proxy:after-upstream。
+	ctx.On(modelgateway.ProxyBeforeAttempt, svc.HandleProxyBeforeUpstream)
 	ctx.On(modelgateway.ProxyAfterUpstream, svc.HandleProxyAfterUpstream)
 	return nil
 }

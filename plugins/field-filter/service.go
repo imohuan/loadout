@@ -107,8 +107,9 @@ func (s *Service) requestChannelBaseURL(channelID string) string {
 // 避免同一请求 before/after 各查一次路由表）。
 const routeMetaKey = "__field_filter_route"
 
-// HandleProxyBeforeUpstream 请求方向 hook：转发上游前按配置剔除/保留请求体字段、
-// 剔除请求头。仅处理合法 JSON body；未命中路由/native/error/无 FieldRules → 原样透传。
+// HandleProxyBeforeUpstream 每次渠道尝试安检 hook（proxy:before-attempt）：
+// 转发上游前按配置剔除/保留请求体字段、剔除请求头。仅处理合法 JSON body；
+// 未命中路由/native/error/无 FieldRules → 原样透传。
 // 路由查询结果写入 pipe.Metadata（含未命中 nil），供响应方向 hook 复用。
 func (s *Service) HandleProxyBeforeUpstream(payload any) (any, error) {
 	pipe, ok := payload.(*modelgateway.ProxyPipeline)
