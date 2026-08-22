@@ -16,12 +16,23 @@ import RouteLogTable from '@/components/route-logs/RouteLogTable.vue'
 const service = useRouteLogs()
 const channelService = useChannels()
 const filters = ref<RouteLogFilters>({})
+const page = ref(1)
+const pageSize = ref(20)
 const {
-  data: logs,
+  data: logsData,
   loading,
   refreshing,
   refresh,
-} = useListLoader(() => service.list(filters.value))
+} = useListLoader(() => service.list(filters.value, { page: page.value, pageSize: pageSize.value }))
+// 后端真分页：logs 为当前页记录，total 为满足过滤条件的全量条数
+const logs = computed(() => logsData.value?.items ?? [])
+const total = computed(() => logsData.value?.total ?? 0)
+// 翻页/改每页条数：更新分页状态后重新拉取当前页（3s 定时刷新同样带当前 page/pageSize）
+function onPageChange(nextPage: number, nextSize: number) {
+  page.value = nextPage
+  pageSize.value = nextSize
+  void refresh()
+}
 const { data: channels } = useListLoader(channelService.list)
 const { run, isPending } = useAsyncTask()
 const { confirmDialog } = useConfirm()
@@ -169,6 +180,7 @@ onScopeDispose(stopAutoRefresh)
 async function apply(next: RouteLogFilters) {
   await run('apply', async () => {
     filters.value = next
+    page.value = 1 // 过滤条件变化回到第一页，避免高页码下先拉到空页
     await refresh()
     await refreshActiveDetails()
   })
@@ -198,6 +210,7 @@ async function clear() {
       await service.clear()
       detailsMap.clear()
       expandedIds.clear()
+      page.value = 1 // 清空后回到第一页
       await refresh()
     },
     '转发日志已清理',
@@ -240,7 +253,9 @@ async function clear() {
       :logs="displayLogs"
       :channels="channels || []"
       :loading-detail="loadingDetail"
+      :total="total"
       @expand="expand"
+      @page-change="onPageChange"
     />
   </div>
 </template>
