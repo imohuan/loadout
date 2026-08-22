@@ -150,14 +150,14 @@ func TestVisionE2EFlushOnSuccess(t *testing.T) {
 		t.Fatalf("应转发成功，实际 %d: %s", rr.Code, rr.Body.String())
 	}
 
-	logs, err := rl.List(context.Background(), contracts.RouteLogFilter{})
+	page, err := rl.List(context.Background(), contracts.RouteLogFilter{})
 	if err != nil {
 		t.Fatalf("查询 route log 失败: %v", err)
 	}
-	if len(logs) != 1 {
-		t.Fatalf("应有 1 条请求日志，实际 %d", len(logs))
+	if len(page.Items) != 1 {
+		t.Fatalf("应有 1 条请求日志，实际 %d", len(page.Items))
 	}
-	detail, err := rl.Detail(context.Background(), logs[0].RequestID)
+	detail, err := rl.Detail(context.Background(), page.Items[0].RequestID)
 	if err != nil {
 		t.Fatalf("查询详情失败: %v", err)
 	}
@@ -217,14 +217,14 @@ func TestVisionE2EFlushOnFail(t *testing.T) {
 		t.Fatalf("视觉失败应拒绝（400），实际 %d", rr.Code)
 	}
 
-	logs, err := rl.List(context.Background(), contracts.RouteLogFilter{})
+	page, err := rl.List(context.Background(), contracts.RouteLogFilter{})
 	if err != nil {
 		t.Fatalf("查询 route log 失败: %v", err)
 	}
-	if len(logs) != 1 || logs[0].Result != "failed" {
-		t.Fatalf("应有 1 条 failed 请求日志，实际 %+v", logs)
+	if len(page.Items) != 1 || page.Items[0].Result != "failed" {
+		t.Fatalf("应有 1 条 failed 请求日志，实际 %+v", page.Items)
 	}
-	detail, err := rl.Detail(context.Background(), logs[0].RequestID)
+	detail, err := rl.Detail(context.Background(), page.Items[0].RequestID)
 	if err != nil {
 		t.Fatalf("查询详情失败: %v", err)
 	}

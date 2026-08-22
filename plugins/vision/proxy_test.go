@@ -462,8 +462,8 @@ func (m *mockVisionRouteLog) Finish(ctx context.Context, f contracts.RouteFinish
 	m.finishs = append(m.finishs, f)
 	return nil
 }
-func (m *mockVisionRouteLog) List(ctx context.Context, f contracts.RouteLogFilter) ([]contracts.RouteRequestView, error) {
-	return nil, nil
+func (m *mockVisionRouteLog) List(ctx context.Context, f contracts.RouteLogFilter) (contracts.RouteLogPage, error) {
+	return contracts.RouteLogPage{}, nil
 }
 func (m *mockVisionRouteLog) Detail(ctx context.Context, id string) (contracts.RouteRequestView, error) {
 	return contracts.RouteRequestView{}, nil
