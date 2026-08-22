@@ -314,6 +314,8 @@ export function buildArgs(opts: {
     args.push('--source', opts.source)
   }
   if (opts.verbose) args.push('--verbose')
+  // 启用视觉能力（UnifyAI 多模态支持）
+  args.push('--enable-vision')
   return args
 }
 
