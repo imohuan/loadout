@@ -370,7 +370,7 @@ func (m *mockVisionRouteLog) SelfHeal(ctx context.Context, id string, threshold 
 }
 
 // TestDescribeWithFailoverOrder 验证 failover 顺序：路由 3 个候选，第 1 个渠道 500、第 2 个成功，
-// 只调用到第 2 个、返回第 2 个结果；第 1 个失败被写 route-log（failed attempt）。
+// 只调用到第 2 个、返回第 2 个结果及第 2 个渠道 id（route-log 已改由调用方写，本方法不再内部写 attempt）。
 func TestDescribeWithFailoverOrder(t *testing.T) {
 	setVisionConfig(t)
 
@@ -440,7 +440,7 @@ func TestDescribeWithFailoverOrder(t *testing.T) {
 		{ChannelIDs: []string{"ch3"}, ViaModel: "qwen3.7-flash-2026-07-15"},
 	}}
 
-	text, err := svc.describeWithFailover(context.Background(), imgID, "看颜色", nil, route, "req-order-1")
+	text, successChannelID, err := svc.describeWithFailover(context.Background(), imgID, "看颜色", nil, route)
 	if err != nil {
 		t.Fatalf("describeWithFailover 报错: %v", err)
 	}
@@ -459,15 +459,8 @@ func TestDescribeWithFailoverOrder(t *testing.T) {
 	if m, ok := gotModel.Load().(string); !ok || m != "qwen3-vl-flash-2026-01-22" {
 		t.Errorf("成功请求 model = %v, want qwen3-vl-flash-2026-01-22（第 2 个候选的 viaModel）", m)
 	}
-	// route-log：第 1 个候选失败 + 第 2 个候选成功各一条。
-	if len(log.attempts) != 2 {
-		t.Fatalf("route-log attempts = %d, want 2（failed + success）", len(log.attempts))
-	}
-	if log.attempts[0].Result != "failed" || log.attempts[0].Model != "doubao-seed-2-0-mini-260428" || log.attempts[0].ChannelID != "ch1" {
-		t.Errorf("attempt[0] = %+v, want 第 1 个候选 failed", log.attempts[0])
-	}
-	if log.attempts[1].Result != "success" || log.attempts[1].Model != "qwen3-vl-flash-2026-01-22" || log.attempts[1].ChannelID != "ch2" {
-		t.Errorf("attempt[1] = %+v, want 第 2 个候选 success", log.attempts[1])
+	if successChannelID != "ch2" {
+		t.Errorf("successChannelID = %q, want ch2（第 2 个成功候选渠道 id）", successChannelID)
 	}
 }
 
@@ -517,12 +510,15 @@ func TestDescribeWithFailoverCacheHit(t *testing.T) {
 	route := &types.CapabilityRoute{ViaOptions: []types.ViaOption{
 		{ChannelIDs: []string{"ch1"}, ViaModel: "qwen3-vl-flash-2026-01-22"},
 	}}
-	text, err := svc.describeWithFailover(context.Background(), imgID, "看颜色", nil, route, "req-cache-1")
+	text, successChannelID, err := svc.describeWithFailover(context.Background(), imgID, "看颜色", nil, route)
 	if err != nil {
 		t.Fatalf("describeWithFailover 报错: %v", err)
 	}
 	if text != "缓存描述" {
 		t.Errorf("返回文本 = %q, want 缓存描述", text)
+	}
+	if successChannelID != "" {
+		t.Errorf("successChannelID = %q, want 空（缓存命中不关联渠道）", successChannelID)
 	}
 	if visionCalls.Load() != 0 {
 		t.Errorf("缓存命中不应调用视觉 server, 实际 %d 次", visionCalls.Load())

@@ -31,9 +31,22 @@ func (s *Service) DescribeImage(ctx context.Context, id, prompt string, streamWr
 			return text, true, nil
 		}
 	}
-	raw, mime, err := s.loadImageBytes(id)
+	dataURI, err := s.buildDataURI(id)
 	if err != nil {
 		return "", false, err
+	}
+	text, err := s.describeImageWithDataURI(ctx, key, id, prompt, dataURI, streamWriter, ch, viaModel)
+	if err != nil {
+		return "", false, err
+	}
+	return text, false, nil
+}
+
+// buildDataURI 读取图片字节并构建（压缩后的）data URI，供视觉识别复用（一次读图、多候选共享）。
+func (s *Service) buildDataURI(id string) (string, error) {
+	raw, mime, err := s.loadImageBytes(id)
+	if err != nil {
+		return "", err
 	}
 	dataURI := "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(raw)
 	if config.VisionCompressEnabled {
@@ -43,26 +56,37 @@ func (s *Service) DescribeImage(ctx context.Context, id, prompt string, streamWr
 			s.lg.Warn("图片压缩失败，使用原图", "id", id, "err", err)
 		}
 	}
+	return dataURI, nil
+}
+
+// describeImageWithDataURI 用已构建的 data URI 调视觉模型并写缓存、懒清理孤儿图片。
+func (s *Service) describeImageWithDataURI(ctx context.Context, key, id, prompt, dataURI string, streamWriter func(string) error, ch modelgateway.ResolvedChannel, viaModel string) (string, error) {
 	text, err := s.callVision(ctx, dataURI, prompt, ch, viaModel, streamWriter)
 	if err != nil {
-		return "", false, err
+		return "", err
 	}
 	if config.VisionCacheEnabled {
 		_ = s.writeCache(key, text)
 	}
 	s.cleanupStaleFiles() // 懒清理孤儿图片
-	return text, false, nil
+	return text, nil
 }
 
 // describeWithFailover 按路由 via_options 依次尝试视觉候选（渠道展开 + 各自 viaModel），
-// 任一成功返回；全部失败返回最后错误。缓存命中直接返回（不调模型、不进 failover）。
-// 每次候选尝试写 route-log（visionAttempt：running → success/failed），与旧 vision 一致。
-func (s *Service) describeWithFailover(ctx context.Context, id, prompt string, streamWriter func(string) error, route *types.CapabilityRoute, requestID string) (string, error) {
+// 任一成功返回 (text, successChannelID, nil)；全部失败返回 ("", "", lastErr)。
+// 缓存命中直接返回 (text, "", nil)（channelID 空 = 缓存命中，调用方据此写 metadata cache_hit=true）。
+// 本方法不写 route-log（写日志职责归调用方 tool_loop.go/after.go），每个候选仅打详细 slog。
+func (s *Service) describeWithFailover(ctx context.Context, id, prompt string, streamWriter func(string) error, route *types.CapabilityRoute) (string, string, error) {
 	key := visionCacheKey(id, prompt)
 	if config.VisionCacheEnabled {
 		if text, ok := s.readCache(key); ok {
-			return text, nil
+			s.lg.Info("视觉缓存命中", "image_id", id, "prompt", prompt)
+			return text, "", nil
 		}
+	}
+	dataURI, err := s.buildDataURI(id)
+	if err != nil {
+		return "", "", err
 	}
 	var options []types.ViaOption
 	if route != nil {
@@ -92,12 +116,13 @@ func (s *Service) describeWithFailover(ctx context.Context, id, prompt string, s
 			}
 			for _, rc := range rcs {
 				start := time.Now()
-				text, _, err := s.DescribeImage(ctx, id, prompt, streamWriter, rc, viaModel)
+				s.lg.Info("视觉候选 start", "via_model", viaModel, "channel_id", rc.ID, "image_id", id, "prompt", prompt, "compressed_bytes", len(dataURI))
+				text, err := s.describeImageWithDataURI(ctx, key, id, prompt, dataURI, streamWriter, rc, viaModel)
 				if err == nil {
-					s.visionAttempt(ctx, requestID, -1, viaModel, start, time.Since(start), "success", rc.ID, "", 1)
-					return text, nil
+					s.lg.Info("视觉候选 success", "via_model", viaModel, "channel_id", rc.ID, "duration_ms", time.Since(start).Milliseconds())
+					return text, rc.ID, nil
 				}
-				s.visionAttempt(ctx, requestID, -1, viaModel, start, time.Since(start), "failed", rc.ID, err.Error(), 1)
+				s.lg.Warn("视觉候选 failed", "via_model", viaModel, "channel_id", rc.ID, "err", err, "duration_ms", time.Since(start).Milliseconds())
 				lastErr = err
 			}
 			continue
@@ -110,18 +135,19 @@ func (s *Service) describeWithFailover(ctx context.Context, id, prompt string, s
 				continue
 			}
 			start := time.Now()
-			text, _, err := s.DescribeImage(ctx, id, prompt, streamWriter, *rc, viaModel)
+			s.lg.Info("视觉候选 start", "via_model", viaModel, "channel_id", k.ChannelID, "image_id", id, "prompt", prompt, "compressed_bytes", len(dataURI))
+			text, err := s.describeImageWithDataURI(ctx, key, id, prompt, dataURI, streamWriter, *rc, viaModel)
 			if err == nil {
-				s.visionAttempt(ctx, requestID, -1, viaModel, start, time.Since(start), "success", rc.ID, "", 1)
-				return text, nil
+				s.lg.Info("视觉候选 success", "via_model", viaModel, "channel_id", k.ChannelID, "duration_ms", time.Since(start).Milliseconds())
+				return text, rc.ID, nil
 			}
-			s.visionAttempt(ctx, requestID, -1, viaModel, start, time.Since(start), "failed", rc.ID, err.Error(), 1)
+			s.lg.Warn("视觉候选 failed", "via_model", viaModel, "channel_id", k.ChannelID, "err", err, "duration_ms", time.Since(start).Milliseconds())
 			s.lg.Warn("视觉候选 Key 失败，尝试下一个", "via_model", viaModel, "channel", k.ChannelID, "err", err)
 			keyErr = err
 		}
 		lastErr = keyErr
 	}
-	return "", lastErr
+	return "", "", lastErr
 }
 
 // loadChannels 读取全部渠道（repo；复制旧 vision service.go:387）。
@@ -247,15 +273,18 @@ func (s *Service) callVision(ctx context.Context, dataURI, prompt string, ch mod
 
 // 复制的辅助类型（从旧 vision/service.go）：chatMessage、contentPart、imageURL、
 // readVisionStream、visionAttempt、pointerTime（route-log 用）。
-// visionAttempt 签名参考旧版，本任务实现，Task 7 使用。
 
-// visionAttempt 写一条视觉识别 attempt 到 route-log（两阶段）：
-// 识别开始调一次（Result=running 占位），识别结束以同一 step_no 再调一次更新状态。
-// 视觉 attempt 固定用 stepNo=-1（不占主链路 step 空间，与旧 vision 模式一致）。
-// routeLog 为 nil（测试/旧管线）或 stepNo == 0 时静默跳过。
-func (s *Service) visionAttempt(ctx context.Context, requestID string, stepNo int, model string, startedAt time.Time, dur time.Duration, result, channelID, errMsg string, imageCount int) {
-	if s.routeLog == nil || requestID == "" || stepNo == 0 {
+// visionAttempt 写一条视觉识别 attempt 到 route-log。
+// stepNo 由调用方按主链路 __route_step+1 分配（主请求=1、视觉识别=2、续流=3，与主链路共享单调递增空间）。
+// extra 为额外 metadata（called_via_tool/tool/image_id/prompt/cache_hit 等），与 capability/image_count 合并写入。
+// routeLog 为 nil（测试/旧管线）或 stepNo <= 0（非法值）时静默跳过。
+func (s *Service) visionAttempt(ctx context.Context, requestID string, stepNo int, model string, startedAt time.Time, dur time.Duration, result, channelID, errMsg string, imageCount int, extra map[string]any) {
+	if s.routeLog == nil || requestID == "" || stepNo <= 0 {
 		return
+	}
+	meta := map[string]any{"capability": "vision", "image_count": imageCount}
+	for k, v := range extra {
+		meta[k] = v
 	}
 	if _, err := s.routeLog.Attempt(ctx, contracts.RouteAttempt{
 		RequestID:    requestID,
@@ -268,7 +297,7 @@ func (s *Service) visionAttempt(ctx context.Context, requestID string, stepNo in
 		Result:       result,
 		ErrorMessage: errMsg,
 		Duration:     contracts.DurationMS(dur),
-		Metadata:     map[string]any{"capability": "vision", "image_count": imageCount},
+		Metadata:     meta,
 	}); err != nil {
 		s.lg.Warn("route log vision attempt failed", "err", err)
 	}

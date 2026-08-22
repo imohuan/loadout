@@ -222,7 +222,7 @@ func (s *Service) executeToolLoop(pipe *modelgateway.ProxyPipeline, st *toolLoop
 			if pipe.HTTPRequest != nil && pipe.HTTPRequest.Context() != nil {
 				ctx = pipe.HTTPRequest.Context()
 			}
-			text, err := s.describeWithFailover(ctx, c.ImageID, c.Prompt, s.toolStreamWriter(pipe, st.format), route, pipe.RequestID)
+			text, _, err := s.describeWithFailover(ctx, c.ImageID, c.Prompt, s.toolStreamWriter(pipe, st.format), route)
 			if err != nil {
 				return false, err
 			}

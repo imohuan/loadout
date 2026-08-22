@@ -144,7 +144,7 @@ func (s *Service) toolLoopNonStream(pipe *modelgateway.ProxyPipeline, calls []To
 			if pipe.HTTPRequest != nil && pipe.HTTPRequest.Context() != nil {
 				ctx = pipe.HTTPRequest.Context()
 			}
-			text, err := s.describeWithFailover(ctx, c.ImageID, c.Prompt, nil, route, pipe.RequestID)
+			text, _, err := s.describeWithFailover(ctx, c.ImageID, c.Prompt, nil, route)
 			if err != nil {
 				return nil, err
 			}

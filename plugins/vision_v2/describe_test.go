@@ -9,10 +9,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"loadout/core/config"
+	"loadout/core/db"
+	"loadout/core/store"
 	modelgateway "loadout/plugins/model-gateway"
+	"loadout/plugins/types"
 )
 
 // setVisionConfig 临时固定全局视觉开关，测试结束恢复。
@@ -178,5 +182,134 @@ func TestCallVisionUsesViaModel(t *testing.T) {
 	}
 	if gotModels[1] != config.DefaultVisionModel {
 		t.Errorf("model[1] = %q, want 兜底 %q", gotModels[1], config.DefaultVisionModel)
+	}
+}
+
+// TestDescribeWithFailoverReturnsChannelID 验证 failover 返回成功渠道 id：
+// 路由 2 个候选（第 1 个 500、第 2 个成功）→ 返回文本来自第 2 个、successChannelID = 第 2 个渠道 id。
+func TestDescribeWithFailoverReturnsChannelID(t *testing.T) {
+	setVisionConfig(t)
+
+	var srv1Calls atomic.Int32
+	srv1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		srv1Calls.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprint(w, "boom")
+	}))
+	defer srv1.Close()
+	var srv2Calls atomic.Int32
+	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		srv2Calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"choices":[{"message":{"content":"第二渠道描述"}}]}`)
+	}))
+	defer srv2.Close()
+
+	database, err := db.OpenMemory()
+	if err != nil {
+		t.Fatalf("db.OpenMemory: %v", err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	repo, err := db.NewRepository(database)
+	if err != nil {
+		t.Fatalf("db.NewRepository: %v", err)
+	}
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	svc := NewService(st, repo, slog.Default())
+	svc.cacheDir = t.TempDir()
+	if err := repo.ReplaceChannels(context.Background(), []db.Channel{
+		{ID: "ch1", Name: "c1", BaseURL: srv1.URL, ManualEnabled: true},
+		{ID: "ch2", Name: "c2", BaseURL: srv2.URL, ManualEnabled: true},
+	}); err != nil {
+		t.Fatalf("ReplaceChannels: %v", err)
+	}
+
+	imgID, err := svc.SaveImageDataURI(tinyPNGDataURI)
+	if err != nil {
+		t.Fatalf("SaveImageDataURI: %v", err)
+	}
+	route := &types.CapabilityRoute{ViaOptions: []types.ViaOption{
+		{ChannelIDs: []string{"ch1"}, ViaModel: "doubao-seed-2-0-mini-260428"},
+		{ChannelIDs: []string{"ch2"}, ViaModel: "qwen3-vl-flash-2026-01-22"},
+	}}
+
+	text, successChannelID, err := svc.describeWithFailover(context.Background(), imgID, "看颜色", nil, route)
+	if err != nil {
+		t.Fatalf("describeWithFailover 报错: %v", err)
+	}
+	if !strings.Contains(text, "第二渠道") {
+		t.Errorf("返回文本 = %q, want 来自第 2 个候选", text)
+	}
+	if successChannelID != "ch2" {
+		t.Errorf("successChannelID = %q, want ch2（第 2 个成功候选渠道 id）", successChannelID)
+	}
+	if srv1Calls.Load() != 1 {
+		t.Errorf("srv1 被调 %d 次, want 1（首个候选失败一次）", srv1Calls.Load())
+	}
+	if srv2Calls.Load() != 1 {
+		t.Errorf("srv2 被调 %d 次, want 1（第 2 个候选成功）", srv2Calls.Load())
+	}
+}
+
+// TestDescribeWithFailoverCacheHitNoChannel 验证缓存命中：返回 (text, "", nil)，
+// successChannelID 为空（缓存命中不关联渠道，调用方据此写 cache_hit=true），不调任何视觉 server。
+func TestDescribeWithFailoverCacheHitNoChannel(t *testing.T) {
+	setVisionConfig(t)
+
+	var visionCalls atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		visionCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"choices":[{"message":{"content":"不应返回"}}]}`)
+	}))
+	defer ts.Close()
+
+	database, err := db.OpenMemory()
+	if err != nil {
+		t.Fatalf("db.OpenMemory: %v", err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	repo, err := db.NewRepository(database)
+	if err != nil {
+		t.Fatalf("db.NewRepository: %v", err)
+	}
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	svc := NewService(st, repo, slog.Default())
+	svc.cacheDir = t.TempDir()
+	if err := repo.ReplaceChannels(context.Background(), []db.Channel{
+		{ID: "ch1", Name: "c1", BaseURL: ts.URL, ManualEnabled: true},
+	}); err != nil {
+		t.Fatalf("ReplaceChannels: %v", err)
+	}
+
+	imgID, err := svc.SaveImageDataURI(tinyPNGDataURI)
+	if err != nil {
+		t.Fatalf("SaveImageDataURI: %v", err)
+	}
+	if err := svc.writeCache(visionCacheKey(imgID, "看颜色"), "缓存描述"); err != nil {
+		t.Fatalf("writeCache: %v", err)
+	}
+	route := &types.CapabilityRoute{ViaOptions: []types.ViaOption{
+		{ChannelIDs: []string{"ch1"}, ViaModel: "qwen3-vl-flash-2026-01-22"},
+	}}
+
+	text, successChannelID, err := svc.describeWithFailover(context.Background(), imgID, "看颜色", nil, route)
+	if err != nil {
+		t.Fatalf("describeWithFailover 报错: %v", err)
+	}
+	if text != "缓存描述" {
+		t.Errorf("返回文本 = %q, want 缓存描述", text)
+	}
+	if successChannelID != "" {
+		t.Errorf("successChannelID = %q, want 空（缓存命中不关联渠道）", successChannelID)
+	}
+	if visionCalls.Load() != 0 {
+		t.Errorf("缓存命中不应调用视觉 server, 实际 %d 次", visionCalls.Load())
 	}
 }
