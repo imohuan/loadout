@@ -94,7 +94,10 @@ const filteredModels = computed(() => {
 })
 // 统一解析入口：空格 / Tab / 换行 / 英文逗号 / 中文逗号
 function parseModelTokens(raw: string): string[] {
-  return raw.split(/[\s,，]+/).map((s) => s.trim()).filter(Boolean)
+  return raw
+    .split(/[\s,，]+/)
+    .map((s) => s.trim())
+    .filter(Boolean)
 }
 // 当前搜索框按批量分隔符拆出的 token 列表（供「未找到」占位区预览）
 const parsedSearchTokens = computed(() => parseModelTokens(modelSearch.value))
@@ -171,7 +174,9 @@ function submit() {
   <Dialog v-model:open="open">
     <DialogContent class="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-2xl!">
       <DialogHeader>
-        <DialogTitle>{{ lockBaseUrl ? '添加 Key' : channel ? '编辑渠道' : '添加渠道' }}</DialogTitle>
+        <DialogTitle>{{
+          lockBaseUrl ? '添加 Key' : channel ? '编辑渠道' : '添加渠道'
+        }}</DialogTitle>
         <DialogDescription v-if="lockBaseUrl">
           为 {{ lockBaseUrl }} 添加一个独立账号（Key）。每个 Key 独立探测模型、独立健康状态。
         </DialogDescription>
@@ -309,15 +314,13 @@ function submit() {
                   </p>
                   <template v-else>
                     <p class="text-xs text-muted-foreground">
-                      未在候选中找到，将作为自定义模型添加（共 {{ parsedSearchTokens.length }} 个）：
+                      未在候选中找到，将作为自定义模型添加（共
+                      {{ parsedSearchTokens.length }} 个）：
                     </p>
                     <div class="flex max-w-full flex-wrap items-center justify-center gap-1">
-                      <Badge
-                        v-for="t in parsedSearchTokens"
-                        :key="t"
-                        variant="secondary"
-                        >{{ t }}</Badge
-                      >
+                      <Badge v-for="t in parsedSearchTokens" :key="t" variant="secondary">{{
+                        t
+                      }}</Badge>
                     </div>
                   </template>
                   <Button

@@ -125,9 +125,7 @@ async function importFromClipboard(): Promise<void> {
     return
   }
   // 直接覆盖整个列表（含 0 条也允许 = 清空）。
-  model.value = items.length
-    ? items
-    : [{ from: '', to: '', regex: false }]
+  model.value = items.length ? items : [{ from: '', to: '', regex: false }]
   toast.success('已导入', {
     description: `共 ${items.length} 条规则`,
   })
@@ -201,8 +199,8 @@ defineExpose({ exportToClipboard, importFromClipboard })
       ><RiAddLine size="16" />{{ addLabel }}</Button
     >
     <p class="text-xs text-muted-foreground">
-      按从上到下的顺序依次替换；整体替换若破坏 JSON，会自动降级为只替换
-      messages 下的文本内容（不报错）。正则开启时「原始内容」按正则匹配，替换内容支持
+      按从上到下的顺序依次替换；整体替换若破坏 JSON，会自动降级为只替换 messages
+      下的文本内容（不报错）。正则开启时「原始内容」按正则匹配，替换内容支持
       <code class="font-mono">$1</code> 捕获组引用。
     </p>
     <p class="text-xs text-muted-foreground">

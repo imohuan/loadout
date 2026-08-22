@@ -20,11 +20,16 @@ const tabs: { label: string; value: ModelStatsDays }[] = [
 <template>
   <Card class="rounded-md">
     <CardHeader>
-      <CardTitle class="flex items-center gap-2 text-base"><RiCpuLine size="18" />模型使用情况</CardTitle>
+      <CardTitle class="flex items-center gap-2 text-base"
+        ><RiCpuLine size="18" />模型使用情况</CardTitle
+      >
       <CardDescription>模型网关近 {{ days }} 天使用统计</CardDescription>
     </CardHeader>
     <CardContent>
-      <div v-if="error" class="rounded-md border border-destructive/40 bg-destructive/5 px-4 py-6 text-center text-sm text-destructive">
+      <div
+        v-if="error"
+        class="rounded-md border border-destructive/40 bg-destructive/5 px-4 py-6 text-center text-sm text-destructive"
+      >
         统计接口不可用：{{ error }}
         <Button variant="outline" size="sm" class="mt-2" @click="refresh">重试</Button>
       </div>

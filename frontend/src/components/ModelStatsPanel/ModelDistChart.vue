@@ -65,7 +65,9 @@ const rows = computed(() =>
       <CardDescription>按 Token 计 · 调用次数最多的模型</CardDescription>
     </CardHeader>
     <CardContent>
-      <div v-if="items.length === 0" class="py-8 text-center text-sm text-muted-foreground">暂无数据</div>
+      <div v-if="items.length === 0" class="py-8 text-center text-sm text-muted-foreground">
+        暂无数据
+      </div>
       <template v-else>
         <!-- 饼图居中放大 -->
         <div class="flex justify-center">
@@ -75,19 +77,21 @@ const rows = computed(() =>
         </div>
         <!-- 模型列表(模型名不再 truncate,完整显示) -->
         <div class="mt-4 space-y-1.5">
-          <div
-            v-for="r in rows"
-            :key="r.model"
-            class="flex items-center gap-2 text-sm"
-          >
-            <span class="w-6 shrink-0 text-xs text-muted-foreground tabular-nums">#{{ r.rank }}</span>
+          <div v-for="r in rows" :key="r.model" class="flex items-center gap-2 text-sm">
+            <span class="w-6 shrink-0 text-xs text-muted-foreground tabular-nums"
+              >#{{ r.rank }}</span
+            >
             <span
               class="inline-block h-2.5 w-2.5 shrink-0 rounded-full"
               :style="{ backgroundColor: r.color }"
             />
             <span class="min-w-0 flex-1 break-all">{{ r.model }}</span>
-            <span class="shrink-0 text-xs text-muted-foreground tabular-nums">{{ r.calls }} 次</span>
-            <span class="shrink-0 font-medium tabular-nums">{{ (r.tokens / 1000).toFixed(1) }}K</span>
+            <span class="shrink-0 text-xs text-muted-foreground tabular-nums"
+              >{{ r.calls }} 次</span
+            >
+            <span class="shrink-0 font-medium tabular-nums"
+              >{{ (r.tokens / 1000).toFixed(1) }}K</span
+            >
           </div>
         </div>
       </template>

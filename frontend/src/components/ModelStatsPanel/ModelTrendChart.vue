@@ -36,24 +36,30 @@ const option = computed(() => {
       splitLine: { lineStyle: { color: '#e2e8f0' } },
       axisLabel: { color: '#64748b', fontSize: 11, formatter: (v: number) => fmt(v) },
     },
-    series: [{
-      type: 'line' as const,
-      data: trend.map((p) => p.total_tokens),
-      smooth: true,
-      symbol: 'circle',
-      symbolSize: 5,
-      lineStyle: { color: '#6366f1', width: 2 },
-      itemStyle: { color: '#6366f1' },
-      areaStyle: {
-        color: {
-          type: 'linear' as const, x: 0, y: 0, x2: 0, y2: 1,
-          colorStops: [
-            { offset: 0, color: 'rgba(99, 102, 241, 0.4)' },
-            { offset: 1, color: 'rgba(99, 102, 241, 0.05)' },
-          ],
+    series: [
+      {
+        type: 'line' as const,
+        data: trend.map((p) => p.total_tokens),
+        smooth: true,
+        symbol: 'circle',
+        symbolSize: 5,
+        lineStyle: { color: '#6366f1', width: 2 },
+        itemStyle: { color: '#6366f1' },
+        areaStyle: {
+          color: {
+            type: 'linear' as const,
+            x: 0,
+            y: 0,
+            x2: 0,
+            y2: 1,
+            colorStops: [
+              { offset: 0, color: 'rgba(99, 102, 241, 0.4)' },
+              { offset: 1, color: 'rgba(99, 102, 241, 0.05)' },
+            ],
+          },
         },
       },
-    }],
+    ],
   }
 })
 </script>
@@ -66,7 +72,12 @@ const option = computed(() => {
     </CardHeader>
     <CardContent>
       <div class="h-44">
-        <div v-if="!(stats?.trend?.length)" class="flex h-full items-center justify-center text-sm text-muted-foreground">暂无数据</div>
+        <div
+          v-if="!stats?.trend?.length"
+          class="flex h-full items-center justify-center text-sm text-muted-foreground"
+        >
+          暂无数据
+        </div>
         <VChart v-else :option="option" autoresize />
       </div>
     </CardContent>

@@ -104,7 +104,8 @@ function groupTitle(group: ChannelGroup) {
       <CardHeader>
         <CardTitle class="text-base">渠道列表</CardTitle>
         <CardDescription>
-          同一 Base URL 的所有 Key 归为一组，组内顺序即该渠道的 Key 优先级；列表顺序即普通模型路由时的优先级。
+          同一 Base URL 的所有 Key 归为一组，组内顺序即该渠道的 Key
+          优先级；列表顺序即普通模型路由时的优先级。
         </CardDescription>
       </CardHeader>
       <CardContent class="p-0">
@@ -136,7 +137,9 @@ function groupTitle(group: ChannelGroup) {
                       variant="ghost"
                       size="icon"
                       class="size-8"
-                      :aria-label="isGroupExpanded(group.baseUrl) ? '收起 Key 列表' : '展开 Key 列表'"
+                      :aria-label="
+                        isGroupExpanded(group.baseUrl) ? '收起 Key 列表' : '展开 Key 列表'
+                      "
                       :aria-expanded="isGroupExpanded(group.baseUrl)"
                       @click="toggleGroup(group.baseUrl)"
                     >
@@ -157,7 +160,9 @@ function groupTitle(group: ChannelGroup) {
                   </TableCell>
                   <TableCell>{{ groupModelCount(group.keys) }} 个</TableCell>
                   <TableCell>
-                    <Badge :variant="groupEnabledState(group.keys) === 'none' ? 'secondary' : 'default'">
+                    <Badge
+                      :variant="groupEnabledState(group.keys) === 'none' ? 'secondary' : 'default'"
+                    >
                       {{ groupEnabledLabel(group.keys) }}
                     </Badge>
                   </TableCell>
@@ -171,7 +176,11 @@ function groupTitle(group: ChannelGroup) {
                             aria-label="刷新全部 Key 模型"
                             :disabled="busy(groupKey(group.baseUrl, 'refresh'))"
                             @click="emit('refreshGroup', group.baseUrl)"
-                            ><RiLoader4Line v-if="busy(groupKey(group.baseUrl, 'refresh'))" class="animate-spin" size="16" /><RiRefreshLine v-else size="16" /></Button>
+                            ><RiLoader4Line
+                              v-if="busy(groupKey(group.baseUrl, 'refresh'))"
+                              class="animate-spin"
+                              size="16" /><RiRefreshLine v-else size="16"
+                          /></Button>
                         </TooltipTrigger>
                         <TooltipContent>刷新全部 Key 模型</TooltipContent>
                       </Tooltip>
@@ -183,7 +192,11 @@ function groupTitle(group: ChannelGroup) {
                             aria-label="提高整组优先级"
                             :disabled="busy(groupKey(group.baseUrl, 'move-up')) || groupIndex === 0"
                             @click="emit('moveGroup', group.baseUrl, 'up')"
-                            ><RiLoader4Line v-if="busy(groupKey(group.baseUrl, 'move-up'))" class="animate-spin" size="16" /><RiArrowUpLine v-else size="16" /></Button>
+                            ><RiLoader4Line
+                              v-if="busy(groupKey(group.baseUrl, 'move-up'))"
+                              class="animate-spin"
+                              size="16" /><RiArrowUpLine v-else size="16"
+                          /></Button>
                         </TooltipTrigger>
                         <TooltipContent>提高整组优先级</TooltipContent>
                       </Tooltip>
@@ -193,9 +206,16 @@ function groupTitle(group: ChannelGroup) {
                             variant="ghost"
                             size="icon"
                             aria-label="降低整组优先级"
-                            :disabled="busy(groupKey(group.baseUrl, 'move-down')) || groupIndex === groups.length - 1"
+                            :disabled="
+                              busy(groupKey(group.baseUrl, 'move-down')) ||
+                              groupIndex === groups.length - 1
+                            "
                             @click="emit('moveGroup', group.baseUrl, 'down')"
-                            ><RiLoader4Line v-if="busy(groupKey(group.baseUrl, 'move-down'))" class="animate-spin" size="16" /><RiArrowDownLine v-else size="16" /></Button>
+                            ><RiLoader4Line
+                              v-if="busy(groupKey(group.baseUrl, 'move-down'))"
+                              class="animate-spin"
+                              size="16" /><RiArrowDownLine v-else size="16"
+                          /></Button>
                         </TooltipTrigger>
                         <TooltipContent>降低整组优先级</TooltipContent>
                       </Tooltip>
@@ -207,14 +227,21 @@ function groupTitle(group: ChannelGroup) {
                             aria-label="删除整组"
                             :disabled="busy(groupKey(group.baseUrl, 'remove'))"
                             @click="emit('removeGroup', group.baseUrl)"
-                            ><RiLoader4Line v-if="busy(groupKey(group.baseUrl, 'remove'))" class="animate-spin" size="16" /><RiDeleteBinLine v-else size="16" /></Button>
+                            ><RiLoader4Line
+                              v-if="busy(groupKey(group.baseUrl, 'remove'))"
+                              class="animate-spin"
+                              size="16" /><RiDeleteBinLine v-else size="16"
+                          /></Button>
                         </TooltipTrigger>
                         <TooltipContent>删除整组（全部 Key）</TooltipContent>
                       </Tooltip>
                     </div>
                   </TableCell>
                 </TableRow>
-                <TableRow v-if="isGroupExpanded(group.baseUrl)" class="bg-muted/30 hover:bg-muted/30">
+                <TableRow
+                  v-if="isGroupExpanded(group.baseUrl)"
+                  class="bg-muted/30 hover:bg-muted/30"
+                >
                   <TableCell :colspan="6" class="whitespace-normal p-0 w-full overflow-hidden">
                     <div class="space-y-3 px-4 py-4">
                       <div class="flex items-center justify-between gap-3">
@@ -226,12 +253,19 @@ function groupTitle(group: ChannelGroup) {
                         </div>
                         <div class="flex shrink-0 items-center gap-2">
                           <Badge variant="outline">{{ group.keys.length }} 个 Key</Badge>
-                          <Button variant="outline" size="sm" @click="emit('addKey', group.baseUrl)">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            @click="emit('addKey', group.baseUrl)"
+                          >
                             <RiAddLine size="16" />添加 Key
                           </Button>
                         </div>
                       </div>
-                      <div v-if="group.keys.length" class="divide-y rounded-md border bg-background">
+                      <div
+                        v-if="group.keys.length"
+                        class="divide-y rounded-md border bg-background"
+                      >
                         <div
                           v-for="(key, keyIndex) in group.keys"
                           :key="key.id"
@@ -239,7 +273,9 @@ function groupTitle(group: ChannelGroup) {
                         >
                           <div class="min-w-0 flex-1 overflow-hidden">
                             <div class="truncate text-sm font-medium">{{ key.name }}</div>
-                            <div class="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                            <div
+                              class="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground"
+                            >
                               <span>{{ modelCountLabel(key) }}</span>
                               <span
                                 >费用同步：
@@ -253,13 +289,35 @@ function groupTitle(group: ChannelGroup) {
                             <Badge :variant="keyEnabled(key) ? 'default' : 'secondary'">{{
                               keyEnabled(key) ? '启用' : '禁用'
                             }}</Badge>
-                            <Button variant="outline" size="sm" :disabled="busy(keyKey(key, 'toggle'))" @click="emit('toggleKey', key)">
-                              <RiLoader4Line v-if="busy(keyKey(key, 'toggle'))" class="animate-spin" size="16" />{{
-                                busy(keyKey(key, 'toggle')) ? '处理中' : keyEnabled(key) ? '停用' : '启用'
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              :disabled="busy(keyKey(key, 'toggle'))"
+                              @click="emit('toggleKey', key)"
+                            >
+                              <RiLoader4Line
+                                v-if="busy(keyKey(key, 'toggle'))"
+                                class="animate-spin"
+                                size="16"
+                              />{{
+                                busy(keyKey(key, 'toggle'))
+                                  ? '处理中'
+                                  : keyEnabled(key)
+                                    ? '停用'
+                                    : '启用'
                               }}
                             </Button>
-                            <Button variant="ghost" size="sm" :disabled="busy(keyKey(key, 'refresh'))" @click="emit('refreshKey', key)">
-                              <RiLoader4Line v-if="busy(keyKey(key, 'refresh'))" class="animate-spin" size="16" /><RiRefreshLine v-else size="16" />刷新模型
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              :disabled="busy(keyKey(key, 'refresh'))"
+                              @click="emit('refreshKey', key)"
+                            >
+                              <RiLoader4Line
+                                v-if="busy(keyKey(key, 'refresh'))"
+                                class="animate-spin"
+                                size="16"
+                              /><RiRefreshLine v-else size="16" />刷新模型
                             </Button>
                             <Button variant="ghost" size="sm" @click="emit('editKey', key)">
                               <RiEditLine size="16" />编辑
@@ -273,7 +331,11 @@ function groupTitle(group: ChannelGroup) {
                                     aria-label="上移 Key"
                                     :disabled="busy(keyKey(key, 'move-up')) || keyIndex === 0"
                                     @click="emit('moveKey', key, 'up')"
-                                    ><RiLoader4Line v-if="busy(keyKey(key, 'move-up'))" class="animate-spin" size="16" /><RiArrowUpLine v-else size="16" /></Button>
+                                    ><RiLoader4Line
+                                      v-if="busy(keyKey(key, 'move-up'))"
+                                      class="animate-spin"
+                                      size="16" /><RiArrowUpLine v-else size="16"
+                                  /></Button>
                                 </TooltipTrigger>
                                 <TooltipContent>上移 Key</TooltipContent>
                               </Tooltip>
@@ -283,9 +345,16 @@ function groupTitle(group: ChannelGroup) {
                                     variant="ghost"
                                     size="icon"
                                     aria-label="下移 Key"
-                                    :disabled="busy(keyKey(key, 'move-down')) || keyIndex === group.keys.length - 1"
+                                    :disabled="
+                                      busy(keyKey(key, 'move-down')) ||
+                                      keyIndex === group.keys.length - 1
+                                    "
                                     @click="emit('moveKey', key, 'down')"
-                                    ><RiLoader4Line v-if="busy(keyKey(key, 'move-down'))" class="animate-spin" size="16" /><RiArrowDownLine v-else size="16" /></Button>
+                                    ><RiLoader4Line
+                                      v-if="busy(keyKey(key, 'move-down'))"
+                                      class="animate-spin"
+                                      size="16" /><RiArrowDownLine v-else size="16"
+                                  /></Button>
                                 </TooltipTrigger>
                                 <TooltipContent>下移 Key</TooltipContent>
                               </Tooltip>
@@ -298,7 +367,11 @@ function groupTitle(group: ChannelGroup) {
                                   aria-label="删除该 Key"
                                   :disabled="busy(keyKey(key, 'remove'))"
                                   @click="emit('removeKey', key)"
-                                  ><RiLoader4Line v-if="busy(keyKey(key, 'remove'))" class="animate-spin" size="16" /><RiDeleteBinLine v-else size="16" /></Button>
+                                  ><RiLoader4Line
+                                    v-if="busy(keyKey(key, 'remove'))"
+                                    class="animate-spin"
+                                    size="16" /><RiDeleteBinLine v-else size="16"
+                                /></Button>
                               </TooltipTrigger>
                               <TooltipContent>删除该 Key</TooltipContent>
                             </Tooltip>
@@ -312,10 +385,7 @@ function groupTitle(group: ChannelGroup) {
             </TableBody>
           </Table>
         </div>
-        <EmptyState
-          v-else
-          title="还没有渠道"
-          description="先添加一个上游服务，再探测可用模型。" />
+        <EmptyState v-else title="还没有渠道" description="先添加一个上游服务，再探测可用模型。" />
       </CardContent>
     </Card>
   </TooltipProvider>

@@ -1,5 +1,13 @@
 <script setup lang="ts">
-import { AlertDialog, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, Button } from 'shadcn-vue-cdn'
+import {
+  AlertDialog,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  Button,
+} from 'shadcn-vue-cdn'
 import { useConfirm } from '@/composables/useConfirm'
 
 const { state, resolve } = useConfirm()

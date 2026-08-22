@@ -12,7 +12,7 @@ const total = computed(() => props.stats?.summary.requests ?? 0)
   <div class="rounded-md border bg-card px-3 py-2.5">
     <div class="mb-1.5 flex items-center justify-between">
       <span class="text-sm font-medium">请求结果</span>
-      <span class="text-xs text-muted-foreground">成功率 {{ ((rate) * 100).toFixed(1) }}%</span>
+      <span class="text-xs text-muted-foreground">成功率 {{ (rate * 100).toFixed(1) }}%</span>
     </div>
     <div class="flex h-2 w-full overflow-hidden rounded-full bg-muted">
       <div class="bg-green-500 transition-all" :style="{ width: `${rate * 100}%` }" />

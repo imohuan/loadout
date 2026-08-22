@@ -4,12 +4,7 @@ import { emitter } from '@/lib/emitter'
 // 后端：POST /api/config/export | /api/config/import/preview | /api/config/import
 
 export type TransferSectionKey =
-  | 'channels'
-  | 'aggregates'
-  | 'capability_routes'
-  | 'mcp'
-  | 'skills'
-  | 'other'
+  'channels' | 'aggregates' | 'capability_routes' | 'mcp' | 'skills' | 'other'
 
 export type ImportMode = 'overwrite' | 'append'
 

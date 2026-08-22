@@ -121,7 +121,7 @@ async function refreshActiveDetails() {
       const detail = await service.detail(log.request_id)
       detailsMap.set(log.request_id, detail)
       // 终态 + attempts 为空：视为本次拉取仍不完整（继续计数，下次轮询重试）
-      if (log.result !== 'running' && !(detail.attempts?.length)) {
+      if (log.result !== 'running' && !detail.attempts?.length) {
         // 已达上限：收起该行，避免无限轮询一个本无 attempts 的请求
         if (tries >= DETAIL_RETRY_MAX) expandedIds.delete(log.request_id)
         continue
@@ -192,12 +192,16 @@ async function expand(log: RouteLog) {
 }
 async function clear() {
   if (!(await confirmDialog('清空全部转发日志？此操作不可恢复。'))) return
-  await run('clear', async () => {
-    await service.clear()
-    detailsMap.clear()
-    expandedIds.clear()
-    await refresh()
-  }, '转发日志已清理')
+  await run(
+    'clear',
+    async () => {
+      await service.clear()
+      detailsMap.clear()
+      expandedIds.clear()
+      await refresh()
+    },
+    '转发日志已清理',
+  )
 }
 </script>
 
@@ -211,9 +215,16 @@ async function clear() {
           variant="outline"
           :disabled="loading || refreshing || isPending('refresh')"
           @click="manualRefresh"
-          ><RiLoader4Line v-if="isPending('refresh')" class="animate-spin" size="16" /><RiRefreshLine v-else :class="{ 'animate-spin': refreshing }" size="16" />刷新 </Button
+          ><RiLoader4Line
+            v-if="isPending('refresh')"
+            class="animate-spin"
+            size="16"
+          /><RiRefreshLine v-else :class="{ 'animate-spin': refreshing }" size="16" />刷新 </Button
         ><Button variant="destructive" :disabled="isPending('clear')" @click="clear">
-          <RiLoader4Line v-if="isPending('clear')" class="animate-spin" size="16" /><RiDeleteBinLine v-else size="16" />清空日志
+          <RiLoader4Line v-if="isPending('clear')" class="animate-spin" size="16" /><RiDeleteBinLine
+            v-else
+            size="16"
+          />清空日志
         </Button></template
       >
     </PageHeader>

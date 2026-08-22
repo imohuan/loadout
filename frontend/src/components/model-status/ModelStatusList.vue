@@ -55,7 +55,9 @@ const groups = computed(() => {
         @recover-channel="(item) => emit('recoverChannel', item)"
         @recover-model="(item, m) => emit('recoverModel', item, m)"
         @recover-all-models="(item) => emit('recoverAllModels', item)"
-        @batch-model-toggle="(item, models, enabled) => emit('batchModelToggle', item, models, enabled)"
+        @batch-model-toggle="
+          (item, models, enabled) => emit('batchModelToggle', item, models, enabled)
+        "
         @batch-recover-model="(item, models) => emit('batchRecoverModel', item, models)"
         @batch-delete-model="(item, models) => emit('batchDeleteModel', item, models)"
         @delete-model="(item, m) => emit('deleteModel', item, m)"

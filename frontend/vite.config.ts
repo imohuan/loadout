@@ -3,7 +3,7 @@ import { fileURLToPath, URL } from 'node:url'
 import vue from '@vitejs/plugin-vue'
 import tailwindcss from '@tailwindcss/vite'
 
-const targetUrl = "http://127.0.0.1:3000"
+const targetUrl = 'http://127.0.0.1:3000'
 
 // https://vite.dev/config/
 export default defineConfig({

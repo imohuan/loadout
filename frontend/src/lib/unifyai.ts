@@ -162,15 +162,7 @@ export interface PlatformResult {
 // ---- 日志条目（文档 §8 图标语义） ----
 
 export type LogLevel =
-  | 'info'
-  | 'success'
-  | 'warn'
-  | 'error'
-  | 'skip'
-  | 'backup'
-  | 'sync'
-  | 'thinking'
-  | 'vision'
+  'info' | 'success' | 'warn' | 'error' | 'skip' | 'backup' | 'sync' | 'thinking' | 'vision'
 
 export interface SyncLogEntry {
   id: number

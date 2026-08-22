@@ -17,7 +17,6 @@ const text = computed(() => formatChannelRef(props.channels, props.target))
 
 <template>
   <span v-if="text" class="inline-flex items-center gap-0.5 text-muted-foreground">
-    <span v-if="atPrefix" class="shrink-0">@</span
-    ><span class="whitespace-nowrap">{{ text }}</span>
+    <span v-if="atPrefix" class="shrink-0">@</span><span class="whitespace-nowrap">{{ text }}</span>
   </span>
 </template>

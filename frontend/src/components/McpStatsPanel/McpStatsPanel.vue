@@ -11,7 +11,9 @@ const { stats, loading, error, refresh } = useMcpStats()
 <template>
   <Card class="rounded-md">
     <CardHeader>
-      <CardTitle class="flex items-center gap-2 text-base"><RiLineChartLine size="18" />MCP 调用统计</CardTitle>
+      <CardTitle class="flex items-center gap-2 text-base"
+        ><RiLineChartLine size="18" />MCP 调用统计</CardTitle
+      >
       <CardDescription>聚合网关近 30 天使用情况</CardDescription>
       <template #actions>
         <Button variant="ghost" size="sm" :disabled="loading" @click="refresh">
@@ -20,7 +22,10 @@ const { stats, loading, error, refresh } = useMcpStats()
       </template>
     </CardHeader>
     <CardContent>
-      <div v-if="error" class="rounded-md border border-destructive/40 bg-destructive/5 px-4 py-6 text-center text-sm text-destructive">
+      <div
+        v-if="error"
+        class="rounded-md border border-destructive/40 bg-destructive/5 px-4 py-6 text-center text-sm text-destructive"
+      >
         统计接口不可用：{{ error }}
         <Button variant="outline" size="sm" class="mt-2" @click="refresh">重试</Button>
       </div>

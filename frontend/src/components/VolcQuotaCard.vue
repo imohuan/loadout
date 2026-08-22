@@ -10,7 +10,12 @@ import {
   RiLoader4Line,
   RiRefreshLine,
 } from '@remixicon/vue'
-import type { Channel, VolcQuotaConfig, VolcQuotaConfigDetails, VolcQuotaPackage } from '@/lib/types'
+import type {
+  Channel,
+  VolcQuotaConfig,
+  VolcQuotaConfigDetails,
+  VolcQuotaPackage,
+} from '@/lib/types'
 import { useChannels } from '@/composables/useChannels'
 import { useVolcQuota } from '@/composables/useVolcQuota'
 import { useConfirm } from '@/composables/useConfirm'
@@ -174,7 +179,11 @@ const remoteDialogOpen = ref(false)
 const remoteChecking = ref(false)
 const remoteTarget = ref('') // 空 = 全量；否则 channel_id
 const remoteTargetName = ref('')
-const recentUsage = ref<{ has_recent: boolean; request_count: number; last_request_at: string } | null>(null)
+const recentUsage = ref<{
+  has_recent: boolean
+  request_count: number
+  last_request_at: string
+} | null>(null)
 
 function openRemoteRefresh(channelId = '') {
   remoteTarget.value = channelId
@@ -225,11 +234,7 @@ async function refreshOne(channelId: string) {
   openRemoteRefresh(channelId)
 }
 
-function applyRefreshResult(
-  checked: number,
-  failed?: string[],
-  disabled?: string[],
-) {
+function applyRefreshResult(checked: number, failed?: string[], disabled?: string[]) {
   const parts: string[] = []
   if (checked > 0) parts.push(`已刷新 ${checked} 个配置`)
   if (disabled?.length) {
@@ -247,7 +252,13 @@ function applyRefreshResult(
 // ===== 新增 / 编辑 / 删除 =====
 const dialogOpen = ref(false)
 const editing = ref(false) // false = 新增
-const form = reactive<{ channel_id: string; access_key: string; secret_key: string; enabled: boolean; force_block: boolean }>({
+const form = reactive<{
+  channel_id: string
+  access_key: string
+  secret_key: string
+  enabled: boolean
+  force_block: boolean
+}>({
   channel_id: '',
   access_key: '',
   secret_key: '',
@@ -256,7 +267,13 @@ const form = reactive<{ channel_id: string; access_key: string; secret_key: stri
 })
 
 function resetForm() {
-  Object.assign(form, { channel_id: '', access_key: '', secret_key: '', enabled: true, force_block: false })
+  Object.assign(form, {
+    channel_id: '',
+    access_key: '',
+    secret_key: '',
+    enabled: true,
+    force_block: false,
+  })
   editing.value = false
 }
 
@@ -317,7 +334,11 @@ async function submit() {
 async function remove(channelId: string) {
   if (!(await confirmDialog('删除该 Key 的额度监控配置？（不会删除渠道本身）'))) return
   try {
-    await quota.save(configs.value.filter((item) => item.config.channel_id !== channelId).map((item) => item.config))
+    await quota.save(
+      configs.value
+        .filter((item) => item.config.channel_id !== channelId)
+        .map((item) => item.config),
+    )
     toast.success('配置已删除')
     await loadStatus(false)
   } catch (e) {
@@ -333,7 +354,9 @@ const displayName = (ch: Channel) => ch.channel_name || ch.name
     <CardHeader>
       <CardTitle class="text-base">火山引擎免费额度</CardTitle>
       <CardDescription>
-        为方舟渠道 Key 配置 AK/SK（火山引擎控制台访问授权），自动查询免费模型额度；每次请求按 total_tokens 本地扣减余额（不依赖账单接口，账单 429 也能拦截）；额度耗尽后自动禁用该模型（冷却至次日 0 点，错误信息「模型免费额度用完」）。
+        为方舟渠道 Key 配置 AK/SK（火山引擎控制台访问授权），自动查询免费模型额度；每次请求按
+        total_tokens 本地扣减余额（不依赖账单接口，账单 429
+        也能拦截）；额度耗尽后自动禁用该模型（冷却至次日 0 点，错误信息「模型免费额度用完」）。
       </CardDescription>
     </CardHeader>
     <CardContent class="space-y-3">
@@ -342,20 +365,11 @@ const displayName = (ch: Channel) => ch.channel_name || ch.name
           共 {{ configs.length }} 个 Key 配置<span v-if="loaded">，额度每天 0 点重置</span>
         </div>
         <div class="flex items-center gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            :disabled="refreshingAll"
-            @click="refreshLocal"
-          >
+          <Button variant="outline" size="sm" :disabled="refreshingAll" @click="refreshLocal">
             <RiRefreshLine size="16" />
             刷新本地
           </Button>
-          <Button
-            size="sm"
-            :disabled="refreshingAll"
-            @click="openRemoteRefresh()"
-          >
+          <Button size="sm" :disabled="refreshingAll" @click="openRemoteRefresh()">
             <RiLoader4Line v-if="refreshingAll" class="animate-spin" size="16" />
             <RiRefreshLine v-else size="16" />
             刷新远程
@@ -385,13 +399,14 @@ const displayName = (ch: Channel) => ch.channel_name || ch.name
             <div class="min-w-0 flex-1">
               <div class="truncate text-sm font-medium">{{ title(item) }}</div>
               <div class="truncate font-mono text-xs text-muted-foreground">
-                {{ item.config.base_url }}<span v-if="item.config.access_key"> · AK {{ item.config.access_key.slice(0, 8) }}…</span>
+                {{ item.config.base_url
+                }}<span v-if="item.config.access_key">
+                  · AK {{ item.config.access_key.slice(0, 8) }}…</span
+                >
               </div>
             </div>
             <div class="flex shrink-0 items-center gap-2">
-              <Badge v-if="item.config.force_block" variant="destructive">
-                强制关停
-              </Badge>
+              <Badge v-if="item.config.force_block" variant="destructive"> 强制关停 </Badge>
               <Badge v-if="exhaustedCount(item) > 0" variant="destructive">
                 {{ exhaustedCount(item) }} 个已耗尽
               </Badge>
@@ -436,9 +451,11 @@ const displayName = (ch: Channel) => ch.channel_name || ch.name
             v-if="isExpanded(item.config.channel_id)"
             class="space-y-3 border-t bg-muted/30 px-4 py-4"
           >
-
             <!-- 资源包逐条明细 -->
-            <div v-if="item.packages?.length" class="overflow-hidden rounded-md border bg-background/60">
+            <div
+              v-if="item.packages?.length"
+              class="overflow-hidden rounded-md border bg-background/60"
+            >
               <div class="flex items-center justify-between gap-2 border-b bg-muted/50 px-3 py-1.5">
                 <span class="text-xs font-medium text-muted-foreground">
                   资源包（{{ filteredPackages(item).length }} / {{ item.packages.length }}）
@@ -469,32 +486,53 @@ const displayName = (ch: Channel) => ch.channel_name || ch.name
                   >
                     <TableCell class="py-1.5 align-top">
                       <div class="truncate font-medium" :title="pkgName(p)">{{ pkgName(p) }}</div>
-                      <div class="truncate font-mono text-[10px] text-muted-foreground" :title="p.configuration_code">
+                      <div
+                        class="truncate font-mono text-[10px] text-muted-foreground"
+                        :title="p.configuration_code"
+                      >
                         {{ p.configuration_code || p.product || '' }}
                       </div>
                     </TableCell>
-                    <TableCell class="py-1.5 text-right tabular-nums">{{ formatAmount(p.total_amount) }}</TableCell>
+                    <TableCell class="py-1.5 text-right tabular-nums">{{
+                      formatAmount(p.total_amount)
+                    }}</TableCell>
                     <TableCell class="py-1.5">
                       <div class="flex items-center gap-2">
                         <Progress
                           :model-value="pkgProgress(p)"
-                          :class="p.local_remaining <= 0 && p.initial_total > 0 ? 'bg-destructive/20' : (p.total_amount > 0 && p.available_amount / p.total_amount < 0.2 ? 'bg-amber-500/20' : '')"
+                          :class="
+                            p.local_remaining <= 0 && p.initial_total > 0
+                              ? 'bg-destructive/20'
+                              : p.total_amount > 0 && p.available_amount / p.total_amount < 0.2
+                                ? 'bg-amber-500/20'
+                                : ''
+                          "
                           class="h-1.5 flex-1"
                         />
                         <!-- 本地余额精确显示（千分位），否则 formatAmount(1999811)="2M" 看不到扣减差异 -->
                         <span
                           class="w-32 shrink-0 text-right tabular-nums"
-                          :class="p.local_remaining <= 0 && p.initial_total > 0 ? 'text-destructive' : ''"
+                          :class="
+                            p.local_remaining <= 0 && p.initial_total > 0 ? 'text-destructive' : ''
+                          "
                           :title="`本地剩余 ${p.local_remaining} / 初始 ${p.initial_total}`"
                         >
-                          {{ p.local_remaining.toLocaleString() }}<span v-if="p.initial_total > 0" class="text-muted-foreground">/{{ p.initial_total.toLocaleString() }}</span>
+                          {{ p.local_remaining.toLocaleString()
+                          }}<span v-if="p.initial_total > 0" class="text-muted-foreground"
+                            >/{{ p.initial_total.toLocaleString() }}</span
+                          >
                         </span>
                       </div>
                     </TableCell>
                     <!-- 已用：本地口径（initial_total - local_remaining），不是 billing used_amount
                          （billing 是 total-available，本地扣的不会算进去）。 -->
                     <TableCell class="py-1.5 text-right tabular-nums text-muted-foreground">
-                      {{ (p.initial_total > 0 ? p.initial_total - p.local_remaining : p.used_amount).toLocaleString() }}
+                      {{
+                        (p.initial_total > 0
+                          ? p.initial_total - p.local_remaining
+                          : p.used_amount
+                        ).toLocaleString()
+                      }}
                     </TableCell>
                     <TableCell class="py-1.5">
                       <Badge :variant="pkgBadge(p).variant">{{ pkgBadge(p).label }}</Badge>
@@ -550,7 +588,8 @@ const displayName = (ch: Channel) => ch.channel_name || ch.name
             </SelectContent>
           </Select>
           <p v-if="!arkChannels.length" class="text-xs text-muted-foreground">
-            未找到方舟渠道，请先在「渠道列表」中添加 base_url 为 https://ark.cn-beijing.volces.com/api/v3 的渠道。
+            未找到方舟渠道，请先在「渠道列表」中添加 base_url 为
+            https://ark.cn-beijing.volces.com/api/v3 的渠道。
           </p>
         </div>
         <div class="space-y-1">
@@ -574,7 +613,9 @@ const displayName = (ch: Channel) => ch.channel_name || ch.name
         <div class="flex items-center gap-2">
           <Switch id="vq-force-block" v-model="form.force_block" />
           <Label for="vq-force-block">强制关停（忽略手动恢复）</Label>
-          <span class="text-xs text-muted-foreground">开启后，即使模型状态被手动恢复，请求时仍按额度表拦截</span>
+          <span class="text-xs text-muted-foreground"
+            >开启后，即使模型状态被手动恢复，请求时仍按额度表拦截</span
+          >
         </div>
         <DialogFooter>
           <Button type="submit" :disabled="saving">

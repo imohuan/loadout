@@ -83,8 +83,7 @@ export function extractErrorSummary(
 ): string {
   const parsed = tryParseJson(errorBody || '')
   const bodyMsg = parsed ? pickField(parsed) : undefined
-  const fbMsg =
-    typeof fallback === 'string' && fallback.trim() ? fallback.trim() : undefined
+  const fbMsg = typeof fallback === 'string' && fallback.trim() ? fallback.trim() : undefined
 
   let summary: string
   if (bodyMsg && fbMsg) {

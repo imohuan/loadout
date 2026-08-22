@@ -16,8 +16,7 @@ const emit = defineEmits<{ toggle: [platform: Platform] }>()
 
 /** 模型能力徽章文案与样式 */
 function modelBadge() {
-  if (props.platform.modelSync)
-    return { text: '模型 ✓', variant: 'default' as const }
+  if (props.platform.modelSync) return { text: '模型 ✓', variant: 'default' as const }
   return { text: '模型 ✗', variant: 'secondary' as const }
 }
 
@@ -63,12 +62,12 @@ function mcpBadge() {
             <RiCloseLine v-else-if="disabled" size="14" class="shrink-0 text-muted-foreground" />
           </div>
           <div class="flex flex-wrap gap-1">
-            <Badge :variant="modelBadge().variant" class="px-1.5 py-0 text-[10px] font-normal"
-              >{{ modelBadge().text }}</Badge
-            >
-            <Badge :variant="mcpBadge().variant" class="px-1.5 py-0 text-[10px] font-normal"
-              >{{ mcpBadge().text }}</Badge
-            >
+            <Badge :variant="modelBadge().variant" class="px-1.5 py-0 text-[10px] font-normal">{{
+              modelBadge().text
+            }}</Badge>
+            <Badge :variant="mcpBadge().variant" class="px-1.5 py-0 text-[10px] font-normal">{{
+              mcpBadge().text
+            }}</Badge>
           </div>
         </button>
       </TooltipTrigger>

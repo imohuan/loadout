@@ -122,8 +122,8 @@ export function formatChannelRef(
   const baseUrls = ref.channel_base_urls?.length
     ? ref.channel_base_urls
     : ref.channel_base_url
-    ? [ref.channel_base_url]
-    : []
+      ? [ref.channel_base_url]
+      : []
   const segments = mergeSegments(
     channelLevelSegments(channels, baseUrls),
     groupSegmentsFor(channels, ids),

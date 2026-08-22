@@ -31,9 +31,10 @@ function reset() {
     </div>
     <div class="min-w-36 flex-1 space-y-1">
       <Label for="log-channel">渠道</Label>
-      <Select :model-value="form.channel_id || '__all__'" @update:model-value="
-        form.channel_id = $event === '__all__' ? undefined : String($event)
-        ">
+      <Select
+        :model-value="form.channel_id || '__all__'"
+        @update:model-value="form.channel_id = $event === '__all__' ? undefined : String($event)"
+      >
         <SelectTrigger id="log-channel" class="w-full">
           <SelectValue placeholder="所有渠道" />
         </SelectTrigger>
@@ -49,8 +50,10 @@ function reset() {
     </div>
     <div class="min-w-36 flex-1 space-y-1">
       <Label for="log-result">结果</Label>
-      <Select :model-value="form.result || '__all__'"
-        @update:model-value="form.result = $event === '__all__' ? undefined : String($event)">
+      <Select
+        :model-value="form.result || '__all__'"
+        @update:model-value="form.result = $event === '__all__' ? undefined : String($event)"
+      >
         <SelectTrigger id="log-result" class="w-full">
           <SelectValue placeholder="所有结果" />
         </SelectTrigger>
@@ -74,14 +77,23 @@ function reset() {
     </div>
     <div class="flex shrink-0 items-center gap-2">
       <Button type="submit" :disabled="busy('apply')">
-        <RiLoader4Line v-if="busy('apply')" class="animate-spin" size="16" /><RiFilter3Line v-else size="16" />筛选
+        <RiLoader4Line v-if="busy('apply')" class="animate-spin" size="16" /><RiFilter3Line
+          v-else
+          size="16"
+        />筛选
       </Button>
       <TooltipProvider>
         <Tooltip>
-          <TooltipTrigger as-child><Button type="button" variant="outline" :disabled="busy('apply')" aria-label="重置筛选"
-              @click="reset">
-              <RiRefreshLine size="16" />
-            </Button></TooltipTrigger>
+          <TooltipTrigger as-child
+            ><Button
+              type="button"
+              variant="outline"
+              :disabled="busy('apply')"
+              aria-label="重置筛选"
+              @click="reset"
+            >
+              <RiRefreshLine size="16" /> </Button
+          ></TooltipTrigger>
           <TooltipContent>重置筛选</TooltipContent>
         </Tooltip>
       </TooltipProvider>

@@ -206,19 +206,27 @@ export function useMcpManagement() {
       error?: string
       tools?: Array<{ name: string; description?: string }>
     }
-    await run(`server:${name}:test`, async () => {
-      try {
-        result = {
-          name,
-          ...((await api('/api/mcp-servers/test', {
-            method: 'POST',
-            body: JSON.stringify(serverPayload),
-          })) as any),
+    await run(
+      `server:${name}:test`,
+      async () => {
+        try {
+          result = {
+            name,
+            ...((await api('/api/mcp-servers/test', {
+              method: 'POST',
+              body: JSON.stringify(serverPayload),
+            })) as any),
+          }
+        } catch (error) {
+          result = {
+            name,
+            ok: false,
+            error: error instanceof Error ? error.message : String(error),
+          }
         }
-      } catch (error) {
-        result = { name, ok: false, error: error instanceof Error ? error.message : String(error) }
-      }
-    }, '')
+      },
+      '',
+    )
     const description =
       result!.error || `${result!.name}：发现 ${(result!.tools || []).length} 个工具`
     if (result!.ok) toast.success('MCP 连接成功', { description })
@@ -226,53 +234,73 @@ export function useMcpManagement() {
     return result!
   }
   async function saveServer() {
-    await run('save-server', async () => {
-      const data = payload()
-      if (!data.name) throw new Error('名称必填')
-      if ((data.transport === 'http' || data.transport === 'sse') && !data.url)
-        throw new Error('URL 必填')
-      if (data.transport === 'stdio' && !data.command) throw new Error('命令必填')
-      if (editingId.value) await request('/api/mcp-servers/' + editingId.value, 'PUT', data)
-      else await request('/api/mcp-servers', 'POST', data)
-      await refresh()
-      await testServer(data, data.name)
-    }, 'MCP 服务器已保存')
+    await run(
+      'save-server',
+      async () => {
+        const data = payload()
+        if (!data.name) throw new Error('名称必填')
+        if ((data.transport === 'http' || data.transport === 'sse') && !data.url)
+          throw new Error('URL 必填')
+        if (data.transport === 'stdio' && !data.command) throw new Error('命令必填')
+        if (editingId.value) await request('/api/mcp-servers/' + editingId.value, 'PUT', data)
+        else await request('/api/mcp-servers', 'POST', data)
+        await refresh()
+        await testServer(data, data.name)
+      },
+      'MCP 服务器已保存',
+    )
   }
   async function toggleServer(server: McpServer) {
-    await run(`server:${server.id}:toggle`, async () => {
-      await request('/api/mcp-servers/' + server.id, 'PUT', {
-        ...server,
-        enabled: server.enabled === false,
-      })
-      await refresh()
-    }, '状态已更新')
+    await run(
+      `server:${server.id}:toggle`,
+      async () => {
+        await request('/api/mcp-servers/' + server.id, 'PUT', {
+          ...server,
+          enabled: server.enabled === false,
+        })
+        await refresh()
+      },
+      '状态已更新',
+    )
   }
   async function removeServer(server: McpServer) {
     if (!(await confirmDialog('删除 MCP「' + server.name + '」？'))) return
-    await run(`server:${server.id}:remove`, async () => {
-      await api('/api/mcp-servers', { method: 'DELETE', body: JSON.stringify({ id: server.id }) })
-      await refresh()
-    }, 'MCP 服务器已删除')
+    await run(
+      `server:${server.id}:remove`,
+      async () => {
+        await api('/api/mcp-servers', { method: 'DELETE', body: JSON.stringify({ id: server.id }) })
+        await refresh()
+      },
+      'MCP 服务器已删除',
+    )
   }
   async function saveGroup() {
-    await run('save-group', async () => {
-      if (!groupName.value.trim()) throw new Error('分组名必填')
-      await request('/api/groups', 'PUT', [
-        ...groups.value.filter(
-          (group) => group.name !== editingGroup.value && group.name !== groupName.value,
-        ),
-        { name: groupName.value.trim(), tools: selectedTools.value },
-      ])
-      await refresh()
-      resetGroup()
-    }, '分组已保存')
+    await run(
+      'save-group',
+      async () => {
+        if (!groupName.value.trim()) throw new Error('分组名必填')
+        await request('/api/groups', 'PUT', [
+          ...groups.value.filter(
+            (group) => group.name !== editingGroup.value && group.name !== groupName.value,
+          ),
+          { name: groupName.value.trim(), tools: selectedTools.value },
+        ])
+        await refresh()
+        resetGroup()
+      },
+      '分组已保存',
+    )
   }
   async function removeGroup(group: McpGroup) {
     if (!(await confirmDialog('删除分组「' + group.name + '」？'))) return
-    await run(`group:${group.name}:remove`, async () => {
-      await api('/api/groups', { method: 'DELETE', body: JSON.stringify({ name: group.name }) })
-      await refresh()
-    }, '分组已删除')
+    await run(
+      `group:${group.name}:remove`,
+      async () => {
+        await api('/api/groups', { method: 'DELETE', body: JSON.stringify({ name: group.name }) })
+        await refresh()
+      },
+      '分组已删除',
+    )
   }
   async function copy(path: string) {
     await navigator.clipboard.writeText(location.origin + path)

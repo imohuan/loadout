@@ -427,20 +427,15 @@ async function send() {
 
   const channelId = config.channelId || undefined
   try {
-    const result = await modelTest.chat(
-      buildTarget(),
-      config.model,
-      requestMessages,
-      {
-        onDelta: (delta) => {
-          assistantReply.value += delta
-        },
-        onSummary: (summary) => {
-          summaryHolder.value = summary
-        },
-        signal: controller.signal,
+    const result = await modelTest.chat(buildTarget(), config.model, requestMessages, {
+      onDelta: (delta) => {
+        assistantReply.value += delta
       },
-    )
+      onSummary: (summary) => {
+        summaryHolder.value = summary
+      },
+      signal: controller.signal,
+    })
     entry.request_id = result.request_id || entry.request_id
     entry.result = 'success'
     entry.duration_ms = Date.now() - startedAt.getTime()
@@ -463,7 +458,11 @@ async function send() {
     if (summaryHolder.value?.request_id) entry.request_id = summaryHolder.value.request_id
     entry.result = 'failed'
     entry.duration_ms = Date.now() - startedAt.getTime()
-    entry.error_message = aborted ? '已手动停止' : error instanceof Error ? error.message : '请求失败'
+    entry.error_message = aborted
+      ? '已手动停止'
+      : error instanceof Error
+        ? error.message
+        : '请求失败'
     entry.attempts = [
       {
         step_no: 1,
@@ -500,7 +499,10 @@ async function syncTestLog(entry: RouteLog, summary: RouteLog | null) {
       // 后端/摘要没有渠道名称快照时保留本地快照，Key 删除后仍能显示「@渠道名(Unknown)」。
       final_channel_name: summary.final_channel_name ?? entry.final_channel_name,
       attempts: summary.attempts?.length
-        ? summary.attempts.map((a) => ({ ...a, channel_name: a.channel_name ?? entry.attempts?.[0]?.channel_name }))
+        ? summary.attempts.map((a) => ({
+            ...a,
+            channel_name: a.channel_name ?? entry.attempts?.[0]?.channel_name,
+          }))
         : entry.attempts,
     }
     effectiveId = merged.request_id
@@ -565,7 +567,10 @@ async function expand(log: RouteLog) {
         attempts: detail.attempts?.length
           ? detail.attempts.map((a, i) => ({
               ...a,
-              channel_name: a.channel_name ?? log.attempts?.[i]?.channel_name ?? log.attempts?.[0]?.channel_name,
+              channel_name:
+                a.channel_name ??
+                log.attempts?.[i]?.channel_name ??
+                log.attempts?.[0]?.channel_name,
             }))
           : detail.attempts,
       }
@@ -622,11 +627,7 @@ onBeforeUnmount(() => {
                       class="w-full justify-between font-normal"
                     >
                       <span
-                        :class="
-                          presetTriggerLabel
-                            ? 'text-foreground'
-                            : 'text-muted-foreground'
-                        "
+                        :class="presetTriggerLabel ? 'text-foreground' : 'text-muted-foreground'"
                         >{{
                           channelsLoading
                             ? '正在加载渠道'
@@ -653,8 +654,7 @@ onBeforeUnmount(() => {
                           type="button"
                           class="rounded-md border px-2 py-1 text-xs font-medium transition-colors"
                           :class="
-                            config.channelId === BUILTIN_CHANNEL &&
-                            config.skKeyHash === sk.hash
+                            config.channelId === BUILTIN_CHANNEL && config.skKeyHash === sk.hash
                               ? 'border-primary bg-primary text-primary-foreground'
                               : 'border-border bg-background hover:bg-muted'
                           "
@@ -663,10 +663,7 @@ onBeforeUnmount(() => {
                           {{ sk.name }}
                         </button>
                       </div>
-                      <p
-                        v-else
-                        class="px-2 py-1.5 text-xs text-muted-foreground"
-                      >
+                      <p v-else class="px-2 py-1.5 text-xs text-muted-foreground">
                         暂无可用 Key，请先到「设置」创建
                       </p>
                     </div>
@@ -788,7 +785,10 @@ onBeforeUnmount(() => {
             </TooltipProvider>
           </CardHeader>
           <CardContent class="space-y-3 pt-0">
-            <p v-if="!messages.length" class="rounded-md border border-dashed border-border py-6 text-center text-sm text-muted-foreground">
+            <p
+              v-if="!messages.length"
+              class="rounded-md border border-dashed border-border py-6 text-center text-sm text-muted-foreground"
+            >
               暂无消息。在右侧输入发送，或点 + 添加消息组成多轮对话。
             </p>
             <div
@@ -819,7 +819,11 @@ onBeforeUnmount(() => {
                   <RiCloseLine size="16" />
                 </Button>
               </div>
-              <Textarea v-model="message.content" class="min-h-20 min-w-0 max-h-64" placeholder="输入消息内容" />
+              <Textarea
+                v-model="message.content"
+                class="min-h-20 min-w-0 max-h-64"
+                placeholder="输入消息内容"
+              />
             </div>
           </CardContent>
         </Card>
@@ -899,12 +903,7 @@ onBeforeUnmount(() => {
                   <RiImageAddLine size="16" />添加图片或资源
                 </Button>
                 <div class="flex items-center gap-2">
-                  <Button
-                    v-if="streaming"
-                    type="button"
-                    variant="outline"
-                    @click="stop"
-                  >
+                  <Button v-if="streaming" type="button" variant="outline" @click="stop">
                     <RiStopLine size="16" />停止
                   </Button>
                   <Button
@@ -941,8 +940,7 @@ onBeforeUnmount(() => {
             <pre
               v-if="assistantReply"
               class="max-h-96 overflow-y-auto whitespace-pre-wrap break-words rounded-md border border-border bg-muted/20 p-3 font-sans text-sm text-foreground"
-              >{{ assistantReply }}</pre
-            >
+              >{{ assistantReply }}</pre>
             <p v-if="!streaming && !assistantReply" class="text-sm text-muted-foreground">
               发送请求后，这里会显示模型回复。
             </p>

@@ -37,9 +37,7 @@ function submit() {
   if (!form.name) return
   // 目标有效：模型 + 三种粒度至少一种渠道形态（渠道级 / Key 多选 / 单 Key 兼容）。
   const targets = form.targets.filter(
-    (t) =>
-      t.model &&
-      (t.channel_id || t.channel_ids?.length || t.channel_base_url),
+    (t) => t.model && (t.channel_id || t.channel_ids?.length || t.channel_base_url),
   )
   if (targets.length) emit('save', { name: form.name, enabled: form.enabled, targets })
 }

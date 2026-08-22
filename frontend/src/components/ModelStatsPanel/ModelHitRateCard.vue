@@ -16,16 +16,26 @@ const option = computed(() => {
   const total = h?.total ?? 0
   return {
     tooltip: { trigger: 'item' as const },
-    series: [{
-      type: 'pie' as const,
-      radius: ['62%', '82%'],
-      avoidLabelOverlap: false,
-      label: { show: false },
-      data: [
-        { value: Math.max(0, Math.round(total * 100)), name: '命中', itemStyle: { color: '#22c55e' } },
-        { value: Math.max(0, Math.round((1 - total) * 100)), name: '未命中', itemStyle: { color: '#e2e8f0' } },
-      ],
-    }],
+    series: [
+      {
+        type: 'pie' as const,
+        radius: ['62%', '82%'],
+        avoidLabelOverlap: false,
+        label: { show: false },
+        data: [
+          {
+            value: Math.max(0, Math.round(total * 100)),
+            name: '命中',
+            itemStyle: { color: '#22c55e' },
+          },
+          {
+            value: Math.max(0, Math.round((1 - total) * 100)),
+            name: '未命中',
+            itemStyle: { color: '#e2e8f0' },
+          },
+        ],
+      },
+    ],
   }
 })
 const detail = computed(() => {

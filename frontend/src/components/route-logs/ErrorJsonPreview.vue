@@ -112,5 +112,5 @@ const highlighted = computed(() => {
       props.compact ? 'text-[11px]' : 'text-xs',
       props.maxHeightClass,
     ]"
-  >{{ parsed?.kind === 'raw' ? parsed.text : body }}</pre>
+    >{{ parsed?.kind === 'raw' ? parsed.text : body }}</pre>
 </template>

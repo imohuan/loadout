@@ -240,27 +240,35 @@ function endpointUrl(path: string) {
   return `${window.location.origin}${path}`
 }
 async function createMcpKey(endpoint: string) {
-  await runKey(`endpoint:${endpoint}:create`, async () => {
-    const result = await api.createMcpKey(endpoint)
-    endpointKeys.value = { ...endpointKeys.value, [endpoint]: result.key }
-    if (!isEndpointExpanded(endpoint)) expandedEndpoints.value.push(endpoint)
-    // Only refresh the key list; the rest of the table is untouched so the
-    // "已配置/无认证" badge flips without re-rendering the whole list.
-    await mcp.refreshKeys()
-  }, 'MCP 端点密钥已签发')
+  await runKey(
+    `endpoint:${endpoint}:create`,
+    async () => {
+      const result = await api.createMcpKey(endpoint)
+      endpointKeys.value = { ...endpointKeys.value, [endpoint]: result.key }
+      if (!isEndpointExpanded(endpoint)) expandedEndpoints.value.push(endpoint)
+      // Only refresh the key list; the rest of the table is untouched so the
+      // "已配置/无认证" badge flips without re-rendering the whole list.
+      await mcp.refreshKeys()
+    },
+    'MCP 端点密钥已签发',
+  )
 }
 async function deleteMcpKey(endpoint: string) {
-  await runKey(`endpoint:${endpoint}:delete`, async () => {
-    await api.deleteMcpKey(endpoint)
-    const index = expandedEndpoints.value.indexOf(endpoint)
-    if (index >= 0) expandedEndpoints.value.splice(index, 1)
-    if (endpointKeys.value[endpoint]) {
-      const next = { ...endpointKeys.value }
-      delete next[endpoint]
-      endpointKeys.value = next
-    }
-    await mcp.refreshKeys()
-  }, '端点密钥已删除')
+  await runKey(
+    `endpoint:${endpoint}:delete`,
+    async () => {
+      await api.deleteMcpKey(endpoint)
+      const index = expandedEndpoints.value.indexOf(endpoint)
+      if (index >= 0) expandedEndpoints.value.splice(index, 1)
+      if (endpointKeys.value[endpoint]) {
+        const next = { ...endpointKeys.value }
+        delete next[endpoint]
+        endpointKeys.value = next
+      }
+      await mcp.refreshKeys()
+    },
+    '端点密钥已删除',
+  )
 }
 async function copyKey(value: string) {
   await navigator.clipboard.writeText(value)
@@ -378,7 +386,11 @@ async function copyConfig(endpoint: {
                                   :disabled="mcp.isPending(`server:${server.id}:test`)"
                                   @click="mcp.testServer(server, server.name)"
                                 >
-                                  <RiLoader4Line v-if="mcp.isPending(`server:${server.id}:test`)" class="animate-spin" size="16" /><RiTestTubeLine v-else size="16" /> </Button
+                                  <RiLoader4Line
+                                    v-if="mcp.isPending(`server:${server.id}:test`)"
+                                    class="animate-spin"
+                                    size="16"
+                                  /><RiTestTubeLine v-else size="16" /> </Button
                               ></TooltipTrigger>
                               <TooltipContent>测试连接</TooltipContent>
                             </Tooltip>
@@ -403,7 +415,11 @@ async function copyConfig(endpoint: {
                                   :disabled="mcp.isPending(`server:${server.id}:toggle`)"
                                   @click="mcp.toggleServer(server)"
                                 >
-                                  <RiLoader4Line v-if="mcp.isPending(`server:${server.id}:toggle`)" class="animate-spin" size="16" /><RiRefreshLine v-else size="16" /> </Button
+                                  <RiLoader4Line
+                                    v-if="mcp.isPending(`server:${server.id}:toggle`)"
+                                    class="animate-spin"
+                                    size="16"
+                                  /><RiRefreshLine v-else size="16" /> </Button
                               ></TooltipTrigger>
                               <TooltipContent>切换状态</TooltipContent>
                             </Tooltip>
@@ -416,7 +432,11 @@ async function copyConfig(endpoint: {
                                   :disabled="mcp.isPending(`server:${server.id}:remove`)"
                                   @click="mcp.removeServer(server)"
                                 >
-                                  <RiLoader4Line v-if="mcp.isPending(`server:${server.id}:remove`)" class="animate-spin" size="16" /><RiDeleteBinLine v-else size="16" /> </Button
+                                  <RiLoader4Line
+                                    v-if="mcp.isPending(`server:${server.id}:remove`)"
+                                    class="animate-spin"
+                                    size="16"
+                                  /><RiDeleteBinLine v-else size="16" /> </Button
                               ></TooltipTrigger>
                               <TooltipContent>删除</TooltipContent>
                             </Tooltip>
@@ -530,7 +550,11 @@ async function copyConfig(endpoint: {
                                 :disabled="mcp.isPending(`group:${group.name}:remove`)"
                                 @click="mcp.removeGroup(group)"
                               >
-                                <RiLoader4Line v-if="mcp.isPending(`group:${group.name}:remove`)" class="animate-spin" size="16" /><RiDeleteBinLine v-else size="16" /> </Button
+                                <RiLoader4Line
+                                  v-if="mcp.isPending(`group:${group.name}:remove`)"
+                                  class="animate-spin"
+                                  size="16"
+                                /><RiDeleteBinLine v-else size="16" /> </Button
                             ></TooltipTrigger>
                             <TooltipContent>删除分组</TooltipContent>
                           </Tooltip>
@@ -613,7 +637,11 @@ async function copyConfig(endpoint: {
                           :disabled="isKeyPending(`endpoint:${endpoint.path}:delete`)"
                           @click="deleteMcpKey(endpoint.path)"
                         >
-                          <RiLoader4Line v-if="isKeyPending(`endpoint:${endpoint.path}:delete`)" class="animate-spin" size="16" /><RiDeleteBinLine v-else size="16" />删除认证
+                          <RiLoader4Line
+                            v-if="isKeyPending(`endpoint:${endpoint.path}:delete`)"
+                            class="animate-spin"
+                            size="16"
+                          /><RiDeleteBinLine v-else size="16" />删除认证
                         </Button>
                         <Button
                           v-else
@@ -622,7 +650,11 @@ async function copyConfig(endpoint: {
                           :disabled="isKeyPending(`endpoint:${endpoint.path}:create`)"
                           @click="createMcpKey(endpoint.path)"
                         >
-                          <RiLoader4Line v-if="isKeyPending(`endpoint:${endpoint.path}:create`)" class="animate-spin" size="16" /><RiKey2Line v-else size="16" />创建端点密钥
+                          <RiLoader4Line
+                            v-if="isKeyPending(`endpoint:${endpoint.path}:create`)"
+                            class="animate-spin"
+                            size="16"
+                          /><RiKey2Line v-else size="16" />创建端点密钥
                         </Button>
                       </div>
                     </TableCell>

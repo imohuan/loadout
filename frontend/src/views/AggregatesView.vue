@@ -65,27 +65,35 @@ function openDuplicate(value: Aggregate) {
   editorOpen.value = true
 }
 async function save(value: Aggregate) {
-  await run('save', async () => {
-    const next = [
-      ...(aggregates.value || []).filter(
-        (item) => item.name !== (editing.value?.name || value.name),
-      ),
-      value,
-    ]
-    await aggregateService.replaceAll(next)
-    editing.value = undefined
-    editorOpen.value = false
-    await refreshAggregates()
-  }, '聚合模型已保存')
+  await run(
+    'save',
+    async () => {
+      const next = [
+        ...(aggregates.value || []).filter(
+          (item) => item.name !== (editing.value?.name || value.name),
+        ),
+        value,
+      ]
+      await aggregateService.replaceAll(next)
+      editing.value = undefined
+      editorOpen.value = false
+      await refreshAggregates()
+    },
+    '聚合模型已保存',
+  )
 }
 async function remove(value: Aggregate) {
   if (!(await confirmDialog(`删除聚合模型「${value.name}」？`))) return
-  await run(`aggregate:${value.name}:remove`, async () => {
-    await aggregateService.replaceAll(
-      (aggregates.value || []).filter((item) => item.name !== value.name),
-    )
-    await refreshAggregates()
-  }, '聚合模型已删除')
+  await run(
+    `aggregate:${value.name}:remove`,
+    async () => {
+      await aggregateService.replaceAll(
+        (aggregates.value || []).filter((item) => item.name !== value.name),
+      )
+      await refreshAggregates()
+    },
+    '聚合模型已删除',
+  )
 }
 </script>
 

@@ -41,7 +41,8 @@ export interface TestChatOptions {
 // content_block_delta + text_delta 的 delta.text。
 export function extractTestDelta(chunk: Record<string, any>, mode?: string): string {
   if (mode === 'gpt') {
-    if (chunk.type === 'response.output_text.delta' && typeof chunk.delta === 'string') return chunk.delta
+    if (chunk.type === 'response.output_text.delta' && typeof chunk.delta === 'string')
+      return chunk.delta
     return ''
   }
   if (mode === 'claude') {

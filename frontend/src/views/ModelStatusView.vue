@@ -70,7 +70,10 @@ const data = computed(() => {
     .map((channel) => {
       const filteredModels = channel.models.filter((m) => {
         if (!modelMatches(m.model, filters.value.model)) return false
-        if (filters.value.manual_enabled !== undefined && m.manual_enabled !== filters.value.manual_enabled)
+        if (
+          filters.value.manual_enabled !== undefined &&
+          m.manual_enabled !== filters.value.manual_enabled
+        )
           return false
         if (filters.value.status && m.health_status !== filters.value.status) return false
         return true
@@ -120,16 +123,24 @@ async function silentRefresh() {
 }
 
 async function channelToggle(item: ChannelStatus, enabled: boolean) {
-  await run(msKey(item.channel.id, 'toggle'), async () => {
-    await service.setChannel(item.channel.id, enabled)
-    await patchChannel(item.channel.id)
-  }, '渠道开关已更新')
+  await run(
+    msKey(item.channel.id, 'toggle'),
+    async () => {
+      await service.setChannel(item.channel.id, enabled)
+      await patchChannel(item.channel.id)
+    },
+    '渠道开关已更新',
+  )
 }
 async function modelToggle(item: ChannelStatus, model: ModelStatus, enabled: boolean) {
-  await run(msKey(item.channel.id, `model-toggle:${model.model}`), async () => {
-    await service.setModel(item.channel.id, model.model, enabled)
-    await patchChannel(item.channel.id)
-  }, '模型开关已更新')
+  await run(
+    msKey(item.channel.id, `model-toggle:${model.model}`),
+    async () => {
+      await service.setModel(item.channel.id, model.model, enabled)
+      await patchChannel(item.channel.id)
+    },
+    '模型开关已更新',
+  )
 }
 async function deleteModel(item: ChannelStatus, model: ModelStatus) {
   const confirmed = await confirmDialog({
@@ -138,10 +149,14 @@ async function deleteModel(item: ChannelStatus, model: ModelStatus) {
     confirmText: '删除',
   })
   if (!confirmed) return
-  await run(msKey(item.channel.id, `model-delete:${model.model}`), async () => {
-    await service.deleteModel(item.channel.id, model.model)
-    await patchChannel(item.channel.id)
-  }, '模型已删除')
+  await run(
+    msKey(item.channel.id, `model-delete:${model.model}`),
+    async () => {
+      await service.deleteModel(item.channel.id, model.model)
+      await patchChannel(item.channel.id)
+    },
+    '模型已删除',
+  )
 }
 async function batchModelToggle(item: ChannelStatus, models: ModelStatus[], enabled: boolean) {
   const action = enabled ? '开启' : '关闭'
@@ -151,16 +166,31 @@ async function batchModelToggle(item: ChannelStatus, models: ModelStatus[], enab
     confirmText: action,
   })
   if (!confirmed) return
-  await run(msKey(item.channel.id, `batch-toggle:${enabled ? 'on' : 'off'}`), async () => {
-    await service.setModels(item.channel.id, models.map((m) => m.model), enabled)
-    await patchChannel(item.channel.id)
-  }, `已${action} ${models.length} 个模型`)
+  await run(
+    msKey(item.channel.id, `batch-toggle:${enabled ? 'on' : 'off'}`),
+    async () => {
+      await service.setModels(
+        item.channel.id,
+        models.map((m) => m.model),
+        enabled,
+      )
+      await patchChannel(item.channel.id)
+    },
+    `已${action} ${models.length} 个模型`,
+  )
 }
 async function batchRecoverModel(item: ChannelStatus, models: ModelStatus[]) {
-  await run(msKey(item.channel.id, 'batch-recover'), async () => {
-    await service.recoverModels(item.channel.id, models.map((m) => m.model))
-    await patchChannel(item.channel.id)
-  }, `已恢复 ${models.length} 个模型`)
+  await run(
+    msKey(item.channel.id, 'batch-recover'),
+    async () => {
+      await service.recoverModels(
+        item.channel.id,
+        models.map((m) => m.model),
+      )
+      await patchChannel(item.channel.id)
+    },
+    `已恢复 ${models.length} 个模型`,
+  )
 }
 async function batchDeleteModel(item: ChannelStatus, models: ModelStatus[]) {
   const manualOnly = models.filter((m) => m.source === 'manual')
@@ -174,28 +204,47 @@ async function batchDeleteModel(item: ChannelStatus, models: ModelStatus[]) {
     confirmText: '删除',
   })
   if (!confirmed) return
-  await run(msKey(item.channel.id, 'batch-delete'), async () => {
-    await service.deleteModels(item.channel.id, manualOnly.map((m) => m.model))
-    await patchChannel(item.channel.id)
-  }, `已删除 ${manualOnly.length} 个手动模型`)
+  await run(
+    msKey(item.channel.id, 'batch-delete'),
+    async () => {
+      await service.deleteModels(
+        item.channel.id,
+        manualOnly.map((m) => m.model),
+      )
+      await patchChannel(item.channel.id)
+    },
+    `已删除 ${manualOnly.length} 个手动模型`,
+  )
 }
 async function recoverChannel(item: ChannelStatus) {
-  await run(msKey(item.channel.id, 'recover'), async () => {
-    await service.recoverChannel(item.channel.id)
-    await patchChannel(item.channel.id)
-  }, '渠道已恢复')
+  await run(
+    msKey(item.channel.id, 'recover'),
+    async () => {
+      await service.recoverChannel(item.channel.id)
+      await patchChannel(item.channel.id)
+    },
+    '渠道已恢复',
+  )
 }
 async function recoverModel(item: ChannelStatus, model: ModelStatus) {
-  await run(msKey(item.channel.id, `model-recover:${model.model}`), async () => {
-    await service.recoverModel(item.channel.id, model.model)
-    await patchChannel(item.channel.id)
-  }, '模型已恢复')
+  await run(
+    msKey(item.channel.id, `model-recover:${model.model}`),
+    async () => {
+      await service.recoverModel(item.channel.id, model.model)
+      await patchChannel(item.channel.id)
+    },
+    '模型已恢复',
+  )
 }
 async function check() {
-  await run('check', async () => {
-    await service.check()
-    await silentRefresh()
-  }, '健康检查已启动')
+  await run(
+    'check',
+    async () => {
+      await service.check()
+      await silentRefresh()
+    },
+    '健康检查已启动',
+  )
 }
 async function recoverAllModels(item: ChannelStatus) {
   // 计数当前渠道内"非正常"条目，给用户一个明确的预期
@@ -216,10 +265,14 @@ async function recoverAllModels(item: ChannelStatus) {
     confirmText: '恢复全部',
   })
   if (!confirmed) return
-  await run(msKey(item.channel.id, 'recover-all'), async () => {
-    await service.recoverAllByChannel(item.channel.id)
-    await patchChannel(item.channel.id)
-  }, `已恢复「${item.channel.name}」全部异常模型`)
+  await run(
+    msKey(item.channel.id, 'recover-all'),
+    async () => {
+      await service.recoverAllByChannel(item.channel.id)
+      await patchChannel(item.channel.id)
+    },
+    `已恢复「${item.channel.name}」全部异常模型`,
+  )
 }
 
 // 全平台操作：恢复所有渠道的自动熔断（只清渠道状态，不碰模型开关）
@@ -235,10 +288,14 @@ async function recoverAllChannelsGlobal() {
     confirmText: '恢复全部渠道',
   })
   if (!confirmed) return
-  await run('recover-all-channels', async () => {
-    await service.recoverAllChannels()
-    await silentRefresh()
-  }, '已恢复全部异常渠道')
+  await run(
+    'recover-all-channels',
+    async () => {
+      await service.recoverAllChannels()
+      await silentRefresh()
+    },
+    '已恢复全部异常渠道',
+  )
 }
 
 // 全平台操作：恢复所有渠道的全部异常模型（清熔断 + 强制打开手动开关）
@@ -262,27 +319,64 @@ async function recoverAllModelsGlobal() {
     confirmText: '恢复全部',
   })
   if (!confirmed) return
-  await run('recover-all-models', async () => {
-    await service.recoverAll()
-    await silentRefresh()
-  }, '已恢复全平台全部异常模型')
+  await run(
+    'recover-all-models',
+    async () => {
+      await service.recoverAll()
+      await silentRefresh()
+    },
+    '已恢复全平台全部异常模型',
+  )
 }
 </script>
 
 <template>
   <div class="space-y-6">
-    <PageHeader title="模型状态" description="手动开关与自动健康状态分别管理；自动状态不会重新打开手动关闭的对象。"><template #actions><Button
-          variant="outline" :disabled="isPending('refresh')" @click="silentRefresh">
-          <RiLoader4Line v-if="isPending('refresh')" class="animate-spin" size="16" /><RiRefreshLine v-else size="16" />刷新
-        </Button><Button :disabled="isPending('check')" @click="check">
-          <RiLoader4Line v-if="isPending('check')" class="animate-spin" size="16" /><RiStethoscopeLine v-else size="16" />健康检查
-        </Button><Button variant="outline" :disabled="isPending('recover-all-channels')" @click="recoverAllChannelsGlobal">
-          <RiLoader4Line v-if="isPending('recover-all-channels')" class="animate-spin" size="16" /><RiRefreshLine v-else size="16" />全平台恢复渠道
-        </Button><Button variant="outline" :disabled="isPending('recover-all-models')" @click="recoverAllModelsGlobal">
-          <RiLoader4Line v-if="isPending('recover-all-models')" class="animate-spin" size="16" /><RiRestartLine v-else size="16" />全平台恢复全部异常
-        </Button></template></PageHeader>
+    <PageHeader
+      title="模型状态"
+      description="手动开关与自动健康状态分别管理；自动状态不会重新打开手动关闭的对象。"
+      ><template #actions
+        ><Button variant="outline" :disabled="isPending('refresh')" @click="silentRefresh">
+          <RiLoader4Line v-if="isPending('refresh')" class="animate-spin" size="16" /><RiRefreshLine
+            v-else
+            size="16"
+          />刷新 </Button
+        ><Button :disabled="isPending('check')" @click="check">
+          <RiLoader4Line
+            v-if="isPending('check')"
+            class="animate-spin"
+            size="16"
+          /><RiStethoscopeLine v-else size="16" />健康检查 </Button
+        ><Button
+          variant="outline"
+          :disabled="isPending('recover-all-channels')"
+          @click="recoverAllChannelsGlobal"
+        >
+          <RiLoader4Line
+            v-if="isPending('recover-all-channels')"
+            class="animate-spin"
+            size="16"
+          /><RiRefreshLine v-else size="16" />全平台恢复渠道 </Button
+        ><Button
+          variant="outline"
+          :disabled="isPending('recover-all-models')"
+          @click="recoverAllModelsGlobal"
+        >
+          <RiLoader4Line
+            v-if="isPending('recover-all-models')"
+            class="animate-spin"
+            size="16"
+          /><RiRestartLine v-else size="16" />全平台恢复全部异常
+        </Button></template
+      ></PageHeader
+    >
     <div class="flex items-center gap-3">
-      <ModelStatusFiltersForm class="flex-1" :is-pending="isPending" @apply="applyFilters" @reset="resetFilters" />
+      <ModelStatusFiltersForm
+        class="flex-1"
+        :is-pending="isPending"
+        @apply="applyFilters"
+        @reset="resetFilters"
+      />
 
       <TooltipProvider>
         <div class="flex shrink-0 min-w-32 items-center justify-end gap-1">
@@ -290,17 +384,27 @@ async function recoverAllModelsGlobal() {
             <Label for="ms-model">显示状态</Label>
 
             <Tooltip>
-              <TooltipTrigger as-child><Button size="sm" variant="ghost" :class="mode === 'table' ? 'bg-muted' : ''"
-                  @click="mode = 'table'">
-                  <RiListCheck size="16" />
-                </Button></TooltipTrigger>
+              <TooltipTrigger as-child
+                ><Button
+                  size="sm"
+                  variant="ghost"
+                  :class="mode === 'table' ? 'bg-muted' : ''"
+                  @click="mode = 'table'"
+                >
+                  <RiListCheck size="16" /> </Button
+              ></TooltipTrigger>
               <TooltipContent>表格模式</TooltipContent>
             </Tooltip>
             <Tooltip>
-              <TooltipTrigger as-child><Button size="sm" variant="ghost" :class="mode === 'tags' ? 'bg-muted' : ''"
-                  @click="mode = 'tags'">
-                  <RiGridLine size="16" />
-                </Button></TooltipTrigger>
+              <TooltipTrigger as-child
+                ><Button
+                  size="sm"
+                  variant="ghost"
+                  :class="mode === 'tags' ? 'bg-muted' : ''"
+                  @click="mode = 'tags'"
+                >
+                  <RiGridLine size="16" /> </Button
+              ></TooltipTrigger>
               <TooltipContent>标签模式</TooltipContent>
             </Tooltip>
             <!--
@@ -314,17 +418,30 @@ async function recoverAllModelsGlobal() {
                   <RiExpandHeightLine v-else size="16" />
                 </Button>
               </TooltipTrigger>
-              <TooltipContent>{{ expandAll === 'expanded' ? '全部折叠' : '全部展开' }}</TooltipContent>
+              <TooltipContent>{{
+                expandAll === 'expanded' ? '全部折叠' : '全部展开'
+              }}</TooltipContent>
             </Tooltip>
           </div>
         </div>
       </TooltipProvider>
     </div>
     <LoadingBlock v-if="loading" />
-    <ModelStatusList v-else :items="data || []" :mode="mode" :is-pending="isPending" :expand-all="expandAll"
+    <ModelStatusList
+      v-else
+      :items="data || []"
+      :mode="mode"
+      :is-pending="isPending"
+      :expand-all="expandAll"
       @channel-toggle="channelToggle"
-      @model-toggle="modelToggle" @recover-channel="recoverChannel" @recover-model="recoverModel"
-      @recover-all-models="recoverAllModels" @batch-model-toggle="batchModelToggle"
-      @batch-recover-model="batchRecoverModel" @batch-delete-model="batchDeleteModel" @delete-model="deleteModel" />
+      @model-toggle="modelToggle"
+      @recover-channel="recoverChannel"
+      @recover-model="recoverModel"
+      @recover-all-models="recoverAllModels"
+      @batch-model-toggle="batchModelToggle"
+      @batch-recover-model="batchRecoverModel"
+      @batch-delete-model="batchDeleteModel"
+      @delete-model="deleteModel"
+    />
   </div>
 </template>

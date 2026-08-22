@@ -210,7 +210,9 @@ const excludedCount = computed(() => {
                         variant="ghost"
                         size="icon"
                         class="size-7"
-                        :aria-label="isDisabled(server.name) ? `启用 ${server.name}` : `禁用 ${server.name}`"
+                        :aria-label="
+                          isDisabled(server.name) ? `启用 ${server.name}` : `禁用 ${server.name}`
+                        "
                         @click="toggleServerEnabled(server.name)"
                       >
                         <RiToggleFill
@@ -218,9 +220,8 @@ const excludedCount = computed(() => {
                           size="14"
                           class="text-emerald-600"
                         />
-                        <RiToggleLine v-else size="14" class="text-muted-foreground" />
-                      </Button></TooltipTrigger
-                    >
+                        <RiToggleLine v-else size="14" class="text-muted-foreground" /> </Button
+                    ></TooltipTrigger>
                     <TooltipContent>
                       {{ isDisabled(server.name) ? '启用' : '禁用' }}
                     </TooltipContent>
@@ -236,9 +237,8 @@ const excludedCount = computed(() => {
                         :aria-label="`删除 ${server.name}`"
                         @click="emit('remove', server.name)"
                       >
-                        <RiDeleteBinLine size="14" />
-                      </Button></TooltipTrigger
-                    >
+                        <RiDeleteBinLine size="14" /> </Button
+                    ></TooltipTrigger>
                     <TooltipContent>删除</TooltipContent>
                   </Tooltip>
                 </TooltipProvider>
@@ -252,9 +252,8 @@ const excludedCount = computed(() => {
                         :aria-label="`编辑 ${server.name}`"
                         @click="emit('edit', server)"
                       >
-                        <RiEditLine size="14" />
-                      </Button></TooltipTrigger
-                    >
+                        <RiEditLine size="14" /> </Button
+                    ></TooltipTrigger>
                     <TooltipContent>编辑</TooltipContent>
                   </Tooltip>
                 </TooltipProvider>

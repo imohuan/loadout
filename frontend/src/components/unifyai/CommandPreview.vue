@@ -83,9 +83,13 @@ const modelLabel: Record<
           <div class="min-w-0">
             <div class="flex flex-wrap items-center gap-1.5 text-sm">
               <span class="font-medium">MCP 来源</span>
-              <Badge variant="secondary" class="font-normal">{{ mcpEnabled }}/{{ mcpTotal }} 启用</Badge>
+              <Badge variant="secondary" class="font-normal"
+                >{{ mcpEnabled }}/{{ mcpTotal }} 启用</Badge
+              >
             </div>
-            <p class="mt-0.5 truncate font-mono text-xs text-muted-foreground">{{ mcpSourcePath }}</p>
+            <p class="mt-0.5 truncate font-mono text-xs text-muted-foreground">
+              {{ mcpSourcePath }}
+            </p>
           </div>
         </div>
       </div>
@@ -99,7 +103,9 @@ const modelLabel: Record<
             <RiClipboardLine size="14" />复制命令
           </Button>
         </div>
-        <code class="block overflow-x-auto whitespace-pre rounded-md bg-background p-3 font-mono text-xs leading-6">
+        <code
+          class="block overflow-x-auto whitespace-pre rounded-md bg-background p-3 font-mono text-xs leading-6"
+        >
           {{ command }}
         </code>
         <p class="mt-2 flex items-center gap-1 text-xs text-muted-foreground">

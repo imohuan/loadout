@@ -53,7 +53,12 @@ const router = createRouter({
           component: RouteLogsView,
           meta: { title: '转发日志' },
         },
-        { path: 'integrations', name: 'integrations', component: McpView, meta: { title: 'MCP 管理' } },
+        {
+          path: 'integrations',
+          name: 'integrations',
+          component: McpView,
+          meta: { title: 'MCP 管理' },
+        },
         {
           path: 'capability-routes',
           name: 'capability-routes',

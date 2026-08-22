@@ -11,7 +11,7 @@ const props = defineProps<{
 const label = computed(() => {
   if (props.available === false) return '已关闭'
   return (
-    ({
+    {
       available: '可用',
       cooling: '冷却中',
       disabled: '已禁用',
@@ -19,7 +19,7 @@ const label = computed(() => {
       failed: '失败',
       running: '进行中',
       skipped: '已跳过',
-    })[props.status || ''] ||
+    }[props.status || ''] ||
     props.status ||
     '未知'
   )
@@ -40,7 +40,7 @@ const visible = computed(
   <Badge v-if="visible" :variant="variant">
     {{ label }}
 
-    <template v-if="count !== undefined"> 
+    <template v-if="count !== undefined">
       <span class="ml-2">{{ count }}个模型</span>
     </template>
   </Badge>

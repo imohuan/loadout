@@ -394,14 +394,21 @@ async function saveJsonFile() {
     // 重建 matrix：保留仍在列表中的服务器原有排除配置，新条目补占位
     const nextMatrix: Record<string, Record<PlatformId, boolean>> = {}
     for (const srv of servers) {
-      nextMatrix[srv.name] =
-        matrix.value[srv.name] || { opencode: false, codex: false, claudecode: false, reasonix: false, penguin: false }
+      nextMatrix[srv.name] = matrix.value[srv.name] || {
+        opencode: false,
+        codex: false,
+        claudecode: false,
+        reasonix: false,
+        penguin: false,
+      }
     }
     matrix.value = nextMatrix
     // 重建 disabled：只保留仍在列表中的，再按 enabled 字段对齐
     const names = new Set(servers.map((s) => s.name))
     const nextDisabled = new Set(
-      [...disabledServers.value].filter((n) => names.has(n) && servers.find((s) => s.name === n)?.enabled === false),
+      [...disabledServers.value].filter(
+        (n) => names.has(n) && servers.find((s) => s.name === n)?.enabled === false,
+      ),
     )
     for (const srv of servers) if (!srv.enabled) nextDisabled.add(srv.name)
     disabledServers.value = nextDisabled
@@ -1313,7 +1320,9 @@ onMounted(() => {
           />
         </div>
         <DialogFooter>
-          <Button :disabled="savingJsonFile || savingMcp" @click="saveJsonFile">保存到 mcp.json</Button>
+          <Button :disabled="savingJsonFile || savingMcp" @click="saveJsonFile"
+            >保存到 mcp.json</Button
+          >
           <Button variant="ghost" @click="jsonFileDialogOpen = false">取消</Button>
         </DialogFooter>
       </DialogContent>

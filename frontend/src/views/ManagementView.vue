@@ -55,35 +55,51 @@ async function refresh() {
   await Promise.all([refreshKeys(), refreshPlugins(), refreshSettings()])
 }
 async function createSkKey() {
-  await run('create-key', async () => {
-    const result = await api.createSkKey({
-      name: skForm.name,
-      models: skForm.models.split(/[\s,]+/).filter(Boolean),
-    })
-    newKey.value = result.key
-    Object.assign(skForm, { name: '', models: '' })
-    keyDialog.value = false
-    await refreshKeys()
-  }, '密钥已创建')
+  await run(
+    'create-key',
+    async () => {
+      const result = await api.createSkKey({
+        name: skForm.name,
+        models: skForm.models.split(/[\s,]+/).filter(Boolean),
+      })
+      newKey.value = result.key
+      Object.assign(skForm, { name: '', models: '' })
+      keyDialog.value = false
+      await refreshKeys()
+    },
+    '密钥已创建',
+  )
 }
 async function removeSkKey(id: string) {
   if (!(await confirmDialog('删除此模型 API 密钥？'))) return
-  await run(`key:${id}:remove`, async () => {
-    await api.deleteSkKey(id)
-    await refreshKeys()
-  }, '密钥已删除')
+  await run(
+    `key:${id}:remove`,
+    async () => {
+      await api.deleteSkKey(id)
+      await refreshKeys()
+    },
+    '密钥已删除',
+  )
 }
 async function saveSettings() {
-  await run('save-settings', async () => {
-    await api.saveSettings({ ...settingsForm })
-    await refreshSettings()
-  }, '设置已保存')
+  await run(
+    'save-settings',
+    async () => {
+      await api.saveSettings({ ...settingsForm })
+      await refreshSettings()
+    },
+    '设置已保存',
+  )
 }
 async function changePassword() {
-  await run('change-password', async () => {
-    await api.changePassword({ ...passwordForm })
-    Object.assign(passwordForm, { old: '', new: '' })
-  }, '密码已修改')
+  await run(
+    'change-password',
+    async () => {
+      await api.changePassword({ ...passwordForm })
+      Object.assign(passwordForm, { old: '', new: '' })
+    },
+    '密码已修改',
+  )
 }
 </script>
 
@@ -92,13 +108,19 @@ async function changePassword() {
     <PageHeader title="设置" description="集中管理运行时默认值、模型密钥和插件状态。"
       ><template #actions
         ><Button variant="outline" :disabled="loading || isPending('refresh')" @click="refresh">
-          <RiLoader4Line v-if="isPending('refresh')" class="animate-spin" size="16" /><RiRefreshLine v-else size="16" />刷新 </Button
+          <RiLoader4Line v-if="isPending('refresh')" class="animate-spin" size="16" /><RiRefreshLine
+            v-else
+            size="16"
+          />刷新 </Button
         ><Button
           v-if="activeTab === 'credentials'"
           :disabled="loading || isPending('create-key')"
           @click="keyDialog = true"
         >
-          <RiLoader4Line v-if="isPending('create-key')" class="animate-spin" size="16" /><RiAddLine v-else size="16" />创建模型 API 密钥 </Button
+          <RiLoader4Line v-if="isPending('create-key')" class="animate-spin" size="16" /><RiAddLine
+            v-else
+            size="16"
+          />创建模型 API 密钥 </Button
         ><Button variant="outline" @click="exportDialog = true">
           <RiDownload2Line size="16" />导出配置 </Button
         ><Button @click="importDialog = true">
@@ -126,54 +148,62 @@ async function changePassword() {
         <TabsContent value="runtime" class="space-y-4">
           <VolcQuotaCard />
           <div class="grid gap-4 lg:grid-cols-2">
-          <Card class="rounded-md">
-            <CardHeader>
-              <CardTitle class="text-base">运行时设置</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <form class="space-y-3" @submit.prevent="saveSettings">
-                <div class="space-y-1">
-                  <Label for="default-model">默认模型</Label
-                  ><Input
-                    id="default-model"
-                    v-model="settingsForm.default_model"
-                    placeholder="deepseek-chat"
-                  />
-                </div>
-                <div class="space-y-1">
-                  <Label for="active-preset">当前预设</Label
-                  ><Input
-                    id="active-preset"
-                    v-model="settingsForm.active_preset"
-                    placeholder="编程向"
-                  />
-                </div>
-                <Button type="submit" :disabled="isPending('save-settings')">
-                  <RiLoader4Line v-if="isPending('save-settings')" class="animate-spin" size="16" />保存设置
-                </Button>
-              </form>
-            </CardContent>
-          </Card>
-          <Card class="rounded-md">
-            <CardHeader>
-              <CardTitle class="text-base">修改密码</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <form class="space-y-3" @submit.prevent="changePassword">
-                <div class="space-y-1">
-                  <Label for="old-password">旧密码</Label
-                  ><Input id="old-password" v-model="passwordForm.old" type="password" required />
-                </div>
-                <div class="space-y-1">
-                  <Label for="new-password">新密码</Label
-                  ><Input id="new-password" v-model="passwordForm.new" type="password" required />
-                </div>
-                <Button type="submit" :disabled="isPending('change-password')">
-                  <RiLoader4Line v-if="isPending('change-password')" class="animate-spin" size="16" />修改密码
-                </Button>
-              </form>
-            </CardContent>
-          </Card>
+            <Card class="rounded-md">
+              <CardHeader>
+                <CardTitle class="text-base">运行时设置</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <form class="space-y-3" @submit.prevent="saveSettings">
+                  <div class="space-y-1">
+                    <Label for="default-model">默认模型</Label
+                    ><Input
+                      id="default-model"
+                      v-model="settingsForm.default_model"
+                      placeholder="deepseek-chat"
+                    />
+                  </div>
+                  <div class="space-y-1">
+                    <Label for="active-preset">当前预设</Label
+                    ><Input
+                      id="active-preset"
+                      v-model="settingsForm.active_preset"
+                      placeholder="编程向"
+                    />
+                  </div>
+                  <Button type="submit" :disabled="isPending('save-settings')">
+                    <RiLoader4Line
+                      v-if="isPending('save-settings')"
+                      class="animate-spin"
+                      size="16"
+                    />保存设置
+                  </Button>
+                </form>
+              </CardContent>
+            </Card>
+            <Card class="rounded-md">
+              <CardHeader>
+                <CardTitle class="text-base">修改密码</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <form class="space-y-3" @submit.prevent="changePassword">
+                  <div class="space-y-1">
+                    <Label for="old-password">旧密码</Label
+                    ><Input id="old-password" v-model="passwordForm.old" type="password" required />
+                  </div>
+                  <div class="space-y-1">
+                    <Label for="new-password">新密码</Label
+                    ><Input id="new-password" v-model="passwordForm.new" type="password" required />
+                  </div>
+                  <Button type="submit" :disabled="isPending('change-password')">
+                    <RiLoader4Line
+                      v-if="isPending('change-password')"
+                      class="animate-spin"
+                      size="16"
+                    />修改密码
+                  </Button>
+                </form>
+              </CardContent>
+            </Card>
           </div>
         </TabsContent>
         <TabsContent value="credentials" class="space-y-4">
@@ -210,7 +240,11 @@ async function changePassword() {
                                 :disabled="isPending(`key:${key.id}:remove`)"
                                 @click="removeSkKey(key.id)"
                               >
-                                <RiLoader4Line v-if="isPending(`key:${key.id}:remove`)" class="animate-spin" size="16" /><RiDeleteBinLine v-else size="16" /> </Button
+                                <RiLoader4Line
+                                  v-if="isPending(`key:${key.id}:remove`)"
+                                  class="animate-spin"
+                                  size="16"
+                                /><RiDeleteBinLine v-else size="16" /> </Button
                             ></TooltipTrigger>
                             <TooltipContent>删除密钥</TooltipContent>
                           </Tooltip>
@@ -294,8 +328,11 @@ async function changePassword() {
           </div>
           <DialogFooter
             ><Button type="submit" :disabled="isPending('create-key')">
-              <RiLoader4Line v-if="isPending('create-key')" class="animate-spin" size="16" />创建密钥
-            </Button
+              <RiLoader4Line
+                v-if="isPending('create-key')"
+                class="animate-spin"
+                size="16"
+              />创建密钥 </Button
             ><Button type="button" variant="outline" @click="keyDialog = false"
               >取消</Button
             ></DialogFooter

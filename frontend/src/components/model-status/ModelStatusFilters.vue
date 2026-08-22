@@ -25,13 +25,20 @@ function reset() {
   <form class="flex flex-wrap items-end gap-4" @submit.prevent="submit">
     <div class="min-w-128 space-y-1">
       <Label for="ms-model">模型</Label>
-      <Input id="ms-model" v-model="form.model" placeholder="搜索模型（支持 * 通配符，如 deepseek*）" />
+      <Input
+        id="ms-model"
+        v-model="form.model"
+        placeholder="搜索模型（支持 * 通配符，如 deepseek*）"
+      />
     </div>
     <div class="min-w-24 space-y-1">
       <Label for="ms-enabled">开关</Label>
-      <Select :model-value="form.manual_enabled ?? '__all__'" @update:model-value="
-        form.manual_enabled = $event === '__all__' ? undefined : $event === 'true'
-        ">
+      <Select
+        :model-value="form.manual_enabled ?? '__all__'"
+        @update:model-value="
+          form.manual_enabled = $event === '__all__' ? undefined : $event === 'true'
+        "
+      >
         <SelectTrigger id="ms-enabled" class="w-full">
           <SelectValue placeholder="全部开关" />
         </SelectTrigger>
@@ -46,8 +53,10 @@ function reset() {
     </div>
     <div class="min-w-24 space-y-1">
       <Label for="ms-status">状态</Label>
-      <Select :model-value="form.status || '__all__'"
-        @update:model-value="form.status = $event === '__all__' ? undefined : String($event)">
+      <Select
+        :model-value="form.status || '__all__'"
+        @update:model-value="form.status = $event === '__all__' ? undefined : String($event)"
+      >
         <SelectTrigger id="ms-status" class="w-full">
           <SelectValue placeholder="全部状态" />
         </SelectTrigger>
@@ -63,13 +72,17 @@ function reset() {
     </div>
     <div class="flex shrink-0 items-center gap-2">
       <Button type="submit" :disabled="busy('filter')">
-        <RiLoader4Line v-if="busy('filter')" class="animate-spin" size="16" /><RiFilter3Line v-else size="16" />筛选
+        <RiLoader4Line v-if="busy('filter')" class="animate-spin" size="16" /><RiFilter3Line
+          v-else
+          size="16"
+        />筛选
       </Button>
       <TooltipProvider>
         <Tooltip>
-          <TooltipTrigger as-child><Button type="button" variant="outline" aria-label="重置筛选" @click="reset">
-              <RiRefreshLine size="16" />
-            </Button></TooltipTrigger>
+          <TooltipTrigger as-child
+            ><Button type="button" variant="outline" aria-label="重置筛选" @click="reset">
+              <RiRefreshLine size="16" /> </Button
+          ></TooltipTrigger>
           <TooltipContent>重置筛选</TooltipContent>
         </Tooltip>
       </TooltipProvider>

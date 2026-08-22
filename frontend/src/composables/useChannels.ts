@@ -69,5 +69,16 @@ export function useChannels() {
       'POST',
       { id, model, vision },
     )
-  return { list, save, remove, move, reorder, setEnabled, probe, refreshModels, replaceModels, test }
+  return {
+    list,
+    save,
+    remove,
+    move,
+    reorder,
+    setEnabled,
+    probe,
+    refreshModels,
+    replaceModels,
+    test,
+  }
 }

@@ -46,9 +46,12 @@ function pickInitialCursor() {
 
 const cursor = ref(pickInitialCursor())
 
-watch(() => props.calendar, () => {
-  cursor.value = pickInitialCursor()
-})
+watch(
+  () => props.calendar,
+  () => {
+    cursor.value = pickInitialCursor()
+  },
+)
 
 function prevMonth() {
   const d = new Date(cursor.value.year, cursor.value.month - 1, 1)
@@ -111,70 +114,90 @@ function fmt(n: number): string {
 <template>
   <TooltipProvider>
     <Card class="rounded-md">
-    <CardHeader>
-      <div class="flex items-center justify-between gap-2">
-        <CardTitle class="text-base">积分消耗月历</CardTitle>
-        <div class="flex items-center gap-1">
-          <button
-            type="button"
-            class="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-            aria-label="上月"
-            @click="prevMonth"
-          >
-            <RiArrowLeftSLine size="16" />
-          </button>
-          <span class="min-w-[6.5rem] text-center text-sm tabular-nums">{{ monthLabel }}</span>
-          <button
-            type="button"
-            class="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-            aria-label="下月"
-            @click="nextMonth"
-          >
-            <RiArrowRightSLine size="16" />
-          </button>
+      <CardHeader>
+        <div class="flex items-center justify-between gap-2">
+          <CardTitle class="text-base">积分消耗月历</CardTitle>
+          <div class="flex items-center gap-1">
+            <button
+              type="button"
+              class="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              aria-label="上月"
+              @click="prevMonth"
+            >
+              <RiArrowLeftSLine size="16" />
+            </button>
+            <span class="min-w-[6.5rem] text-center text-sm tabular-nums">{{ monthLabel }}</span>
+            <button
+              type="button"
+              class="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              aria-label="下月"
+              @click="nextMonth"
+            >
+              <RiArrowRightSLine size="16" />
+            </button>
+          </div>
         </div>
-      </div>
-      <CardDescription>近 {{ days ?? 30 }} 天 · 以 Token 计 · 本地无积分</CardDescription>
-    </CardHeader>
-    <CardContent>
-      <div v-if="calendar.length === 0" class="py-8 text-center text-sm text-muted-foreground">暂无数据</div>
-      <template v-else>
-        <div class="grid grid-cols-7 gap-1 px-1 text-center text-xs text-muted-foreground">
-          <div v-for="w in ['日', '一', '二', '三', '四', '五', '六']" :key="w" class="py-1">{{ w }}</div>
+        <CardDescription>近 {{ days ?? 30 }} 天 · 以 Token 计 · 本地无积分</CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div v-if="calendar.length === 0" class="py-8 text-center text-sm text-muted-foreground">
+          暂无数据
         </div>
-        <div class="grid grid-cols-7 gap-1 text-center text-xs">
-          <template v-for="(week, wi) in weeks" :key="wi">
-            <Tooltip v-for="(cell, ci) in week" :key="ci" :disabled="!cell.date">
-              <TooltipTrigger as-child>
-                <div
-                  class="flex min-h-[44px] flex-col items-center justify-center rounded-md border p-1 transition-colors"
-                  :class="[
-                    cell.isToday
-                      ? 'border-foreground bg-foreground text-background'
-                      : cell.tokens > 0
-                        ? 'border-amber-300/50'
-                        : 'border-transparent bg-muted/30',
-                    !cell.inMonth ? 'invisible' : '',
-                  ]"
-                  :style="cell.tokens > 0 && !cell.isToday ? { backgroundColor: color(cell.tokens) } : {}"
-                >
-                  <span class="text-[10px] leading-none opacity-80">{{ cell.day }}</span>
-                  <span class="mt-0.5 font-medium tabular-nums leading-none">{{ fmt(cell.tokens) }}</span>
-                </div>
-              </TooltipTrigger>
-              <TooltipContent>
-                {{ cell.date }} · {{ cell.tokens.toLocaleString() }} tokens
-              </TooltipContent>
-            </Tooltip>
-          </template>
-        </div>
-        <div class="mt-3 flex items-center justify-end gap-3 text-[11px] text-muted-foreground">
-          <span class="inline-flex items-center gap-1"><span class="inline-block h-3 w-3 rounded border bg-muted/30"></span>无消耗</span>
-          <span class="inline-flex items-center gap-1"><span class="inline-block h-3 w-3 rounded" style="background-color: rgba(245, 158, 11, 0.6)"></span>有消耗</span>
-          <span class="inline-flex items-center gap-1"><span class="inline-block h-3 w-3 rounded bg-foreground"></span>今天</span>
-        </div>
-      </template>
-    </CardContent>
+        <template v-else>
+          <div class="grid grid-cols-7 gap-1 px-1 text-center text-xs text-muted-foreground">
+            <div v-for="w in ['日', '一', '二', '三', '四', '五', '六']" :key="w" class="py-1">
+              {{ w }}
+            </div>
+          </div>
+          <div class="grid grid-cols-7 gap-1 text-center text-xs">
+            <template v-for="(week, wi) in weeks" :key="wi">
+              <Tooltip v-for="(cell, ci) in week" :key="ci" :disabled="!cell.date">
+                <TooltipTrigger as-child>
+                  <div
+                    class="flex min-h-[44px] flex-col items-center justify-center rounded-md border p-1 transition-colors"
+                    :class="[
+                      cell.isToday
+                        ? 'border-foreground bg-foreground text-background'
+                        : cell.tokens > 0
+                          ? 'border-amber-300/50'
+                          : 'border-transparent bg-muted/30',
+                      !cell.inMonth ? 'invisible' : '',
+                    ]"
+                    :style="
+                      cell.tokens > 0 && !cell.isToday
+                        ? { backgroundColor: color(cell.tokens) }
+                        : {}
+                    "
+                  >
+                    <span class="text-[10px] leading-none opacity-80">{{ cell.day }}</span>
+                    <span class="mt-0.5 font-medium tabular-nums leading-none">{{
+                      fmt(cell.tokens)
+                    }}</span>
+                  </div>
+                </TooltipTrigger>
+                <TooltipContent>
+                  {{ cell.date }} · {{ cell.tokens.toLocaleString() }} tokens
+                </TooltipContent>
+              </Tooltip>
+            </template>
+          </div>
+          <div class="mt-3 flex items-center justify-end gap-3 text-[11px] text-muted-foreground">
+            <span class="inline-flex items-center gap-1"
+              ><span class="inline-block h-3 w-3 rounded border bg-muted/30"></span>无消耗</span
+            >
+            <span class="inline-flex items-center gap-1"
+              ><span
+                class="inline-block h-3 w-3 rounded"
+                style="background-color: rgba(245, 158, 11, 0.6)"
+              ></span
+              >有消耗</span
+            >
+            <span class="inline-flex items-center gap-1"
+              ><span class="inline-block h-3 w-3 rounded bg-foreground"></span>今天</span
+            >
+          </div>
+        </template>
+      </CardContent>
     </Card>
-    </TooltipProvider>
-  </template>
+  </TooltipProvider>
+</template>

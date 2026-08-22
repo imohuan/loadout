@@ -57,20 +57,13 @@ const copied = ref(false)
           class="inline-flex max-w-full items-center rounded px-1 text-xs text-destructive hover:bg-destructive/10"
           @click.stop
         >
-          <span class="truncate underline">{{ summary }}</span> 
+          <span class="truncate underline">{{ summary }}</span>
         </span>
       </slot>
     </HoverCardTrigger>
-    <HoverCardContent
-      align="start"
-      :side-offset="6"
-      class="w-[min(460px,calc(100vw-2rem))] p-0"
-    >
+    <HoverCardContent align="start" :side-offset="6" class="w-[min(460px,calc(100vw-2rem))] p-0">
       <!-- 卡片壳 = label 行 + 复制按钮 + 彩色 JSON。本组件自己渲染，不再外套 -->
-      <div
-        v-if="hasJson"
-        class="rounded-md border border-border/60 bg-muted/40 px-3 py-2 text-xs"
-      >
+      <div v-if="hasJson" class="rounded-md border border-border/60 bg-muted/40 px-3 py-2 text-xs">
         <div class="mb-1 flex items-center justify-between gap-2">
           <span class="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
             {{ props.label }}
@@ -83,7 +76,11 @@ const copied = ref(false)
             {{ copied ? '已复制' : '复制' }}
           </button>
         </div>
-        <ErrorJsonPreview :body="props.json as string" :compact="true" max-height-class="max-h-72" />
+        <ErrorJsonPreview
+          :body="props.json as string"
+          :compact="true"
+          max-height-class="max-h-72"
+        />
       </div>
       <p v-else class="px-3 py-2 text-xs text-muted-foreground">
         {{ summary || '无错误详情' }}

@@ -73,7 +73,9 @@ const extraSections = computed<ImportPreviewSection[]>(() =>
   (preview.value?.sections || []).filter((section) => !MAIN_KEYS.includes(section.key)),
 )
 // 已勾选的主 section（用于控制开始导入按钮与提交载荷）。
-const selectedMainSections = computed(() => mainSections.value.filter((s) => selected.value.has(s.key)))
+const selectedMainSections = computed(() =>
+  mainSections.value.filter((s) => selected.value.has(s.key)),
+)
 
 function reset() {
   stage.value = 'idle'
@@ -392,9 +394,7 @@ function onOpenChange(value: boolean) {
                 >
                   {{ section.name }}（{{ section.count }} 条）
                 </span>
-                <span
-                  v-if="index < extraSections.length - 1"
-                  class="mr-1 text-muted-foreground/50"
+                <span v-if="index < extraSections.length - 1" class="mr-1 text-muted-foreground/50"
                   >·</span
                 >
               </template>

@@ -13,7 +13,13 @@ import {
   type ChannelGroupSegment,
 } from '@/composables/useChannelRef'
 import { normalizeBaseURL } from '@/composables/useChannels'
-import type { CapabilityRoute, Channel, FieldRules, ModelChannelItem, SensitiveReplacement } from '@/lib/types'
+import type {
+  CapabilityRoute,
+  Channel,
+  FieldRules,
+  ModelChannelItem,
+  SensitiveReplacement,
+} from '@/lib/types'
 
 const props = defineProps<{
   route?: CapabilityRoute
@@ -497,7 +503,10 @@ function submit() {
             </Select>
           </div>
         </div>
-        <div v-if="form.capability === CAP_FIELD_FILTER && form.route !== 'native'" class="space-y-2">
+        <div
+          v-if="form.capability === CAP_FIELD_FILTER && form.route !== 'native'"
+          class="space-y-2"
+        >
           <Label>字段过滤规则（field_rules，每行一项）</Label>
           <div class="grid gap-3 sm:grid-cols-2">
             <div class="space-y-1">
@@ -558,13 +567,19 @@ function submit() {
             </div>
           </div>
           <p class="text-xs text-muted-foreground">
-            keep 非空时走白名单（只保留，忽略同方向 strip）；无字段命中时原字节透传；流式响应（SSE）不支持字段级过滤。典型场景：
-            Codex 等 agent 携带 <code class="font-mono">client_metadata</code> 被腾讯 copilot 网关严格解析拒绝时，配
-            <code class="font-mono">request_strip: client_metadata</code>；腾讯 copilot 网关优先用 <code class="font-mono">x-api-key/api-key</code> 做认证会覆盖渠道 Authorization 时，
-            配 <code class="font-mono">request_header_strip: X-Api-Key, Api-Key</code>。
+            keep 非空时走白名单（只保留，忽略同方向
+            strip）；无字段命中时原字节透传；流式响应（SSE）不支持字段级过滤。典型场景： Codex 等
+            agent 携带 <code class="font-mono">client_metadata</code> 被腾讯 copilot
+            网关严格解析拒绝时，配
+            <code class="font-mono">request_strip: client_metadata</code>；腾讯 copilot 网关优先用
+            <code class="font-mono">x-api-key/api-key</code> 做认证会覆盖渠道 Authorization 时， 配
+            <code class="font-mono">request_header_strip: X-Api-Key, Api-Key</code>。
           </p>
         </div>
-        <div v-else-if="form.capability === CAP_SENSITIVE && form.route !== 'native'" class="space-y-2">
+        <div
+          v-else-if="form.capability === CAP_SENSITIVE && form.route !== 'native'"
+          class="space-y-2"
+        >
           <div class="flex items-center justify-between gap-2">
             <Label>敏感词过滤列表（按从上到下顺序替换 / 命中判断）</Label>
             <div class="flex shrink-0 items-center gap-1">

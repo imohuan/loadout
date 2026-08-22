@@ -48,8 +48,7 @@ function busy(aggregate: Aggregate, action: string) {
                       <span class="mr-2 tabular-nums">{{ index + 1 }}.</span
                       ><span class="font-mono text-foreground">{{ target.model }}</span>
                       <ChannelRef :target="target" :channels="channels" />
-                    </li>
-                  </ol></TableCell
+                    </li></ol></TableCell
                 ><TableCell
                   ><div class="flex justify-end gap-1">
                     <Tooltip
@@ -78,7 +77,12 @@ function busy(aggregate: Aggregate, action: string) {
                           aria-label="删除"
                           :disabled="busy(aggregate, 'remove')"
                           @click="emit('remove', aggregate)"
-                          ><RiLoader4Line v-if="busy(aggregate, 'remove')" class="animate-spin" size="16" /><RiDeleteBinLine v-else size="16" /></Button></TooltipTrigger
+                          ><RiLoader4Line
+                            v-if="busy(aggregate, 'remove')"
+                            class="animate-spin"
+                            size="16" /><RiDeleteBinLine
+                            v-else
+                            size="16" /></Button></TooltipTrigger
                       ><TooltipContent>删除</TooltipContent></Tooltip
                     >
                   </div></TableCell
