@@ -64,7 +64,8 @@ export interface ChannelStatus {
 
 export interface RouteAttempt {
   id?: number
-  step_no: number
+  /** 点分层级编号：主请求=1，子步骤=1.1、1.2（视觉识别/续流） */
+  step_no: string
   action: string
   result: string
   model: string

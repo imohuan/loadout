@@ -147,6 +147,21 @@ const RESULT_TONES: Record<string, string> = {
 function resultTone(result?: string) {
   return RESULT_TONES[result || ''] || ''
 }
+// stepDepth 点分层级深度：主请求（"1"）深度 0，子步骤（"1.1"）深度 1，孙步骤（"1.1.1"）深度 2。
+// UI 按深度缩进，呈现文件树式的嵌套关系。
+function stepDepth(stepNo?: string) {
+  if (!stepNo) return 0
+  return Math.max(0, stepNo.split('.').length - 1)
+}
+// compareStepNo 点分 step 数值比较（1 < 1.1 < 1.2 < 2 < 2.1），供前端兜底排序。
+function compareStepNo(a: string, b: string) {
+  const as = a.split('.').map((s) => parseInt(s, 10) || 0)
+  const bs = b.split('.').map((s) => parseInt(s, 10) || 0)
+  for (let i = 0; i < Math.min(as.length, bs.length); i++) {
+    if (as[i] !== bs[i]) return as[i] - bs[i]
+  }
+  return as.length - bs.length
+}
 // 模型测试的 result 字符串直接显示中文（不走 StatusBadge 的 health-status 映射，
 // 避免模型健康"已关闭"语义污染测试请求记录）。
 const RESULT_LABELS: Record<string, string> = {
@@ -309,10 +324,12 @@ function isFailureResult(result?: string) {
                     <RouteLogErrorCell v-if="log.error_message || log.error_body" :json="log.error_body"
                       :message="log.error_message" label="上游原始响应（最后一次失败）" />
                     <ol v-if="log.attempts?.length" class="space-y-2 border-l border-border pl-4">
-                      <li v-for="attempt in log.attempts" :key="attempt.step_no" class="relative text-sm">
+                      <li v-for="attempt in [...log.attempts].sort((a, b) => compareStepNo(a.step_no, b.step_no))"
+                        :key="attempt.step_no" class="relative text-sm transition-all"
+                        :style="{ paddingLeft: stepDepth(attempt.step_no) * 22 + 'px' }">
                         <span class="absolute -left-[21px] top-1.5 size-2 rounded-full bg-primary"></span>
                         <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
-                          <span class="font-medium tabular-nums">{{ attempt.step_no }}.</span><span
+                          <span class="font-medium tabular-nums">{{ attempt.step_no }}</span><span
                             class="inline-flex items-center gap-0.5"><span class="font-mono text-xs">{{ attempt.model
                               }}</span>
                             <ChannelRef :target="channelRefFor(attempt)" :channels="channels" />

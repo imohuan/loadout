@@ -227,6 +227,235 @@ func newProxyVisionStreamWriter(w http.ResponseWriter) func(string) error {
 	}
 }
 
+// attemptResult 一次渠道尝试的失败详情（proxyAttempt 填回，proxyForward 汇总用）。
+type attemptResult struct {
+	err        error
+	channelID  string
+	statusCode int
+	errorBody  string
+	header     http.Header
+}
+
+// proxyAttempt 单次渠道尝试：注入当前渠道上下文 → 安检（ProxyBeforeAttempt）→
+// 构造并发送上游请求 → 输出处理（非流式 after-hook / 流式逐块）。
+//
+// 返回 (pipe', handled)：
+//   - handled=true：已向客户端写出最终响应（成功，或安检拒绝），调用方应终止转发；
+//   - handled=false：本次渠道尝试失败，详情写入 res（供 failover 汇总/切换）。
+//
+// pipe' 为安检可能改写后的管线，调用方应更新。
+//
+// 与 ProxyBeforeUpstream（入口只执行一次：聚合改写/额度拦截）的区别：本函数每次
+// 渠道尝试都触发安检，切换渠道/切换模型后能力路由按当前渠道上下文重新匹配。
+func (s *Service) proxyAttempt(w http.ResponseWriter, r *http.Request, pipe *ProxyPipeline, ch ResolvedChannel, model string, started time.Time, res *attemptResult) (*ProxyPipeline, bool) {
+	if res == nil {
+		res = &attemptResult{}
+	}
+	attemptStarted := time.Now()
+	pipe.Metadata["__last_tried_channel"] = ch.ID
+	// 注入当前渠道上下文：安检钩子（sensitive/field-filter）按真实渠道重新匹配
+	// 能力路由；聚合 failover 递归后 resolveChannels 也会据此锁定渠道（failover
+	// 钩子会先重设 __current_channel，覆盖本值）。
+	pipe.Metadata["__current_channel"] = ch.ID
+	if ch.BaseURL != "" {
+		pipe.Metadata["__current_channel_base_url"] = ch.BaseURL
+	}
+
+	// 安检：每次渠道尝试前执行输入侧能力（敏感词过滤、字段过滤）。
+	out, aerr := s.ctx.Waterfall(ProxyBeforeAttempt, pipe)
+	if aerr != nil {
+		// 安检拒绝（如敏感词 error 模式命中）：请求内容违规，与渠道无关，终止整个请求。
+		res.err = aerr
+		res.channelID = ch.ID
+		s.proxyAttemptLog(r, pipe, model, ch.ID, ch.ChannelName, nil, "", attemptStarted, "failed", "rejected", 0, pipe.Request.Stream, contracts.TokenUsage{}, aerr, truncateErrorBody(aerr.Error()))
+		status := http.StatusBadRequest
+		if gw, ok := aerr.(*GatewayError); ok && gw.Status != 0 {
+			status = gw.Status
+		}
+		s.proxyFinishLog(r, pipe, model, ch.ID, ch.ChannelName, "failed", status, time.Since(started), aerr, pipe.Request.Stream, contracts.TokenUsage{}, "")
+		writeGatewayError(w, aerr)
+		return pipe, true
+	}
+	if rewritten, ok := out.(*ProxyPipeline); ok && rewritten != nil {
+		pipe = rewritten
+	}
+
+	body := pipe.Request.Body // 每次尝试重新取：安检可能改写 body
+	targetPath := pipe.Request.Path
+	upstream := strings.TrimRight(openAIBaseURL(ch.BaseURL), "/") + "/" + targetPath
+	if q := pipe.Request.Query; q != "" {
+		upstream += "?" + q
+	}
+	reqBody := body
+	if isCopilotTencentBaseURL(ch.BaseURL) {
+		reqBody = stripCopilotClientMetadata(body)
+	}
+	upReq, err := http.NewRequestWithContext(r.Context(), pipe.Request.Method, upstream, bytes.NewReader(reqBody))
+	if err != nil {
+		res.err = err
+		res.channelID = ch.ID
+		s.proxyAttemptLog(r, pipe, model, ch.ID, ch.ChannelName, nil, "", attemptStarted, "failed", "network", 0, pipe.Request.Stream, contracts.TokenUsage{}, err, truncateErrorBody(err.Error()))
+		return pipe, false
+	}
+	// headers：复制客户端原始 headers，去掉 hop-by-hop 与认证，换渠道 key。
+	// 腾讯 copilot 网关（copilot.tencent.com）优先读取 x-api-key/api-key 做认证，
+	// 客户端透传的这两个头会覆盖渠道 Authorization 导致 401；仅该平台定向剔除，
+	// 其他平台保持原样透传（透明代理语义）。
+	stripAltAuth := isCopilotTencentBaseURL(ch.BaseURL)
+	for k, vv := range pipe.Request.Header {
+		switch http.CanonicalHeaderKey(k) {
+		case "Host", "Content-Length", "Authorization", "Connection", "Proxy-Connection", "Keep-Alive",
+			"Transfer-Encoding", "Upgrade", "Te", "Trailer", "Proxy-Authenticate", "Proxy-Authorization":
+			continue
+		case "X-Api-Key", "Api-Key":
+			if stripAltAuth {
+				continue
+			}
+		}
+		for _, v := range vv {
+			upReq.Header.Add(k, v)
+		}
+	}
+	if ch.APIKey != "" {
+		upReq.Header.Set("Authorization", "Bearer "+ch.APIKey)
+	}
+	client := &http.Client{Timeout: config.UpstreamTimeout}
+	if pipe.Request.Stream {
+		client = &http.Client{}
+	}
+	resp, err := client.Do(upReq)
+	if err != nil {
+		res.err = err
+		res.channelID = ch.ID
+		s.proxyAttemptLog(r, pipe, model, ch.ID, ch.ChannelName, nil, "", attemptStarted, "failed", "network", 0, pipe.Request.Stream, contracts.TokenUsage{}, err, truncateErrorBody(err.Error()))
+		s.lg.Error("upstream network error",
+			"request_id", pipe.RequestID,
+			"model", model,
+			"channel_id", ch.ID,
+			"channel_name", ch.Name,
+			"channel_group", ch.ChannelName,
+			"base_url", ch.BaseURL,
+			"upstream", upstream,
+			"error", err.Error(),
+			"duration_ms", time.Since(attemptStarted).Milliseconds(),
+		)
+		if s.health != nil {
+			_, _ = s.health.RecordFailure(r.Context(), contracts.RouteFailure{RequestID: pipe.RequestID, Model: model, ChannelID: ch.ID, Error: err.Error()})
+		}
+		return pipe, false
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		upBody, _ := readUpstreamErrorBody(resp.Body, resp.Header.Get("Content-Encoding"), 8192)
+		resp.Body.Close()
+		rawBody := string(upBody)
+		msg := upstreamErrorMsg(upBody, resp.StatusCode)
+		res.err = fmt.Errorf("%s", upstreamErrorSummary(resp.StatusCode, msg))
+		res.channelID = ch.ID
+		res.statusCode = resp.StatusCode
+		res.errorBody = rawBody
+		res.header = resp.Header.Clone()
+		s.proxyAttemptLog(r, pipe, model, ch.ID, ch.ChannelName, nil, "", attemptStarted, "failed", "", resp.StatusCode, pipe.Request.Stream, contracts.TokenUsage{}, res.err, truncateErrorBody(rawBody))
+		preview := rawBody
+		if len(preview) > 2048 {
+			preview = preview[:2048] + "...(truncated)"
+		}
+		s.lg.Error("upstream returned error",
+			"request_id", pipe.RequestID,
+			"model", model,
+			"channel_id", ch.ID,
+			"channel_name", ch.Name,
+			"channel_group", ch.ChannelName,
+			"base_url", ch.BaseURL,
+			"upstream", upstream,
+			"status", resp.StatusCode,
+			"error_message", msg,
+			"response_body", preview,
+			"duration_ms", time.Since(attemptStarted).Milliseconds(),
+		)
+		if s.health != nil {
+			_, _ = s.health.RecordFailure(r.Context(), contracts.RouteFailure{RequestID: pipe.RequestID, Model: model, ChannelID: ch.ID, StatusCode: resp.StatusCode, ErrorBody: rawBody, Error: res.err.Error()})
+		}
+		return pipe, false
+	}
+
+	// 命中：非流式读完整 body → 输出 hook → 写回；流式逐块透传。
+	if !pipe.Request.Stream {
+		respBody, rerr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if rerr != nil {
+			res.err = rerr
+			res.channelID = ch.ID
+			s.proxyAttemptLog(r, pipe, model, ch.ID, ch.ChannelName, nil, "", attemptStarted, "failed", "network", resp.StatusCode, false, contracts.TokenUsage{}, rerr, truncateErrorBody(rerr.Error()))
+			return pipe, false
+		}
+		proxyResp := &ProxyResponse{StatusCode: resp.StatusCode, Header: resp.Header.Clone(), Body: respBody}
+		// token 计量基于上游原始响应体，必须在输出 hook 之前提取：
+		// 输出 hook（如 field-filter 剔除 usage 字段）会改写 Body，事后提取会得到全 0，
+		// 导致 volc-free-quota 不扣减、route_log token 列恒 0。
+		usage := extractUsageNonStream(respBody)
+		// 主 attempt 两阶段（与流式 proxyStreamAttempt 同语义）：after-hook 前写 running
+		// 占位并分配 step=1，after-hook 返回后同 step UPSERT 覆盖为 success——非流式下
+		// 视觉插件在 after-hook 内基于 __route_step 续接，得到 主=1、视觉识别=2、续流=3 的顺序
+		//（此前主 attempt 在 after-hook 之后才写，顺序错成 视觉=1、续流=2、主=3）。
+		s.proxyStreamAttempt(r, pipe, model, ch.ID, ch.ChannelName, nil, "", attemptStarted, resp.StatusCode, false, false, contracts.TokenUsage{})
+		out, herr := s.ctx.Waterfall(ProxyAfterUpstream, &AfterUpstreamPayload{Pipe: pipe, Response: proxyResp})
+		if herr != nil {
+			// 输出 hook 拒绝：视为渠道失败，换下一个（错误可被聚合插件捕获切换模型）。
+			res.err = herr
+			res.channelID = ch.ID
+			// 注意：不设置 res.statusCode——与旧实现一致，输出 hook 拒绝视为渠道失败，
+			// 最终 writeProxyError 按 statusOrDefault(0, 502) 返回 502，而非透传上游 200。
+			// 覆盖 after-hook 前的 running 占位为 failed（同 step UPSERT，读 __stream_step 快照），
+			// 避免主请求占位永远卡 running。
+			if snap, ok := pipe.Metadata["__stream_step"].(int); ok && snap > 0 {
+				stepAction, _ := pipe.Metadata["__stream_action"].(string)
+				if stepAction == "" {
+					stepAction = "首次尝试"
+				}
+				fin := time.Now()
+				_, _ = s.routeLog.Attempt(context.WithoutCancel(r.Context()), contracts.RouteAttempt{
+					// StepNo 字段类型为 string（contracts/routing.go:102），须显式转换。
+					RequestID: pipe.RequestID, StepNo: fmt.Sprintf("%d", snap), Action: stepAction,
+					Model: model, ChannelID: ch.ID, ChannelName: ch.ChannelName,
+					StartedAt: attemptStarted, FinishedAt: &fin, Result: "failed",
+					StatusCode: resp.StatusCode, ErrorMessage: herr.Error(),
+					ErrorBody: truncateErrorBody(herr.Error()),
+					Duration:  contracts.DurationMS(time.Since(attemptStarted)),
+				})
+			}
+			return pipe, false
+		}
+		if rewritten, ok := out.(*AfterUpstreamPayload); ok && rewritten.Response != nil {
+			proxyResp = rewritten.Response
+		}
+		s.ctx.Emit(ProxyUpstreamSucceeded, &ProxySuccessPayload{Pipe: pipe, Model: model, ChannelID: ch.ID, Usage: usage})
+		if s.health != nil {
+			_ = s.health.RecordSuccess(r.Context(), ch.ID, model)
+		}
+		s.proxyStreamAttempt(r, pipe, model, ch.ID, ch.ChannelName, nil, "", attemptStarted, proxyResp.StatusCode, true, false, usage)
+		s.proxyFinishLog(r, pipe, model, ch.ID, ch.ChannelName, "success", proxyResp.StatusCode, time.Since(attemptStarted), nil, false, usage, "")
+		writeProxyResponse(w, proxyResp)
+		return pipe, true
+	}
+
+	// 流式：SSE 逐行透传，每行经 stream-chunk hook（无订阅者时 Waterfall 零开销）。
+	// Emit 成功事件移到 proxyStream 之后：usage 在流结束才能拿到，
+	// volc-free-quota 需要 usage.total_tokens 做本地扣减。
+	// attempt 两阶段：转发前写 running 占位，流结束后同 step 更新 success——
+	// 让 attempt 的 finished_at/duration 反映真实流耗时，不再出现
+	// "上游 13s 已成功但请求卡 90s 进行中"的误导（旧逻辑在流开始前就标 success）。
+	s.proxyStreamAttempt(r, pipe, model, ch.ID, ch.ChannelName, nil, "", attemptStarted, resp.StatusCode, false, true, contracts.TokenUsage{})
+	usage := s.proxyStream(w, resp, pipe)
+	s.proxyStreamAttempt(r, pipe, model, ch.ID, ch.ChannelName, nil, "", attemptStarted, resp.StatusCode, true, true, usage)
+	s.ctx.Emit(ProxyUpstreamSucceeded, &ProxySuccessPayload{Pipe: pipe, Model: model, ChannelID: ch.ID, Usage: usage})
+	if s.health != nil {
+		_ = s.health.RecordSuccess(r.Context(), ch.ID, model)
+	}
+	s.proxyFinishLog(r, pipe, model, ch.ID, ch.ChannelName, "success", resp.StatusCode, time.Since(attemptStarted), nil, true, usage, "")
+	return pipe, true
+}
+
 // proxyForward 按 model 路由候选渠道并依次尝试，任一成功即写出响应返回 nil；
 // 全部失败时把最后一个渠道的 状态码+错误体 原样透传（透明代理语义），并返回 nil；
 // 只有内部构造错误（无法发起任何请求）才返回 error。
@@ -292,8 +521,6 @@ func (s *Service) proxyForward(w http.ResponseWriter, r *http.Request, pipe *Pro
 		}
 	}
 
-	body := pipe.Request.Body
-	targetPath := pipe.Request.Path
 	var lastErr error
 	var lastChannelID string
 	var lastStatusCode int
@@ -301,201 +528,17 @@ func (s *Service) proxyForward(w http.ResponseWriter, r *http.Request, pipe *Pro
 	var lastHeader http.Header
 
 	for _, ch := range candidates {
-		attemptStarted := time.Now()
-		pipe.Metadata["__last_tried_channel"] = ch.ID
-		upstream := strings.TrimRight(openAIBaseURL(ch.BaseURL), "/") + "/" + targetPath
-		if q := pipe.Request.Query; q != "" {
-			upstream += "?" + q
+		res := &attemptResult{}
+		var handled bool
+		pipe, handled = s.proxyAttempt(w, r, pipe, ch, model, started, res)
+		if handled {
+			return nil
 		}
-		// body：腾讯 copilot 网关以 DisallowUnknownFields 严格解析请求体，
-		// 遇到 client_metadata 直接 400（json: unknown field），定向剔除；
-		// 其他平台保持原样透传（透明代理语义）。
-		reqBody := body
-		if isCopilotTencentBaseURL(ch.BaseURL) {
-			reqBody = stripCopilotClientMetadata(body)
-		}
-		upReq, err := http.NewRequestWithContext(r.Context(), pipe.Request.Method, upstream, bytes.NewReader(reqBody))
-		if err != nil {
-			lastErr = err
-			lastChannelID = ch.ID
-			s.proxyAttemptLog(r, pipe, model, ch.ID, ch.ChannelName, nil, "", attemptStarted, "failed", "network", 0, pipe.Request.Stream, contracts.TokenUsage{}, err, truncateErrorBody(err.Error()))
-			continue
-		}
-		// headers：复制客户端原始 headers，去掉 hop-by-hop 与认证，换渠道 key。
-		// 腾讯 copilot 网关（copilot.tencent.com）优先读取 x-api-key/api-key 做认证，
-		// 客户端透传的这两个头会覆盖渠道 Authorization 导致 401；仅该平台定向剔除，
-		// 其他平台保持原样透传（透明代理语义）。
-		stripAltAuth := isCopilotTencentBaseURL(ch.BaseURL)
-		for k, vv := range pipe.Request.Header {
-			switch http.CanonicalHeaderKey(k) {
-			case "Host", "Content-Length", "Authorization", "Connection", "Proxy-Connection", "Keep-Alive",
-				"Transfer-Encoding", "Upgrade", "Te", "Trailer", "Proxy-Authenticate", "Proxy-Authorization":
-				continue
-			case "X-Api-Key", "Api-Key":
-				if stripAltAuth {
-					continue
-				}
-			}
-			for _, v := range vv {
-				upReq.Header.Add(k, v)
-			}
-		}
-		if ch.APIKey != "" {
-			upReq.Header.Set("Authorization", "Bearer "+ch.APIKey)
-		}
-
-		// 非流式沿用总超时（config.UpstreamTimeout）；流式不设总超时，
-		// 避免长 SSE 流（长推理/agent 任务）被到点截断，由服务层 WriteTimeout 兜底。
-		client := &http.Client{Timeout: config.UpstreamTimeout}
-		if pipe.Request.Stream {
-			client = &http.Client{}
-		}
-		resp, err := client.Do(upReq)
-		if err != nil {
-			lastErr = err
-			lastChannelID = ch.ID
-			s.proxyAttemptLog(r, pipe, model, ch.ID, ch.ChannelName, nil, "", attemptStarted, "failed", "network", 0, pipe.Request.Stream, contracts.TokenUsage{}, err, truncateErrorBody(err.Error()))
-			// 网络层失败也要写到文件日志：之前同样只入 DB，slog 看不到，
-			// 上游整段宕机 / DNS 解析失败 / TLS 握手报错只能靠 DB 反查，定位慢。
-			s.lg.Error("upstream network error",
-				"request_id", pipe.RequestID,
-				"model", model,
-				"channel_id", ch.ID,
-				"channel_name", ch.Name,
-				"channel_group", ch.ChannelName,
-				"base_url", ch.BaseURL,
-				"upstream", upstream,
-				"error", err.Error(),
-				"duration_ms", time.Since(attemptStarted).Milliseconds(),
-			)
-			if s.health != nil {
-				_, _ = s.health.RecordFailure(r.Context(), contracts.RouteFailure{RequestID: pipe.RequestID, Model: model, ChannelID: ch.ID, Error: err.Error()})
-			}
-			continue
-		}
-
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			// 错误体限制 8KB：覆盖绝大多数上游 JSON 错误（典型 1~4KB），再长截断。
-			// 太长不利于 slog（每行日志很长）和 route_log（DB 字段）；调试时按 channel_id +
-			// request_id 直接拿完整 body 出原始报文另说——上游完整 body 通过 rawBody 字段写 DB。
-			//
-			// readUpstreamErrorBody 内部按 Content-Encoding 与 magic bytes 自动 gzip 解压
-			// （某些代理会省略 Content-Encoding 但 body 仍是 gzip 字节；不解压就直接
-			// 落库会出现 0x1f 0x8b 乱码，前端无法识别）。
-			upBody, _ := readUpstreamErrorBody(resp.Body, resp.Header.Get("Content-Encoding"), 8192)
-			resp.Body.Close()
-			rawBody := string(upBody)
-			msg := upstreamErrorMsg(upBody, resp.StatusCode)
-			lastErr = fmt.Errorf("%s", upstreamErrorSummary(resp.StatusCode, msg))
-			lastChannelID = ch.ID
-			lastStatusCode = resp.StatusCode
-			lastErrorBody = rawBody
-			lastHeader = resp.Header.Clone()
-			s.proxyAttemptLog(r, pipe, model, ch.ID, ch.ChannelName, nil, "", attemptStarted, "failed", "", resp.StatusCode, pipe.Request.Stream, contracts.TokenUsage{}, lastErr, truncateErrorBody(rawBody))
-			// 关键：在 slog 文件日志里同步记录上游错误细节——此前 proxyAttemptLog 只写 DB，
-			// 用户翻 loadout.log 看不到任何上游 body，无法定位 500/502 的根因（截图里
-			// 「上游返回错误(500): 上游返回错误(500)」正是因为 body 没拍到日志里，
-			// 而 response 里 errorText 又被同一前缀二次包裹）。
-			//
-			// 字段：request_id（贯穿查询）、channel_id / channel_name / base_url（哪个渠道）、
-			// upstream（请求打到了哪个 URL）、status（上游状态码）、error_message（解析后的
-			// message 字段，可能为空）、response_body（原始上游错误体，截断到 ~2KB 防止
-			// 单行日志过长；完整 body 已在 lastErrorBody 透过 route_log 的 raw 字段保存，
-			// 需要全文可通过前端 /api/route-logs/{id} 取）、duration_ms。
-			preview := rawBody
-			if len(preview) > 2048 {
-				preview = preview[:2048] + "...(truncated)"
-			}
-			s.lg.Error("upstream returned error",
-				"request_id", pipe.RequestID,
-				"model", model,
-				"channel_id", ch.ID,
-				"channel_name", ch.Name,
-				"channel_group", ch.ChannelName,
-				"base_url", ch.BaseURL,
-				"upstream", upstream,
-				"status", resp.StatusCode,
-				"error_message", msg,
-				"response_body", preview,
-				"duration_ms", time.Since(attemptStarted).Milliseconds(),
-			)
-			if s.health != nil {
-				_, _ = s.health.RecordFailure(r.Context(), contracts.RouteFailure{RequestID: pipe.RequestID, Model: model, ChannelID: ch.ID, StatusCode: resp.StatusCode, ErrorBody: lastErrorBody, Error: lastErr.Error()})
-			}
-			continue
-		}
-
-		// 命中：非流式读完整 body → 输出 hook → 写回；流式逐块透传。
-if !pipe.Request.Stream {
-		respBody, rerr := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if rerr != nil {
-			lastErr = rerr
-			s.proxyAttemptLog(r, pipe, model, ch.ID, ch.ChannelName, nil, "", attemptStarted, "failed", "network", resp.StatusCode, false, contracts.TokenUsage{}, rerr, truncateErrorBody(rerr.Error()))
-			continue
-		}
-		proxyResp := &ProxyResponse{StatusCode: resp.StatusCode, Header: resp.Header.Clone(), Body: respBody}
-		// token 计量基于上游原始响应体，必须在输出 hook 之前提取：
-		// 输出 hook（如 field-filter 剔除 usage 字段）会改写 Body，事后提取会得到全 0，
-		// 导致 volc-free-quota 不扣减、route_log token 列恒 0。
-		usage := extractUsageNonStream(respBody)
-		// 主 attempt 两阶段（与流式 proxyStreamAttempt 同语义）：after-hook 前写 running
-		// 占位并分配 step=1，after-hook 返回后同 step UPSERT 覆盖为 success——非流式下
-		// 视觉插件在 after-hook 内基于 __route_step 续接，得到 主=1、视觉识别=2、续流=3 的顺序
-		//（此前主 attempt 在 after-hook 之后才写，顺序错成 视觉=1、续流=2、主=3）。
-		s.proxyStreamAttempt(r, pipe, model, ch.ID, ch.ChannelName, nil, "", attemptStarted, resp.StatusCode, false, false, contracts.TokenUsage{})
-		out, herr := s.ctx.Waterfall(ProxyAfterUpstream, &AfterUpstreamPayload{Pipe: pipe, Response: proxyResp})
-		if herr != nil {
-			// 输出 hook 拒绝：视为渠道失败，换下一个（错误可被聚合插件捕获切换模型）。
-			lastErr = herr
-			lastChannelID = ch.ID
-			// 覆盖 after-hook 前的 running 占位为 failed（同 step UPSERT，读 __stream_step 快照），
-			// 避免主请求占位永远卡 running。
-			if snap, ok := pipe.Metadata["__stream_step"].(int); ok && snap > 0 {
-				stepAction, _ := pipe.Metadata["__stream_action"].(string)
-				if stepAction == "" {
-					stepAction = "首次尝试"
-				}
-				fin := time.Now()
-				_, _ = s.routeLog.Attempt(context.WithoutCancel(r.Context()), contracts.RouteAttempt{
-					RequestID: pipe.RequestID, StepNo: fmt.Sprintf("%d", snap), Action: stepAction,
-					Model: model, ChannelID: ch.ID, ChannelName: ch.ChannelName,
-					StartedAt: attemptStarted, FinishedAt: &fin, Result: "failed",
-					StatusCode: resp.StatusCode, ErrorMessage: herr.Error(),
-					ErrorBody: truncateErrorBody(herr.Error()),
-					Duration:  contracts.DurationMS(time.Since(attemptStarted)),
-				})
-			}
-			continue
-		}
-		if rewritten, ok := out.(*AfterUpstreamPayload); ok && rewritten.Response != nil {
-			proxyResp = rewritten.Response
-		}
-		s.ctx.Emit(ProxyUpstreamSucceeded, &ProxySuccessPayload{Pipe: pipe, Model: model, ChannelID: ch.ID, Usage: usage})
-		if s.health != nil {
-			_ = s.health.RecordSuccess(r.Context(), ch.ID, model)
-		}
-		s.proxyStreamAttempt(r, pipe, model, ch.ID, ch.ChannelName, nil, "", attemptStarted, proxyResp.StatusCode, true, false, usage)
-		s.proxyFinishLog(r, pipe, model, ch.ID, ch.ChannelName, "success", proxyResp.StatusCode, time.Since(attemptStarted), nil, false, usage, "")
-		writeProxyResponse(w, proxyResp)
-		return nil
-	}
-
-		// 流式：SSE 逐行透传，每行经 stream-chunk hook（无订阅者时 Waterfall 零开销）。
-		// Emit 成功事件移到 proxyStream 之后：usage 在流结束才能拿到，
-		// volc-free-quota 需要 usage.total_tokens 做本地扣减。
-		// attempt 两阶段：转发前写 running 占位，流结束后同 step 更新 success——
-		// 让 attempt 的 finished_at/duration 反映真实流耗时，不再出现
-		// "上游 13s 已成功但请求卡 90s 进行中"的误导（旧逻辑在流开始前就标 success）。
-		s.proxyStreamAttempt(r, pipe, model, ch.ID, ch.ChannelName, nil, "", attemptStarted, resp.StatusCode, false, true, contracts.TokenUsage{})
-		usage := s.proxyStream(w, resp, pipe)
-		s.proxyStreamAttempt(r, pipe, model, ch.ID, ch.ChannelName, nil, "", attemptStarted, resp.StatusCode, true, true, usage)
-		s.ctx.Emit(ProxyUpstreamSucceeded, &ProxySuccessPayload{Pipe: pipe, Model: model, ChannelID: ch.ID, Usage: usage})
-		if s.health != nil {
-			_ = s.health.RecordSuccess(r.Context(), ch.ID, model)
-		}
-		s.proxyFinishLog(r, pipe, model, ch.ID, ch.ChannelName, "success", resp.StatusCode, time.Since(attemptStarted), nil, true, usage, "")
-		return nil
+		lastErr = res.err
+		lastChannelID = res.channelID
+		lastStatusCode = res.statusCode
+		lastErrorBody = res.errorBody
+		lastHeader = res.header
 	}
 
 	// 全部渠道失败：聚合模型触发失败事件换目标，否则原样透传最后一条上游错误。
@@ -952,6 +995,7 @@ func (s *Service) proxyBeginLog(r *http.Request, pipe *ProxyPipeline) {
 //   - 单 Key 路径：channelID 非空、其余空。
 //   - 聚合目标 rejected（proxyRejectedLog）：channelID = t.ChannelID，channelIDs =
 //     t.ChannelIDs（Key 多选），channelBaseURL = t.ChannelBaseURL（渠道级）。
+//
 // 前端 RouteLogTable 由此渲染 "@ 渠道名(Key1, Key2)" 而非空 channel_id。
 func (s *Service) proxyAttemptLog(r *http.Request, pipe *ProxyPipeline, model, channelID, channelName string, channelIDs []string, channelBaseURL string, started time.Time, result, failureClass string, statusCode int, stream bool, usage contracts.TokenUsage, err error, errorBody string) {
 	if s.routeLog == nil {

@@ -413,7 +413,7 @@ async function send() {
     result: 'running',
     attempts: [
       {
-        step_no: 1,
+        step_no: '1',
         action: '首次尝试',
         result: 'running',
         model: config.model,
@@ -441,7 +441,7 @@ async function send() {
     entry.duration_ms = Date.now() - startedAt.getTime()
     entry.attempts = [
       {
-        step_no: 1,
+        step_no: '1',
         action: 'test',
         result: 'success',
         model: config.model,
@@ -465,7 +465,7 @@ async function send() {
         : '请求失败'
     entry.attempts = [
       {
-        step_no: 1,
+        step_no: '1',
         action: 'test',
         result: 'failed',
         model: config.model,
