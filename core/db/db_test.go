@@ -3,10 +3,12 @@ package db
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"loadout/core/store"
 	"loadout/plugins/types"
@@ -50,8 +52,8 @@ func TestMigrateIsIdempotent(t *testing.T) {
 	if err := database.QueryRow("SELECT count(*) FROM schema_migrations").Scan(&count); err != nil {
 		t.Fatal(err)
 	}
-	if count != 22 {
-		t.Fatalf("schema_migrations count = %d, want 22", count)	}
+	if count != 23 {
+		t.Fatalf("schema_migrations count = %d, want 23", count)	}
 }
 
 func TestMigrateRejectsIncompatibleHistory(t *testing.T) {
@@ -62,8 +64,8 @@ func TestMigrateRejectsIncompatibleHistory(t *testing.T) {
 			}
 		},
 		"newer database": func(database *sql.DB) {
-			// 程序当前有 22 条迁移，插入 version 23 才能模拟"比程序更新"的库。
-			if _, err := database.Exec("INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (23, 'future', 'future', 'now')"); err != nil {				t.Fatal(err)
+			// 程序当前有 23 条迁移，插入 version 24 才能模拟"比程序更新"的库。
+			if _, err := database.Exec("INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (24, 'future', 'future', 'now')"); err != nil {				t.Fatal(err)
 			}
 		},
 	} {
@@ -282,6 +284,139 @@ func mustOpen(t *testing.T, path string) *sql.DB {
 		t.Fatal(err)
 	}
 	return database
+}
+
+func TestMigrateStepNoText(t *testing.T) {
+	ctx := context.Background()
+	// 手动构造 v22 库：绕过 Open 的自动 Migrate，按 migrations[0:22] 建 schema 并记录
+	// schema_migrations，插入 INTEGER step_no 的历史数据后，调 Migrate 只应用 v23，
+	// 验证重建（类型转换、数据保留、外键/唯一约束、索引）。
+	d, err := sql.Open("sqlite", fmt.Sprintf("file:loadout-stepno-%d?mode=memory&cache=shared", time.Now().UnixNano()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	d.SetMaxOpenConns(1)
+	if err := configure(d); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`CREATE TABLE schema_migrations (
+  version INTEGER PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE,
+  checksum TEXT NOT NULL,
+  applied_at TEXT NOT NULL
+)`); err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range migrations[:len(migrations)-1] {
+		if _, err := d.Exec(m.sql); err != nil {
+			t.Fatalf("apply migration %d: %v", m.version, err)
+		}
+		if _, err := d.Exec("INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (?, ?, ?, ?)",
+			m.version, m.name, migrationChecksum(m.sql), time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+			t.Fatalf("record migration %d: %v", m.version, err)
+		}
+	}
+	insertAttempt := func(requestID string, step int, prev any, action string, tokens int) {
+		t.Helper()
+		if _, err := d.Exec(`INSERT INTO route_attempts(request_id, previous_attempt_id, step_no, action, model, channel_id, channel_ids_json, channel_base_url, channel_name, started_at, result, failure_class, status_code, error_message, error_body, duration_ms, stream, prompt_tokens, completion_tokens, cached_tokens, metadata_json)
+VALUES (?, ?, ?, ?, 'gpt-test', 'chan1', '["chan1"]', 'https://chan1.example', 'Chan1', 'now', 'success', '', 200, '', '', 100, 1, ?, ?, ?, '{}')`,
+			requestID, prev, step, action, tokens, tokens*2, tokens*3); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := d.Exec("INSERT INTO route_requests(request_id, requested_model, started_at, result) VALUES ('req1', 'gpt-test', 'now', 'success')"); err != nil {
+		t.Fatal(err)
+	}
+	insertAttempt("req1", 1, nil, "首次尝试", 10)
+	insertAttempt("req1", 2, 1, "视觉识别", 20)
+
+	// 库只有 1..22，Migrate 只应用 v23（含 foreign_keys 关/开处理）
+	if err := Migrate(ctx, d); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1) step_no 列类型改为 TEXT
+	var typeName string
+	found := false
+	rows, err := d.Query("PRAGMA table_info(route_attempts)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notnull int
+		var dflt sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			t.Fatal(err)
+		}
+		if name == "step_no" {
+			found = true
+			typeName = typ
+		}
+	}
+	rows.Close()
+	if !found || typeName != "TEXT" {
+		t.Fatalf("step_no type = %q (found=%v), want TEXT", typeName, found)
+	}
+
+	// 2) 历史数据保留：step_no 转文本、previous_attempt_id 未被 SET NULL、token 列未丢
+	var step string
+	var prev sql.NullInt64
+	var stream, prompt, completion, cached int
+	if err := d.QueryRow("SELECT step_no, previous_attempt_id, stream, prompt_tokens, completion_tokens, cached_tokens FROM route_attempts WHERE id = 2").Scan(&step, &prev, &stream, &prompt, &completion, &cached); err != nil {
+		t.Fatal(err)
+	}
+	if step != "2" || !prev.Valid || prev.Int64 != 1 || stream != 1 || prompt != 20 || completion != 40 || cached != 60 {
+		t.Fatalf("migrated row = step:%q prev:%+v stream:%d tokens:%d/%d/%d", step, prev, stream, prompt, completion, cached)
+	}
+
+	// 3) 点分层级可插入，且唯一约束生效："1"、"1.1"、"1.2" 互不冲突
+	for _, s := range []string{"1.1", "1.2"} {
+		if _, err := d.Exec("INSERT INTO route_attempts(request_id, step_no, action, model, started_at, result) VALUES ('req1', ?, '视觉识别', 'gpt-test', 'now', 'success')", s); err != nil {
+			t.Fatalf("insert %q: %v", s, err)
+		}
+	}
+	if _, err := d.Exec("INSERT INTO route_attempts(request_id, step_no, action, model, started_at, result) VALUES ('req1', '1', 'dup', 'gpt-test', 'now', 'running')"); err == nil {
+		t.Fatal("duplicate (request_id='req1', step_no='1') should violate UNIQUE")
+	}
+
+	// 4) ON CONFLICT(request_id, step_no) UPSERT 语义不变
+	if _, err := d.Exec("INSERT INTO route_attempts(request_id, step_no, action, model, started_at, result) VALUES ('req1', '1.1', '视觉识别', 'gpt-test', 'now', 'success') ON CONFLICT(request_id, step_no) DO UPDATE SET result='failed'"); err != nil {
+		t.Fatalf("upsert '1.1': %v", err)
+	}
+	var upserted string
+	if err := d.QueryRow("SELECT result FROM route_attempts WHERE request_id='req1' AND step_no='1.1'").Scan(&upserted); err != nil {
+		t.Fatal(err)
+	}
+	if upserted != "failed" {
+		t.Fatalf("upsert result = %q, want failed", upserted)
+	}
+
+	// 5) v1 的 4 个索引重建齐全
+	for _, idx := range []string{"idx_route_attempts_request_step", "idx_route_attempts_channel_started_at", "idx_route_attempts_model_started_at", "idx_route_attempts_result_started_at"} {
+		var n int
+		if err := d.QueryRow("SELECT count(*) FROM sqlite_master WHERE type = 'index' AND name = ?", idx).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		if n != 1 {
+			t.Fatalf("index %s missing after rebuild", idx)
+		}
+	}
+
+	// 6) 迁移后外键仍生效：删除父请求级联删除 attempts
+	if _, err := d.Exec("DELETE FROM route_requests WHERE request_id = 'req1'"); err != nil {
+		t.Fatal(err)
+	}
+	var remaining int
+	if err := d.QueryRow("SELECT count(*) FROM route_attempts WHERE request_id = 'req1'").Scan(&remaining); err != nil {
+		t.Fatal(err)
+	}
+	if remaining != 0 {
+		t.Fatalf("cascade delete left %d rows", remaining)
+	}
 }
 
 func TestCapabilityRouteFieldRulesPersist(t *testing.T) {

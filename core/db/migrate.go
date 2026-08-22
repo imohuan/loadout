@@ -475,12 +475,70 @@ ALTER TABLE route_requests ADD COLUMN final_channel_name TEXT NOT NULL DEFAULT '
 -- raw body。attempt 行单条存储便于「切换渠道」场景下逐个排查。
 ALTER TABLE route_attempts ADD COLUMN error_body TEXT NOT NULL DEFAULT '';
 ALTER TABLE route_requests ADD COLUMN error_body TEXT NOT NULL DEFAULT '';
+`, }, {
+		version: 23,
+		name:    "route-attempts-step-no-text",
+		sql: `
+-- step_no 从 INTEGER 改为 TEXT：支持点分层级编号（"1" 主请求、"1.1" 视觉识别、"1.2" 续流）。
+-- SQLite 不支持 ALTER COLUMN TYPE，重建表迁移。新表 = v1 建表列 + 之后所有加列：
+--   v3  stream/prompt_tokens/completion_tokens/cached_tokens
+--   v17 channel_ids_json/channel_base_url
+--   v19 first_byte_at
+--   v21 channel_name
+--   v22 error_body
+-- 外键：本迁移在 Migrate 的单个事务里执行，事务开始前已 PRAGMA foreign_keys=OFF
+-- （见 Migrate 注释）。否则 DROP route_attempts 的隐式 DELETE 会对 route_attempts_new
+-- 触发 ON DELETE SET NULL，把刚拷贝的 previous_attempt_id 清空。
+CREATE TABLE route_attempts_new (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  request_id TEXT NOT NULL REFERENCES route_requests(request_id) ON DELETE CASCADE,
+  previous_attempt_id INTEGER REFERENCES route_attempts(id) ON DELETE SET NULL,
+  step_no TEXT NOT NULL,
+  action TEXT NOT NULL,
+  model TEXT NOT NULL,
+  channel_id TEXT,
+  channel_ids_json TEXT NOT NULL DEFAULT '[]',
+  channel_base_url TEXT NOT NULL DEFAULT '',
+  channel_name TEXT NOT NULL DEFAULT '',
+  started_at TEXT NOT NULL,
+  finished_at TEXT,
+  first_byte_at TEXT,
+  result TEXT NOT NULL,
+  failure_class TEXT NOT NULL DEFAULT '',
+  status_code INTEGER,
+  error_message TEXT NOT NULL DEFAULT '',
+  error_body TEXT NOT NULL DEFAULT '',
+  duration_ms INTEGER,
+  stream INTEGER NOT NULL DEFAULT 0,
+  prompt_tokens INTEGER NOT NULL DEFAULT 0,
+  completion_tokens INTEGER NOT NULL DEFAULT 0,
+  cached_tokens INTEGER NOT NULL DEFAULT 0,
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  UNIQUE(request_id, step_no)
+);
+INSERT INTO route_attempts_new (id, request_id, previous_attempt_id, step_no, action, model, channel_id, channel_ids_json, channel_base_url, channel_name, started_at, finished_at, first_byte_at, result, failure_class, status_code, error_message, error_body, duration_ms, stream, prompt_tokens, completion_tokens, cached_tokens, metadata_json)
+  SELECT id, request_id, previous_attempt_id, CAST(step_no AS TEXT), action, model, channel_id, channel_ids_json, channel_base_url, channel_name, started_at, finished_at, first_byte_at, result, failure_class, status_code, error_message, error_body, duration_ms, stream, prompt_tokens, completion_tokens, cached_tokens, metadata_json FROM route_attempts;
+DROP TABLE route_attempts;
+ALTER TABLE route_attempts_new RENAME TO route_attempts;
+CREATE INDEX idx_route_attempts_request_step ON route_attempts(request_id, step_no);
+CREATE INDEX idx_route_attempts_channel_started_at ON route_attempts(channel_id, started_at DESC);
+CREATE INDEX idx_route_attempts_model_started_at ON route_attempts(model, started_at DESC);
+CREATE INDEX idx_route_attempts_result_started_at ON route_attempts(result, started_at DESC);
 `,
 	}}
 
 // Migrate applies all pending schema migrations and rejects an incompatible
 // database instead of trying to infer a recovery path.
 func Migrate(ctx context.Context, database *sql.DB) error {
+	// SQLite 不支持 ALTER COLUMN TYPE，改列类型需重建表（v23 起 route_attempts）。
+	// 重建过程在事务里 DROP 旧表，隐式 DELETE 会触发外键 ON DELETE 动作——例如
+	// route_attempts_new.previous_attempt_id 引用被 DROP 的旧表，SET NULL 会把刚
+	// 拷贝的数据清掉。PRAGMA foreign_keys 在事务内是 no-op，必须在事务外关闭、
+	// 提交后再恢复。出错时调用方（db.Open）会关闭连接，无需在此兜底恢复。
+	if _, err := database.ExecContext(ctx, "PRAGMA foreign_keys = OFF"); err != nil {
+		return fmt.Errorf("db: disable foreign keys: %w", err)
+	}
+
 	tx, err := database.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("db: begin migration: %w", err)
@@ -541,6 +599,9 @@ func Migrate(ctx context.Context, database *sql.DB) error {
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("db: commit migrations: %w", err)
+	}
+	if _, err := database.ExecContext(ctx, "PRAGMA foreign_keys = ON"); err != nil {
+		return fmt.Errorf("db: re-enable foreign keys: %w", err)
 	}
 	return nil
 }
