@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, ref } from 'vue'
 import { RiArrowDownSLine, RiArrowRightSLine } from '@remixicon/vue'
 import type { Channel, RouteAttempt, RouteLog } from '@/lib/types'
 import { BUILTIN_CHANNEL } from '@/lib/constants'
@@ -20,13 +20,17 @@ const props = withDefaults(
     liveProgress?: boolean
     /** 后端返回的全量条数（真分页）。缺省时回退 logs.length，保持本地伪分页兼容（模型测试页） */
     total?: number
+    /** 受控分页页码（真分页模式：父组件 RouteLogsView 持有，过滤/清空时可重置回 1）。
+     *  缺省时内部自管理（模型测试页兼容，配合无 total 的本地切片）。 */
+    page?: number
+    pageSize?: number
   }>(),
   { collapsible: true, liveProgress: true },
 )
 const emit = defineEmits<{
   expand: [log: RouteLog]
-  /** 页码/每页条数变化（真分页模式下父组件据此重新拉取当前页） */
-  'page-change': [page: number, pageSize: number]
+  'update:page': [value: number]
+  'update:pageSize': [value: number]
 }>()
 const expanded = ref(new Set<string>())
 // 日志里 attempt.channel 三种粒度（与 AggregateTarget 对齐）：
@@ -96,19 +100,29 @@ function showDetails(log: RouteLog) {
 }
 
 // ---------- 分页 ----------
-// 有 total（真分页：logs 已是后端返回的当前页数据）→ 不做本地切片，直接渲染；
-// 无 total（模型测试页兼容）→ 保持本地切片伪分页。
-const page = ref(1)
-const pageSize = ref(20)
+// 受控模式（父组件传 page/pageSize，真分页）：页码由 RouteLogsView 持有，过滤/清空可重置；
+// 非受控模式（模型测试页兼容，total 缺省）：内部自管理 + 本地切片伪分页。
+const internalPage = ref(1)
+const internalPageSize = ref(20)
+const controlled = computed(() => props.page !== undefined)
+const currentPage = computed({
+  get: () => (controlled.value ? (props.page ?? 1) : internalPage.value),
+  set: (value: number) => {
+    internalPage.value = value
+    if (controlled.value) emit('update:page', value)
+  },
+})
+const currentPageSize = computed({
+  get: () => (controlled.value ? (props.pageSize ?? 20) : internalPageSize.value),
+  set: (value: number) => {
+    internalPageSize.value = value
+    if (controlled.value) emit('update:pageSize', value)
+  },
+})
 const pagedLogs = computed(() => {
   if (props.total !== undefined) return props.logs || []
-  const start = (page.value - 1) * pageSize.value
-  return (props.logs || []).slice(start, start + pageSize.value)
-})
-// 真分页模式下，页码/每页条数变化通知父组件刷新。
-// watch 覆盖 DataPagination 内部因 total 变化自动纠正 page 的路径（pageCount watch）。
-watch([page, pageSize], ([p, s]) => {
-  if (props.total !== undefined) emit('page-change', p, s)
+  const start = (currentPage.value - 1) * currentPageSize.value
+  return (props.logs || []).slice(start, start + currentPageSize.value)
 })
 
 // action 历史值兼容：后端已切换为中文，但旧库仍可能存着英文枚举
@@ -406,7 +420,7 @@ function isFailureResult(result?: string) {
       </div>
       <EmptyState v-else-if="!total" title="还没有请求记录" description="发生模型请求后，这里会按 request_id 展示完整路由过程。" />
       <div v-if="(props.total ?? logs.length) > 0" class="border-t border-border p-3">
-        <DataPagination v-model:page="page" v-model:page-size="pageSize" :total="props.total ?? logs.length" />
+        <DataPagination v-model:page="currentPage" v-model:page-size="currentPageSize" :total="props.total ?? logs.length" />
       </div>
     </CardContent>
   </Card>

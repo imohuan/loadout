@@ -19,6 +19,7 @@
 - **P2-2** 真分页模式越界页 items 为空但 total>0 时，`v-if="pagedLogs.length"` 会误显「还没有请求记录」→ EmptyState 条件改为同时看 total。
 - **P2-3** COUNT 与 SELECT 非同一事务，并发写入下 total/items 可能瞬时不一致 → 代码注释说明可接受。
 - **P2-4** Task 5 落地后、Task 6 完成前前端 `vue-tsc` 必 FAIL（RouteLogsView 仍按数组用），Step 3 期望明确写「必 FAIL」。审计结论：SQL（listWhere 等价性/args 顺序）、前端 watch/自愈链路无死循环（useListLoader seq 守卫 + pageCount 纠正单调收敛）、ModelTestView 兼容分支成立；补齐 P0 后可执行。
+- **实施后 code review 修正（2026-08-23）**：P0——分页状态双份导致过滤后页码错位。RouteLogTable 内部自持 page/pageSize，RouteLogsView 的 apply/clear 只重置父组件 page，表格内部停留在旧页码：过滤后显示第 1 页数据但分页器高亮旧页（新 total 页数足够时永久错位）。修法：`page`/`pageSize` 提升为受控 prop（v-model 语义，`update:page`/`update:pageSize` 事件），删 page-change 事件与内部 watch；非受控模式（ModelTestView 不传）由 internalPage 回退，行为不变。
 
 ---
 

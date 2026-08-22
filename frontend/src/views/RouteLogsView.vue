@@ -27,10 +27,15 @@ const {
 // 后端真分页：logs 为当前页记录，total 为满足过滤条件的全量条数
 const logs = computed(() => logsData.value?.items ?? [])
 const total = computed(() => logsData.value?.total ?? 0)
-// 翻页/改每页条数：更新分页状态后重新拉取当前页（3s 定时刷新同样带当前 page/pageSize）
-function onPageChange(nextPage: number, nextSize: number) {
+// 翻页/改每页条数：更新分页状态后重新拉取当前页（3s 定时刷新同样带当前 page/pageSize）。
+// 分页状态受控传入 RouteLogTable（:page/:page-size），保证过滤/清空重置 page=1 时表格同步。
+function onPageChange(nextPage: number) {
   page.value = nextPage
+  void refresh()
+}
+function onPageSizeChange(nextSize: number) {
   pageSize.value = nextSize
+  page.value = 1 // 切每页条数回到第一页（DataPagination 内部也会 emit update:page=1，这里双保险）
   void refresh()
 }
 const { data: channels } = useListLoader(channelService.list)
@@ -254,8 +259,11 @@ async function clear() {
       :channels="channels || []"
       :loading-detail="loadingDetail"
       :total="total"
+      :page="page"
+      :page-size="pageSize"
+      @update:page="onPageChange"
+      @update:page-size="onPageSizeChange"
       @expand="expand"
-      @page-change="onPageChange"
     />
   </div>
 </template>
