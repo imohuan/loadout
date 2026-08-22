@@ -172,11 +172,11 @@ function channelScopeLabel(channels: Channel[], ids?: string[], baseURLs?: strin
                     routeLabel[route.route] || route.route
                   }}</Badge>
                 </TableCell>
-                <TableCell class="max-w-md text-sm text-muted-foreground">
+                <TableCell class="min-w-0 max-w-md text-sm text-muted-foreground">
                   <Tooltip>
                     <TooltipTrigger as-child>
                       <div
-                        class="w-fit whitespace-pre-wrap break-words [display:-webkit-box] [-webkit-line-clamp:2] [-webkit-box-orient:vertical] overflow-hidden"
+                        class="min-w-0 whitespace-pre-wrap break-words [display:-webkit-box] [-webkit-line-clamp:2] [-webkit-box-orient:vertical] overflow-hidden"
                       >
                         <template v-if="route.capability === 'sensitive_filter'">
                           {{ proxyReplacementsLabel(route) || '—' }}
@@ -186,7 +186,11 @@ function channelScopeLabel(channels: Channel[], ids?: string[], baseURLs?: strin
                         </template>
                         <template v-else>
                           <template v-for="(o, i) in viaOptions(route)" :key="i">
-                            <ModelChannelRef :model="o.via_model" :target="o" :channels="channels" />
+                            <ModelChannelRef
+                              :model="o.via_model"
+                              :target="o"
+                              :channels="channels"
+                            />
                             <template v-if="i < viaOptions(route).length - 1"
                               ><span class="mx-1">→</span></template
                             >
@@ -197,7 +201,9 @@ function channelScopeLabel(channels: Channel[], ids?: string[], baseURLs?: strin
                     </TooltipTrigger>
                     <TooltipContent side="top" align="start">
                       <template v-if="route.capability === 'sensitive_filter'">
-                        {{ proxyReplacementsLabel(route) || '—' }}
+                        <span class="whitespace-pre-wrap">{{
+                          proxyReplacementsLabel(route) || '—'
+                        }}</span>
                       </template>
                       <template v-else-if="route.capability === 'field_filter'">
                         <span class="whitespace-pre-wrap">{{ fieldRulesLabel(route) || '—' }}</span>
@@ -209,7 +215,11 @@ function channelScopeLabel(channels: Channel[], ids?: string[], baseURLs?: strin
                             :key="i"
                             class="flex items-center gap-1.5"
                           >
-                            <ModelChannelRef :model="o.via_model" :target="o" :channels="channels" />
+                            <ModelChannelRef
+                              :model="o.via_model"
+                              :target="o"
+                              :channels="channels"
+                            />
                             <template v-if="i < viaOptions(route).length - 1"
                               ><span class="text-muted-foreground">→</span></template
                             >
