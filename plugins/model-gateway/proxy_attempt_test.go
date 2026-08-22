@@ -97,3 +97,75 @@ func TestProxyBeforeAttemptRejectsStopsRequest(t *testing.T) {
 		t.Fatalf("安检拒绝后渠道B不应收到请求, 实际 %d 个", len(recs))
 	}
 }
+
+// TestProxyBeforeAttemptFiresAfterAggregateFailover 聚合模型切目标后，递归的
+// 新渠道尝试同样触发 proxy:before-attempt（修复"切模型跳过安检"）。
+func TestProxyBeforeAttemptFiresAfterAggregateFailover(t *testing.T) {
+	svc, _ := newTestService(t)
+	echo1, _ := newEchoServer(t, `{"error":{"message":"down"}}`, 500, nil)
+	defer echo1.Close()
+	echo2, _ := newEchoServer(t, `{"id":"resp_ok","object":"response"}`, 0, nil)
+	defer echo2.Close()
+	if err := svc.st.Write(types.FileChannels, []types.Channel{
+		{ID: "ch-1", Name: "渠道1", BaseURL: echo1.URL, Enabled: true, Models: []string{"gpt-4o"}},
+		{ID: "ch-2", Name: "渠道2", BaseURL: echo2.URL, Enabled: true, Models: []string{"claude-3"}},
+	}); err != nil {
+		t.Fatalf("写渠道表失败: %v", err)
+	}
+
+	// 入口 before 钩子（模拟 aggregate）：虚拟模型 auto → 目标1 gpt-4o
+	svc.ctx.On(ProxyBeforeUpstream, func(payload any) (any, error) {
+		pipe := payload.(*ProxyPipeline)
+		if pipe.Metadata == nil {
+			pipe.Metadata = map[string]any{}
+		}
+		pipe.Metadata["__virtual_model"] = "auto"
+		pipe.Metadata["__aggregate_targets"] = []types.AggregateTarget{
+			{Model: "gpt-4o", ChannelID: "ch-1"},
+			{Model: "claude-3", ChannelID: "ch-2"},
+		}
+		pipe.Metadata["__failed_targets"] = []string{}
+		pipe.Request.Model = "gpt-4o"
+		return pipe, nil
+	})
+	// failover 钩子（模拟 aggregate 切目标2，重设渠道上下文：与真实 applyTargetMetadata
+	// 语义一致，__current_channel_base_url 清空、__channel_candidates 置 nil，
+	// 否则残留的旧渠道 base_url/候选列表会让递归 resolveChannels 锁死在旧渠道）
+	svc.ctx.On(ProxyUpstreamFailed, func(payload any) (any, error) {
+		f := payload.(*ProxyFailurePayload)
+		f.Pipe.Metadata["__failed_targets"] = append(f.Pipe.Metadata["__failed_targets"].([]string), "gpt-4o@ch-1")
+		f.Pipe.Metadata["__current_channel"] = "ch-2"
+		f.Pipe.Metadata["__current_channel_base_url"] = ""
+		f.Pipe.Metadata["__channel_candidates"] = nil
+		f.Pipe.Request.Model = "claude-3"
+		return &ProxyRetry{Pipe: f.Pipe}, nil
+	})
+	// 安检钩子：记录每次触发的 model@渠道
+	var mu sync.Mutex
+	var seen []string
+	svc.ctx.On(ProxyBeforeAttempt, func(payload any) (any, error) {
+		pipe := payload.(*ProxyPipeline)
+		mu.Lock()
+		ch, _ := pipe.Metadata["__current_channel"].(string)
+		seen = append(seen, pipe.Request.Model+"@"+ch)
+		mu.Unlock()
+		return payload, nil
+	})
+
+	body := `{"model":"auto"}`
+	req := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(body))
+	rr := httptest.NewRecorder()
+	svc.HandleProxy(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d, 期望 200", rr.Code)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seen) != 2 {
+		t.Fatalf("ProxyBeforeAttempt 触发 %d 次, 期望 2（目标1 + 目标2 各一次）: %v", len(seen), seen)
+	}
+	if seen[0] != "gpt-4o@ch-1" || seen[1] != "claude-3@ch-2" {
+		t.Fatalf("安检触发顺序 = %v, 期望 [gpt-4o@ch-1 claude-3@ch-2]", seen)
+	}
+}
