@@ -1,0 +1,27 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Loadout: 调试后台服务 (apps/server)",
+      "type": "go",
+      "request": "launch",
+      "mode": "debug",
+      "program": "${workspaceFolder}/apps/server",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "LOADOUT_LOG_LEVEL": "debug",
+        "LOADOUT_SERVER_ADDR": ":3000"
+      },
+      "preLaunchTask": "check-port-3000",
+      "showLog": true,
+      "buildFlags": "-buildvcs=false"
+    },
+    {
+      "name": "Loadout: 附加到已运行进程",
+      "type": "go",
+      "request": "attach",
+      "mode": "local",
+      "processId": "${command:pickProcess}"
+    }
+  ]
+}

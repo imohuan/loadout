@@ -1,0 +1,3 @@
+found PID 7096, name: loadout
+killed PID 7096 (loadout)
+after cleanup, hits on 3000: 0 (expect 0)
