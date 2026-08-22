@@ -4,7 +4,7 @@ import { RiArrowDownSLine, RiArrowRightSLine } from '@remixicon/vue'
 import type { Channel, RouteAttempt, RouteLog } from '@/lib/types'
 import { BUILTIN_CHANNEL } from '@/lib/constants'
 import { formatDate, formatDuration } from '@/lib/format'
-import ChannelRef from '@/components/ChannelRef.vue'
+import ModelChannelRef from '@/components/ModelChannelRef.vue'
 import EmptyState from '@/components/EmptyState.vue'
 import DataPagination from '@/components/DataPagination.vue'
 import RouteLogErrorCell from '@/components/route-logs/RouteLogErrorCell.vue'
@@ -273,13 +273,13 @@ function isFailureResult(result?: string) {
                     {{ log.request_id }}
                   </p>
                 </TableCell>
-                <TableCell class="text-sm"><span class="inline-flex items-center gap-0.5"><span class="font-mono">{{
-                  log.final_model || '-' }}</span><template v-if="log.final_model"><span
+                <TableCell class="text-sm"><span class="inline-flex items-center gap-0.5"><template
+                    v-if="log.final_model"><span
                         v-if="log.final_channel_id === BUILTIN_CHANNEL" class="text-muted-foreground">@ {{
                           finalTargetLabel(log.final_channel_id, log.sk_key_name) }}</span>
-                      <ChannelRef v-else-if="finalChannelRef(log)" :target="finalChannelRef(log)"
-                        :channels="channels" />
-                    </template></span></TableCell>
+                      <ModelChannelRef v-else :model="log.final_model" :target="finalChannelRef(log)"
+                        :channels="channels" :decorate="false" />
+                    </template><span v-else class="font-mono">-</span></span></TableCell>
                 <TableCell>
                   <Badge :class="resultTone(log.result)">{{ resultLabel(log.result) }}</Badge>
                 </TableCell>
@@ -331,9 +331,8 @@ function isFailureResult(result?: string) {
                         <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
                           <span class="font-medium tabular-nums">{{ attempt.step_no }}</span><span
                             class="inline-flex items-center gap-0.5">
-                            <span class="font-mono text-xs">{{ attempt.model
-                            }}</span>
-                            <ChannelRef :target="channelRefFor(attempt)" :channels="channels" />
+                            <ModelChannelRef :model="attempt.model" :target="channelRefFor(attempt)"
+                              :channels="channels" :decorate="false" class="text-xs" />
                           </span>
                           <Badge variant="outline" :class="['shrink-0 border', actionTone(attempt.action)]">{{
                             actionLabel(attempt.action) }}</Badge>

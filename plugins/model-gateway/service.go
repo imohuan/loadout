@@ -812,6 +812,10 @@ func upstreamErrorSummary(status int, msg string) string {
 	if msg == "" {
 		return fmt.Sprintf("上游返回错误(%d)", status)
 	}
+	// 如果 msg 已经带「上游返回错误(」前缀，直接返回，不再重复拼接
+	if strings.HasPrefix(msg, "上游返回错误(") {
+		return msg
+	}
 	return fmt.Sprintf("上游返回错误(%d): %s", status, msg)
 }
 

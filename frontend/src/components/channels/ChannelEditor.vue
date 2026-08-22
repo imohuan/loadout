@@ -211,6 +211,9 @@ function submit() {
             :disabled="!!lockBaseUrl"
             placeholder="http://127.0.0.1:3001/v1"
           />
+          <p class="text-xs text-muted-foreground">
+            基础 URL 请填写到接口前缀的完整路径，如需 /v1 前缀请自行包含在 URL 中，系统不会自动补全。
+          </p>
         </div>
         <div class="space-y-2">
           <Label for="channel-key">API Key{{ channel ? '（留空不修改）' : '' }}</Label

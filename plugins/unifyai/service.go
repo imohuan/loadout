@@ -20,14 +20,14 @@ import (
 
 // Platform 对应 `unifyai --list-platforms --json` 输出的单个平台（附录 B.1）。
 type Platform struct {
-	ID            string `json:"id"`
-	Name          string `json:"name"`
-	SupportsModels bool  `json:"supportsModels"`
-	ModelStatus   string `json:"modelStatus"`
-	SupportsMcp   bool   `json:"supportsMcp"`
-	McpStatus     string `json:"mcpStatus"`
-	ConfigPath    string `json:"configPath"`
-	ConfigFormat  string `json:"configFormat"`
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	SupportsModels bool   `json:"supportsModels"`
+	ModelStatus    string `json:"modelStatus"`
+	SupportsMcp    bool   `json:"supportsMcp"`
+	McpStatus      string `json:"mcpStatus"`
+	ConfigPath     string `json:"configPath"`
+	ConfigFormat   string `json:"configFormat"`
 }
 
 // ListPlatformsResult 对应 --list-platforms --json 的完整输出。
@@ -82,7 +82,10 @@ func (s *Service) PlatformInfo() (ListPlatformsResult, error) {
 		return defaultPlatforms(), nil
 	}
 	args := append(append([]string{}, base...), "--list-platforms", "--json")
-	out, err := exec.Command(cmd, args...).Output()
+	proc := exec.Command(cmd, args...)
+	// 后台服务 PATH 可能不完整，把 npx 所在目录补到最前（含 node）。
+	proc.Env = envWithBinDir(cmd)
+	out, err := proc.Output()
 	if err != nil {
 		s.lg.Warn("unifyai: --list-platforms 失败，回落到内置默认", "err", err)
 		return defaultPlatforms(), nil
@@ -123,20 +126,96 @@ func (s *Service) Run(args []string, onLog func(string)) error {
 func resolveCmd() (string, []string, error) {
 	npx, err := exec.LookPath("npx")
 	if err != nil {
-		// Windows 常见安装位置兜底。
-		if runtime.GOOS == "windows" {
-			for _, p := range []string{
-				filepath.Join(os.Getenv("APPDATA"), "npm", "npx.cmd"),
-				"C:/Program Files/nodejs/npx.cmd",
-			} {
-				if fileExists(p) {
-					return p, []string{"-y", "unifyai@latest"}, nil
-				}
+		// PATH 中找不到 npx（后台服务/systemd 启动时环境不完整），
+		// 按常见安装位置兜底，覆盖 Windows 与 Linux。
+		for _, p := range npxCandidates() {
+			if fileExists(p) {
+				return p, []string{"-y", "unifyai@latest"}, nil
 			}
 		}
 		return "", nil, fmt.Errorf("未找到 npx：请先安装 Node.js（unifyai 通过 npx 自动运行，无需额外安装）")
 	}
 	return npx, []string{"-y", "unifyai@latest"}, nil
+}
+
+// npxCandidates 按常见安装位置枚举 npx 完整路径（含 Windows 与 Linux）。
+// 包级变量，测试可替换。
+var npxCandidates = func() []string {
+	if runtime.GOOS == "windows" {
+		return []string{
+			filepath.Join(os.Getenv("APPDATA"), "npm", "npx.cmd"),
+			"C:/Program Files/nodejs/npx.cmd",
+		}
+	}
+	// Linux: nvm、fnm 版本目录全部枚举，另加 volta/asdf/系统位置。
+	var cands []string
+	if home, err := os.UserHomeDir(); err == nil {
+		// nvm: ~/.nvm/versions/node/<ver>/bin/npx。
+		versionsDir := filepath.Join(home, ".nvm", "versions", "node")
+		if entries, err := os.ReadDir(versionsDir); err == nil {
+			for _, e := range entries {
+				if e.IsDir() {
+					cands = append(cands, filepath.Join(versionsDir, e.Name(), "bin", "npx"))
+				}
+			}
+		}
+		cands = append(cands,
+			filepath.Join(home, ".nvm", "current", "bin", "npx"),
+			filepath.Join(home, ".local", "bin", "npx"),
+			filepath.Join(home, ".volta", "bin", "npx"),
+			filepath.Join(home, ".asdf", "shims", "npx"),
+		)
+		// fnm: ~/.local/share/fnm/<ver>/installation/bin/npx。
+		fnmDir := filepath.Join(home, ".local", "share", "fnm")
+		if entries, err := os.ReadDir(fnmDir); err == nil {
+			for _, e := range entries {
+				if e.IsDir() {
+					cands = append(cands, filepath.Join(fnmDir, e.Name(), "installation", "bin", "npx"))
+				}
+			}
+		}
+	}
+	return append(cands,
+		"/usr/local/bin/npx",
+		"/usr/bin/npx",
+		"/opt/node/bin/npx",
+		"/usr/local/node/bin/npx",
+	)
+}
+
+// findNpxFallback 在常见安装位置中寻找存在的 npx（兜底 PATH 缺失场景）。
+func findNpxFallback() string {
+	for _, p := range npxCandidates() {
+		if fileExists(p) {
+			return p
+		}
+	}
+	return ""
+}
+
+// envWithBinDir 在子进程环境变量中把命令所在目录放到 PATH 最前，
+// 保证 npx 能找到同目录下的 node（后台服务 PATH 不完整时）。
+func envWithBinDir(cmdPath string) []string {
+	dir := filepath.Dir(cmdPath)
+	return osEnvironWithPathPrefix(dir)
+}
+
+// osEnvironWithPathPrefix 返回 os.Environ 副本，并把 dir 放到 PATH 最前。
+// 后台服务/systemd 启动时 PATH 可能不完整，需显式补全命令所在目录。
+func osEnvironWithPathPrefix(dir string) []string {
+	env := os.Environ()
+	for i, kv := range env {
+		if j := strings.IndexByte(kv, '='); j > 0 && strings.EqualFold(kv[:j], "PATH") {
+			cur := kv[j+1:]
+			if cur == "" {
+				env[i] = "PATH=" + dir
+			} else if !strings.HasPrefix(cur, dir+string(os.PathListSeparator)) {
+				env[i] = "PATH=" + dir + string(os.PathListSeparator) + cur
+			}
+			return env
+		}
+	}
+	return append(env, "PATH="+dir)
 }
 
 // fileExists 判断路径存在且是普通文件。
@@ -168,7 +247,7 @@ func defaultPlatforms() ListPlatformsResult {
 // `if (!config.disabled)` 过滤服务器（enabled 仅 normalizeMcp 兜底，不再双写）。
 type McpServer struct {
 	Name    string            `json:"name"`
-	Type    string            `json:"type"`    // local | remote
+	Type    string            `json:"type"` // local | remote
 	Enabled bool              `json:"enabled"`
 	Command []string          `json:"command,omitempty"`
 	URL     string            `json:"url,omitempty"`

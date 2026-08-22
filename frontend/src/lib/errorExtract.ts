@@ -69,7 +69,9 @@ function tryParseJson(s: string): unknown {
  *
  * 返回规则：
  * - 两者都有：`error_message + 提取到的 msg`，中间用「: 」拼接
- *   （error_message 是后端状态摘要，msg 是具体原因，信息互补都保留）
+ *   （error_message 是后端状态摘要，msg 是具体原因，信息互补都保留）；
+ *   若 error_message 已包含/以 msg 结尾（上游已带同格式前缀时），直接返回
+ *   error_message，避免再拼冒号造成多层重复前缀。
  * - 只有其一：返回那一份
  * - 都取不到：返回空字符串
  * @param errorBody 上游原始响应文本（可能是 JSON 也可能是纯文本）
@@ -87,7 +89,10 @@ export function extractErrorSummary(
 
   let summary: string
   if (bodyMsg && fbMsg) {
-    summary = `${fbMsg}: ${bodyMsg}`
+    // 后端摘要（error_message）已包含或以 bodyMsg 结尾时（典型如
+    // 「上游返回错误(400): json: unknown field ...」），直接用 fbMsg，
+    // 避免再拼冒号造成多层重复前缀。
+    summary = fbMsg.includes(bodyMsg) || fbMsg.endsWith(bodyMsg) ? fbMsg : `${fbMsg}: ${bodyMsg}`
   } else {
     summary = bodyMsg || fbMsg || ''
   }

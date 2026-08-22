@@ -947,17 +947,11 @@ func statusOrDefault(code int, def int) int {
 	return code
 }
 
-// openAIBaseURL 规范化渠道 base_url：已含版本段（v1、v2、v1beta 等）原样返回，
-// 否则补 /v1。兼容「https://api.openai.com/v1」与漏写 /v1 的地址两种写法。
+// openAIBaseURL 规范化渠道 base_url：只去掉末尾斜杠，其余完全按用户配置原样返回，
+// 不再自动补 /v1。很多模型的基础 URL 不是 v1 结尾（如 Claude、Gemini、厂商定制网关），
+// 自动补全会导致 /v1/v1/xxx 类 404；需要 /v1 前缀时由用户在 base_url 里自行包含。
 func openAIBaseURL(baseURL string) string {
-	base := strings.TrimRight(baseURL, "/")
-	if idx := strings.LastIndex(base, "/"); idx >= 0 {
-		last := base[idx+1:]
-		if strings.HasPrefix(last, "v") && len(last) > 1 && last[1] >= '0' && last[1] <= '9' {
-			return base
-		}
-	}
-	return base + "/v1"
+	return strings.TrimRight(baseURL, "/")
 }
 
 // isCopilotTencentBaseURL 判断渠道 base_url 是否指向腾讯 copilot 网关

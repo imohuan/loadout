@@ -105,8 +105,8 @@ func TestHandleProxyTransparent(t *testing.T) {
 		t.Fatalf("上游收到 %d 个请求, 期望 1", len(recs))
 	}
 	rec := recs[0]
-	if rec.Path != "/v1/responses" {
-		t.Fatalf("上游路径 = %s, 期望 /v1/responses", rec.Path)
+	if rec.Path != "/responses" {
+		t.Fatalf("上游路径 = %s, 期望 /responses（base_url 不再自动补 /v1）", rec.Path)
 	}
 	if rec.Query != "x=1&y=2" {
 		t.Fatalf("上游 query = %s, 期望 x=1&y=2", rec.Query)
@@ -128,8 +128,8 @@ func TestHandleProxyAnyMethod(t *testing.T) {
 		t.Fatalf("状态码 = %d, 期望 200", rr.Code)
 	}
 	recs := getRecords()
-	if len(recs) != 1 || recs[0].Method != "GET" || recs[0].Path != "/v1/files" {
-		t.Fatalf("GET /v1/files 未原样转发: %+v", recs)
+	if len(recs) != 1 || recs[0].Method != "GET" || recs[0].Path != "/files" {
+		t.Fatalf("GET /files 未原样转发（base_url 不再自动补 /v1）: %+v", recs)
 	}
 }
 
@@ -770,8 +770,8 @@ func TestHandleProxyV2Prefix(t *testing.T) {
 		t.Fatalf("上游 model = %q, 期望 gpt-4o（前缀应被改写）", sent.Model)
 	}
 	// 路径原样转发。
-	if recs[0].Path != "/v1/responses" {
-		t.Fatalf("上游路径 = %s, 期望 /v1/responses", recs[0].Path)
+	if recs[0].Path != "/responses" {
+		t.Fatalf("上游路径 = %s, 期望 /responses（base_url 不再自动补 /v1）", recs[0].Path)
 	}
 }
 
@@ -1032,6 +1032,9 @@ func TestUpstreamErrorSummaryNoDoublePrefix(t *testing.T) {
 		{"message 含前后空白时去除", 500, "  boom  ", "上游返回错误(500): boom"},
 		{"4xx 同样不再加前缀", 404, "", "上游返回错误(404)"},
 		{"4xx 有 message 不重复", 429, "rate-limited", "上游返回错误(429): rate-limited"},
+		{"上游已带同格式前缀时不重复", 400, "上游返回错误(400): json: unknown field \"client_metadata\"", "上游返回错误(400): json: unknown field \"client_metadata\""},
+		{"上游已带前缀即使状态码不同也不重包", 502, "上游返回错误(404): not found", "上游返回错误(404): not found"},
+		{"多级嵌套前缀不再叠加", 502, "上游返回错误(500): 上游返回错误(400): boom", "上游返回错误(500): 上游返回错误(400): boom"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1071,6 +1074,30 @@ func TestUpstreamErrorMsgReturnsPureMessage(t *testing.T) {
 			// 任何情况下返回值都不应包含「上游返回错误」字样（那是 summary 的事）。
 			if strings.Contains(got, "上游返回错误") {
 				t.Fatalf("upstreamErrorMsg 返回值不应包含上游返回错误前缀，实际 %q", got)
+			}
+		})
+	}
+}
+
+// TestOpenAIBaseURLNoAutoV1 回归「自动补 /v1」逻辑错误：base_url 完全按用户配置
+// 原样使用（只去末尾斜杠），不再自动补版本段——很多模型的基础 URL 不是 v1 结尾，
+// 自动补全会导致 /v1/v1/xxx 类 404。需要 /v1 前缀时由用户自行写在 base_url 里。
+func TestOpenAIBaseURLNoAutoV1(t *testing.T) {
+	cases := []struct {
+		name string
+		base string
+		want string
+	}{
+		{"无版本段原样返回", "https://api.example.com", "https://api.example.com"},
+		{"用户自含 /v1 保留", "https://api.example.com/v1", "https://api.example.com/v1"},
+		{"末尾斜杠去除", "https://api.example.com/api/v2/", "https://api.example.com/api/v2"},
+		{"带端口", "http://127.0.0.1:3001", "http://127.0.0.1:3001"},
+		{"空串", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := openAIBaseURL(tc.base); got != tc.want {
+				t.Fatalf("openAIBaseURL(%q) = %q, 期望 %q", tc.base, got, tc.want)
 			}
 		})
 	}
@@ -1118,9 +1145,9 @@ func TestProxyLogsUpstreamErrorDetails(t *testing.T) {
 	}
 
 	logs := buf.String()
-	// openAIBaseURL 自动给未带版本段的 base_url 补 /v1（兼容漏写 /v1 的地址），
-	// 所以 upstream 字段形如 http://127.0.0.1:PORT/v1/chat/completions。
-	expectedUpstream := bad.URL + "/v1/chat/completions"
+	// openAIBaseURL 不再自动补 /v1，base_url 原样使用，
+	// 所以 upstream 字段形如 http://127.0.0.1:PORT/chat/completions。
+	expectedUpstream := bad.URL + "/chat/completions"
 	mustContain := []string{
 		`"msg":"upstream returned error"`,
 		`"request_id":"test-req-id-001"`,

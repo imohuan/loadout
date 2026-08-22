@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"io"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"sync"
 )
 
@@ -84,6 +86,11 @@ func (r *RunRunner) run() {
 // 包级变量，测试可替换为 fake。
 var runCommandStream = func(name string, args []string, onLine func(string)) error {
 	cmd := exec.Command(name, args...)
+	// 后台服务 PATH 可能不完整（找不到 npx/node），
+	// 把命令所在目录补到 PATH 最前，保证 npx 能找到同目录的 node。
+	if runtime.GOOS != "windows" && filepath.IsAbs(name) {
+		cmd.Env = osEnvironWithPathPrefix(filepath.Dir(name))
+	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return err

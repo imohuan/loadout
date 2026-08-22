@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { RiDeleteBinLine, RiEditLine, RiFileCopyLine, RiLoader4Line } from '@remixicon/vue'
 import type { Aggregate, Channel } from '@/lib/types'
-import ChannelRef from '@/components/ChannelRef.vue'
+import ModelChannelRef from '@/components/ModelChannelRef.vue'
 import EmptyState from '@/components/EmptyState.vue'
+import { modelChannelStatus } from '@/composables/useChannelRef'
 
 const props = defineProps<{
   aggregates: Aggregate[]
@@ -13,21 +14,44 @@ const emit = defineEmits<{
   edit: [aggregate: Aggregate]
   remove: [aggregate: Aggregate]
   duplicate: [aggregate: Aggregate]
+  pruneAbnormal: [removed: number]
 }>()
 // 与 AggregatesView.remove() 的 key 规则一致：aggregate:{name}:remove
 function busy(aggregate: Aggregate, action: string) {
   return props.isPending ? props.isPending(`aggregate:${aggregate.name}:${action}`) : false
 }
+
+// 统计所有聚合目标中的异常数量（model_missing / channel_missing / key_missing / model_not_in_channel）。
+function abnormalTargetCount(): number {
+  let count = 0
+  for (const aggregate of props.aggregates) {
+    for (const target of aggregate.targets) {
+      const { status } = modelChannelStatus(props.channels, target.model, target)
+      if (status !== 'ok') count++
+    }
+  }
+  return count
+}
 </script>
 
 <template>
-  <TooltipProvider
-    ><Card class="rounded-md"
-      ><CardHeader
-        ><CardTitle class="text-base">聚合模型列表</CardTitle
-        ><CardDescription
-          >聚合模型只使用指定渠道，不会跨到同名模型的其他渠道。</CardDescription
-        ></CardHeader
+ <TooltipProvider
+  ><Card class="rounded-md"
+    ><CardHeader class="flex flex-row items-center justify-between gap-3 space-y-0"
+         ><div
+           ><CardTitle class="text-base">聚合模型列表</CardTitle
+           ><CardDescription
+             >聚合模型只使用指定渠道，不会跨到同名模型的其他渠道。</CardDescription
+           ></div
+         ><Button
+           v-if="abnormalTargetCount() > 0"
+           variant="outline"
+           size="sm"
+           class="shrink-0"
+           :disabled="isPending?.('prune-abnormal')"
+           @click="emit('pruneAbnormal', abnormalTargetCount())"
+           ><RiLoader4Line v-if="isPending?.('prune-abnormal')" class="animate-spin" size="14" /><RiDeleteBinLine v-else size="14" />清除异常模型（{{ abnormalTargetCount() }}）</Button
+         ></CardHeader
       ><CardContent class="p-0"
         ><div v-if="aggregates.length" class="overflow-x-auto">
           <Table
@@ -46,8 +70,7 @@ function busy(aggregate: Aggregate, action: string) {
                       :key="`${target.model}-${target.channel_base_url || target.channel_ids?.join(',') || target.channel_id}`"
                     >
                       <span class="mr-2 tabular-nums">{{ index + 1 }}.</span
-                      ><span class="font-mono text-foreground">{{ target.model }}</span>
-                      <ChannelRef :target="target" :channels="channels" />
+                      ><ModelChannelRef :model="target.model" :target="target" :channels="channels" />
                     </li></ol></TableCell
                 ><TableCell
                   ><div class="flex justify-end gap-1">

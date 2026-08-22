@@ -501,10 +501,10 @@ func TestHandleProxyBeforeUpstreamVisionLogTwoPhase(t *testing.T) {
 		t.Fatalf("应写 2 条 attempt（running + success），实际 %d: %+v", len(log.attempts), log.attempts)
 	}
 	first, second := log.attempts[0], log.attempts[1]
-	if first.RequestID != "req-vision-1" || first.StepNo != 1 || first.Action != "视觉识别" || first.Result != "running" {
+	if first.RequestID != "req-vision-1" || first.StepNo != "1" || first.Action != "视觉识别" || first.Result != "running" {
 		t.Fatalf("占位 attempt 不符: %+v", first)
 	}
-	if second.RequestID != "req-vision-1" || second.StepNo != 1 || second.Result != "success" || second.Model != "qwen-vl-max" || second.ChannelID != "v" {
+	if second.RequestID != "req-vision-1" || second.StepNo != "1" || second.Result != "success" || second.Model != "qwen-vl-max" || second.ChannelID != "v" {
 		t.Fatalf("成功 attempt 不符: %+v", second)
 	}
 	if second.Duration.Duration() <= 0 {
@@ -555,16 +555,16 @@ func TestHandleProxyBeforeUpstreamVisionLogMultiCandidate(t *testing.T) {
 	// 顺序：doubao running(1) → doubao failed(1) → qwen running(2) → qwen success(2)
 	doubaoRunning, doubaoFailed := log.attempts[0], log.attempts[1]
 	qwenRunning, qwenSuccess := log.attempts[2], log.attempts[3]
-	if doubaoRunning.StepNo != 1 || doubaoRunning.Model != "doubao-vision" || doubaoRunning.Result != "running" {
+	if doubaoRunning.StepNo != "1" || doubaoRunning.Model != "doubao-vision" || doubaoRunning.Result != "running" {
 		t.Fatalf("doubao 占位不符: %+v", doubaoRunning)
 	}
-	if doubaoFailed.StepNo != 1 || doubaoFailed.Result != "failed" || doubaoFailed.ErrorMessage == "" {
+	if doubaoFailed.StepNo != "1" || doubaoFailed.Result != "failed" || doubaoFailed.ErrorMessage == "" {
 		t.Fatalf("doubao 失败更新不符: %+v", doubaoFailed)
 	}
-	if qwenRunning.StepNo != 2 || qwenRunning.Model != "qwen3-vl" || qwenRunning.Result != "running" {
+	if qwenRunning.StepNo != "2" || qwenRunning.Model != "qwen3-vl" || qwenRunning.Result != "running" {
 		t.Fatalf("qwen 占位不符: %+v", qwenRunning)
 	}
-	if qwenSuccess.StepNo != 2 || qwenSuccess.Result != "success" || qwenSuccess.ChannelID != "ch-qwen" {
+	if qwenSuccess.StepNo != "2" || qwenSuccess.Result != "success" || qwenSuccess.ChannelID != "ch-qwen" {
 		t.Fatalf("qwen 成功更新不符: %+v", qwenSuccess)
 	}
 }

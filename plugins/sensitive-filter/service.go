@@ -51,22 +51,33 @@ func (s *Service) DecideRoute(model, channelID string) (*types.CapabilityRoute, 
 			scope.BaseURLs = []string{bu}
 		}
 	}
-	return s.DecideRouteScope(model, scope)
+	routes, err := s.DecideRoutesScope(model, scope)
+	if err != nil || len(routes) == 0 {
+		return nil, err
+	}
+	return routes[0], nil
 }
 
-// DecideRouteScope 查能力路由表：model + 请求渠道上下文（含聚合模型的候选 Key 集合）。
-func (s *Service) DecideRouteScope(model string, scope types.ChannelRequestScope) (*types.CapabilityRoute, error) {
+// DecideRoutesScope 查能力路由表：model + 请求渠道上下文（含聚合模型的候选 Key 集合）。
+// 返回所有匹配的路由；若命中 native/error 路由，立即返回该项，跳过后续匹配。
+func (s *Service) DecideRoutesScope(model string, scope types.ChannelRequestScope) ([]*types.CapabilityRoute, error) {
 	if s.repo != nil {
 		routes, err := s.repo.ListCapabilityRoutes(context.Background())
 		if err == nil {
+			var matched []*types.CapabilityRoute
 			for i := range routes {
 				if routes[i].Capability == capabilityName &&
 					types.MatchModels(routes[i].Models, model) &&
 					types.MatchChannelScopeEx(routes[i].ChannelIDs, routes[i].ChannelBaseURLs, scope) {
-					return &routes[i], nil
+					// 遇到 native/error 路由直接返回，终止后续匹配
+					if routes[i].Route != types.RouteProxy {
+						return []*types.CapabilityRoute{&routes[i]}, nil
+					}
+					// proxy 路由收集全部匹配项
+					matched = append(matched, &routes[i])
 				}
 			}
-			return nil, nil
+			return matched, nil
 		}
 		s.lg.Error("sensitive-filter: 从 SQLite 读能力路由表失败，回退 JSON", "err", err)
 	}
@@ -78,14 +89,20 @@ func (s *Service) DecideRouteScope(model string, scope types.ChannelRequestScope
 		s.lg.Error("sensitive-filter: 读取能力路由表失败，按透传处理", "err", err)
 		return nil, nil
 	}
+	var matched []*types.CapabilityRoute
 	for i := range routes {
 		if routes[i].Capability == capabilityName &&
 			types.MatchModels(routes[i].Models, model) &&
 			types.MatchChannelScopeEx(routes[i].ChannelIDs, routes[i].ChannelBaseURLs, scope) {
-			return &routes[i], nil
+			// 遇到 native/error 路由直接返回，终止后续匹配
+			if routes[i].Route != types.RouteProxy {
+				return []*types.CapabilityRoute{&routes[i]}, nil
+			}
+			// proxy 路由收集全部匹配项
+			matched = append(matched, &routes[i])
 		}
 	}
-	return nil, nil
+	return matched, nil
 }
 
 // requestChannelBaseURL 取请求渠道的 base_url（用于渠道级匹配），无渠道或查不到返回空串。
@@ -124,26 +141,30 @@ func (s *Service) HandleProxyBeforeUpstream(payload any) (any, error) {
 	// 聚合渠道级/Key 多选目标会写 __channel_candidates（__current_channel 为空），
 	// 必须读齐 metadata 三个字段，否则聚合流量匹配不到渠道约束路由。
 	scope := types.ChannelScopeFromMetadata(pipe.Metadata, s.requestChannelBaseURL)
-	route, err := s.DecideRouteScope(model, scope)
+	routes, err := s.DecideRoutesScope(model, scope)
 	if err != nil {
 		// 防御：DecideRoute 现为 fail-open，正常不会走到这里。
 		return nil, sensitiveError(err.Error())
 	}
 	channelID, _ := pipe.Metadata["__current_channel"].(string)
-	if route == nil {
+	if len(routes) == 0 {
 		s.lg.Debug("sensitive-filter: 未命中路由，原样透传", "model", model, "channel_id", channelID, "path", pipe.Request.Path)
 		return payload, nil
 	}
-	if route.Route == types.RouteNative {
+
+	// 处理 native/error 路由：直接透传或拒绝
+	if routes[0].Route == types.RouteNative {
 		s.lg.Debug("sensitive-filter: native 路由，原样透传", "model", model, "channel_id", channelID, "path", pipe.Request.Path)
 		return payload, nil
 	}
-	s.lg.Info("sensitive-filter: 命中路由", "model", model, "channel_id", channelID, "path", pipe.Request.Path, "route", route.Route, "rules", len(route.Replacements))
-
-	text := string(pipe.Request.Body)
-	switch route.Route {
-	case types.RouteError:
-		hit, err := containsAny(text, route.Replacements)
+	if routes[0].Route == types.RouteError {
+		text := string(pipe.Request.Body)
+		// 先合并所有 error 路由的规则
+		var allRules []types.SensitiveReplacement
+		for _, route := range routes {
+			allRules = append(allRules, route.Replacements...)
+		}
+		hit, err := containsAny(text, allRules)
 		if err != nil {
 			return nil, sensitiveError(err.Error())
 		}
@@ -152,37 +173,44 @@ func (s *Service) HandleProxyBeforeUpstream(payload any) (any, error) {
 			return nil, sensitiveError(fmt.Sprintf("请求命中敏感词过滤规则，模型 %q 已拒绝", model))
 		}
 		return payload, nil
-	case types.RouteProxy:
-		before := len(text)
-		replaced, err := replaceAll(text, route.Replacements)
-		if err != nil {
-			return nil, sensitiveError(err.Error())
-		}
-		after := len(replaced)
-		jsonOK := json.Valid([]byte(replaced))
-		if jsonOK && after != before {
-			s.lg.Info("sensitive-filter: 整体替换完成", "model", model, "before_bytes", before, "after_bytes", after, "rules_applied", len(route.Replacements))
-			pipe.Request.Body = []byte(replaced)
-			return pipe, nil
-		}
-		// 整体替换未命中（客户端常把中文转义成 \uXXXX，字节级搜索不到）或破坏了 JSON
-		// → 降级：解析 JSON 结构，对真实字符串值逐一替换，绝不报错拒绝请求。
-		s.lg.Warn("敏感词整体替换未命中或破坏 JSON，降级为结构化替换",
-			"model", model, "channel_id", channelID, "path", pipe.Request.Path, "before_bytes", before, "after_bytes", after, "json_valid", jsonOK)
-		fallback, ferr := replaceMessagesText(pipe.Request.Body, route.Replacements)
-		if ferr != nil {
-			return nil, sensitiveError(ferr.Error())
-		}
-		if string(fallback) != string(pipe.Request.Body) {
-			s.lg.Info("sensitive-filter: 结构化替换完成", "model", model, "before_bytes", before, "after_bytes", len(fallback))
-			pipe.Request.Body = fallback
-			return pipe, nil
-		}
-		s.lg.Info("sensitive-filter: 结构化替换也未命中", "model", model, "before_bytes", before, "rules_count", len(route.Replacements))
-		return pipe, nil
-	default:
-		return payload, nil
 	}
+
+	// 合并所有 proxy 路由的规则
+	var allRules []types.SensitiveReplacement
+	for _, route := range routes {
+		allRules = append(allRules, route.Replacements...)
+	}
+
+	s.lg.Info("sensitive-filter: 命中路由", "model", model, "channel_id", channelID, "path", pipe.Request.Path, "route", types.RouteProxy, "rules", len(allRules))
+
+	text := string(pipe.Request.Body)
+	before := len(text)
+	replaced, err := replaceAll(text, allRules)
+	if err != nil {
+		return nil, sensitiveError(err.Error())
+	}
+	after := len(replaced)
+	jsonOK := json.Valid([]byte(replaced))
+	if jsonOK && after != before {
+		s.lg.Info("sensitive-filter: 整体替换完成", "model", model, "before_bytes", before, "after_bytes", after, "rules_applied", len(allRules))
+		pipe.Request.Body = []byte(replaced)
+		return pipe, nil
+	}
+	// 整体替换未命中（客户端常把中文转义成 \uXXXX，字节级搜索不到）或破坏了 JSON
+	// → 降级：解析 JSON 结构，对真实字符串值逐一替换，绝不报错拒绝请求。
+	s.lg.Warn("敏感词整体替换未命中或破坏 JSON，降级为结构化替换",
+		"model", model, "channel_id", channelID, "path", pipe.Request.Path, "before_bytes", before, "after_bytes", after, "json_valid", jsonOK)
+	fallback, ferr := replaceMessagesText(pipe.Request.Body, allRules)
+	if ferr != nil {
+		return nil, sensitiveError(ferr.Error())
+	}
+	if string(fallback) != string(pipe.Request.Body) {
+		s.lg.Info("sensitive-filter: 结构化替换完成", "model", model, "before_bytes", before, "after_bytes", len(fallback))
+		pipe.Request.Body = fallback
+		return pipe, nil
+	}
+	s.lg.Info("sensitive-filter: 结构化替换也未命中", "model", model, "before_bytes", before, "rules_count", len(allRules))
+	return pipe, nil
 }
 
 // replaceMessagesText 降级路径：解析 JSON 结构，只对 messages 下的文本字段做替换。
@@ -331,3 +359,4 @@ func replaceAll(text string, rules []types.SensitiveReplacement) (string, error)
 func sensitiveError(msg string) *modelgateway.GatewayError {
 	return &modelgateway.GatewayError{Type: "sensitive_filter_error", Msg: msg}
 }
+

@@ -136,3 +136,84 @@ export function formatChannelRef(
   }
   return segments.map(formatChannelGroupLabel).join(', ')
 }
+
+// ---- 模型 + 渠道引用状态检测（ModelChannelRef 组件用）----
+
+export type ModelChannelStatus =
+  | 'ok' // 模型与渠道均正常匹配
+  | 'channel_missing' // 渠道级 base_url 匹配不到任何渠道组
+  | 'key_missing' // Key 级 channel_id(s) 在 channels 列表找不到（可能已删除）
+  | 'model_missing' // 模型不在任何渠道的模型清单里
+  | 'model_not_in_channel' // 模型不在所引用渠道的模型清单里（渠道存在但不提供该模型）
+
+export interface ModelChannelStatusResult {
+  status: ModelChannelStatus
+  reason: string
+}
+
+// 渠道的完整模型清单：models_detail（含禁用的全部候选）优先，回退 models。
+function channelAllModels(ch: Channel): Set<string> {
+  if (ch.models_detail?.length) return new Set(ch.models_detail.map((d) => d.model))
+  return new Set(ch.models || [])
+}
+
+// 模型是否存在：出现在任一渠道的完整模型清单里即视为存在（含禁用模型）。
+export function modelExistsInChannels(channels: Channel[], model: string): boolean {
+  if (!model) return false
+  return channels.some((ch) => channelAllModels(ch).has(model))
+}
+
+// 检测「模型 + 渠道引用」的匹配状态。空渠道引用（自动路由）只查模型是否存在。
+// 优先级：渠道缺失 > Key 缺失 > 模型不存在 > 模型不在该渠道。
+export function modelChannelStatus(
+  channels: Channel[],
+  model: string,
+  ref: ChannelRefInput | undefined | null,
+): ModelChannelStatusResult {
+  // 1. 渠道级引用存在性检测
+  if (ref?.channel_base_url) {
+    const group = groupChannelsByBaseURL(channels).find(
+      (g) => normalizeBaseURL(g.baseUrl) === normalizeBaseURL(ref.channel_base_url!),
+    )
+    if (!group) {
+      return { status: 'channel_missing', reason: '渠道不存在（Base URL 匹配不到任何渠道组）' }
+    }
+    // 模型是否在该组任一 Key 的清单里
+    const groupModels = new Set<string>()
+    for (const key of group.keys) {
+      for (const m of channelAllModels(key)) groupModels.add(m)
+    }
+    if (model && !groupModels.has(model)) {
+      if (!modelExistsInChannels(channels, model)) {
+        return { status: 'model_missing', reason: '模型不存在于任何渠道的模型清单' }
+      }
+      return { status: 'model_not_in_channel', reason: '该渠道不提供此模型' }
+    }
+    return { status: 'ok', reason: '' }
+  }
+  // 2. Key 级引用存在性检测
+  const ids = ref?.channel_ids?.length ? ref.channel_ids : ref?.channel_id ? [ref.channel_id] : []
+  if (ids.length) {
+    const found = channels.filter((ch) => ids.includes(ch.id))
+    if (!found.length) {
+      return { status: 'key_missing', reason: '渠道 Key 不存在（可能已删除）' }
+    }
+    // 模型是否在任一被引用 Key 的清单里
+    const refModels = new Set<string>()
+    for (const ch of found) {
+      for (const m of channelAllModels(ch)) refModels.add(m)
+    }
+    if (model && !refModels.has(model)) {
+      if (!modelExistsInChannels(channels, model)) {
+        return { status: 'model_missing', reason: '模型不存在于任何渠道的模型清单' }
+      }
+      return { status: 'model_not_in_channel', reason: '该渠道不提供此模型' }
+    }
+    return { status: 'ok', reason: '' }
+  }
+  // 3. 无渠道引用（自动路由）：只检测模型是否存在
+  if (model && !modelExistsInChannels(channels, model)) {
+    return { status: 'model_missing', reason: '模型不存在于任何渠道的模型清单' }
+  }
+  return { status: 'ok', reason: '' }
+}

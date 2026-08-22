@@ -13,7 +13,7 @@ import {
   groupSegmentsFor,
   mergeSegments,
 } from '@/composables/useChannelRef'
-import ChannelRef from '@/components/ChannelRef.vue'
+import ModelChannelRef from '@/components/ModelChannelRef.vue'
 import EmptyState from '@/components/EmptyState.vue'
 
 const props = defineProps<{
@@ -186,8 +186,7 @@ function channelScopeLabel(channels: Channel[], ids?: string[], baseURLs?: strin
                         </template>
                         <template v-else>
                           <template v-for="(o, i) in viaOptions(route)" :key="i">
-                            <span class="font-mono text-foreground">{{ o.via_model }}</span>
-                            <ChannelRef :target="o" :channels="channels" />
+                            <ModelChannelRef :model="o.via_model" :target="o" :channels="channels" />
                             <template v-if="i < viaOptions(route).length - 1"
                               ><span class="mx-1">→</span></template
                             >
@@ -210,8 +209,7 @@ function channelScopeLabel(channels: Channel[], ids?: string[], baseURLs?: strin
                             :key="i"
                             class="flex items-center gap-1.5"
                           >
-                            <span class="font-mono">{{ o.via_model }}</span>
-                            <ChannelRef :target="o" :channels="channels" />
+                            <ModelChannelRef :model="o.via_model" :target="o" :channels="channels" />
                             <template v-if="i < viaOptions(route).length - 1"
                               ><span class="text-muted-foreground">→</span></template
                             >

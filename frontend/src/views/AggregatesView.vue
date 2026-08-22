@@ -7,6 +7,7 @@ import { useListLoader } from '@/composables/useListLoader'
 import { useAsyncTask } from '@/composables/useAsyncTask'
 import { useConfirm } from '@/composables/useConfirm'
 import type { Aggregate } from '@/lib/types'
+import { modelChannelStatus } from '@/composables/useChannelRef'
 import PageHeader from '@/components/PageHeader.vue'
 import LoadingBlock from '@/components/LoadingBlock.vue'
 import AggregateEditor from '@/components/aggregates/AggregateEditor.vue'
@@ -95,6 +96,30 @@ async function remove(value: Aggregate) {
     '聚合模型已删除',
   )
 }
+
+async function pruneAbnormal(removedHint: number) {
+  if (
+    !(await confirmDialog({
+      title: `清除 ${removedHint} 个异常模型？`,
+      description: '将从所有聚合模型中移除检测为异常的目标（模型不存在/渠道缺失/Key 缺失/该渠道不提供此模型）。',
+      confirmText: '清除',
+    }))
+  )
+    return
+  await run(
+    'prune-abnormal',
+    async () => {
+      const chs = channels.value || []
+      const next = (aggregates.value || []).map((a) => ({
+        ...a,
+        targets: a.targets.filter((t) => modelChannelStatus(chs, t.model, t).status === 'ok'),
+      }))
+      await aggregateService.replaceAll(next)
+      await refreshAggregates()
+    },
+    '已清除异常模型',
+  )
+}
 </script>
 
 <template>
@@ -126,6 +151,7 @@ async function remove(value: Aggregate) {
       @edit="openEdit"
       @duplicate="openDuplicate"
       @remove="remove"
+      @prune-abnormal="pruneAbnormal"
     />
   </div>
 </template>

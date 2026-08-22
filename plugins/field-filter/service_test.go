@@ -398,9 +398,9 @@ func TestDecideRouteChannelLevelExactMatch(t *testing.T) {
 		Request:  &modelgateway.ProxyRequest{Model: "gpt-4o", Body: []byte(`{"model":"gpt-4o","client_metadata":{}}`)},
 		Metadata: map[string]any{"__current_channel": "k1"},
 	}
-	route, err := svc.decideRoute(pipe)
-	if err != nil || route == nil {
-		t.Fatalf("精确匹配（带 /v1）应命中, route=%v err=%v", route, err)
+	routes, err := svc.decideRoutes(pipe)
+	if err != nil || len(routes) == 0 {
+		t.Fatalf("精确匹配（带 /v1）应命中, routes=%v err=%v", routes, err)
 	}
 }
 
@@ -425,11 +425,96 @@ func TestDecideRouteChannelLevelVersionMismatch(t *testing.T) {
 		Request:  &modelgateway.ProxyRequest{Model: "gpt-4o", Body: []byte(`{"model":"gpt-4o","client_metadata":{}}`)},
 		Metadata: map[string]any{"__current_channel": "k1"},
 	}
-	route, err := svc.decideRoute(pipe)
+	routes, err := svc.decideRoutes(pipe)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if route != nil {
-		t.Fatalf("版本段不一致不应命中（需与渠道 base_url 精确一致）: %+v", route)
+	if len(routes) != 0 {
+		t.Fatalf("版本段不一致不应命中（需与渠道 base_url 精确一致）: %+v", routes)
+	}
+}
+
+// TestDecideRoutesProxyStacked 多条 proxy 规则同时命中 → 全部收集（叠加执行）。
+// 这是用户要求的核心语义：proxy（附加）路由不再「命中第一条就返回」。
+func TestDecideRoutesProxyStacked(t *testing.T) {
+	svc, st := newTestService(t)
+	if err := st.Write(types.FileCapabilityRoutes, []types.CapabilityRoute{
+		{
+			Models:     []string{"gpt-4o"},
+			Capability: capabilityName,
+			Route:      types.RouteProxy,
+			FieldRules: &types.FieldRules{RequestStrip: []string{"client_metadata"}},
+		},
+		{
+			Models:     []string{"gpt-4o"},
+			Capability: capabilityName,
+			Route:      types.RouteProxy,
+			FieldRules: &types.FieldRules{RequestStrip: []string{"max_completion_tokens", "max_tokens"}},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	pipe := proxyPipe(t, map[string]any{
+		"model":                "gpt-4o",
+		"messages":             []any{},
+		"client_metadata":      map[string]any{"app": "codex"},
+		"max_completion_tokens": 1048576,
+	})
+	out, err := svc.HandleProxyBeforeUpstream(pipe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := out.(*modelgateway.ProxyPipeline)
+	var body map[string]any
+	if err := json.Unmarshal(got.Request.Body, &body); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := body["client_metadata"]; ok {
+		t.Fatalf("client_metadata 未剔除（第一条规则未生效）: %s", got.Request.Body)
+	}
+	if _, ok := body["max_completion_tokens"]; ok {
+		t.Fatalf("max_completion_tokens 未剔除（第二条规则未生效）: %s", got.Request.Body)
+	}
+	if _, ok := body["messages"]; !ok {
+		t.Fatal("messages 被误删")
+	}
+}
+
+// TestDecideRoutesNativeStops 命中 native 路由 → 立即返回并跳过后续匹配。
+// 即使后面还有匹配的 proxy 路由，也只执行 native 的语义（透传）。
+func TestDecideRoutesNativeStops(t *testing.T) {
+	svc, st := newTestService(t)
+	if err := st.Write(types.FileCapabilityRoutes, []types.CapabilityRoute{
+		{
+			Models:     []string{"gpt-4o"},
+			Capability: capabilityName,
+			Route:      types.RouteNative,
+		},
+		{
+			Models:     []string{"gpt-4o"},
+			Capability: capabilityName,
+			Route:      types.RouteProxy,
+			FieldRules: &types.FieldRules{RequestStrip: []string{"client_metadata"}},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	pipe := proxyPipe(t, map[string]any{
+		"model":           "gpt-4o",
+		"messages":        []any{},
+		"client_metadata": map[string]any{"app": "codex"},
+	})
+	out, err := svc.HandleProxyBeforeUpstream(pipe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := out.(*modelgateway.ProxyPipeline)
+	var body map[string]any
+	if err := json.Unmarshal(got.Request.Body, &body); err != nil {
+		t.Fatal(err)
+	}
+	// native 命中 → 后续 proxy 规则不执行，client_metadata 保留
+	if _, ok := body["client_metadata"]; !ok {
+		t.Fatalf("native 命中后 proxy 规则不应执行（client_metadata 被误删）: %s", got.Request.Body)
 	}
 }
