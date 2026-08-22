@@ -53,6 +53,7 @@
 
 > 目标二选一：`channel_id` 复用已存渠道（后端解密密钥，不回传明文），或临时 `base_url` + `api_key`（不落盘）。
 > 每次 `/api/test/chat` 都会以 `request_id` 写入转发日志（route-log），可在 `/api/route-logs` 查看完整时间线。
+> `GET /api/route-logs` 支持 `page`（默认 1）/`pageSize`（默认 20，上限 100）分页参数，返回 `{items: [...], total: N}`；`GET /api/route-logs/{request_id}` 返回单条完整时间线（attempts 按 step 排序）。
 
 ### 能力路由（视觉附加）
 | 方法 | 路径 | 说明 |

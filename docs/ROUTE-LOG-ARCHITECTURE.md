@@ -314,10 +314,12 @@ Start(running) → Attempt × N（每次渠道/模型尝试）→ Finish(success
 ### 7.2 数据流
 
 ```
-后端 /api/route-logs          → useListLoader.refresh()（3s 定时）
-后端 /api/route-logs/{id}     → expand() / refreshActiveDetails()（展开时 / 定时）
+后端 /api/route-logs?page=&pageSize= → useListLoader.refresh()（3s 定时，带当前分页）
+后端 /api/route-logs/{id}            → expand() / refreshActiveDetails()（展开时 / 定时）
 detailsMap (Map<request_id, RouteLog>)  → displayLogs 合并 attempts/error_message
 ```
+
+**分页（2026-08-23 真分页改造）：** `GET /api/route-logs` 支持 `page`（默认 1）/`pageSize`（默认 20，上限 100）参数，响应从裸数组改为 `{ "items": [...], "total": N }`——`total` 是满足过滤条件的全量条数（COUNT 与查询同 WHERE）。前端 `RouteLogsView` 持有 `page/pageSize` 状态，翻页/改每页条数经 `RouteLogTable` 的 `page-change` 事件触发重新拉取；3s 自动刷新保持当前页。`RouteLogTable` 的 `total` prop 缺省时回退 `logs.length`（模型测试页本地缓存场景），此时保持本地切片伪分页。
 
 ### 7.3 3 秒自动刷新链（`RouteLogsView.vue:110-121`）
 
