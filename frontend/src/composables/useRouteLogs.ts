@@ -1,5 +1,5 @@
 import { api, request } from '@/lib/api'
-import type { RouteLog } from '@/lib/types'
+import type { RouteLog, RouteLogPage } from '@/lib/types'
 
 export interface RouteLogFilters {
   model?: string
@@ -16,14 +16,19 @@ function toISOString(value?: string) {
 }
 
 export function useRouteLogs() {
-  function list(filters: RouteLogFilters) {
+  function list(
+    filters: RouteLogFilters,
+    pagination?: { page?: number; pageSize?: number },
+  ) {
     const search = new URLSearchParams()
     if (filters.model) search.set('model', filters.model)
     if (filters.channel_id) search.set('channel_id', filters.channel_id)
     if (filters.result) search.set('result', filters.result)
     if (toISOString(filters.from)) search.set('from', toISOString(filters.from)!)
     if (toISOString(filters.to)) search.set('to', toISOString(filters.to)!)
-    return api<RouteLog[]>(`/api/route-logs${search.size ? `?${search}` : ''}`)
+    if (pagination?.page) search.set('page', String(pagination.page))
+    if (pagination?.pageSize) search.set('pageSize', String(pagination.pageSize))
+    return api<RouteLogPage>(`/api/route-logs${search.size ? `?${search}` : ''}`)
   }
   // detail：默认纯读；带 repair: true 时加 ?repair=1，触发后端对卡死 running 记录的自愈收尾。
   const detail = (requestId: string, options?: { repair?: boolean }) =>

@@ -122,6 +122,12 @@ export interface RouteLog {
   attempts?: RouteAttempt[]
 }
 
+/** 转发日志分页结果：items 为当前页记录，total 为满足过滤条件的全量条数（后端 COUNT）。 */
+export interface RouteLogPage {
+  items: RouteLog[]
+  total: number
+}
+
 export interface Skill {
   name: string
   description?: string
