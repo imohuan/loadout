@@ -1,0 +1,4 @@
+{
+  "status": 200,
+  "body": "{\"data\":[{\"id\":\"auto-demo\",\"object\":\"model\"}],\"object\":\"list\"}\n"
+}
