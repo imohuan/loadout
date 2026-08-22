@@ -2,6 +2,7 @@ package modelgateway
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/rand"
 	"database/sql"
@@ -812,4 +813,47 @@ func upstreamErrorSummary(status int, msg string) string {
 		return fmt.Sprintf("上游返回错误(%d)", status)
 	}
 	return fmt.Sprintf("上游返回错误(%d): %s", status, msg)
+}
+
+// readUpstreamErrorBody 读取上游错误响应体并按需 gzip 解压，最后截断到 maxBytes。
+// 返回最终要落库/进日志的字节切片。
+//
+// 两层 gzip 检测（缺一不可——某些代理会省略 Content-Encoding 但 body 仍是 gzip 字节，
+// 也有些网关标记了 gzip 但 body 实际是明文）：
+//  1. Content-Encoding 头包含 gzip；
+//  2. body 头 2 字节是 gzip magic (0x1f 0x8b)。
+// 命中则 gzip.NewReader 解压；解压失败/无 gzip 则用原字节。压缩输入上限 4MB（覆盖
+// 99% 错误体；超出截断避免无限读取），解压后上限 maxBytes（默认 8KB，防止解压出
+// 几百 MB 把 route_log 单行 DB 字段撑爆）。
+func readUpstreamErrorBody(body io.Reader, contentEncoding string, maxBytes int) ([]byte, error) {
+	if maxBytes <= 0 {
+		maxBytes = 8192
+	}
+	const compressedCap = 4 * 1024 * 1024
+	raw, err := io.ReadAll(io.LimitReader(body, compressedCap))
+	if err != nil {
+		return nil, err
+	}
+	if isGzipBytes(raw) || strings.Contains(strings.ToLower(contentEncoding), "gzip") {
+		if gr, gerr := gzip.NewReader(bytes.NewReader(raw)); gerr == nil {
+			dec, derr := io.ReadAll(io.LimitReader(gr, int64(maxBytes)+1))
+			_ = gr.Close()
+			if derr == nil {
+				if len(dec) > maxBytes {
+					return dec[:maxBytes], nil
+				}
+				return dec, nil
+			}
+			// 解压失败：fallback 到原字节（上游可能把非 gzip 当 gzip 标记，或解压流被截断）
+		}
+	}
+	if len(raw) > maxBytes {
+		return raw[:maxBytes], nil
+	}
+	return raw, nil
+}
+
+// isGzipBytes 检测字节切片前 2 字节是否为 gzip magic (RFC 1952)。
+func isGzipBytes(b []byte) bool {
+	return len(b) >= 2 && b[0] == 0x1f && b[1] == 0x8b
 }

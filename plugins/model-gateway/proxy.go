@@ -378,7 +378,11 @@ func (s *Service) proxyForward(w http.ResponseWriter, r *http.Request, pipe *Pro
 			// 错误体限制 8KB：覆盖绝大多数上游 JSON 错误（典型 1~4KB），再长截断。
 			// 太长不利于 slog（每行日志很长）和 route_log（DB 字段）；调试时按 channel_id +
 			// request_id 直接拿完整 body 出原始报文另说——上游完整 body 通过 rawBody 字段写 DB。
-			upBody, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
+			//
+			// readUpstreamErrorBody 内部按 Content-Encoding 与 magic bytes 自动 gzip 解压
+			// （某些代理会省略 Content-Encoding 但 body 仍是 gzip 字节；不解压就直接
+			// 落库会出现 0x1f 0x8b 乱码，前端无法识别）。
+			upBody, _ := readUpstreamErrorBody(resp.Body, resp.Header.Get("Content-Encoding"), 8192)
 			resp.Body.Close()
 			rawBody := string(upBody)
 			msg := upstreamErrorMsg(upBody, resp.StatusCode)
