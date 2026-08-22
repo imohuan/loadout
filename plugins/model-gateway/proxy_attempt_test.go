@@ -246,3 +246,58 @@ func TestProxyBeforeAttemptAfterHookRejectContinues(t *testing.T) {
 		t.Fatalf("安检触发 = %v, 期望 [ch-a ch-b]（after-hook 拒绝后下一渠道仍安检）", attempts)
 	}
 }
+
+// TestProxyAggregateSkipsMissingModel 聚合目标模型不存在（渠道 Models 不含该模型）时：
+// candidates=0 → failover 跳过该目标（failedKeys 记 "model@"）→ 选下一个可用目标。
+func TestProxyAggregateSkipsMissingModel(t *testing.T) {
+	svc, _ := newTestService(t)
+	// 渠道 ch-a 只声明 glm-5（qwen3.7-plus 不存在于渠道 Models → candidates=0）
+	echo, _ := newEchoServer(t, `{"id":"resp_ok","object":"response"}`, 0, nil)
+	defer echo.Close()
+	if err := svc.st.Write(types.FileChannels, []types.Channel{
+		{ID: "ch-a", Name: "聚合渠道", BaseURL: echo.URL, Enabled: true, Models: []string{"glm-5"}},
+	}); err != nil {
+		t.Fatalf("写渠道表失败: %v", err)
+	}
+
+	// 聚合 before hook：free → 第一个目标 qwen3.7-plus（模型不存在）
+	svc.ctx.On(ProxyBeforeUpstream, func(payload any) (any, error) {
+		pipe := payload.(*ProxyPipeline)
+		if pipe.Metadata == nil {
+			pipe.Metadata = map[string]any{}
+		}
+		pipe.Metadata["__virtual_model"] = "free"
+		pipe.Metadata["__aggregate_targets"] = []types.AggregateTarget{
+			{Model: "qwen3.7-plus", ChannelID: "ch-a"},
+			{Model: "glm-5", ChannelID: "ch-a"},
+		}
+		pipe.Metadata["__failed_targets"] = []string{}
+		pipe.Metadata["__current_channel"] = "ch-a"
+		pipe.Metadata["__current_channel_base_url"] = ""
+		pipe.Request.Model = "qwen3.7-plus"
+		return pipe, nil
+	})
+	// failover hook：模拟 selectAvailableTarget 修复后的行为——failedKeys 记 "model@"
+	//（candidates=0 时 channelID 为空），跳过 qwen3.7-plus 选 glm-5
+	svc.ctx.On(ProxyUpstreamFailed, func(payload any) (any, error) {
+		f := payload.(*ProxyFailurePayload)
+		f.Pipe.Metadata["__failed_targets"] = append(f.Pipe.Metadata["__failed_targets"].([]string), "qwen3.7-plus@")
+		f.Pipe.Metadata["__current_channel"] = "ch-a"
+		f.Pipe.Metadata["__current_channel_base_url"] = ""
+		f.Pipe.Request.Model = "glm-5"
+		f.Pipe.Request.Body = []byte(`{"model":"glm-5"}`)
+		return &ProxyRetry{Pipe: f.Pipe}, nil
+	})
+
+	body := `{"model":"free"}`
+	req := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(body))
+	rr := httptest.NewRecorder()
+	svc.HandleProxy(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d, 期望 200（跳过不存在的 qwen3.7-plus 后 glm-5 成功）", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "resp_ok") {
+		t.Fatalf("响应体应为 glm-5 上游内容: %s", rr.Body.String())
+	}
+}

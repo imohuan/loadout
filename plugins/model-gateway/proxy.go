@@ -473,6 +473,10 @@ func (s *Service) proxyAttempt(w http.ResponseWriter, r *http.Request, pipe *Pro
 func (s *Service) proxyForward(w http.ResponseWriter, r *http.Request, pipe *ProxyPipeline, model string, started time.Time) error {
 	candidates := s.resolveProxyChannels(r.Context(), model, pipe)
 	if len(candidates) == 0 {
+		// 记录"候选解析失败"的 attempt，让 route-log UI 显示尝试过该模型
+		//（聚合跳过不存在的目标场景下，用户能看到每个目标都试过）。
+		noChErr := fmt.Errorf("没有可用渠道支持模型 %q", model)
+		s.proxyAttemptLog(r, pipe, model, "", "", nil, "", time.Now(), "failed", "no_available_channel", 0, pipe.Request.Stream, contracts.TokenUsage{}, noChErr, truncateErrorBody(noChErr.Error()))
 		// 无可用渠道：先过安检——内容违规（如敏感词 error 模式命中）应优先于
 		// 502 拒绝，避免敏感请求因"渠道不可用"绕过安检（旧实现安检在入口执行，
 		// 天然覆盖此分支；安检移到 proxyAttempt 后必须在此补一次）。
@@ -483,10 +487,10 @@ func (s *Service) proxyForward(w http.ResponseWriter, r *http.Request, pipe *Pro
 			return nil
 		}
 		// 无可用渠道：若是聚合模型，触发失败事件让插件切下一个目标。
-		if retry, ok := s.tryProxyAggregateFailover(pipe, model, fmt.Errorf("没有可用渠道支持模型 %q", model), "", 0, ""); ok {
+		if retry, ok := s.tryProxyAggregateFailover(pipe, model, noChErr, "", 0, ""); ok {
 			return s.proxyForward(w, r, retry.Pipe, retry.Pipe.Request.Model, started)
 		}
-		s.proxyFinishLog(r, pipe, model, "", "", "failed", http.StatusBadGateway, time.Since(started), fmt.Errorf("没有可用渠道支持模型 %q", model), false, contracts.TokenUsage{}, "")
+		s.proxyFinishLog(r, pipe, model, "", "", "failed", http.StatusBadGateway, time.Since(started), noChErr, false, contracts.TokenUsage{}, "")
 		writeOpenAIError(w, http.StatusBadGateway, "no_available_channel", fmt.Sprintf("没有可用渠道支持模型 %q", model))
 		return nil
 	}

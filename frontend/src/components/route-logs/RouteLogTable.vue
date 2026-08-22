@@ -266,7 +266,7 @@ function isFailureResult(result?: string) {
                 </TableCell>
                 <TableCell class="whitespace-nowrap text-xs text-muted-foreground">{{
                   formatDate(log.started_at)
-                  }}</TableCell>
+                }}</TableCell>
                 <TableCell>
                   <p class="font-mono text-xs font-medium">{{ log.requested_model }}</p>
                   <p class="mt-1 max-w-40 truncate font-mono text-[11px] text-muted-foreground">
@@ -304,16 +304,16 @@ function isFailureResult(result?: string) {
                       class="ml-1 text-[10px] text-violet-600 dark:text-violet-300">缓存 ↓ {{
                         formatTokens(log.cached_tokens) }}</span></template><span v-else
                     class="text-muted-foreground">-</span></TableCell>
-                <TableCell class="whitespace-nowrap text-xs tabular-nums font-mono"><template v-if="cacheRatio(log)"><span
-                      class="font-medium text-violet-600 dark:text-violet-300">{{
-                        cacheRatio(log)
-                      }}</span>
+                <TableCell class="whitespace-nowrap text-xs tabular-nums font-mono"><template
+                    v-if="cacheRatio(log)"><span class="font-medium text-violet-600 dark:text-violet-300">{{
+                      cacheRatio(log)
+                    }}</span>
                   </template>
                   <span v-else class="text-muted-foreground">-</span>
                 </TableCell>
                 <TableCell class="whitespace-nowrap tabular-nums text-sm font-mono">{{
                   formatDuration(log.duration_ms)
-                  }}</TableCell>
+                }}</TableCell>
               </TableRow>
               <TableRow v-if="showDetails(log)">
                 <TableCell colspan="10" class="bg-muted/30 p-4">
@@ -326,12 +326,13 @@ function isFailureResult(result?: string) {
                     <ol v-if="log.attempts?.length" class="space-y-2 border-l border-border pl-4">
                       <li v-for="attempt in [...log.attempts].sort((a, b) => compareStepNo(a.step_no, b.step_no))"
                         :key="attempt.step_no" class="relative text-sm transition-all"
-                        :style="{ paddingLeft: stepDepth(attempt.step_no) * 22 + 'px' }">
+                        :style="{ paddingLeft: stepDepth(attempt.step_no) * 10 + 'px' }">
                         <span class="absolute -left-[21px] top-1.5 size-2 rounded-full bg-primary"></span>
                         <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
                           <span class="font-medium tabular-nums">{{ attempt.step_no }}</span><span
-                            class="inline-flex items-center gap-0.5"><span class="font-mono text-xs">{{ attempt.model
-                              }}</span>
+                            class="inline-flex items-center gap-0.5">
+                            <span class="font-mono text-xs">{{ attempt.model
+                            }}</span>
                             <ChannelRef :target="channelRefFor(attempt)" :channels="channels" />
                           </span>
                           <Badge variant="outline" :class="['shrink-0 border', actionTone(attempt.action)]">{{
@@ -341,11 +342,11 @@ function isFailureResult(result?: string) {
                             执行工具
                             <span class="font-mono font-bold">{{
                               attempt.metadata.tool || 'tool'
-                              }}</span>
+                            }}</span>
                           </Badge>
                           <Badge :class="['shrink-0 border', resultTone(attempt.result)]">{{
                             resultLabel(attempt.result)
-                            }}</Badge>
+                          }}</Badge>
                           <span v-if="
                             props.liveProgress &&
                             attempt.stream &&
@@ -374,7 +375,7 @@ function isFailureResult(result?: string) {
                           </span>
                           <span class="text-xs text-muted-foreground font-mono font-bold">{{
                             formatDuration(attempt.duration_ms)
-                            }}</span>
+                          }}</span>
                         </div>
                         <RouteLogErrorCell v-if="attempt.error_message || attempt.error_body" :json="attempt.error_body"
                           :message="attempt.failure_class
