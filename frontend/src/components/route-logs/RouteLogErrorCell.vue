@@ -47,8 +47,9 @@ const copied = ref(false)
 </script>
 
 <template>
-  <!-- trigger + hover 卡片模式：列表列用。默认插槽 = 基础文本，scoped 传出 message -->
-  <HoverCard v-if="props.trigger" :open-delay="150" :close-delay="100">
+  <!-- trigger + hover 卡片模式：列表列用。仅当存在 JSON 时才启用 hover 弹卡，
+       避免没有详细内容时弹出空卡片。默认插槽 = 基础文本，scoped 传出 message -->
+  <HoverCard v-if="props.trigger && hasJson" :open-delay="150" :close-delay="100">
     <HoverCardTrigger as-child>
       <!-- 默认插槽 = 基础文本。scoped 传出 message，调用方自定义 trigger 时
            记得给根元素加 @click.stop，避免表格行点击展开被误触发 -->
@@ -62,8 +63,9 @@ const copied = ref(false)
       </slot>
     </HoverCardTrigger>
     <HoverCardContent align="start" :side-offset="6" class="w-[min(460px,calc(100vw-2rem))] p-0">
-      <!-- 卡片壳 = label 行 + 复制按钮 + 彩色 JSON。本组件自己渲染，不再外套 -->
-      <div v-if="hasJson" class="rounded-md border border-border/60 bg-muted/40 px-3 py-2 text-xs">
+      <!-- 卡片壳 = label 行 + 复制按钮 + 彩色 JSON。本组件自己渲染，不再外套；
+           外层已保证 hasJson 才会进入此分支 -->
+      <div class="rounded-md border border-border/60 bg-muted/40 px-3 py-2 text-xs">
         <div class="mb-1 flex items-center justify-between gap-2">
           <span class="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
             {{ props.label }}
@@ -82,11 +84,15 @@ const copied = ref(false)
           max-height-class="max-h-72"
         />
       </div>
-      <p v-else class="px-3 py-2 text-xs text-muted-foreground">
-        {{ summary || '无错误详情' }}
-      </p>
     </HoverCardContent>
   </HoverCard>
+
+  <!-- 无 JSON 时的 trigger 降级：只展示文本，不启用 hover，也不弹卡片 -->
+  <span v-else-if="props.trigger" class="inline-flex max-w-full items-center rounded px-1 text-xs text-destructive">
+    <slot :message="summary">
+      <span class="truncate underline">{{ summary }}</span>
+    </slot>
+  </span>
 
   <!-- 内嵌模式：折叠详情直接用。跟 hover 卡片里的壳样式对齐：label + 复制按钮 + 彩色 JSON -->
   <div
