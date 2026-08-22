@@ -2,6 +2,7 @@ package vision
 
 import (
 	"context"
+	"database/sql"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -82,7 +83,10 @@ func (e2eHealth) PurgeChannelStates(context.Context, string, []string) error { r
 
 // newE2EGateway 构造完整链路：model-gateway + 真实 vision hook + 真实 route-log。
 // 返回 gateway、route-log、事件上下文。
-func newE2EGateway(t *testing.T, visSvc *Service) (*modelgateway.Service, *routelog.Service, *e2eCtx) {
+// database 由调用方传入并复用：测试主体往该库写入渠道/能力路由，网关/route-log
+// 也绑定同一库——旧实现内部 db.OpenMemory() 另建空库，导致主链路 routing 读不到
+// 渠道（TestVisionE2EFlushOnSuccess 稳定 502 no_available_channel）。
+func newE2EGateway(t *testing.T, visSvc *Service, database *sql.DB) (*modelgateway.Service, *routelog.Service, *e2eCtx) {
 	t.Helper()
 	st, err := store.New(t.TempDir())
 	if err != nil {
@@ -91,11 +95,6 @@ func newE2EGateway(t *testing.T, visSvc *Service) (*modelgateway.Service, *route
 	ectx := newE2ECtx()
 	mgw := modelgateway.NewService(st, slog.Default(), ectx)
 
-	database, err := db.OpenMemory()
-	if err != nil {
-		t.Fatalf("db.OpenMemory: %v", err)
-	}
-	t.Cleanup(func() { _ = database.Close() })
 	rl := routelog.NewService(database, slog.Default())
 	mgw.SetRoutingServices(database, e2eHealth{}, rl)
 	visSvc.SetRouteLog(rl)
@@ -144,7 +143,7 @@ func TestVisionE2EFlushOnSuccess(t *testing.T) {
 		t.Fatalf("写能力路由失败: %v", err)
 	}
 
-	mgw, rl, _ := newE2EGateway(t, visSvc)
+	mgw, rl, _ := newE2EGateway(t, visSvc, database)
 	body := `{"model":"deepseek-chat","messages":[{"role":"user","content":[{"type":"text","text":"看"},{"type":"image_url","image_url":{"url":"http://img/a.png"}}]}]}`
 	rr := doProxyE2E(t, mgw, body)
 	if rr.Code != http.StatusOK {
@@ -211,7 +210,7 @@ func TestVisionE2EFlushOnFail(t *testing.T) {
 		t.Fatalf("写能力路由失败: %v", err)
 	}
 
-	mgw, rl, _ := newE2EGateway(t, visSvc)
+	mgw, rl, _ := newE2EGateway(t, visSvc, database)
 	body := `{"model":"deepseek-chat","messages":[{"role":"user","content":[{"type":"text","text":"看"},{"type":"image_url","image_url":{"url":"http://img/a.png"}}]}]}`
 	rr := doProxyE2E(t, mgw, body)
 	if rr.Code != http.StatusBadRequest {
