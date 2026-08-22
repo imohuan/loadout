@@ -68,6 +68,12 @@ func (s *Service) selectAvailableTarget(targets []types.AggregateTarget, failedK
 			}
 			var available []string
 			for _, k := range keys {
+				// 模型级失败（channelID 为空 = candidates=0 早退，该模型整体无可用渠道）：
+				// 跳过该模型的所有 Key，避免死循环永远选中同一个目标（failedKeys 记的是
+				// "model@"，与 "model@channelID" 永远匹配不上）。
+				if contains(failedKeys, targets[i].Model+"@") {
+					continue
+				}
 				key := fmt.Sprintf("%s@%s", targets[i].Model, k.ChannelID)
 				if contains(failedKeys, key) {
 					continue
@@ -110,6 +116,12 @@ func (s *Service) selectAvailableTarget(targets []types.AggregateTarget, failedK
 		}
 		var available []string
 		for _, k := range keys {
+			// 模型级失败（channelID 为空 = candidates=0 早退，该模型整体无可用渠道）：
+			// 跳过该模型的所有 Key，避免死循环永远选中同一个目标。
+			if contains(failedKeys, targets[i].Model+"@") {
+				s.lg.Info("[aggregate] 跳过（模型级失败）", "model", targets[i].Model)
+				break
+			}
 			key := fmt.Sprintf("%s@%s", targets[i].Model, k.ChannelID)
 			s.lg.Info("[aggregate] 检查目标", "index", i, "key", key)
 

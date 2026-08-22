@@ -170,6 +170,32 @@ func TestSelectAvailableTargetSkipsUnavailable(t *testing.T) {
 	}
 }
 
+// TestSelectAvailableTargetSkipsModelLevelFailed 回归：candidates=0 早退时
+// tryProxyAggregateFailover 的 channelID 为空，failedKeys 记成 "model@"（无渠道 ID）。
+// selectAvailableTarget 必须跳过该模型的所有 Key 选下一个目标，否则死循环永远选中同一个。
+func TestSelectAvailableTargetSkipsModelLevelFailed(t *testing.T) {
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("创建 store 失败: %v", err)
+	}
+	svc := NewService(st, slog.Default(), nil)
+
+	targets := []types.AggregateTarget{
+		{Model: "m1", ChannelID: "c1"},
+		{Model: "m2", ChannelID: "c2"},
+	}
+	// m1 无可用渠道失败（candidates=0 早退），failedKeys 记 "m1@"（channelID 为空）
+	failed := []string{"m1@"}
+
+	target, _, err := svc.selectAvailableTarget(targets, failed)
+	if err != nil {
+		t.Fatalf("selectAvailableTarget 报错: %v", err)
+	}
+	if target == nil || target.Model != "m2" {
+		t.Fatalf("应跳过 m1 选中 m2，实际 %+v", target)
+	}
+}
+
 // TestSelectAvailableTargetChannelLevel 渠道级目标：组内 Key 逐一健康检查，
 // 返回渠道级 target + 可用 Key 列表；组内全部不可用则跳过该 target。
 func TestSelectAvailableTargetChannelLevel(t *testing.T) {
