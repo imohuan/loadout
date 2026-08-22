@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
+	"loadout/plugins/contracts"
 	modelgateway "loadout/plugins/model-gateway"
 	"loadout/plugins/types"
 )
@@ -122,7 +125,18 @@ func strField(m map[string]any, key string) string {
 
 // toolLoopNonStream 非流式工具循环：执行工具 → 按格式构造消息 → 非流式新请求 → 循环，
 // 返回最终响应 Body。错误返回给调用方。
+// 与 executeToolLoop 对齐：视觉识别 attempt 的 step 按主链路 __route_step+1 分配
+// （主请求=1、视觉识别=2、续流=3），先写 running 占位、结束再 success/failed 覆盖
+// （db 按 request_id+step_no UPSERT）；续流结束补写主链路 attempt（Action=首次尝试）并推进 step。
 func (s *Service) toolLoopNonStream(pipe *modelgateway.ProxyPipeline, calls []ToolCall, format visionProxyFormat, bodyMap map[string]any, messages []any) ([]byte, error) {
+	route, _ := pipe.Metadata["__vision_v2_route"].(*types.CapabilityRoute)
+	if route == nil {
+		return nil, errors.New("vision_v2: 缺少视觉路由")
+	}
+	ctx := context.Background()
+	if pipe.HTTPRequest != nil && pipe.HTTPRequest.Context() != nil {
+		ctx = pipe.HTTPRequest.Context()
+	}
 	round := 0
 	for {
 		if round >= maxToolRounds {
@@ -131,34 +145,60 @@ func (s *Service) toolLoopNonStream(pipe *modelgateway.ProxyPipeline, calls []To
 		if len(calls) == 0 {
 			break
 		}
+		// step 分配：视觉识别 = 主链路当前 step + 1（主请求=1、视觉识别=2、续流=3）。
+		// 一次工具循环（可含多个 look_at_image 调用）合并分配一个 step，全部识别视为一次视觉动作。
+		step, _ := pipe.Metadata["__route_step"].(int)
+		step++
+		pipe.Metadata["__route_step"] = step
+
+		// 1. 执行工具（识别）
 		var toolResults []any
 		for _, c := range calls {
 			if c.Name != lookAtImageToolName {
 				continue
 			}
-			route, _ := pipe.Metadata["__vision_v2_route"].(*types.CapabilityRoute)
-			if route == nil {
-				return nil, fmt.Errorf("vision_v2: 缺少视觉路由")
+			start := time.Now()
+			// running 占位：UI 实时看到"工具调用中"
+			extra := map[string]any{
+				"called_via_tool": true,
+				"tool":            c.Name,
+				"image_id":        c.ImageID,
+				"prompt":          c.Prompt,
 			}
-			ctx := context.Background()
-			if pipe.HTTPRequest != nil && pipe.HTTPRequest.Context() != nil {
-				ctx = pipe.HTTPRequest.Context()
-			}
-			text, _, err := s.describeWithFailover(ctx, c.ImageID, c.Prompt, nil, route)
+			s.visionAttempt(ctx, pipe.RequestID, step, viaModelOf(route), start, 0, "running", "", "", 1, extra)
+			s.lg.Info("视觉识别开始", "req", pipe.RequestID, "step", step, "tool", c.Name, "image_id", c.ImageID)
+			text, chID, err := s.describeWithFailover(ctx, c.ImageID, c.Prompt, nil, route)
 			if err != nil {
+				extra["cache_hit"] = false
+				s.visionAttempt(ctx, pipe.RequestID, step, viaModelOf(route), start, time.Since(start), "failed", "", err.Error(), 1, extra)
 				return nil, err
 			}
+			extra["cache_hit"] = (chID == "")
+			if chID != "" {
+				extra["via_channel"] = chID
+			}
+			s.visionAttempt(ctx, pipe.RequestID, step, viaModelOf(route), start, time.Since(start), "success", chID, "", 1, extra)
+			s.lg.Info("视觉识别完成", "req", pipe.RequestID, "step", step, "image_id", c.ImageID, "cache_hit", chID == "", "duration_ms", time.Since(start).Milliseconds())
 			toolResults = append(toolResults, buildToolResultMessage(c, text, format))
 		}
 		if len(toolResults) == 0 {
 			break
 		}
+		s.lg.Info("工具结果写回", "req", pipe.RequestID, "round", round, "tool_calls", len(calls), "results", len(toolResults))
+		// 2. 构造 assistant 工具消息 + 结果，追加。
 		messages = append(messages, buildAssistantToolMessage(calls, format))
 		messages = append(messages, toolResults...)
 		bodyMap[msgArrayKey(format)] = messages
+		// 3. 非流式续流请求（复用原主链路渠道）。
 		reqBody, err := json.Marshal(bodyMap)
 		if err != nil {
 			return nil, err
+		}
+		continuationStart := time.Now()
+		ch := s.mainChannelForContinuation(pipe)
+		chID := ""
+		if ch != nil {
+			chID = ch.ID
 		}
 		resp, err := s.doUpstream(pipe, reqBody)
 		if err != nil {
@@ -169,6 +209,35 @@ func (s *Service) toolLoopNonStream(pipe *modelgateway.ProxyPipeline, calls []To
 			respBody, _ = io.ReadAll(resp.Body)
 			resp.Body.Close()
 		}
+		// 4. 续流结束：补写主链路 attempt（step = __route_step + 1，action=首次尝试）。
+		//    续流不走 model-gateway 主链路（vision_v2 直接 doUpstream），由这里补日志并推进 step。
+		contStep, _ := pipe.Metadata["__route_step"].(int)
+		pipe.Metadata["__route_step"] = contStep + 1
+		result, errMsg := "success", ""
+		if resp.StatusCode >= 400 {
+			result, errMsg = "failed", summarizeContinuationError(respBody)
+		}
+		if s.routeLog != nil {
+			if _, lerr := s.routeLog.Attempt(ctx, contracts.RouteAttempt{
+				RequestID:    pipe.RequestID,
+				StepNo:       contStep + 1,
+				Action:       "首次尝试",
+				Model:        pipe.Request.Model,
+				ChannelID:    chID,
+				StartedAt:    continuationStart,
+				FinishedAt:   pointerTime(time.Now()),
+				Result:       result,
+				ErrorMessage: errMsg,
+				Duration:     contracts.DurationMS(time.Since(continuationStart)),
+				Stream:       false,
+			}); lerr != nil {
+				s.lg.Warn("route log 续流 attempt failed", "err", lerr)
+			}
+		}
+		s.lg.Info("续流完成", "req", pipe.RequestID, "step", contStep+1, "status", resp.StatusCode, "new_calls", 0)
+		if resp.StatusCode >= 400 {
+			return nil, fmt.Errorf("vision_v2: 非流式续流失败(%d): %s", resp.StatusCode, errMsg)
+		}
 		next := parseToolCallsNonStream(respBody, format)
 		if len(next) == 0 {
 			return respBody, nil // 最终响应
@@ -178,6 +247,16 @@ func (s *Service) toolLoopNonStream(pipe *modelgateway.ProxyPipeline, calls []To
 	}
 	// 无工具调用分支：返回原 body（调用方处理）
 	return nil, nil
+}
+
+// summarizeContinuationError 非流式续流失败响应的 body 摘要（截断 512 字节，
+// 避免超长错误体塞满 error_message）。
+func summarizeContinuationError(body []byte) string {
+	const maxLen = 512
+	if len(body) > maxLen {
+		return string(body[:maxLen])
+	}
+	return string(body)
 }
 
 // HandleProxyAfterUpstream 非流式输出 hook：解析工具调用 → 循环执行 → 替换响应 Body。

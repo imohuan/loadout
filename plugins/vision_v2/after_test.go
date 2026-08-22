@@ -10,11 +10,14 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"loadout/core/config"
 	"loadout/core/db"
 	"loadout/core/store"
 	modelgateway "loadout/plugins/model-gateway"
+	"loadout/plugins/contracts"
+	routelog "loadout/plugins/route-log"
 	"loadout/plugins/types"
 )
 
@@ -130,15 +133,12 @@ func TestAfterUpstreamToolLoopChat(t *testing.T) {
 	firstBody := fmt.Sprintf(`{"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"look_at_image","arguments":%q}}]},"finish_reason":"tool_calls"}]}`, argsJSON)
 	finalBody := `{"choices":[{"message":{"role":"assistant","content":"最终回答"},"finish_reason":"stop"}]}`
 
-	// 主上游：第 1 次（http.Post 原始请求）返回 tool_calls，第 2 次（续流）返回最终文本。
+	// 主上游：仅在续流（doUpstream）时被调用，返回最终文本。
+	// 首轮 tool_calls 响应由 ap.Response.Body 直接构造，不经过本 server。
 	var mainCalls atomic.Int32
 	main := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		n := mainCalls.Add(1)
+		mainCalls.Add(1)
 		w.Header().Set("Content-Type", "application/json")
-		if n == 1 {
-			fmt.Fprint(w, firstBody)
-			return
-		}
 		fmt.Fprint(w, finalBody)
 	}))
 	defer main.Close()
@@ -168,6 +168,14 @@ func TestAfterUpstreamToolLoopChat(t *testing.T) {
 	}
 	svc.repo = repo
 	svc.st = st
+	// 注入真实 route-log（与主链路同库），断言视觉识别/续流的 attempt 序列。
+	rl := routelog.NewService(database, slog.Default())
+	svc.SetRouteLog(rl)
+	if err := rl.Start(context.Background(), contracts.RouteRequest{
+		RequestID: "req-after-1", RequestedModel: "gpt-4o", StartedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("rl.Start: %v", err)
+	}
 	if err := repo.ReplaceChannels(context.Background(), []db.Channel{
 		{ID: "vision", Name: "视觉", BaseURL: vision.URL, ManualEnabled: true},
 		{ID: "main", Name: "主模型", BaseURL: main.URL, ManualEnabled: true},
@@ -185,6 +193,7 @@ func TestAfterUpstreamToolLoopChat(t *testing.T) {
 		},
 		HTTPRequest: httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
 		Metadata: map[string]any{
+			"__route_step":      1, // 模拟主链路已写 step1（主请求首次尝试）
 			"__current_channel": "main",
 			"__vision_v2_route": &types.CapabilityRoute{ViaOptions: []types.ViaOption{
 				{ChannelIDs: []string{"vision"}, ViaModel: "qwen3-vl-flash-2026-01-22"},
@@ -217,8 +226,60 @@ func TestAfterUpstreamToolLoopChat(t *testing.T) {
 	if visionCalls.Load() == 0 {
 		t.Error("视觉模型 server 应被调用")
 	}
-	if mainCalls.Load() != 2 {
-		t.Errorf("主上游应被调 2 次（原始请求+续流），实际 %d", mainCalls.Load())
+	if mainCalls.Load() != 1 {
+		t.Errorf("主上游应被调 1 次（仅续流），实际 %d", mainCalls.Load())
+	}
+	// route-log 断言：主请求=1 → 视觉识别=2 → 续流=3。
+	// running 占位被 success UPSERT 覆盖（request_id+step_no），Detail 里 step2 只剩最终态。
+	detail, err := rl.Detail(context.Background(), pipe.RequestID)
+	if err != nil {
+		t.Fatalf("rl.Detail: %v", err)
+	}
+	if len(detail.Attempts) != 2 {
+		t.Fatalf("attempts = %d 条, want 2（step2 视觉识别 + step3 续流）: %+v", len(detail.Attempts), detail.Attempts)
+	}
+	var visionStep, contStep *contracts.RouteAttempt
+	for i := range detail.Attempts {
+		a := &detail.Attempts[i]
+		switch a.StepNo {
+		case 2:
+			visionStep = a
+		case 3:
+			contStep = a
+		}
+	}
+	if visionStep == nil {
+		t.Error("缺少 step=2 的视觉识别 attempt")
+	} else {
+		if visionStep.Action != "视觉识别" || visionStep.Result != "success" {
+			t.Errorf("step2 = %+v, want Action=视觉识别 Result=success", *visionStep)
+		}
+		if v, _ := visionStep.Metadata["called_via_tool"].(bool); !v {
+			t.Errorf("step2 called_via_tool = %v, want true", visionStep.Metadata["called_via_tool"])
+		}
+		if v, _ := visionStep.Metadata["tool"].(string); v != "look_at_image" {
+			t.Errorf("step2 tool = %v, want look_at_image", visionStep.Metadata["tool"])
+		}
+		if v, _ := visionStep.Metadata["cache_hit"].(bool); v {
+			t.Error("step2 cache_hit = true, want false（本测试未预写缓存）")
+		}
+	}
+	if contStep == nil {
+		t.Error("缺少 step=3 的续流 attempt")
+	} else {
+		if contStep.Action != "首次尝试" || contStep.Result != "success" {
+			t.Errorf("step3 = %+v, want Action=首次尝试 Result=success", *contStep)
+		}
+		if contStep.ChannelID != "main" {
+			t.Errorf("step3 ChannelID = %q, want main（续流复用主链路渠道）", contStep.ChannelID)
+		}
+		if contStep.Stream {
+			t.Error("step3 Stream = true, want false（非流式续流）")
+		}
+	}
+	// __route_step 应停在 3（识别推进到 2、续流推进到 3）。
+	if v, _ := pipe.Metadata["__route_step"].(int); v != 3 {
+		t.Errorf("__route_step = %v, want 3", pipe.Metadata["__route_step"])
 	}
 }
 
@@ -280,6 +341,7 @@ func TestAfterUpstreamErrorNoFailover(t *testing.T) {
 		},
 		HTTPRequest: httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
 		Metadata: map[string]any{
+			"__route_step":      1, // 模拟主链路已写 step1（主请求首次尝试）
 			"__current_channel": "main",
 			"__vision_v2_route": &types.CapabilityRoute{ViaOptions: []types.ViaOption{
 				{ChannelIDs: []string{"vision"}, ViaModel: "qwen3-vl-flash-2026-01-22"},
