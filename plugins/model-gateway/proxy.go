@@ -462,9 +462,9 @@ if !pipe.Request.Stream {
 		// attempt 两阶段：转发前写 running 占位，流结束后同 step 更新 success——
 		// 让 attempt 的 finished_at/duration 反映真实流耗时，不再出现
 		// "上游 13s 已成功但请求卡 90s 进行中"的误导（旧逻辑在流开始前就标 success）。
-		s.proxyStreamAttempt(r, pipe, model, ch.ID, ch.ChannelName, nil, "", attemptStarted, resp.StatusCode, false, contracts.TokenUsage{})
+		s.proxyStreamAttempt(r, pipe, model, ch.ID, ch.ChannelName, nil, "", attemptStarted, resp.StatusCode, false, true, contracts.TokenUsage{})
 		usage := s.proxyStream(w, resp, pipe)
-		s.proxyStreamAttempt(r, pipe, model, ch.ID, ch.ChannelName, nil, "", attemptStarted, resp.StatusCode, true, usage)
+		s.proxyStreamAttempt(r, pipe, model, ch.ID, ch.ChannelName, nil, "", attemptStarted, resp.StatusCode, true, true, usage)
 		s.ctx.Emit(ProxyUpstreamSucceeded, &ProxySuccessPayload{Pipe: pipe, Model: model, ChannelID: ch.ID, Usage: usage})
 		if s.health != nil {
 			_ = s.health.RecordSuccess(r.Context(), ch.ID, model)
@@ -980,7 +980,7 @@ func (s *Service) proxyAttemptLog(r *http.Request, pipe *ProxyPipeline, model, c
 // 与 proxyAttemptLog 的区别：后者在流开始前就标 success，attempt 时间只到"收到响应头"，
 // 而流式主链路可能要再传数十秒，导致 UI 显示"已成功"但请求仍在进行中。
 // 语义对齐视觉链路的 visionAttempt（先 running 后 success，同 step UPSERT）。
-func (s *Service) proxyStreamAttempt(r *http.Request, pipe *ProxyPipeline, model, channelID, channelName string, channelIDs []string, channelBaseURL string, started time.Time, statusCode int, done bool, usage contracts.TokenUsage) {
+func (s *Service) proxyStreamAttempt(r *http.Request, pipe *ProxyPipeline, model, channelID, channelName string, channelIDs []string, channelBaseURL string, started time.Time, statusCode int, done bool, stream bool, usage contracts.TokenUsage) {
 	if s.routeLog == nil {
 		return
 	}
@@ -996,6 +996,10 @@ func (s *Service) proxyStreamAttempt(r *http.Request, pipe *ProxyPipeline, model
 		// 首次：分配 step 并递增主链路计数器（后续 attempt 的「首次/切换」判定依赖它）。
 		step++
 		pipe.Metadata["__route_step"] = step
+		// 快照本次分配 step：done=true 收尾时读 __stream_step，避免被工具循环
+		//（视觉识别/续流）推进后的运行时 __route_step 撞号覆盖其它 attempt，
+		// 同时保证主请求 attempt（step1）的 running→success 收尾落在自己 step 上。
+		pipe.Metadata["__stream_step"] = step
 		mainStep, _ := pipe.Metadata["__main_route_step"].(int)
 		pipe.Metadata["__main_route_step"] = mainStep + 1
 		if mainStep > 0 {
@@ -1004,7 +1008,7 @@ func (s *Service) proxyStreamAttempt(r *http.Request, pipe *ProxyPipeline, model
 				action = "切换模型"
 			}
 		}
-		// TTFB：流式 running 占位记录收到上游响应头的时刻；success 收尾不传，
+		// TTFB：running 占位记录收到上游响应头的时刻；success 收尾不传，
 		// 由 route-log 的 COALESCE 保留首次写入的 first_byte_at。
 		now := time.Now()
 		firstByte = &now
@@ -1012,6 +1016,10 @@ func (s *Service) proxyStreamAttempt(r *http.Request, pipe *ProxyPipeline, model
 		pipe.Metadata["__stream_action"] = action
 		pipe.Metadata["__stream_started"] = started
 		pipe.Metadata["__stream_channel_name"] = channelName
+	} else if snap, ok := pipe.Metadata["__stream_step"].(int); ok && snap > 0 {
+		// 收尾：用 begin 阶段快照的 step（不被后续工具循环推进的运行时 __route_step 影响），
+		// 同 step UPSERT 覆盖为 success（主请求 attempt step1 的 running→success 在此完成）。
+		step = snap
 	}
 	result := "running"
 	var finished *time.Time
@@ -1039,7 +1047,7 @@ func (s *Service) proxyStreamAttempt(r *http.Request, pipe *ProxyPipeline, model
 		Result:           result,
 		StatusCode:       statusCode,
 		Duration:         duration,
-		Stream:           true,
+		Stream:           stream,
 		PromptTokens:     usage.PromptTokens,
 		CompletionTokens: usage.CompletionTokens,
 		CachedTokens:     usage.CachedTokens,
