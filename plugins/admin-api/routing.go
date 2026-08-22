@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -842,6 +843,25 @@ func (s *Service) handleRouteLogsList(w http.ResponseWriter, r *http.Request) {
 			filter.StartedBefore = &parsed
 		}
 	}
+	// 分页：page 从 1 起，pageSize 默认 20、上限 100（与 DataPagination 的 pageSizes 对齐）。
+	// pageSize 超上限钳到 100 而非静默回退默认值，避免请求 50 却拿到 20 的错觉。
+	page := 1
+	if v := r.URL.Query().Get("page"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			page = n
+		}
+	}
+	pageSize := 20
+	if v := r.URL.Query().Get("pageSize"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			if n > 100 {
+				n = 100
+			}
+			pageSize = n
+		}
+	}
+	filter.Limit = pageSize
+	filter.Offset = (page - 1) * pageSize
 	values, err := s.routeLog.List(r.Context(), filter)
 	if err != nil {
 		s.writeServerError(w, err)
