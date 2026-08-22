@@ -360,8 +360,9 @@ func (s *Service) Detail(ctx context.Context, requestID string) (contracts.Route
 		view.Attempts = append(view.Attempts, attempt)
 	}
 	// step_no 已是 TEXT：SQL ORDER BY step_no 按字典序（"1.10" < "1.2"）错误，
-	// 改为 Go 侧点分段数值比较排序（1 < 1.1 < 1.2 < 2）。
-	sort.Slice(view.Attempts, func(i, j int) bool {
+	// 改为 Go 侧点分段数值比较排序（1 < 1.1 < 1.2 < 2）。SliceStable 保证同 step 保持
+	// 数据库返回顺序（running→success 等写入序）。
+	sort.SliceStable(view.Attempts, func(i, j int) bool {
 		return compareStepNo(view.Attempts[i].StepNo, view.Attempts[j].StepNo) < 0
 	})
 	return view, rows.Err()

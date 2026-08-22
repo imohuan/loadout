@@ -188,10 +188,11 @@ func (s *Service) toolStreamWriter(pipe *modelgateway.ProxyPipeline, format visi
 }
 
 // executeToolLoop 工具循环：执行工具 → 按格式构造消息 → 新请求（复用原渠道）→ 续流 → 检测新调用。
-// 视觉识别 attempt 的 step 按主链路 __route_step+1 分配（主请求=1、视觉识别=2、续流=3），
+// 视觉识别 attempt 的 step 按点分层级分配（主请求=1，视觉识别=1.1，续流=1.2，兄弟关系）。
 // 每次识别先写 running 占位、结束再 success/failed 覆盖（db 按 request_id+step_no UPSERT）。
 // 续流由 vision_v2 直接 doUpstream（不走 model-gateway 主链路），故续流结束后补一条
-// 主链路语义的 attempt（Action=首次尝试）推进 __route_step，保证"1 主请求 → 2 识别 → 3 续流"完整呈现。
+// 主链路语义的 attempt（Action=首次尝试，step=主链路段.子段，如 1.2）；主链路段（__route_step）
+// 不被视觉子步骤推进，新主段由 model-gateway 写主 attempt 时重新从 .1 起数。
 func (s *Service) executeToolLoop(pipe *modelgateway.ProxyPipeline, st *toolLoopState) (bool, error) {
 	var bodyMap map[string]any
 	dec := json.NewDecoder(bytes.NewReader(pipe.Request.Body))
@@ -233,7 +234,6 @@ func (s *Service) executeToolLoop(pipe *modelgateway.ProxyPipeline, st *toolLoop
 		}
 		subStep := s.nextVisionSubStep(pipe)
 		step := fmt.Sprintf("%d.%d", mainStep, subStep)
-		_ = step
 
 		// 1. 执行工具（识别）
 		var toolResults []any

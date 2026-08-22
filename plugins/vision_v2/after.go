@@ -125,9 +125,9 @@ func strField(m map[string]any, key string) string {
 
 // toolLoopNonStream 非流式工具循环：执行工具 → 按格式构造消息 → 非流式新请求 → 循环，
 // 返回最终响应 Body。错误返回给调用方。
-// 与 executeToolLoop 对齐：视觉识别 attempt 的 step 按主链路 __route_step+1 分配
-// （主请求=1、视觉识别=2、续流=3），先写 running 占位、结束再 success/failed 覆盖
-// （db 按 request_id+step_no UPSERT）；续流结束补写主链路 attempt（Action=首次尝试）并推进 step。
+// 与 executeToolLoop 对齐：视觉识别 attempt 的 step 按点分层级分配
+// （主请求=1，视觉识别=1.1，续流=1.2，兄弟关系），先写 running 占位、结束再 success/failed 覆盖
+// （db 按 request_id+step_no UPSERT）；续流结束补写主链路 attempt（Action=首次尝试）。
 func (s *Service) toolLoopNonStream(pipe *modelgateway.ProxyPipeline, calls []ToolCall, format visionProxyFormat, bodyMap map[string]any, messages []any) ([]byte, error) {
 	route, _ := pipe.Metadata["__vision_v2_route"].(*types.CapabilityRoute)
 	if route == nil {

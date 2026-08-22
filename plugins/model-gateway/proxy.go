@@ -396,8 +396,8 @@ func (s *Service) proxyAttempt(w http.ResponseWriter, r *http.Request, pipe *Pro
 		usage := extractUsageNonStream(respBody)
 		// 主 attempt 两阶段（与流式 proxyStreamAttempt 同语义）：after-hook 前写 running
 		// 占位并分配 step=1，after-hook 返回后同 step UPSERT 覆盖为 success——非流式下
-		// 视觉插件在 after-hook 内基于 __route_step 续接，得到 主=1、视觉识别=2、续流=3 的顺序
-		//（此前主 attempt 在 after-hook 之后才写，顺序错成 视觉=1、续流=2、主=3）。
+		// 视觉插件在 after-hook 内基于 __main_step 拼子段，得到 主=1、视觉识别=1.1、续流=1.2 的顺序
+		//（此前主 attempt 在 after-hook 之后才写，顺序错成 视觉、续流、主 在前）。
 		s.proxyStreamAttempt(r, pipe, model, ch.ID, ch.ChannelName, nil, "", attemptStarted, resp.StatusCode, false, false, contracts.TokenUsage{})
 		out, herr := s.ctx.Waterfall(ProxyAfterUpstream, &AfterUpstreamPayload{Pipe: pipe, Response: proxyResp})
 		if herr != nil {
