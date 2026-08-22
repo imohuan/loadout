@@ -5,14 +5,15 @@ const lookAtImageToolName = "look_at_image"
 const lookAtImageToolDesc = "图片以 <vision_img_xxx> 标记形式出现在对话中（xxx 为图片 id）。需要查看图片内容时调用本工具：把标记中的 id 传给 image_id，并用 prompt 说明你想从图片中获取的信息方向（如颜色、文字、布局、产品、实体关系等）。支持一次传多张图。不要输出标记本身。"
 
 // ensureLookAtImageTool 按格式注入 look_at_image 工具；已存在同名工具返回原数组。
-func ensureLookAtImageTool(tools any, format visionProxyFormat) []any {
+// 返回 (tools, injected)：injected=true 表示本次新注入，false 表示已存在/原样返回。
+func ensureLookAtImageTool(tools any, format visionProxyFormat) ([]any, bool) {
 	existing, _ := tools.([]any)
 	for _, raw := range existing {
 		if tool, ok := raw.(map[string]any); ok && toolHasName(tool, format) {
-			return existing
+			return existing, false
 		}
 	}
-	return append(existing, toolSchema(format))
+	return append(existing, toolSchema(format)), true
 }
 
 // toolHasName 按格式判断工具元素是否为 look_at_image：

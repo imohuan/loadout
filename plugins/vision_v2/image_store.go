@@ -72,6 +72,7 @@ func (s *Service) saveBytes(raw []byte) (string, error) {
 	if err := os.WriteFile(dst, raw, 0o600); err != nil {
 		return "", err
 	}
+	s.lg.Info("图片落盘", "image_id", id, "mime", http.DetectContentType(raw), "size_bytes", len(raw))
 	return id, nil
 }
 

@@ -122,6 +122,7 @@ func (s *Service) HandleProxyBeforeUpstream(payload any) (any, error) {
 	if route.Route == types.RouteError {
 		return nil, visionError(fmt.Sprintf("模型 %q 不支持视觉能力", pipe.Request.Model))
 	}
+	s.lg.Info("视觉路由命中", "model", pipe.Request.Model, "route", "proxy", "via_candidates", len(route.ViaOptions))
 
 	// 图片 → 占位符
 	var bodyMap map[string]any
@@ -134,16 +135,19 @@ func (s *Service) HandleProxyBeforeUpstream(payload any) (any, error) {
 	if len(messages) == 0 {
 		return payload, nil
 	}
-	changed, err := s.rewriteImagesToPlaceholders(context.Background(), messages, format)
+	changed, replacedCount, err := s.rewriteImagesToPlaceholders(context.Background(), messages, format)
 	if err != nil {
 		return nil, visionError(fmt.Sprintf("图片落盘失败: %v", err))
 	}
+	s.lg.Info("图片检出", "model", pipe.Request.Model, "path", pipe.Request.Path, "image_count", replacedCount)
 	if !changed {
 		return payload, nil
 	}
 
 	// 工具注入：按格式注入 look_at_image 工具
-	bodyMap["tools"] = ensureLookAtImageTool(bodyMap["tools"], format)
+	tools, injected := ensureLookAtImageTool(bodyMap["tools"], format)
+	bodyMap["tools"] = tools
+	s.lg.Info("工具注入", "tool", lookAtImageToolName, "status", map[bool]string{true: "inject", false: "skip_existing"}[injected])
 
 	newBody, err := replaceMessagesBody(bodyMap, format, messages)
 	if err != nil {
@@ -155,13 +159,15 @@ func (s *Service) HandleProxyBeforeUpstream(payload any) (any, error) {
 		pipe.Metadata["__vision_v2_format"] = formatName(format)
 		pipe.Metadata["__vision_v2_route"] = route
 	}
-	s.lg.Info("vision_v2: 图片替换为占位符", "path", pipe.Request.Path, "model", pipe.Request.Model)
+	s.lg.Info("请求改写完成", "model", pipe.Request.Model, "path", pipe.Request.Path, "replaced_images", replacedCount, "tools_injected", injected, "body_bytes", len(newBody))
 	return pipe, nil
 }
 
 // rewriteImagesToPlaceholders 遍历消息 content，图片块 → <vision_img_{id}> 文本块。
-func (s *Service) rewriteImagesToPlaceholders(ctx context.Context, messages []any, format visionProxyFormat) (bool, error) {
+// 返回 (changed, replacedCount, err)，replacedCount 为成功替换的图片张数。
+func (s *Service) rewriteImagesToPlaceholders(ctx context.Context, messages []any, format visionProxyFormat) (bool, int, error) {
 	changed := false
+	replacedCount := 0
 	for mi := range messages {
 		msg, ok := messages[mi].(map[string]any)
 		if !ok {
@@ -209,9 +215,10 @@ func (s *Service) rewriteImagesToPlaceholders(ctx context.Context, messages []an
 			}
 			content[ci] = map[string]any{"type": textBlockType(format), "text": placeholderPrefix + id + placeholderSuffix}
 			changed = true
+			replacedCount++
 		}
 	}
-	return changed, nil
+	return changed, replacedCount, nil
 }
 
 // formatName 格式枚举 → 字符串（metadata 标记用）。
