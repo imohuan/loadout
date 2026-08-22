@@ -263,8 +263,10 @@ func nowOr(t time.Time, fallback time.Time) time.Time {
 	return t
 }
 
-func (s *Service) List(ctx context.Context, filter contracts.RouteLogFilter) ([]contracts.RouteRequestView, error) {
-	query := `SELECT request_id, requested_model, COALESCE(virtual_model, ''), started_at, finished_at, result, COALESCE(final_model, ''), COALESCE(final_channel_id, ''), COALESCE(final_channel_ids_json, '[]'), COALESCE(final_channel_base_url, ''), COALESCE(final_channel_name, ''), COALESCE(http_status, 0), COALESCE(duration_ms, 0), error_message, COALESCE(error_body, ''), COALESCE(stream, 0), COALESCE(prompt_tokens, 0), COALESCE(completion_tokens, 0), COALESCE(cached_tokens, 0) FROM route_requests r WHERE 1=1`
+// listWhere 返回 List/Count 共用的 WHERE 子句与参数（含开头的 " WHERE 1=1"）。
+// COUNT 与 SELECT 必须使用完全相同的条件，保证 total 与当前页属于同一数据集。
+func listWhere(filter contracts.RouteLogFilter) (string, []any) {
+	query := ` WHERE 1=1`
 	args := []any{}
 	if filter.Model != "" {
 		query += ` AND (r.requested_model = ? OR r.final_model = ? OR EXISTS (SELECT 1 FROM route_attempts a WHERE a.request_id = r.request_id AND a.model = ?))`
@@ -288,15 +290,31 @@ func (s *Service) List(ctx context.Context, filter contracts.RouteLogFilter) ([]
 		query += ` AND r.started_at <= ?`
 		args = append(args, filter.StartedBefore.UTC().Format(time.RFC3339Nano))
 	}
-	query += ` ORDER BY r.started_at DESC LIMIT ?`
+	return query, args
+}
+
+func (s *Service) List(ctx context.Context, filter contracts.RouteLogFilter) (contracts.RouteLogPage, error) {
+	where, whereArgs := listWhere(filter)
+	// COUNT 与 SELECT 非同一事务：并发写入下 total/items 可能瞬时不一致（先 COUNT 后 SELECT，
+	// 中间新增的请求会漏在当前页外）。本地单机 SQLite + 3s 轮询场景可接受，仅影响页数展示，
+	// 不影响数据正确性；如需强一致再包事务（本计划不做）。
+	var total int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM route_requests r`+where, whereArgs...).Scan(&total); err != nil {
+		return contracts.RouteLogPage{}, err
+	}
+	offset := filter.Offset
+	if offset < 0 {
+		offset = 0
+	}
 	limit := filter.Limit
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
-	args = append(args, limit)
+	query := `SELECT request_id, requested_model, COALESCE(virtual_model, ''), started_at, finished_at, result, COALESCE(final_model, ''), COALESCE(final_channel_id, ''), COALESCE(final_channel_ids_json, '[]'), COALESCE(final_channel_base_url, ''), COALESCE(final_channel_name, ''), COALESCE(http_status, 0), COALESCE(duration_ms, 0), error_message, COALESCE(error_body, ''), COALESCE(stream, 0), COALESCE(prompt_tokens, 0), COALESCE(completion_tokens, 0), COALESCE(cached_tokens, 0) FROM route_requests r` + where + ` ORDER BY r.started_at DESC LIMIT ? OFFSET ?`
+	args := append(whereArgs, limit, offset)
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, err
+		return contracts.RouteLogPage{}, err
 	}
 	defer rows.Close()
 	// 初始化为空切片而非 nil，保证空列表 JSON 序列化为 [] 而不是 null
@@ -304,11 +322,11 @@ func (s *Service) List(ctx context.Context, filter contracts.RouteLogFilter) ([]
 	for rows.Next() {
 		view, err := scanRequest(rows)
 		if err != nil {
-			return nil, err
+			return contracts.RouteLogPage{}, err
 		}
 		result = append(result, view)
 	}
-	return result, rows.Err()
+	return contracts.RouteLogPage{Items: result, Total: total}, rows.Err()
 }
 
 func (s *Service) Detail(ctx context.Context, requestID string) (contracts.RouteRequestView, error) {

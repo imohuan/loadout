@@ -3,6 +3,7 @@ package routelog
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -91,7 +92,7 @@ func TestRouteLogRetryMergesSameRequestID(t *testing.T) {
 		t.Fatal(err)
 	}
 	count := 0
-	for _, item := range list {
+	for _, item := range list.Items {
 		if item.RequestID == "r-retry" {
 			count++
 		}
@@ -472,6 +473,76 @@ func TestCompareStepNo(t *testing.T) {
 		if got := compareStepNo(c.a, c.b); got != 0 {
 			t.Errorf("compareStepNo(%q, %q) = %d, want 0（同层相等）", c.a, c.b, got)
 		}
+	}
+}
+
+// TestListPagination：List 支持 Limit/Offset 分页，Total 为满足过滤条件的全量条数。
+func TestListPagination(t *testing.T) {
+	service := NewService(logDB(t), nil)
+	ctx := context.Background()
+	// 插入 25 条日志（started_at 递增，保证 ORDER BY 顺序确定）
+	base := time.Now().Add(-time.Hour)
+	for i := 0; i < 25; i++ {
+		id := fmt.Sprintf("r-pg-%02d", i)
+		started := base.Add(time.Duration(i) * time.Minute)
+		if err := service.Start(ctx, contracts.RouteRequest{RequestID: id, RequestedModel: "m", StartedAt: started}); err != nil {
+			t.Fatalf("Start(%s): %v", id, err)
+		}
+		if err := service.Finish(ctx, contracts.RouteFinish{RequestID: id, FinishedAt: started.Add(time.Second), Result: "success"}); err != nil {
+			t.Fatalf("Finish(%s): %v", id, err)
+		}
+	}
+	// 第 1 页：pageSize=10 → 10 条、total=25
+	page1, err := service.List(ctx, contracts.RouteLogFilter{Limit: 10, Offset: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page1.Total != 25 {
+		t.Fatalf("total = %d, want 25", page1.Total)
+	}
+	if len(page1.Items) != 10 {
+		t.Fatalf("page1 len = %d, want 10", len(page1.Items))
+	}
+	// 第 3 页：offset=20 → 5 条（余量）
+	page3, err := service.List(ctx, contracts.RouteLogFilter{Limit: 10, Offset: 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page3.Items) != 5 {
+		t.Fatalf("page3 len = %d, want 5", len(page3.Items))
+	}
+	// 越界页：offset=30 → 0 条，但 total 仍为 25
+	pageOver, err := service.List(ctx, contracts.RouteLogFilter{Limit: 10, Offset: 30})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pageOver.Items) != 0 {
+		t.Fatalf("over page len = %d, want 0", len(pageOver.Items))
+	}
+	if pageOver.Total != 25 {
+		t.Fatalf("over page total = %d, want 25", pageOver.Total)
+	}
+	// 负 offset 钳 0
+	pageNeg, err := service.List(ctx, contracts.RouteLogFilter{Limit: 10, Offset: -5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pageNeg.Items) != 10 {
+		t.Fatalf("negative offset len = %d, want 10", len(pageNeg.Items))
+	}
+	// 过滤条件同样影响 total：造 1 条 failed 做对照（r-pg-00 已是 success）
+	if err := service.Start(ctx, contracts.RouteRequest{RequestID: "r-fail", RequestedModel: "m", StartedAt: base.Add(-2 * time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Finish(ctx, contracts.RouteFinish{RequestID: "r-fail", FinishedAt: base.Add(-2 * time.Hour).Add(time.Second), Result: "failed"}); err != nil {
+		t.Fatal(err)
+	}
+	failedPage, err := service.List(ctx, contracts.RouteLogFilter{Result: "failed", Limit: 10, Offset: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if failedPage.Total != 1 {
+		t.Fatalf("failed total = %d, want 1", failedPage.Total)
 	}
 }
 
