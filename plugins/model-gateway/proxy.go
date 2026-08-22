@@ -236,6 +236,23 @@ type attemptResult struct {
 	header     http.Header
 }
 
+// rejectBySecurity 安检拒绝的公共路径：写 attempt/finish 日志 + 返回错误响应。
+// 供 proxyAttempt（每次尝试安检）与 proxyForward（无候选渠道早退分支）共用，
+// 保证"内容违规拒绝"的日志语义一致。返回 true 表示已写出响应，调用方直接返回。
+func (s *Service) rejectBySecurity(w http.ResponseWriter, r *http.Request, pipe *ProxyPipeline, model string, started time.Time, aerr error) bool {
+	status := http.StatusBadRequest
+	if gw, ok := aerr.(*GatewayError); ok && gw.Status != 0 {
+		status = gw.Status
+	}
+	attemptStarted := time.Now()
+	channelID, _ := pipe.Metadata["__current_channel"].(string)
+	channelName, _ := pipe.Metadata["__stream_channel_name"].(string)
+	s.proxyAttemptLog(r, pipe, model, channelID, channelName, nil, "", attemptStarted, "failed", "rejected", status, pipe.Request.Stream, contracts.TokenUsage{}, aerr, truncateErrorBody(aerr.Error()))
+	s.proxyFinishLog(r, pipe, model, channelID, channelName, "failed", status, time.Since(started), aerr, pipe.Request.Stream, contracts.TokenUsage{}, "")
+	writeGatewayError(w, aerr)
+	return true
+}
+
 // proxyAttempt 单次渠道尝试：注入当前渠道上下文 → 安检（ProxyBeforeAttempt）→
 // 构造并发送上游请求 → 输出处理（非流式 after-hook / 流式逐块）。
 //
@@ -257,9 +274,9 @@ func (s *Service) proxyAttempt(w http.ResponseWriter, r *http.Request, pipe *Pro
 	// 能力路由；聚合 failover 递归后 resolveChannels 也会据此锁定渠道（failover
 	// 钩子会先重设 __current_channel，覆盖本值）。
 	pipe.Metadata["__current_channel"] = ch.ID
-	if ch.BaseURL != "" {
-		pipe.Metadata["__current_channel_base_url"] = ch.BaseURL
-	}
+	// 显式赋值（含空）：同循环内渠道从有 BaseURL 到无 BaseURL 时不残留旧值，
+	// 聚合递归时也不会因残留值把 resolveChannels 锁死在旧渠道。
+	pipe.Metadata["__current_channel_base_url"] = ch.BaseURL
 
 	// 安检：每次渠道尝试前执行输入侧能力（敏感词过滤、字段过滤）。
 	out, aerr := s.ctx.Waterfall(ProxyBeforeAttempt, pipe)
@@ -267,13 +284,7 @@ func (s *Service) proxyAttempt(w http.ResponseWriter, r *http.Request, pipe *Pro
 		// 安检拒绝（如敏感词 error 模式命中）：请求内容违规，与渠道无关，终止整个请求。
 		res.err = aerr
 		res.channelID = ch.ID
-		s.proxyAttemptLog(r, pipe, model, ch.ID, ch.ChannelName, nil, "", attemptStarted, "failed", "rejected", 0, pipe.Request.Stream, contracts.TokenUsage{}, aerr, truncateErrorBody(aerr.Error()))
-		status := http.StatusBadRequest
-		if gw, ok := aerr.(*GatewayError); ok && gw.Status != 0 {
-			status = gw.Status
-		}
-		s.proxyFinishLog(r, pipe, model, ch.ID, ch.ChannelName, "failed", status, time.Since(started), aerr, pipe.Request.Stream, contracts.TokenUsage{}, "")
-		writeGatewayError(w, aerr)
+		s.rejectBySecurity(w, r, pipe, model, started, aerr)
 		return pipe, true
 	}
 	if rewritten, ok := out.(*ProxyPipeline); ok && rewritten != nil {
@@ -462,6 +473,15 @@ func (s *Service) proxyAttempt(w http.ResponseWriter, r *http.Request, pipe *Pro
 func (s *Service) proxyForward(w http.ResponseWriter, r *http.Request, pipe *ProxyPipeline, model string, started time.Time) error {
 	candidates := s.resolveProxyChannels(r.Context(), model, pipe)
 	if len(candidates) == 0 {
+		// 无可用渠道：先过安检——内容违规（如敏感词 error 模式命中）应优先于
+		// 502 拒绝，避免敏感请求因"渠道不可用"绕过安检（旧实现安检在入口执行，
+		// 天然覆盖此分支；安检移到 proxyAttempt 后必须在此补一次）。
+		if _, aerr := s.ctx.Waterfall(ProxyBeforeAttempt, pipe); aerr != nil {
+			// 复用 rejectBySecurity：与 proxyAttempt 的安检拒绝语义一致。
+			// 安检通过时的 pipe 改写在此无意义（随即 502 或 failover 改写 body），丢弃。
+			s.rejectBySecurity(w, r, pipe, model, started, aerr)
+			return nil
+		}
 		// 无可用渠道：若是聚合模型，触发失败事件让插件切下一个目标。
 		if retry, ok := s.tryProxyAggregateFailover(pipe, model, fmt.Errorf("没有可用渠道支持模型 %q", model), "", 0, ""); ok {
 			return s.proxyForward(w, r, retry.Pipe, retry.Pipe.Request.Model, started)

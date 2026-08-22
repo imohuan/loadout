@@ -169,3 +169,80 @@ func TestProxyBeforeAttemptFiresAfterAggregateFailover(t *testing.T) {
 		t.Fatalf("安检触发顺序 = %v, 期望 [gpt-4o@ch-1 claude-3@ch-2]", seen)
 	}
 }
+
+// TestProxyBeforeAttemptFiresWhenNoChannels 模型无可用渠道时安检仍执行：
+// 敏感词 error 模式命中应返回 400（而非 502），内容违规优先于渠道不可用。
+func TestProxyBeforeAttemptFiresWhenNoChannels(t *testing.T) {
+	svc, _ := newTestService(t)
+	// 不写任何渠道：model 无候选 → 走 proxyForward 早退分支
+	var called bool
+	svc.ctx.On(ProxyBeforeAttempt, func(payload any) (any, error) {
+		called = true
+		return payload, &GatewayError{Type: "sensitive_filter_error", Msg: "请求命中敏感词规则"}
+	})
+
+	body := `{"model":"gpt-5","input":[{"role":"user","content":"bad"}]}`
+	req := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(body))
+	rr := httptest.NewRecorder()
+	svc.HandleProxy(rr, req)
+
+	if !called {
+		t.Fatal("无渠道时安检未触发")
+	}
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("状态码 = %d, 期望 400（安检拒绝优先于 502）", rr.Code)
+	}
+}
+
+// TestProxyBeforeAttemptAfterHookRejectContinues 非流式 after-hook 拒绝（视为渠道失败）
+// 后，下一渠道尝试仍触发安检且能成功。
+func TestProxyBeforeAttemptAfterHookRejectContinues(t *testing.T) {
+	svc, _ := newTestService(t)
+	// 渠道 A：返回 200 但 after-hook 拒绝（如 field-filter 无法处理该响应）
+	echoA, _ := newEchoServer(t, `{"id":"resp_a","object":"response"}`, 0, nil)
+	defer echoA.Close()
+	echoB, _ := newEchoServer(t, `{"id":"resp_b","object":"response"}`, 0, nil)
+	defer echoB.Close()
+	if err := svc.st.Write(types.FileChannels, []types.Channel{
+		{ID: "ch-a", Name: "渠道A", BaseURL: echoA.URL, Enabled: true},
+		{ID: "ch-b", Name: "渠道B", BaseURL: echoB.URL, Enabled: true},
+	}); err != nil {
+		t.Fatalf("写渠道表失败: %v", err)
+	}
+
+	var mu sync.Mutex
+	var attempts []string
+	svc.ctx.On(ProxyBeforeAttempt, func(payload any) (any, error) {
+		pipe := payload.(*ProxyPipeline)
+		mu.Lock()
+		ch, _ := pipe.Metadata["__current_channel"].(string)
+		attempts = append(attempts, ch)
+		mu.Unlock()
+		return payload, nil
+	})
+	// after-hook：仅拒绝渠道 A 的响应（200 但内容不被接受）
+	svc.ctx.On(ProxyAfterUpstream, func(payload any) (any, error) {
+		after := payload.(*AfterUpstreamPayload)
+		if after.Pipe.Metadata["__current_channel"] == "ch-a" {
+			return payload, &GatewayError{Type: "upstream_error", Msg: "响应不被接受"}
+		}
+		return payload, nil
+	})
+
+	body := `{"model":"gpt-5","input":[{"role":"user","content":"hi"}]}`
+	req := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(body))
+	rr := httptest.NewRecorder()
+	svc.HandleProxy(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d, 期望 200（渠道B成功）", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "resp_b") {
+		t.Fatalf("响应体应为渠道B内容: %s", rr.Body.String())
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(attempts) != 2 || attempts[0] != "ch-a" || attempts[1] != "ch-b" {
+		t.Fatalf("安检触发 = %v, 期望 [ch-a ch-b]（after-hook 拒绝后下一渠道仍安检）", attempts)
+	}
+}
