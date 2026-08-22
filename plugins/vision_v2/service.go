@@ -17,7 +17,6 @@ type toolLoopState struct {
 	acc     *StreamAccumulator // 流式解析状态机（后续任务定义）
 	pending bool
 	calls   []ToolCall
-	active  bool
 	round   int
 	filter  *PlaceholderFilter
 	// passthrough 本轮出现非本插件工具（web_search 等）：剩余流完全透传、不拦截。

@@ -97,14 +97,18 @@ func (s *Service) describeWithFailover(ctx context.Context, id, prompt string, s
 	}
 	channels := s.loadChannels(ctx)
 	var lastErr error
+	var lastViaModel string
 	for _, opt := range options {
 		viaModel := opt.ViaModel
 		if viaModel == "" {
 			viaModel = config.DefaultVisionModel
 		}
+		lastViaModel = viaModel
 		keys := modelgateway.ExpandCandidateKeys(opt.ChannelID, opt.ChannelIDs, opt.ChannelBaseURL, channels)
 		if len(keys) == 0 {
-			if opt.ChannelBaseURL != "" || len(opt.ChannelIDs) > 0 {
+			// 显式渠道约束（单 Key / Key 多选 / 渠道组）但候选 Key 展开为空：
+			// 该渠道不存在/未启用，必须报错跳过该候选，不能静默回退自动路由越界路由。
+			if opt.ChannelBaseURL != "" || len(opt.ChannelIDs) > 0 || opt.ChannelID != "" {
 				lastErr = fmt.Errorf("vision_v2: 视觉候选 %q 无可用渠道（候选 Key 为空）", viaModel)
 				continue
 			}
@@ -112,6 +116,10 @@ func (s *Service) describeWithFailover(ctx context.Context, id, prompt string, s
 			rcs, err := s.channelsForModel(ctx, viaModel)
 			if err != nil {
 				lastErr = err
+				continue
+			}
+			if len(rcs) == 0 {
+				lastErr = fmt.Errorf("vision_v2: 没有可用渠道支持视觉模型 %q", viaModel)
 				continue
 			}
 			for _, rc := range rcs {
@@ -146,6 +154,11 @@ func (s *Service) describeWithFailover(ctx context.Context, id, prompt string, s
 			keyErr = err
 		}
 		lastErr = keyErr
+	}
+	// 防御兜底：全部候选失败但 lastErr 仍为 nil（如 options 为空等异常路径）时，
+	// 返回明确错误而非 ("","",nil)——调用方会把 nil error 当缓存命中写空描述。
+	if lastErr == nil {
+		lastErr = fmt.Errorf("vision_v2: 视觉候选 %q 无可用渠道", lastViaModel)
 	}
 	return "", "", lastErr
 }
@@ -284,6 +297,14 @@ func (s *Service) visionAttempt(ctx context.Context, requestID string, stepNo in
 	}
 	meta := map[string]any{"capability": "vision", "image_count": imageCount}
 	for k, v := range extra {
+		// prompt 超长截断：metadata 写 DB 前经 safeMetadata 清洗，超长文本可能被
+		// 拒写导致整个 attempt 丢失（识别过程白跑），截断到 200 字符防患。
+		if k == "prompt" {
+			if s, ok := v.(string); ok && len(s) > 200 {
+				meta[k] = s[:200] + "...(truncated)"
+				continue
+			}
+		}
 		meta[k] = v
 	}
 	if _, err := s.routeLog.Attempt(ctx, contracts.RouteAttempt{

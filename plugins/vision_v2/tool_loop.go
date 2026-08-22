@@ -39,8 +39,7 @@ func (s *Service) isVisionRequest(pipe *modelgateway.ProxyPipeline) bool {
 //   - 工具调用相关 chunk 置 nil（不转发）；
 //   - 本轮混入/全为非本插件工具（web_search 等）→ 完全透传、不拦截；
 //   - 流结束（chat: [DONE]；claude: message_stop；responses: response.completed 或 EOF）
-//     且本轮流有工具调用 → 在此次 hook 调用内同步执行 executeToolLoop（主循环阻塞在此 hook 上）；
-//   - 已进入接管（st.active）→ 全部置 nil。
+//     且本轮流有工具调用 → 在此次 hook 调用内同步执行 executeToolLoop（主循环阻塞在此 hook 上）。
 func (s *Service) HandleProxyStreamChunk(payload any) (any, error) {
 	sp, ok := payload.(*modelgateway.StreamChunkPayload)
 	if !ok || sp == nil || sp.Data == nil || sp.Pipe == nil {
@@ -51,9 +50,6 @@ func (s *Service) HandleProxyStreamChunk(payload any) (any, error) {
 	}
 	reqID := sp.Pipe.RequestID
 	st := s.state(reqID)
-	if st.active {
-		return nil, nil
-	}
 	if st.passthrough {
 		// 已进入透传：剩余流不拦截，流结束释放 state。
 		if isStreamEnd(string(sp.Data), st.format) {
@@ -462,7 +458,13 @@ func (s *Service) doUpstream(pipe *modelgateway.ProxyPipeline, reqBody []byte) (
 	if ch.APIKey != "" {
 		req.Header.Set("Authorization", "Bearer "+ch.APIKey)
 	}
+	// 流式续流（SSE 可能长时间吐字，总超时会提前截断）不设 http.Client 总 Timeout：
+	// 客户端断开由 request context（pipe.HTTPRequest.Context()）取消兜底，与主链路
+	// 流式（proxyForward 流式分支 Timeout=0）语义一致。非流式续流保持 VisionTimeout 防挂死。
 	client := &http.Client{Timeout: config.VisionTimeout}
+	if pipe.Request != nil && pipe.Request.Stream {
+		client = &http.Client{}
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err

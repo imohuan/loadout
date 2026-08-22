@@ -435,12 +435,33 @@ if !pipe.Request.Stream {
 		// 输出 hook（如 field-filter 剔除 usage 字段）会改写 Body，事后提取会得到全 0，
 		// 导致 volc-free-quota 不扣减、route_log token 列恒 0。
 		usage := extractUsageNonStream(respBody)
+		// 主 attempt 两阶段（与流式 proxyStreamAttempt 同语义）：after-hook 前写 running
+		// 占位并分配 step=1，after-hook 返回后同 step UPSERT 覆盖为 success——非流式下
+		// 视觉插件在 after-hook 内基于 __route_step 续接，得到 主=1、视觉识别=2、续流=3 的顺序
+		//（此前主 attempt 在 after-hook 之后才写，顺序错成 视觉=1、续流=2、主=3）。
+		s.proxyStreamAttempt(r, pipe, model, ch.ID, ch.ChannelName, nil, "", attemptStarted, resp.StatusCode, false, false, contracts.TokenUsage{})
 		out, herr := s.ctx.Waterfall(ProxyAfterUpstream, &AfterUpstreamPayload{Pipe: pipe, Response: proxyResp})
 		if herr != nil {
 			// 输出 hook 拒绝：视为渠道失败，换下一个（错误可被聚合插件捕获切换模型）。
 			lastErr = herr
 			lastChannelID = ch.ID
-			s.proxyAttemptLog(r, pipe, model, ch.ID, ch.ChannelName, nil, "", attemptStarted, "failed", "", resp.StatusCode, false, contracts.TokenUsage{}, herr, truncateErrorBody(herr.Error()))
+			// 覆盖 after-hook 前的 running 占位为 failed（同 step UPSERT，读 __stream_step 快照），
+			// 避免主请求占位永远卡 running。
+			if snap, ok := pipe.Metadata["__stream_step"].(int); ok && snap > 0 {
+				stepAction, _ := pipe.Metadata["__stream_action"].(string)
+				if stepAction == "" {
+					stepAction = "首次尝试"
+				}
+				fin := time.Now()
+				_, _ = s.routeLog.Attempt(context.WithoutCancel(r.Context()), contracts.RouteAttempt{
+					RequestID: pipe.RequestID, StepNo: snap, Action: stepAction,
+					Model: model, ChannelID: ch.ID, ChannelName: ch.ChannelName,
+					StartedAt: attemptStarted, FinishedAt: &fin, Result: "failed",
+					StatusCode: resp.StatusCode, ErrorMessage: herr.Error(),
+					ErrorBody: truncateErrorBody(herr.Error()),
+					Duration:  contracts.DurationMS(time.Since(attemptStarted)),
+				})
+			}
 			continue
 		}
 		if rewritten, ok := out.(*AfterUpstreamPayload); ok && rewritten.Response != nil {
@@ -450,7 +471,7 @@ if !pipe.Request.Stream {
 		if s.health != nil {
 			_ = s.health.RecordSuccess(r.Context(), ch.ID, model)
 		}
-		s.proxyAttemptLog(r, pipe, model, ch.ID, ch.ChannelName, nil, "", attemptStarted, "success", "", proxyResp.StatusCode, false, usage, nil, "")
+		s.proxyStreamAttempt(r, pipe, model, ch.ID, ch.ChannelName, nil, "", attemptStarted, proxyResp.StatusCode, true, false, usage)
 		s.proxyFinishLog(r, pipe, model, ch.ID, ch.ChannelName, "success", proxyResp.StatusCode, time.Since(attemptStarted), nil, false, usage, "")
 		writeProxyResponse(w, proxyResp)
 		return nil
