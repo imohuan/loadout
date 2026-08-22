@@ -179,6 +179,14 @@ type RouteLogFilter struct {
 	StartedAfter  *time.Time
 	StartedBefore *time.Time
 	Limit         int
+	Offset        int
+}
+
+// RouteLogPage 分页结果：Items 为当前页记录，Total 为满足过滤条件的全量条数
+// （COUNT 与 List 查询共用同一 WHERE）。前端 DataPagination 用 Total 计算页数。
+type RouteLogPage struct {
+	Items []RouteRequestView `json:"items"`
+	Total int                `json:"total"`
 }
 
 type RouteRequestView struct {
@@ -210,7 +218,7 @@ type RouteLog interface {
 	Start(context.Context, RouteRequest) error
 	Attempt(context.Context, RouteAttempt) (int64, error)
 	Finish(context.Context, RouteFinish) error
-	List(context.Context, RouteLogFilter) ([]RouteRequestView, error)
+	List(context.Context, RouteLogFilter) (RouteLogPage, error)
 	Detail(context.Context, string) (RouteRequestView, error)
 	Clear(context.Context, time.Time) error
 	// SelfHeal 兜底：用于"Start 写 running 但 Finish 异常中断"的卡死记录。
