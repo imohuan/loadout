@@ -32,6 +32,11 @@
  * 每条 SSE chunk 由后端按 `data: <json>\n\n` 逐块拼接到字符串缓冲中（maxStreamBuffer 32MB）。
  * 因此常见分隔符：`\n\n`、`\n`、`\r\n\r\n`、`\r\n`（HTTP chunked edge），
  * 都需能容忍；解析失败的不抛错，列为 parsed=false 但保留 rawLine 供调试。
+ *
+ * 非流式响应：response_json.body 是完整上游 JSON 响应体字符串（request-log service.go
+ * 非流式分支 string(ap.Response.Body)），无 data: 行。解析走 parseNonStreamBody，
+ * 按结构探测三格式（choices → chat；content[]/stop_reason/type → claude；output[] → responses），
+ * 输出与 parseStreamBody 完全同构的 ParsedStream（合成 1 条 parsed chunk），渲染链共用。
  */
 
 export type StreamFormat = 'chat' | 'claude' | 'responses'
@@ -651,4 +656,268 @@ export function extractResponseBody(responseJson: unknown): string | undefined {
 export function looksLikeSSE(body: string): boolean {
   const first = body.split(/\r?\n/).find((l) => l.trim().length > 0)
   return !!first && first.trim().startsWith('data:')
+}
+
+/**
+ * 解析非流式（完整 JSON）响应正文，提取消息内容。
+ * 与 parseStreamBody 输出结构完全同构，渲染链（ChatPreviewPanel）直接复用。
+ * 支持三种协议格式的完整响应（与流式格式探测对齐）：
+ *   1. chat:      { choices:[{ message:{ content, reasoning_content, tool_calls }, finish_reason }], usage }
+ *   2. claude:    { content:[{ type:'text'|'thinking'|'tool_use' }], stop_reason, usage }
+ *   3. responses: { output:[{ type:'message'|'reasoning'|'function_call' }], status, usage }
+ * 非流式合成 1 条 parsed chunk（rawJsonString=全文原文），展开时间轴可见响应原文。
+ * 解析失败/空 body：返回 emptyStream（与 parseStreamBody 同款兜底），绝不抛错。
+ */
+export function parseNonStreamBody(body: string): ParsedStream {
+  if (typeof body !== 'string' || body.length === 0) return emptyStream('chat')
+  let json: unknown
+  try {
+    json = JSON.parse(body)
+  } catch {
+    return emptyStream('chat')
+  }
+  if (!json || typeof json !== 'object') return emptyStream('chat')
+  const obj = json as Record<string, unknown>
+
+  // 格式探测（与 detectStreamFormat 的字段语义对齐）；rawBody 透传给三个解析器保真原文。
+  // claude 判定只看 content 数组 / stop_reason（Anthropic 非流式响应两者恒有），
+  // 不认顶层 type 字段——否则 {"type":"error"} 之类错误体也会被误判 claude。
+  if (Array.isArray(obj.output)) return parseNonStreamResponses(obj, body)
+  if (Array.isArray(obj.choices)) return parseNonStreamChat(obj, body)
+  if (Array.isArray(obj.content) || typeof obj.stop_reason === 'string') {
+    return parseNonStreamClaude(obj, body)
+  }
+  return emptyStream('chat')
+}
+
+// ---- 非流式：chat.completion 完整响应 ----
+
+function parseNonStreamChat(obj: Record<string, unknown>, rawBody: string): ParsedStream {
+  const chunks: ParsedChunk[] = []
+  let contentAccum = ''
+  let reasoningAccum = ''
+  let usage: StreamUsage | undefined
+  let finishReason: string | null | undefined
+  let id: string | undefined
+  let model: string | undefined
+  const toolCalls: ParsedToolCall[] = []
+
+  const choice0 = (Array.isArray(obj.choices) ? obj.choices[0] : undefined) as Record<string, unknown> | undefined
+  if (choice0 && typeof choice0 === 'object') {
+    const msg = choice0.message as Record<string, unknown> | undefined
+    if (msg && typeof msg === 'object') {
+      contentAccum += extractNonStreamText(msg.content)
+      // 与流式 extractChatChunkFields 的三别名对齐：reasoning_content / reasoning / reasoning_text
+      const reasoningRaw =
+        (msg.reasoning_content as unknown) ??
+        (msg.reasoning as unknown) ??
+        (msg.reasoning_text as unknown)
+      if (typeof reasoningRaw === 'string') reasoningAccum += reasoningRaw
+      if (Array.isArray(msg.tool_calls)) {
+        for (const tcRaw of msg.tool_calls) {
+          if (!tcRaw || typeof tcRaw !== 'object') continue
+          const tc = tcRaw as Record<string, unknown>
+          const fn = tc.function as Record<string, unknown> | undefined
+          const argsRaw = typeof fn?.arguments === 'string' ? fn.arguments : ''
+          let argsParsed: unknown = null
+          try {
+            argsParsed = argsRaw ? JSON.parse(argsRaw) : null
+          } catch {
+            argsParsed = null
+          }
+          toolCalls.push({
+            index: toolCalls.length,
+            id: typeof tc.id === 'string' ? tc.id : '',
+            type: typeof tc.type === 'string' ? tc.type : 'function',
+            name: typeof fn?.name === 'string' ? fn.name : 'unknown',
+            argumentsRaw: argsRaw,
+            argumentsParsed: argsParsed,
+          })
+        }
+      }
+    }
+    if (typeof choice0.finish_reason === 'string') finishReason = choice0.finish_reason
+  }
+  if (typeof obj.id === 'string') id = obj.id
+  if (typeof obj.model === 'string') model = obj.model
+  const u = obj.usage as StreamUsage | undefined
+  if (u && typeof u === 'object') usage = u
+
+  const fields: ParsedChunk['fields'] = {}
+  if (id !== undefined) fields.id = id
+  if (model !== undefined) fields.model = model
+  if (contentAccum) fields.contentDelta = contentAccum
+  if (reasoningAccum) fields.reasoningDelta = reasoningAccum
+  if (finishReason !== undefined) fields.finishReason = finishReason
+  if (usage) fields.usage = usage
+  if (choice0 && typeof choice0.index === 'number') fields.choiceIndex = choice0.index
+
+  chunks.push({
+    index: 1,
+    parsed: true,
+    format: 'chat',
+    rawJsonString: rawBody, // 保真原文（不 JSON.stringify 重排），展开时间轴可见原始响应
+    fields,
+    charOffset: 0,
+  })
+  return { chunks, contentAccum, reasoningAccum, toolCalls, format: 'chat', usage, isDone: true, finishReason, parsedCount: 1 }
+}
+
+// ---- 非流式：claude/messages 完整响应 ----
+
+function parseNonStreamClaude(obj: Record<string, unknown>, rawBody: string): ParsedStream {
+  const chunks: ParsedChunk[] = []
+  let contentAccum = ''
+  let reasoningAccum = ''
+  let usage: StreamUsage | undefined
+  let finishReason: string | null | undefined
+  let id: string | undefined
+  let model: string | undefined
+  const toolCalls: ParsedToolCall[] = []
+
+  if (Array.isArray(obj.content)) {
+    for (const blockRaw of obj.content) {
+      if (!blockRaw || typeof blockRaw !== 'object') continue
+      const block = blockRaw as Record<string, unknown>
+      if (block.type === 'text' && typeof block.text === 'string') {
+        contentAccum += block.text
+      } else if (block.type === 'thinking' && typeof block.thinking === 'string') {
+        reasoningAccum += block.thinking
+      } else if (block.type === 'tool_use') {
+        // 与 chat/responses 的语义对齐：argumentsParsed 一律由字符串 parse 得出。
+        // input 为对象时先序列化再 parse（保一致），parse 失败落 null + 原文保留。
+        const input = block.input
+        let inputStr = ''
+        try {
+          inputStr = input == null ? '' : typeof input === 'string' ? input : JSON.stringify(input)
+        } catch {
+          inputStr = ''
+        }
+        let inputParsed: unknown = null
+        try {
+          inputParsed = inputStr ? JSON.parse(inputStr) : null
+        } catch {
+          inputParsed = null
+        }
+        toolCalls.push({
+          index: toolCalls.length,
+          id: typeof block.id === 'string' ? block.id : '',
+          type: 'tool_use',
+          name: typeof block.name === 'string' ? block.name : 'unknown',
+          argumentsRaw: inputStr,
+          argumentsParsed: inputParsed,
+        })
+      }
+    }
+  }
+  if (typeof obj.stop_reason === 'string') finishReason = obj.stop_reason
+  if (typeof obj.id === 'string') id = obj.id
+  if (typeof obj.model === 'string') model = obj.model
+  const u = obj.usage as StreamUsage | undefined
+  if (u && typeof u === 'object') usage = u
+
+  const fields: ParsedChunk['fields'] = {}
+  if (id !== undefined) fields.id = id
+  if (model !== undefined) fields.model = model
+  if (contentAccum) fields.contentDelta = contentAccum
+  if (reasoningAccum) fields.reasoningDelta = reasoningAccum
+  if (finishReason !== undefined) fields.finishReason = finishReason
+  if (usage) fields.usage = usage
+
+  chunks.push({
+    index: 1,
+    parsed: true,
+    format: 'claude',
+    rawJsonString: rawBody, // 保真原文
+    fields,
+    charOffset: 0,
+  })
+  return { chunks, contentAccum, reasoningAccum, toolCalls, format: 'claude', usage, isDone: true, finishReason, parsedCount: 1 }
+}
+
+// ---- 非流式：responses API 完整响应 ----
+
+function parseNonStreamResponses(obj: Record<string, unknown>, rawBody: string): ParsedStream {
+  const chunks: ParsedChunk[] = []
+  let contentAccum = ''
+  let reasoningAccum = ''
+  let usage: StreamUsage | undefined
+  let finishReason: string | null | undefined
+  let id: string | undefined
+  let model: string | undefined
+  const toolCalls: ParsedToolCall[] = []
+
+  if (Array.isArray(obj.output)) {
+    for (const itemRaw of obj.output) {
+      if (!itemRaw || typeof itemRaw !== 'object') continue
+      const item = itemRaw as Record<string, unknown>
+      if (item.type === 'message' && Array.isArray(item.content)) {
+        for (const part of item.content) {
+          if (!part || typeof part !== 'object') continue
+          const p = part as Record<string, unknown>
+          if (p.type === 'output_text' && typeof p.text === 'string') contentAccum += p.text
+        }
+      } else if (item.type === 'reasoning' && Array.isArray(item.summary)) {
+        for (const seg of item.summary) {
+          if (!seg || typeof seg !== 'object') continue
+          const s = seg as Record<string, unknown>
+          if (typeof s.text === 'string') reasoningAccum += s.text
+        }
+      } else if (item.type === 'function_call') {
+        const argsRaw = typeof item.arguments === 'string' ? item.arguments : ''
+        let argsParsed: unknown = null
+        try {
+          argsParsed = argsRaw ? JSON.parse(argsRaw) : null
+        } catch {
+          argsParsed = null
+        }
+        toolCalls.push({
+          index: toolCalls.length,
+          id: typeof item.id === 'string' ? item.id : '',
+          type: 'function_call',
+          name: typeof item.name === 'string' ? item.name : 'unknown',
+          argumentsRaw: argsRaw,
+          argumentsParsed: argsParsed,
+        })
+      }
+    }
+  }
+  if (typeof obj.status === 'string') finishReason = obj.status
+  if (typeof obj.id === 'string') id = obj.id
+  if (typeof obj.model === 'string') model = obj.model
+  const u = obj.usage as StreamUsage | undefined
+  if (u && typeof u === 'object') usage = u
+
+  const fields: ParsedChunk['fields'] = {}
+  if (id !== undefined) fields.id = id
+  if (model !== undefined) fields.model = model
+  if (contentAccum) fields.contentDelta = contentAccum
+  if (reasoningAccum) fields.reasoningDelta = reasoningAccum
+  if (finishReason !== undefined) fields.finishReason = finishReason
+  if (usage) fields.usage = usage
+
+  chunks.push({
+    index: 1,
+    parsed: true,
+    format: 'responses',
+    rawJsonString: rawBody, // 保真原文
+    fields,
+    charOffset: 0,
+  })
+  return { chunks, contentAccum, reasoningAccum, toolCalls, format: 'responses', usage, isDone: true, finishReason, parsedCount: 1 }
+}
+
+/** 从 OpenAI message.content（字符串或多模态数组）提取纯文本（与 ChatPreviewPanel.extractContent 同规则：只拼 text，忽略图片/其它） */
+function extractNonStreamText(content: unknown): string {
+  if (typeof content === 'string') return content
+  if (Array.isArray(content)) {
+    let text = ''
+    for (const part of content) {
+      if (!part || typeof part !== 'object') continue
+      const p = part as Record<string, unknown>
+      if (p.type === 'text' && typeof p.text === 'string') text += p.text
+    }
+    return text
+  }
+  return ''
 }
