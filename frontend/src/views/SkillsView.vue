@@ -2,8 +2,12 @@
 import { computed, reactive, ref } from 'vue'
 import {
   RiAddLine,
+  RiArrowDownSLine,
+  RiArrowRightSLine,
   RiDeleteBinLine,
   RiEditLine,
+  RiGroup2Line,
+  RiListUnordered,
   RiLoader4Line,
   RiLoaderLine,
   RiRefreshLine,
@@ -73,6 +77,46 @@ const updateStatus = ref<StreamStatus>('idle')
 const updateTrigger = ref(0)
 // 「更新日志」Tab 默认隐藏，点击「检查并更新」后才显示。
 const showLogsTab = ref(false)
+
+// ===== 按来源聚合视图（折叠表格）=====
+const groupBySource = ref(false)
+const expandedSources = ref<string[]>([])
+// 空 source 统一归到一个稳定 key（避免空字符串与字面 "-" 串撞到不同组）。
+const UNSPECIFIED_SOURCE = '__unspecified__'
+type SkillGroup = {
+  key: string
+  displaySource: string
+  firstDescription: string
+  skills: NonNullable<typeof skills.value>
+}
+const groupedSkills = computed<SkillGroup[]>(() => {
+  if (!skills.value) return []
+  const map = new Map<string, SkillGroup>()
+  for (const s of skills.value) {
+    const raw = s.source || ''
+    const isEmpty = raw === '' || raw === '-'
+    const key = isEmpty ? UNSPECIFIED_SOURCE : raw
+    const display = isEmpty ? '未指定来源' : raw
+    if (!map.has(key)) {
+      map.set(key, { key, displaySource: display, firstDescription: s.description || '', skills: [] })
+    }
+    map.get(key)!.skills.push(s)
+  }
+  return Array.from(map.values())
+})
+function toggleSourceGroup(key: string) {
+  const i = expandedSources.value.indexOf(key)
+  if (i >= 0) expandedSources.value.splice(i, 1)
+  else expandedSources.value.push(key)
+}
+function isSourceExpanded(key: string) {
+  return expandedSources.value.includes(key)
+}
+function toggleGroupBySource() {
+  groupBySource.value = !groupBySource.value
+  // 切换模式时清空展开状态，避免下次进入聚合态还残留旧展开项。
+  expandedSources.value = []
+}
 
 function onUpdateDone() {
   void refreshSkills()
@@ -389,21 +433,66 @@ async function restoreAllBackups() {
             </CardHeader>
             <CardContent class="p-0">
               <div v-if="skills?.length" class="overflow-x-auto">
-                <Table>
-                  <TableHeader>
+                <Table class="table-fixed w-full">
+                  <TableHeader v-if="!groupBySource">
                     <TableRow>
-                      <TableHead class="w-32">名称</TableHead>
+                      <TableHead class="w-64">名称</TableHead>
                       <TableHead>描述</TableHead>
-                      <TableHead>来源</TableHead>
-                      <TableHead class="w-24">版本</TableHead>
-                      <TableHead class="w-28">更新时间</TableHead>
-                      <TableHead class="text-right">操作</TableHead>
+                      <TableHead class="w-64">
+                        <div class="flex items-center gap-1">
+                          <span>来源</span>
+                          <Tooltip>
+                            <TooltipTrigger as-child>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                class="size-6"
+                                aria-label="按来源聚合"
+                                @click="toggleGroupBySource"
+                              >
+                                <RiGroup2Line size="14" />
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>按来源聚合</TooltipContent>
+                          </Tooltip>
+                        </div>
+                      </TableHead>
+                      <TableHead class="w-32">版本</TableHead>
+                      <TableHead class="w-32">更新时间</TableHead>
+                      <TableHead class="w-12 text-right">操作</TableHead>
                     </TableRow>
                   </TableHeader>
-                  <TableBody>
+                  <TableHeader v-else>
+                    <TableRow>
+                      <TableHead class="w-12"></TableHead>
+                      <TableHead class="w-32">
+                        <div class="flex items-center gap-1">
+                          <span>来源</span>
+                          <Tooltip>
+                            <TooltipTrigger as-child>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                class="size-6"
+                                aria-label="取消按来源聚合"
+                                @click="toggleGroupBySource"
+                              >
+                                <RiListUnordered size="14" />
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>取消按来源聚合</TooltipContent>
+                          </Tooltip>
+                        </div>
+                      </TableHead>
+                      <TableHead>描述</TableHead>
+                      <TableHead class="w-24">技能数</TableHead>
+                      <TableHead class="w-12 text-right">操作</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody v-if="!groupBySource">
                     <TableRow v-for="skill in skills" :key="skill.name">
-                      <TableCell class="w-32 font-medium">{{ skill.name }}</TableCell>
-                      <TableCell class="max-w-xs">
+                      <TableCell class="w-64 font-medium truncate">{{ skill.name }}</TableCell>
+                      <TableCell class="w-fit">
                         <Tooltip v-if="skill.description" :delay-duration="150">
                           <TooltipTrigger as-child>
                             <p class="line-clamp-2 text-sm text-muted-foreground">
@@ -420,9 +509,9 @@ async function restoreAllBackups() {
                         </Tooltip>
                         <span v-else class="text-sm text-muted-foreground">—</span>
                       </TableCell>
-                      <TableCell class="font-mono text-xs">{{ skill.source || '-' }}</TableCell>
-                      <TableCell>{{ skill.version || '-' }}</TableCell>
-                      <TableCell>
+                      <TableCell class="w-32 font-mono text-xs truncate">{{ skill.source || '-' }}</TableCell>
+                      <TableCell class="w-32">{{ skill.version || '-' }}</TableCell>
+                      <TableCell class="w-32">
                         <Tooltip :disabled="!skill.updated_at">
                           <TooltipTrigger as-child>
                             <span
@@ -445,7 +534,7 @@ async function restoreAllBackups() {
                           >近期</Badge
                         >
                       </TableCell>
-                      <TableCell class="text-right">
+                      <TableCell class="w-12 text-right">
                         <Tooltip>
                           <TooltipTrigger as-child
                             ><Button
@@ -466,6 +555,145 @@ async function restoreAllBackups() {
                       </TableCell>
                     </TableRow>
                   </TableBody>
+                  <TableBody v-else>
+                    <template v-for="group in groupedSkills" :key="group.key">
+                      <TableRow>
+                        <TableCell class="w-12 px-0">
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            class="size-8"
+                            :aria-label="
+                              isSourceExpanded(group.key) ? '收起技能列表' : '展开技能列表'
+                            "
+                            :aria-expanded="isSourceExpanded(group.key)"
+                            @click="toggleSourceGroup(group.key)"
+                          >
+                            <RiArrowDownSLine
+                              v-if="isSourceExpanded(group.key)"
+                              size="16"
+                            />
+                            <RiArrowRightSLine v-else size="16" />
+                          </Button>
+                        </TableCell>
+                        <TableCell class="w-32">
+                          <div class="min-w-0">
+                            <div class="truncate font-mono text-sm">
+                              {{ group.displaySource }}
+                            </div>
+                            <div class="text-xs text-muted-foreground">
+                              {{ group.skills.length }} 个技能
+                            </div>
+                          </div>
+                        </TableCell>
+                        <TableCell class="w-fit">
+                          <Tooltip
+                            v-if="group.firstDescription"
+                            :delay-duration="150"
+                          >
+                            <TooltipTrigger as-child>
+                              <p class="truncate text-sm text-muted-foreground">
+                                {{ group.firstDescription }}
+                              </p>
+                            </TooltipTrigger>
+                            <TooltipContent
+                              side="bottom"
+                              align="start"
+                              class="max-w-md whitespace-normal break-words"
+                            >
+                              {{ group.firstDescription }}
+                            </TooltipContent>
+                          </Tooltip>
+                          <span v-else class="text-sm text-muted-foreground">—</span>
+                        </TableCell>
+                        <TableCell class="w-24">
+                          <Badge variant="secondary">{{ group.skills.length }} 个</Badge>
+                        </TableCell>
+                        <TableCell class="w-12 text-right text-sm text-muted-foreground">—</TableCell>
+                      </TableRow>
+                      <TableRow
+                        v-if="isSourceExpanded(group.key)"
+                        class="bg-muted/30 hover:bg-muted/30"
+                      >
+                        <TableCell :colspan="5" class="whitespace-normal p-0 w-full overflow-hidden">
+                          <Table class="table-fixed w-full">
+                            <TableBody>
+                              <TableRow
+                                v-for="skill in group.skills"
+                                :key="skill.name"
+                                class="hover:bg-transparent"
+                              >
+                                <TableCell class="w-64 font-medium truncate">{{ skill.name }}</TableCell>
+                                <TableCell class="w-fit">
+                                  <Tooltip v-if="skill.description" :delay-duration="150">
+                                    <TooltipTrigger as-child>
+                                      <p class="truncate text-sm text-muted-foreground">
+                                        {{ skill.description }}
+                                      </p>
+                                    </TooltipTrigger>
+                                    <TooltipContent
+                                      side="bottom"
+                                      align="start"
+                                      class="max-w-md whitespace-normal break-words"
+                                    >
+                                      {{ skill.description }}
+                                    </TooltipContent>
+                                  </Tooltip>
+                                  <span v-else class="text-sm text-muted-foreground">—</span>
+                                </TableCell>
+                                <TableCell class="w-32">{{ skill.version || '-' }}</TableCell>
+                                <TableCell class="w-32">
+                                  <Tooltip :disabled="!skill.updated_at">
+                                    <TooltipTrigger as-child>
+                                      <span
+                                        :class="
+                                          skill.updated_at
+                                            ? isRecent(skill.updated_at)
+                                              ? 'text-green-600'
+                                              : 'text-muted-foreground'
+                                            : 'text-muted-foreground'
+                                        "
+                                      >
+                                        {{ timeAgo(skill.updated_at) }}
+                                      </span>
+                                    </TooltipTrigger>
+                                    <TooltipContent v-if="skill.updated_at">{{
+                                      skill.updated_at
+                                    }}</TooltipContent>
+                                  </Tooltip>
+                                  <Badge
+                                    v-if="isRecent(skill.updated_at)"
+                                    variant="default"
+                                    class="ml-1"
+                                    >近期</Badge
+                                  >
+                                </TableCell>
+                                <TableCell class="w-12 text-right">
+                                  <Tooltip>
+                                    <TooltipTrigger as-child
+                                      ><Button
+                                        variant="ghost"
+                                        size="icon"
+                                        aria-label="移除技能"
+                                        :disabled="isPending(`skill:${skill.name}:remove`)"
+                                        @click="removeSkill(skill.name)"
+                                      >
+                                        <RiLoader4Line
+                                          v-if="isPending(`skill:${skill.name}:remove`)"
+                                          class="animate-spin"
+                                          size="16"
+                                        /><RiDeleteBinLine v-else size="16" /> </Button
+                                    ></TooltipTrigger>
+                                    <TooltipContent>移除技能</TooltipContent>
+                                  </Tooltip>
+                                </TableCell>
+                              </TableRow>
+                            </TableBody>
+                          </Table>
+                        </TableCell>
+                      </TableRow>
+                    </template>
+                  </TableBody>
                 </Table>
               </div>
               <EmptyState v-else title="还没有技能" description="通过来源安装技能。" />
@@ -479,22 +707,22 @@ async function restoreAllBackups() {
             </CardHeader>
             <CardContent class="p-0">
               <div v-if="presets?.length" class="overflow-x-auto">
-                <Table>
+                <Table class="table-fixed w-full">
                   <TableHeader>
                     <TableRow>
-                      <TableHead>名称</TableHead>
-                      <TableHead>目标</TableHead>
+                      <TableHead class="w-32">名称</TableHead>
+                      <TableHead class="w-40">目标</TableHead>
                       <TableHead>技能</TableHead>
-                      <TableHead class="text-right">操作</TableHead>
+                      <TableHead class="w-48 text-right">操作</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     <TableRow v-for="preset in presets" :key="preset.name">
-                      <TableCell class="font-medium">{{ preset.name }}</TableCell>
-                      <TableCell>
+                      <TableCell class="w-32 truncate font-medium">{{ preset.name }}</TableCell>
+                      <TableCell class="w-40">
                         <Badge variant="outline">{{ presetTargetsLabel(preset) }}</Badge>
                       </TableCell>
-                      <TableCell class="max-w-md text-sm text-muted-foreground">
+                      <TableCell class="w-fit text-sm text-muted-foreground">
                         <div class="flex items-start gap-2">
                           <span
                             class="min-w-0 flex-1 whitespace-pre-wrap break-words [display:-webkit-box] [-webkit-line-clamp:2] [-webkit-box-orient:vertical] overflow-hidden"
@@ -511,7 +739,7 @@ async function restoreAllBackups() {
                           </Tooltip>
                         </div>
                       </TableCell>
-                      <TableCell class="text-right">
+                      <TableCell class="w-48 text-right">
                         <div class="flex justify-end gap-2">
                           <Button
                             variant="outline"
@@ -590,28 +818,28 @@ async function restoreAllBackups() {
                 <code class="font-mono">skills-backup</code>；检测到备份后可用「恢复」还原。
               </p>
               <div v-if="skillStatus?.length" class="overflow-x-auto">
-                <Table>
+                <Table class="table-fixed w-full">
                   <TableHeader>
                     <TableRow>
-                      <TableHead>平台</TableHead>
-                      <TableHead>技能数</TableHead>
-                      <TableHead>备份</TableHead>
-                      <TableHead class="text-right">操作</TableHead>
+                      <TableHead class="w-64">平台</TableHead>
+                      <TableHead class="w-24">技能数</TableHead>
+                      <TableHead class="w-24">备份</TableHead>
+                      <TableHead class="w-24 text-right">操作</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     <TableRow v-for="st in skillStatus" :key="st.name || 'generic'">
-                      <TableCell>
-                        <div class="font-medium">{{ platformName(st.name) }}</div>
-                        <div class="font-mono text-xs text-muted-foreground">{{ st.dir }}</div>
+                      <TableCell class="w-64">
+                        <div class="truncate font-medium">{{ platformName(st.name) }}</div>
+                        <div class="truncate font-mono text-xs text-muted-foreground">{{ st.dir }}</div>
                       </TableCell>
-                      <TableCell>{{ st.count }}</TableCell>
-                      <TableCell>
+                      <TableCell class="w-24">{{ st.count }}</TableCell>
+                      <TableCell class="w-24">
                         <Badge :variant="st.has_backup ? 'default' : 'outline'">{{
                           st.has_backup ? '有备份' : '无'
                         }}</Badge>
                       </TableCell>
-                      <TableCell class="text-right">
+                      <TableCell class="w-24 text-right">
                         <Button
                           variant="destructive"
                           size="sm"
