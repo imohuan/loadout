@@ -87,15 +87,27 @@ const router = createRouter({
   ],
 })
 
+// 桌面端「打开网页」免登录 token：模块加载时（最早时机）从 URL 读取并缓存，
+// 同时立刻把 ?sso= 从地址栏清掉。先读后清，保证清理不丢登录凭证。
+// 之后 beforeEach 只用缓存的 token，不再依赖 URL。
+let ssoToken: string | null = (() => {
+  const t = new URLSearchParams(window.location.search).get('sso')
+  if (t) {
+    const url = new URL(window.location.href)
+    url.searchParams.delete('sso')
+    window.history.replaceState({}, '', url.pathname + url.search)
+  }
+  return t
+})()
 router.beforeEach(async (to) => {
   const auth = useAuthStore()
-  // 桌面端「打开网页」免登录：URL 带 ?sso= 时用短时效 token 自动换会话。
-  const ssoToken = new URLSearchParams(window.location.search).get('sso')
+  // ssoLogin 只跑一次（页面加载时自动换票）：无论成败都置空 token，
+  // 避免用户登出后被 beforeEach 反复重试触发「登出 → 自动登录」死循环。
   if (ssoToken && !auth.authenticated) {
+    const token = ssoToken
+    ssoToken = null
     try {
-      await auth.ssoLogin(ssoToken)
-      // 清理地址栏参数，避免刷新时重复提交、token 留在 URL 里
-      window.history.replaceState({}, '', window.location.pathname)
+      await auth.ssoLogin(token)
     } catch {
       // token 过期/无效则静默忽略，走正常登录页
     }
@@ -103,6 +115,15 @@ router.beforeEach(async (to) => {
   if (!auth.checked) await auth.check()
   if (!to.meta.public && !auth.authenticated) return { name: 'login' }
   if (to.meta.public && auth.authenticated) return { name: 'overview' }
+})
+
+// 导航完成后兜底再清一次（处理浏览器历史前进/后退把 sso 带回地址栏等边界）。
+router.afterEach(() => {
+  if (new URLSearchParams(window.location.search).get('sso')) {
+    const url = new URL(window.location.href)
+    url.searchParams.delete('sso')
+    window.history.replaceState({}, '', url.pathname + url.search)
+  }
 })
 
 export default router

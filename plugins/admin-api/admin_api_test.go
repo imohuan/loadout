@@ -189,6 +189,99 @@ func TestSSOLogin(t *testing.T) {
 	}
 }
 
+// TestDesktopSessionMark 验证桌面登录标记：仅桌面来源（wails.localhost）登录写标记、
+// 浏览器来源不写、登出删除标记。
+func TestDesktopSessionMark(t *testing.T) {
+	ts, _, pw := newTestServer(t)
+
+	// 隔离 DataDir，避免标记文件污染真实数据目录。
+	oldDataDir := config.DataDir
+	config.DataDir = t.TempDir()
+	t.Cleanup(func() { config.DataDir = oldDataDir })
+	markPath := filepath.Join(config.DataDir, config.DesktopSessionFile)
+
+	loginWithOrigin := func(origin string) *http.Response {
+		t.Helper()
+		body := bytes.NewReader([]byte(`{"username":"admin","password":"` + pw + `"}`))
+		req, err := http.NewRequest(http.MethodPost, ts.URL+"/api/login", body)
+		if err != nil {
+			t.Fatalf("NewRequest: %v", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Origin", origin)
+		resp, err := ts.Client().Do(req)
+		if err != nil {
+			t.Fatalf("login: %v", err)
+		}
+		defer resp.Body.Close()
+		return resp
+	}
+
+	// 桌面来源登录 → 标记文件生成且 username 正确。
+	resp := loginWithOrigin("http://wails.localhost")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("桌面来源登录期望 200，实际 %d", resp.StatusCode)
+	}
+	data, err := os.ReadFile(markPath)
+	if err != nil {
+		t.Fatalf("桌面登录后应生成标记文件: %v", err)
+	}
+	var sess struct {
+		Username string `json:"username"`
+	}
+	if err := json.Unmarshal(data, &sess); err != nil || sess.Username != "admin" {
+		t.Fatalf("标记文件内容异常: %s err=%v", data, err)
+	}
+
+	// 登出 → 标记文件删除。
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/logout", nil)
+	req.Header.Set("Origin", "http://wails.localhost")
+	if resp, err := ts.Client().Do(req); err != nil {
+		t.Fatalf("logout: %v", err)
+	} else {
+		resp.Body.Close()
+	}
+	if _, err := os.Stat(markPath); !os.IsNotExist(err) {
+		t.Fatalf("登出后标记文件应被删除，实际 %v", err)
+	}
+
+	// 浏览器来源登录 → 不写标记。
+	resp = loginWithOrigin("http://127.0.0.1:3000")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("浏览器来源登录期望 200，实际 %d", resp.StatusCode)
+	}
+	if _, err := os.Stat(markPath); !os.IsNotExist(err) {
+		t.Fatalf("浏览器来源登录不应写标记文件")
+	}
+
+	// 核心回归：桌面登录 → 标记写入 → 浏览器登出 → 标记必须保留（不误删）。
+	resp = loginWithOrigin("http://wails.localhost")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("桌面来源登录（第二轮）期望 200，实际 %d", resp.StatusCode)
+	}
+	if _, err := os.Stat(markPath); err != nil {
+		t.Fatalf("桌面登录后标记应存在: %v", err)
+	}
+	logoutWithOrigin := func(origin string) {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/logout", nil)
+		req.Header.Set("Origin", origin)
+		if resp, err := ts.Client().Do(req); err != nil {
+			t.Fatalf("logout: %v", err)
+		} else {
+			resp.Body.Close()
+		}
+	}
+	logoutWithOrigin("http://127.0.0.1:3000") // 浏览器登出
+	if _, err := os.Stat(markPath); err != nil {
+		t.Fatalf("浏览器登出不应删除桌面登录标记（关键回归）: %v", err)
+	}
+	logoutWithOrigin("http://wails.localhost") // 桌面登出
+	if _, err := os.Stat(markPath); !os.IsNotExist(err) {
+		t.Fatalf("桌面登出后标记应被删除")
+	}
+}
+
 // TestModelTestProxy 验证模型测试代理：/api/test/models 与 /api/test/chat 都在后台转发上游，
 // base_url 原样拼接（不自动补 /v1，地址完全由用户决定）。
 func TestModelTestProxy(t *testing.T) {

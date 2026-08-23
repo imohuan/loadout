@@ -2,14 +2,16 @@
 package app
 
 import (
+	"encoding/json"
 	"log"
+	"os"
+	"path/filepath"
 	"time"
 
 	"loadout/core/auth"
 	lconfig "loadout/core/config"
 	"loadout/core/store"
-	"loadout/plugins/types"
-	"proxyui/backend"
+	config "proxyui/backend"
 	"proxyui/icons"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -23,24 +25,31 @@ const webURL = "http://127.0.0.1:3000"
 // 够 30 秒打开页面即可，过期即失效。
 const ssoTokenTTL = 30 * time.Second
 
-// ssoWebURL 生成带免登录 token 的网页地址。
-// 用 Loadout 自身的 secret 签一个短效 JWT 拼到 ?sso=，网页版前端检测到后
-// 调 /api/sso/login 换成完整会话，实现「打开网页免二次登录」。
-// 与 Loadout Server 共用同一数据目录（config.DataDir），因此 secret 一致。
+// ssoWebURL 生成网页地址。
+// 仅当桌面端 WebView 已登录（后端在登录时写入 desktop-session.json 标记）才签发
+// 短效 JWT 拼到 ?sso=，让浏览器自动登录；桌面未登录则返回不带 token 的地址，
+// 网页保持自身的登录态（浏览器已登录则登录，否则显示登录页）。
 func ssoWebURL() string {
+	sessionPath := filepath.Join(lconfig.DataDir, lconfig.DesktopSessionFile)
+	username := ""
+	if data, err := os.ReadFile(sessionPath); err == nil {
+		var sess struct {
+			Username string `json:"username"`
+		}
+		if json.Unmarshal(data, &sess) == nil {
+			username = sess.Username
+		}
+	}
+	if username == "" {
+		// 软件中未登录 → 打开未登录的网页版
+		return webURL
+	}
+
 	st, err := store.New(lconfig.DataDir)
 	if err != nil {
 		log.Printf("打开网页: 读取配置失败，回退无 token 地址: %v", err)
 		return webURL
 	}
-
-	// 取第一个管理员用户名；读不到时回退默认 admin（单管理员场景）。
-	username := "admin"
-	var users []types.User
-	if err := st.Read(types.FileUsers, &users); err == nil && len(users) > 0 && users[0].Username != "" {
-		username = users[0].Username
-	}
-
 	token, err := auth.SignToken(st.SecretKey(), username, ssoTokenTTL)
 	if err != nil {
 		log.Printf("打开网页: 签发免登录 token 失败，回退无 token 地址: %v", err)
@@ -63,7 +72,7 @@ func setupTray(app *application.App, win application.Window) {
 
 	menu := application.NewMenu()
 	// 恢复桌面版应用
-	menu.Add("打开 Loadout").OnClick(func(*application.Context) {
+	menu.Add("打开软件").OnClick(func(*application.Context) {
 		win.Show().Focus()
 	})
 	// 打开网页版（默认浏览器访问本机 Loadout Web 服务，自动免登录）

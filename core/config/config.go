@@ -61,6 +61,10 @@ var AdminPasswordFile string
 // SecretFile 本地密钥文件（0600 权限，用于 AES 加密与 JWT 签名）。
 var SecretFile string
 
+// DesktopSessionFile 桌面端登录标记文件：admin-api 在桌面 WebView 登录成功时写入、
+// 登出时删除；desktop 托盘据此判断「软件中是否已登录」，决定是否签发免登录 token。
+const DesktopSessionFile = "desktop-session.json"
+
 // VisionCacheDir 视觉描述缓存目录（图片 md5 → 描述文本）。
 var VisionCacheDir string
 

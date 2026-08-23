@@ -10,7 +10,13 @@ const router = useRouter()
 const auth = useAuthStore()
 const pageTitle = computed(() => String(route.meta.title || 'Loadout'))
 async function logout() {
-  await auth.logout()
+  // 后端 logout 已改为幂等（无 cookie 也返回 200），但前端再兜一层 401：
+  // 会话已在别处失效时（401 unauthorized 事件已把 store 置为未登录），避免 UI 抛错卡住。
+  try {
+    await auth.logout()
+  } catch {
+    // 忽略：已登出态
+  }
   await router.push({ name: 'login' })
 }
 </script>

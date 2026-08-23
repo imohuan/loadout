@@ -16,6 +16,8 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -89,7 +91,8 @@ func (s *Service) Routes() []plugin.RouteSpec {
 		// 认证
 		{Method: http.MethodPost, Pattern: "POST /api/login", Auth: plugin.AuthPublic, Handler: http.HandlerFunc(s.handleLogin)},
 		{Method: http.MethodPost, Pattern: "POST /api/sso/login", Auth: plugin.AuthPublic, Handler: http.HandlerFunc(s.handleSSOLogin)},
-		{Method: http.MethodPost, Pattern: "POST /api/logout", Auth: plugin.AuthSession, Handler: s.session(s.handleLogout)},
+		// 登出幂等：无论当前是否有会话都返回成功、清空 Cookie；避免 UI 在会话失效态调登出时 401。
+		{Method: http.MethodPost, Pattern: "POST /api/logout", Auth: plugin.AuthPublic, Handler: http.HandlerFunc(s.handleLogout)},
 
 		// 概览
 		{Method: http.MethodGet, Pattern: "GET /api/overview", Auth: plugin.AuthSession, Handler: s.session(s.handleOverview)},
@@ -272,7 +275,47 @@ func (s *Service) handleLogin(w http.ResponseWriter, r *http.Request) {
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode, // Lax 允许顶级导航携带 Cookie，Desktop 开发模式需要
 	})
+	// 来源是桌面端 WebView 才记录「桌面已登录」标记（托盘据此决定是否签发免登录 token）。
+	if isDesktopOrigin(r) {
+		s.markDesktopSession(req.Username)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// desktopSession 桌面登录标记内容。
+type desktopSession struct {
+	Username string `json:"username"`
+	LoginAt  string `json:"login_at"`
+}
+
+// isDesktopOrigin 判断请求是否来自桌面端 WebView（wails.localhost 或 vite dev 9245），
+// 而非浏览器（127.0.0.1:3000）。用于区分「软件中登录」与「网页登录」。
+func isDesktopOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		origin = r.Referer()
+	}
+	return strings.Contains(origin, "wails.localhost") || strings.Contains(origin, ":9245")
+}
+
+// markDesktopSession 记录桌面 WebView 登录（登录成功且来源为桌面端时调用）。
+func (s *Service) markDesktopSession(username string) {
+	data, err := json.Marshal(desktopSession{Username: username, LoginAt: time.Now().Format(time.RFC3339)})
+	if err != nil {
+		return
+	}
+	path := filepath.Join(config.DataDir, config.DesktopSessionFile)
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		s.lg.Warn("adminapi: 记录桌面会话标记失败", "err", err)
+	}
+}
+
+// clearDesktopSession 删除桌面登录标记（登出时调用，幂等）。
+func (s *Service) clearDesktopSession() {
+	path := filepath.Join(config.DataDir, config.DesktopSessionFile)
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		s.lg.Warn("adminapi: 清除桌面会话标记失败", "err", err)
+	}
 }
 
 // handleSSOLogin 用短时效 JWT 换取完整会话 Cookie（桌面端托盘「打开网页」免登录用）。
@@ -324,7 +367,10 @@ func isLoopback(remoteAddr string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-// handleLogout 清除会话 Cookie，完成登出。
+// handleLogout 清除会话 Cookie，完成登出（幂等：无会话也返回成功）。
+// 桌面登录标记（desktop-session.json）只在「桌面 WebView 登出」时删除，
+// 浏览器登出不影响桌面登录态——保证托盘「打开网页」只要桌面 webview 还登录
+// 就能继续免登录。
 func (s *Service) handleLogout(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
@@ -334,6 +380,9 @@ func (s *Service) handleLogout(w http.ResponseWriter, r *http.Request) {
 		MaxAge:   -1,
 		SameSite: http.SameSiteLaxMode,
 	})
+	if isDesktopOrigin(r) {
+		s.clearDesktopSession()
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
