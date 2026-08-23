@@ -89,6 +89,17 @@ const router = createRouter({
 
 router.beforeEach(async (to) => {
   const auth = useAuthStore()
+  // 桌面端「打开网页」免登录：URL 带 ?sso= 时用短时效 token 自动换会话。
+  const ssoToken = new URLSearchParams(window.location.search).get('sso')
+  if (ssoToken && !auth.authenticated) {
+    try {
+      await auth.ssoLogin(ssoToken)
+      // 清理地址栏参数，避免刷新时重复提交、token 留在 URL 里
+      window.history.replaceState({}, '', window.location.pathname)
+    } catch {
+      // token 过期/无效则静默忽略，走正常登录页
+    }
+  }
   if (!auth.checked) await auth.check()
   if (!to.meta.public && !auth.authenticated) return { name: 'login' }
   if (to.meta.public && auth.authenticated) return { name: 'overview' }

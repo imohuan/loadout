@@ -31,11 +31,17 @@ export const useAuthStore = defineStore('auth', () => {
     await check()
   }
 
+  // ssoLogin 用桌面端签发的短时效 token 换取会话（托盘「打开网页」免登录入口）。
+  async function ssoLogin(token: string) {
+    await request('/api/sso/login', 'POST', { token })
+    await check()
+  }
+
   async function logout() {
     await request('/api/logout', 'POST')
     overview.value = undefined
     authenticated.value = false
   }
 
-  return { checked, authenticated, overview, displayName, check, login, logout }
+  return { checked, authenticated, overview, displayName, check, login, ssoLogin, logout }
 })

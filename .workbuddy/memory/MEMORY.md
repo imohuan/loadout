@@ -31,6 +31,10 @@
 
 ## Wails 桌面端
 
+- **打包入口**：`scripts/pack-desktop.ps1`（项目根）是唯一正式打包脚本：构建根 `frontend/` → robocopy /MIR 到 `apps/desktop/frontend/dist`（`go:embed all:frontend/dist` 落点）→ rsrc 图标 → `go build -tags production` → `apps/desktop/dist/loadout-desktop.exe`（内嵌 Loadout Server）。
+- `apps/desktop/scripts/pack.ps1` 是 Wails 模板遗留（打 `apps/desktop/frontend/` 那套 `myapp-frontend` 空壳），不用。
+- 桌面版 UI 与网页版是同一套代码（根 frontend/），desktop 不维护独立前端。
+- **免二次登录（SSO）**：WebView2 与浏览器 cookie 存储物理隔离，登录态无法共享；托盘「打开网页」走 `?sso=<30s JWT>` → 网页版 `POST /api/sso/login`（限 127.0.0.1）换完整会话 cookie。桌面签 token 用 `store.New(config.DataDir)` + `auth.SignToken`（`tray.go` 的 `ssoWebURL()`）。后端接口在 `plugins/admin-api`（handleSSOLogin）。
 - `apps/desktop/backend/app/runner.go` 用 `application.BundledAssetFileServer(assets) + server.SPAFallback(...)` 三层包：API 代理（`/api`/`/v1`/`/mcp` → :3000）+ SPA history 路由 fallback + 文件服务。任何想在桌面端加新路径，先看这三层是否已覆盖，再决定要不要碰。
 - SPA fallback 实现：`apps/desktop/backend/server/spa.go`（buffered ResponseWriter，只对「404 + 末段无扩展名」改写 index.html；资源 404 透传）。复用即可，不要重写。
 - **embed.FS 找 index.html 的两个坑**（很容易踩，配合 vite-go-embed-trap skill 看）：

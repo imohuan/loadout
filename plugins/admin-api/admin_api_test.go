@@ -15,7 +15,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
+	"loadout/core/auth"
 	"loadout/core/config"
 	"loadout/core/store"
 	"loadout/plugins/admin-auth"
@@ -142,6 +144,48 @@ func TestLoginAndSession(t *testing.T) {
 	resp, _ = apiReq(t, ts, http.MethodGet, "/api/channels", nil, nil)
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("无 Cookie 访问 session 端点期望 401，实际 %d", resp.StatusCode)
+	}
+}
+
+// TestSSOLogin 验证桌面端免登录链路：短效 JWT 换完整会话 Cookie，且新 Cookie 能访问受保护端点。
+func TestSSOLogin(t *testing.T) {
+	ts, st, _ := newTestServer(t)
+
+	// 模拟桌面端：用同一 store 的 secret 签 30 秒短效 token。
+	token, err := auth.SignToken(st.SecretKey(), "admin", 30*time.Second)
+	if err != nil {
+		t.Fatalf("SignToken: %v", err)
+	}
+	resp, _ := apiReq(t, ts, http.MethodPost, "/api/sso/login", map[string]string{"token": token}, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("有效 token 换会话期望 200，实际 %d", resp.StatusCode)
+	}
+	var ssoCookie *http.Cookie
+	for _, c := range resp.Cookies() {
+		if c.Name == sessionCookieName {
+			ssoCookie = c
+		}
+	}
+	if ssoCookie == nil {
+		t.Fatal("SSO 登录响应未设置会话 Cookie")
+	}
+
+	// 换到的 Cookie 必须能访问 session 端点（/api/channels）。
+	resp, _ = apiReq(t, ts, http.MethodGet, "/api/channels", nil, ssoCookie)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("SSO 换到的 Cookie 访问受保护端点期望 200，实际 %d", resp.StatusCode)
+	}
+
+	// 无效 token → 401。
+	resp, _ = apiReq(t, ts, http.MethodPost, "/api/sso/login", map[string]string{"token": "bad.token.value"}, nil)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("无效 token 期望 401，实际 %d", resp.StatusCode)
+	}
+
+	// 缺失 token → 400。
+	resp, _ = apiReq(t, ts, http.MethodPost, "/api/sso/login", map[string]string{}, nil)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("缺 token 期望 400，实际 %d", resp.StatusCode)
 	}
 }
 

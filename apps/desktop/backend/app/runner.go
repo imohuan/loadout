@@ -11,6 +11,7 @@ import (
 	"proxyui/icons"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
+	"github.com/wailsapp/wails/v3/pkg/events"
 )
 
 // Run 启动 Wails 应用。assets 为前端构建产物的 embed 文件系统。
@@ -79,6 +80,18 @@ func Run(assets embed.FS) {
 			},
 		},
 	})
+	// 点窗口关闭按钮（X）→ 拦截关闭事件，隐藏到系统托盘，进程保持驻留。
+	// Wails v3 事件流程：WM_CLOSE 触发 WindowClosing → 先执行 RegisterHook 注册的
+	// hook（此处 Cancel 后内置的「真正关闭」逻辑不会执行），窗口仅 Hide。
+	// 唯一退出途径：托盘菜单「退出」（app.Quit() 走 destroy，不经过此拦截）。
+	win.RegisterHook(events.Common.WindowClosing, func(e *application.WindowEvent) {
+		e.Cancel()
+		win.Hide()
+	})
+
+	// 系统托盘：左键单击恢复窗口，右键菜单提供 打开 Loadout / 打开网页 / 退出
+	setupTray(app, win)
+
 	win.Show()
 
 	// 开发阶段自动打开 DevTools，生产构建时建议注释掉
