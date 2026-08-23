@@ -445,6 +445,9 @@ func (s *Service) proxyAttempt(w http.ResponseWriter, r *http.Request, pipe *Pro
 					stepAction = "首次尝试"
 				}
 				fin := time.Now()
+				// 【P1 修复】after-hook 拒绝的失败 attempt 同样带出 request-log 关联：
+				// 不补的话该半条无人收尾（无 Emit），只能等 healStuck 兜底。
+				rejectLogID, _ := pipe.Metadata[MetadataRequestLogAttemptID].(string)
 				_, _ = s.routeLog.Attempt(context.WithoutCancel(r.Context()), contracts.RouteAttempt{
 					// StepNo 字段类型为 string（contracts/routing.go:102），须显式转换。
 					RequestID: pipe.RequestID, StepNo: fmt.Sprintf("%d", snap), Action: stepAction,
@@ -453,6 +456,7 @@ func (s *Service) proxyAttempt(w http.ResponseWriter, r *http.Request, pipe *Pro
 					StatusCode: resp.StatusCode, ErrorMessage: herr.Error(),
 					ErrorBody: truncateErrorBody(herr.Error()),
 					Duration:  contracts.DurationMS(time.Since(attemptStarted)),
+					RequestLogID: rejectLogID,
 				})
 			}
 			return pipe, false

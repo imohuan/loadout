@@ -6,7 +6,7 @@
     >
       {{ emptyText }}
     </div>
-    <div v-else class="max-w-3xl mx-auto px-6 py-6">
+    <div v-else class="max-w-3xl mx-auto px-6" :class="props.dense ? 'py-2' : 'py-6'">
       <div class="space-y-2">
         <template v-for="(group, gIdx) in groups" :key="gIdx">
           <UserMessage v-if="group.type === 'user'" :message="group.message" />
@@ -61,8 +61,10 @@ const props = withDefaults(
   defineProps<{
     messages: NormalizedMessage[];
     emptyText?: string;
+    /** dense 模式：内容区内边距从 py-6 缩为 py-2，适用于嵌套在卡片内的紧凑场景 */
+    dense?: boolean;
   }>(),
-  { emptyText: '暂无对话内容。' },
+  { emptyText: '暂无对话内容。', dense: false },
 );
 
 const scrollRef = ref<HTMLElement | null>(null);

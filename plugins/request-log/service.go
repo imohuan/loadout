@@ -53,6 +53,11 @@ const metadataKey = modelgateway.MetadataRequestLogID
 // route_attempts 行时读取落 request_log_id 列（前端内层行渲染「日志」按钮）。
 const attemptMetadataKey = modelgateway.MetadataRequestLogAttemptID
 
+// skippedKey 本 attempt 未命中 request_log 能力路由的哨兵：置 true 时收尾事件
+// （after/stream-chunk/upstream-failed）经 pipeRequestLogID 直接返回空、跳过按
+// request_id 反查兜底——防止把上一个已记录 attempt 的日志行错误收尾/覆盖。
+const skippedKey = "__request_log_skipped"
+
 // Service 完整请求日志适配器：查能力路由、抓请求/响应快照落独立库。
 // 所有写库 best-effort：handler 永不 return error（否则中断整个 /v1 转发），
 // 出错仅记日志。
@@ -206,7 +211,16 @@ func (s *Service) HandleBeforeAttempt(payload any) (any, error) {
 		return payload, nil
 	}
 	if len(routes) == 0 || routes[0].Route != types.RouteProxy {
-		return payload, nil // 未命中 / native：不记录（列保持 NULL，前端不显示入口）
+		// 未命中 / native：不记录（列保持 NULL，前端不显示入口）。
+		// 【P1 修复】必须清掉本 attempt 的关联 key 并打哨兵：聚合 failover 换模型后若
+		// 新模型不在 request_log 路由内，上一 attempt 的 UUID 残留会导致本 attempt 的
+		// route_attempts.request_log_id 错误指向旧 UUID，收尾事件（after/stream-chunk）
+		// 经 pipeRequestLogID 反查兜底还会把旧 attempt 的日志结果覆盖掉。哨兵让
+		// pipeRequestLogID 直接返回空、跳过反查。
+		delete(pipe.Metadata, metadataKey)
+		delete(pipe.Metadata, attemptMetadataKey)
+		pipe.Metadata[skippedKey] = true
+		return payload, nil
 	}
 
 	// 每次渠道尝试独立 UUID（per-attempt 语义）：不复用 model-gateway 的 pipe 级 UUID
@@ -313,6 +327,11 @@ func (s *Service) pipeRequestLogID(pipe *modelgateway.ProxyPipeline) string {
 		return ""
 	}
 	if pipe.Metadata != nil {
+		// 本 attempt 未命中路由（哨兵）：直接返回空，跳过反查兜底——否则会反查到
+		// 同 request_id 上一个已记录 attempt 的行，错误收尾/覆盖其日志（P1）。
+		if skipped, _ := pipe.Metadata[skippedKey].(bool); skipped {
+			return ""
+		}
 		if id, _ := pipe.Metadata[metadataKey].(string); id != "" {
 			return id
 		}
@@ -342,7 +361,10 @@ func (s *Service) finishRequestLog(uuid string, status int, respJSON, channel, r
 	}
 	now := time.Now().UTC()
 	duration := now.Sub(started).Milliseconds()
-	if _, err := s.reqDB.Exec(`UPDATE request_logs SET response_json = ?, http_status = ?, finished_at = ?, duration_ms = ?, result = ?, channel = CASE WHEN ? = '' THEN channel ELSE ? END WHERE id = ?`,
+	// 【P1 幂等】WHERE 加 finished_at IS NULL：聚合末次失败 attempt 会先后收到
+	// ProxyAttemptFailed（每次失败 emit）与 ProxyUpstreamFailed（聚合全败 failover）
+	// 两个事件，重复收尾同一条；限定仅首次生效可避免二次 UPDATE 与结果覆盖。
+	if _, err := s.reqDB.Exec(`UPDATE request_logs SET response_json = ?, http_status = ?, finished_at = ?, duration_ms = ?, result = ?, channel = CASE WHEN ? = '' THEN channel ELSE ? END WHERE id = ? AND finished_at IS NULL`,
 		respJSON, status, now.Format(time.RFC3339Nano), duration, result, channel, channel, uuid); err != nil {
 		s.lg.Warn("request-log: 收尾写库失败", "id", uuid, "err", err)
 	}
@@ -641,9 +663,11 @@ func (s *Service) healStuck(id, requestID string, started time.Time) {
 		// 错误体），按 request_log_id 精确反查本行对应的 attempt。route_requests 只存
 		// 外层最终结果——per-attempt 语义下外层 success 时它为空，反查 attempt 才能
 		// 拿到失败详情（原实现只查 route_requests 会把失败 attempt 误标 stream_interrupted）。
+		// 【P0 修复】必须限定 result='failed'：流式断开（无 [DONE]）场景 attempt 行可能是
+		// success+200，若只看 error_body/status_code 会把成功 attempt 误标 failed。
 		var attemptErr string
 		var attemptStatus int
-		if err := s.loadout.QueryRow(`SELECT COALESCE(error_body, ''), COALESCE(status_code, 0) FROM route_attempts WHERE request_log_id = ? ORDER BY started_at DESC LIMIT 1`, id).Scan(&attemptErr, &attemptStatus); err == nil && (attemptErr != "" || attemptStatus != 0) {
+		if err := s.loadout.QueryRow(`SELECT COALESCE(error_body, ''), COALESCE(status_code, 0) FROM route_attempts WHERE request_log_id = ? AND result = 'failed' ORDER BY started_at DESC LIMIT 1`, id).Scan(&attemptErr, &attemptStatus); err == nil && (attemptErr != "" || attemptStatus != 0) {
 			errBody = attemptErr
 			status = attemptStatus
 			result = "failed"

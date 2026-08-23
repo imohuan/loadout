@@ -839,3 +839,82 @@ func TestHealStuckFetchesAttemptErrorBody(t *testing.T) {
 		t.Fatalf("response_json missing attempt error body: %s", resp)
 	}
 }
+
+// TestHealStuckSuccessAttemptNotMislabeled P0 反向回归：attempt 行 result=success
+// （流式断开无 [DONE] 但 attempt 侧已 success）时，healStuck 反查不得把它标 failed——
+// 反查必须限定 result='failed'，否则 200 成功尝试被误标 failed(200) 且丢 body。
+func TestHealStuckSuccessAttemptNotMislabeled(t *testing.T) {
+	loadout, err := db.Open(t.TempDir() + "/loadout.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer loadout.Close()
+	if _, err := loadout.Exec(`INSERT INTO route_requests(request_id, requested_model, started_at, finished_at, result, final_model) VALUES ('r-heal-ok', 'auto', '2026-08-23T00:00:00Z', '2026-08-23T00:00:02Z', 'success', 'hy3')`); err != nil {
+		t.Fatal(err)
+	}
+	// attempt 是 success+200（客户端断开但上游正常返回过）——不能被标 failed
+	if _, err := loadout.Exec(`INSERT INTO route_attempts(request_id, step_no, action, model, channel_id, started_at, finished_at, result, status_code, error_body, request_log_id) VALUES ('r-heal-ok', '1', '首次尝试', 'hy3', 'c1', '2026-08-23T00:00:00Z', '2026-08-23T00:00:01Z', 'success', 200, '', 'uuid-ok-1')`); err != nil {
+		t.Fatal(err)
+	}
+
+	reqDB, _ := openRequestLogDB(t.TempDir() + "/request-log.db")
+	defer reqDB.Close()
+	svc := testService(t, nil)
+	svc.reqDB = reqDB
+	svc.loadout = loadout
+
+	started, _ := time.Parse(time.RFC3339Nano, "2026-08-23T00:00:00Z")
+	if _, err := reqDB.Exec(`INSERT INTO request_logs(id, request_id, model, channel, stream, started_at, result, request_json, created_at) VALUES ('uuid-ok-1', 'r-heal-ok', 'hy3', 'c1', 1, '2026-08-23T00:00:00Z', 'running', '{}', '2026-08-23T00:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+
+	svc.healStuck("uuid-ok-1", "r-heal-ok", started)
+
+	var result string
+	if err := reqDB.QueryRow(`SELECT result FROM request_logs WHERE id = ?`, "uuid-ok-1").Scan(&result); err != nil {
+		t.Fatal(err)
+	}
+	if result == "failed" {
+		t.Fatalf("result = failed, want NOT failed (success attempt must not be mislabeled)")
+	}
+}
+
+// TestBeforeAttemptMissClearsAttemptKeys P1 回归：未命中能力路由的 attempt 必须
+// 清掉关联 key 并打哨兵，防止残留上一 attempt 的 UUID 串号（route_attempts.
+// request_log_id 错指 + 收尾覆盖）。
+func TestBeforeAttemptMissClearsAttemptKeys(t *testing.T) {
+	reqDB, _ := openRequestLogDB(t.TempDir() + "/request-log.db")
+	defer reqDB.Close()
+	svc := testService(t, []types.CapabilityRoute{
+		{Models: []string{"hy3"}, Capability: capabilityName, Route: types.RouteProxy},
+	})
+	svc.reqDB = reqDB
+
+	// attempt 1：hy3 命中路由 → UUID 写入
+	pipe := testPipe("req-miss")
+	pipe.Request.Model = "hy3"
+	if _, err := svc.HandleBeforeAttempt(pipe); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := pipe.Metadata[attemptMetadataKey].(string); !ok {
+		t.Fatal("attempt 1: metadata key missing")
+	}
+	// attempt 2：换模型 gpt-4o 未命中 → key 必须清空 + 哨兵
+	pipe.Request.Model = "gpt-4o"
+	if _, err := svc.HandleBeforeAttempt(pipe); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := pipe.Metadata[attemptMetadataKey]; ok {
+		t.Fatal("attempt 2 miss: attemptMetadataKey must be cleared")
+	}
+	if _, ok := pipe.Metadata[metadataKey]; ok {
+		t.Fatal("attempt 2 miss: metadataKey must be cleared")
+	}
+	if skipped, _ := pipe.Metadata[skippedKey].(bool); !skipped {
+		t.Fatal("attempt 2 miss: skipped sentinel must be set")
+	}
+	// 收尾事件（pipeRequestLogID）在哨兵下必须返回空，不反查旧行
+	if id := svc.pipeRequestLogID(pipe); id != "" {
+		t.Fatalf("pipeRequestLogID = %q, want empty under skipped sentinel", id)
+	}
+}
