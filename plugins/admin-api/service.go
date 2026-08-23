@@ -14,11 +14,13 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"loadout/core/auth"
 	"loadout/core/config"
 	"loadout/core/db"
 	"loadout/core/mcpkit"
@@ -86,6 +88,7 @@ func (s *Service) Routes() []plugin.RouteSpec {
 	return []plugin.RouteSpec{
 		// 认证
 		{Method: http.MethodPost, Pattern: "POST /api/login", Auth: plugin.AuthPublic, Handler: http.HandlerFunc(s.handleLogin)},
+		{Method: http.MethodPost, Pattern: "POST /api/sso/login", Auth: plugin.AuthPublic, Handler: http.HandlerFunc(s.handleSSOLogin)},
 		{Method: http.MethodPost, Pattern: "POST /api/logout", Auth: plugin.AuthSession, Handler: s.session(s.handleLogout)},
 
 		// 概览
@@ -270,6 +273,55 @@ func (s *Service) handleLogin(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteLaxMode, // Lax 允许顶级导航携带 Cookie，Desktop 开发模式需要
 	})
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// handleSSOLogin 用短时效 JWT 换取完整会话 Cookie（桌面端托盘「打开网页」免登录用）。
+// 桌面端签发的 token 仅 30 秒有效、且只作为「入场券」：校验通过后按 token 里的
+// 用户名重新签发正常 TTL 的会话，避免换到的 cookie 跟着 30 秒一起过期。
+// 仅允许本机回环来源调用，防止局域网内其他人拿 token 换会话。
+func (s *Service) handleSSOLogin(w http.ResponseWriter, r *http.Request) {
+	if !isLoopback(r.RemoteAddr) {
+		writeError(w, http.StatusForbidden, "仅允许本机调用")
+		return
+	}
+	var req struct {
+		Token string `json:"token"`
+	}
+	if !decodeJSON(w, r, &req) || req.Token == "" {
+		writeError(w, http.StatusBadRequest, "缺少 token")
+		return
+	}
+	claims, err := auth.ParseToken(s.st.SecretKey(), req.Token)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, "登录凭证无效或已过期")
+		return
+	}
+	token, err := auth.SignToken(s.st.SecretKey(), claims.Username, time.Duration(config.SessionTTLHours)*time.Hour)
+	if err != nil {
+		s.writeServerError(w, err)
+		return
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     sessionCookieName,
+		Value:    token,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode, // 与 handleLogin 保持一致
+	})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// isLoopback 判断请求来源是否为回环地址（127.0.0.1 / ::1 / localhost）。
+func isLoopback(remoteAddr string) bool {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		host = remoteAddr
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // handleLogout 清除会话 Cookie，完成登出。
@@ -1038,13 +1090,45 @@ func equalStrings(a, b []string) bool {
 // ===== MCP 服务器 =====
 
 // handleMCPServersList 返回全部上游 MCP 服务器。
+// mcpServerWithStatus 管理后台返回的 MCP 服务器条目（嵌入配置 + 进程运行状态）。
+type mcpServerWithStatus struct {
+	types.MCPServer
+	// Status 进程运行状态：running / stopped / failed（见 mcphub.ServerRunState）。
+	Status string `json:"status"`
+	// Error 失败原因（仅 status=failed 时非空）。
+	Error string `json:"error,omitempty"`
+}
+
+// withStatus 合并进程状态到服务器条目（hub 为 nil 时仅返回配置，Status 置空）。
+func (s *Service) withStatus(it types.MCPServer) mcpServerWithStatus {
+	out := mcpServerWithStatus{MCPServer: it}
+	if s.hub == nil {
+		return out
+	}
+	st, err := s.hub.ServerStatus(it.ID)
+	if err != nil {
+		out.Status = string(mcphub.StateFailed)
+		out.Error = err.Error()
+		return out
+	}
+	out.Status = string(st)
+	if st == mcphub.StateFailed {
+		out.Error = s.hub.ServerError(it.ID)
+	}
+	return out
+}
+
 func (s *Service) handleMCPServersList(w http.ResponseWriter, r *http.Request) {
 	items, err := s.readMCPServers(r.Context())
 	if err != nil {
 		s.writeServerError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, items)
+	out := make([]mcpServerWithStatus, 0, len(items))
+	for _, it := range items {
+		out = append(out, s.withStatus(it))
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // handleMCPServerCreate 新建一个上游 MCP 服务器（自动生成 id）。
@@ -1070,20 +1154,58 @@ func (s *Service) handleMCPServerCreate(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	s.invalidateHub()
-	writeJSON(w, http.StatusOK, req)
+	// enabled 时立即拉起 stdio 进程；失败不阻断创建，状态经 withStatus 展示为 failed。
+	if req.Enabled {
+		s.ensureServerRunning(r.Context(), req)
+	}
+	writeJSON(w, http.StatusOK, s.withStatus(req))
+}
+
+// ensureServerRunning 拉起指定 server 的进程（hub 为 nil 时安全跳过），失败仅记日志。
+func (s *Service) ensureServerRunning(ctx context.Context, srv types.MCPServer) {
+	if s.hub == nil {
+		return
+	}
+	if err := s.hub.SetServerEnabled(ctx, srv.ID, true); err != nil {
+		s.lg.Warn("admin-api: 拉起 MCP 进程失败", "server", srv.Name, "err", err)
+	}
 }
 
 // handleMCPServersReplace 用请求体数组整体替换 MCP 服务器列表。
+// 进程生命周期随替换 diff：消失/改为禁用的先停，新增/重新启用的拉起。
 func (s *Service) handleMCPServersReplace(w http.ResponseWriter, r *http.Request) {
 	var req []types.MCPServer
 	if !decodeJSON(w, r, &req) {
 		return
+	}
+	// 先停掉旧配置中「已消失」或「改为禁用」的进程。
+	old, err := s.readMCPServers(r.Context())
+	if err == nil {
+		kept := map[string]bool{}
+		for _, it := range req {
+			if it.Enabled {
+				kept[it.ID] = true
+			}
+		}
+		for _, it := range old {
+			if it.Enabled && !kept[it.ID] && s.hub != nil {
+				if err := s.hub.SetServerEnabled(r.Context(), it.ID, false); err != nil {
+					s.lg.Warn("admin-api: 替换后停止 MCP 进程失败", "server", it.Name, "err", err)
+				}
+			}
+		}
 	}
 	if err := s.writeMCPServers(r.Context(), req); err != nil {
 		s.writeServerError(w, err)
 		return
 	}
 	s.invalidateHub()
+	// 再拉起新增/重新启用的进程。
+	for _, it := range req {
+		if it.Enabled {
+			s.ensureServerRunning(r.Context(), it)
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -1112,6 +1234,12 @@ func (s *Service) handleMCPServerDelete(w http.ResponseWriter, r *http.Request) 
 	if !found {
 		writeError(w, http.StatusNotFound, "MCP 服务器不存在")
 		return
+	}
+	// 先杀进程再删配置，避免留下孤儿 stdio 子进程。
+	if s.hub != nil {
+		if err := s.hub.SetServerEnabled(r.Context(), req.ID, false); err != nil {
+			s.lg.Warn("admin-api: 删除前停止 MCP 进程失败", "id", req.ID, "err", err)
+		}
 	}
 	if err := s.writeMCPServers(r.Context(), out); err != nil {
 		s.writeServerError(w, err)
@@ -1152,7 +1280,21 @@ func (s *Service) handleMCPServerUpdate(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	s.invalidateHub()
-	writeJSON(w, http.StatusOK, items)
+	// 编辑可能改了命令/URL/开关：先停旧进程，再按新 enabled 拉起，保证新配置生效。
+	// 启动失败不回滚 DB（保留用户意图），状态经 withStatus 展示为 failed。
+	if s.hub != nil {
+		_ = s.hub.SetServerEnabled(r.Context(), id, false)
+		if req.Enabled {
+			if err := s.hub.SetServerEnabled(r.Context(), id, true); err != nil {
+				s.lg.Warn("admin-api: 更新后拉起 MCP 进程失败", "server", req.Name, "err", err)
+			}
+		}
+	}
+	out := make([]mcpServerWithStatus, 0, len(items))
+	for _, it := range items {
+		out = append(out, s.withStatus(it))
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // mcpToolBrief 连接测试/工具列表返回的工具摘要（不含完整 schema，避免响应过大）。

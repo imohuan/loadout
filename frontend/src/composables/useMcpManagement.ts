@@ -16,6 +16,10 @@ export interface McpServer {
   headers?: Record<string, string>
   env?: Record<string, string>
   enabled?: boolean
+  // 进程运行状态（后端 /api/mcp-servers 返回）：running / stopped / failed。
+  status?: string
+  // 失败原因（status=failed 时）。
+  error?: string
 }
 export interface McpToolGroup {
   id: string
@@ -251,16 +255,28 @@ export function useMcpManagement() {
     )
   }
   async function toggleServer(server: McpServer) {
+    const nextEnabled = server.enabled === false
     await run(
       `server:${server.id}:toggle`,
       async () => {
         await request('/api/mcp-servers/' + server.id, 'PUT', {
           ...server,
-          enabled: server.enabled === false,
+          enabled: nextEnabled,
         })
         await refresh()
+        // 开启后进程没起来（stdio 启动失败/崩溃）→ 明确报错，状态列同步显示「失败」。
+        if (nextEnabled) {
+          const updated = servers.value.find((it) => it.id === server.id)
+          if (updated?.status === 'failed') {
+            toast.error('MCP 进程启动失败', {
+              description: updated.error || '进程未存活，具体原因见状态列',
+            })
+            return
+          }
+        }
+        toast.success(nextEnabled ? '已启用' : '已停用')
       },
-      '状态已更新',
+      '',
     )
   }
   async function removeServer(server: McpServer) {

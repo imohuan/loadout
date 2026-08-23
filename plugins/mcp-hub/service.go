@@ -665,6 +665,133 @@ func (s *Service) getUpstreamByID(id string) *mcpkit.Upstream {
 	return s.upstreams[id]
 }
 
+// dropUpstream 从连接池移除指定 server id 的上游（调用方需已确保 Close）。
+func (s *Service) dropUpstream(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.upstreams, id)
+}
+
+// findServer 按 id 读服务器配置。
+func (s *Service) findServer(id string) (*types.MCPServer, error) {
+	servers, err := s.readServers()
+	if err != nil {
+		return nil, err
+	}
+	for i := range servers {
+		if servers[i].ID == id {
+			return &servers[i], nil
+		}
+	}
+	return nil, fmt.Errorf("mcphub: MCP 服务器不存在: %s", id)
+}
+
+// ServerRunState 上游进程的运行状态（前端状态列展示）。
+type ServerRunState string
+
+const (
+	// StateRunning 已启动且存活（stdio 子进程常驻；HTTP/SSE 为外部服务，enabled 即视为运行中）。
+	StateRunning ServerRunState = "running"
+	// StateStopped 未启动（enabled=false 或从未拉起）。
+	StateStopped ServerRunState = "stopped"
+	// StateFailed 启动失败或进程已崩溃退出（enabled=true 但进程没活着）。
+	StateFailed ServerRunState = "failed"
+)
+
+// SetServerEnabled 按开关启停上游进程（进程生命周期与 enabled 开关绑定）：
+//   - enabled=true：拉起 stdio 子进程并常驻后台（HTTP/SSE 无进程可拉，仅入池）；
+//     启动失败返回错误，由调用方决定是否展示「失败」状态。
+//   - enabled=false：杀掉进程并从连接池移除。
+func (s *Service) SetServerEnabled(ctx context.Context, id string, enabled bool) error {
+	srv, err := s.findServer(id)
+	if err != nil {
+		return err
+	}
+	if !enabled {
+		if up := s.getUpstreamByID(id); up != nil {
+			_ = up.Close()
+			s.dropUpstream(id)
+		}
+		return nil
+	}
+	return s.getUpstream(*srv).Connect(ctx)
+}
+
+// StartEnabled 启动时自动拉起所有 enabled 的上游（stdio 常驻进程）。
+// 并行 Connect（总耗时 = 最慢的一个，而非求和），单个失败只记日志不阻断
+// 整体启动——失败状态由前端经 ServerStatus 展示。
+func (s *Service) StartEnabled(ctx context.Context) {
+	servers, err := s.readServers()
+	if err != nil {
+		s.warn("mcphub: 启动恢复：读服务器清单失败", "err", err)
+		return
+	}
+	var wg sync.WaitGroup
+	for _, srv := range servers {
+		if !srv.Enabled {
+			continue
+		}
+		wg.Add(1)
+		go func(srv types.MCPServer) {
+			defer wg.Done()
+			if err := s.getUpstream(srv).Connect(ctx); err != nil {
+				s.warn("mcphub: 启动恢复拉起失败", "server", srv.Name, "err", err)
+			}
+		}(srv)
+	}
+	wg.Wait()
+}
+
+// ServerStatus 返回指定 server 的进程运行状态。
+//   - enabled=false → stopped
+//   - HTTP/SSE（外部服务，无本地进程）→ enabled 即 running
+//   - stdio：池中无 Upstream 或进程未存活 → failed（启动失败 / 已崩溃，不自动重启）
+//   - stdio：进程存活 → running
+func (s *Service) ServerStatus(id string) (ServerRunState, error) {
+	srv, err := s.findServer(id)
+	if err != nil {
+		return StateStopped, nil
+	}
+	if !srv.Enabled {
+		return StateStopped, nil
+	}
+	if srv.Transport != "stdio" {
+		return StateRunning, nil
+	}
+	up := s.getUpstreamByID(id)
+	if up == nil || !up.Alive() {
+		return StateFailed, nil
+	}
+	return StateRunning, nil
+}
+
+// ServerError 返回指定 server 最近一次建连失败的错误原因（无记录返回空串）。
+func (s *Service) ServerError(id string) string {
+	up := s.getUpstreamByID(id)
+	if up == nil {
+		return ""
+	}
+	return up.LastError()
+}
+
+// Close 实现 io.Closer：退出时杀掉所有已拉起的上游子进程。
+// core/plugin 的 Assembly.Unload 会检测 io.Closer 并自动调用。
+func (s *Service) Close() error {
+	s.mu.Lock()
+	ups := make([]*mcpkit.Upstream, 0, len(s.upstreams))
+	for _, up := range s.upstreams {
+		ups = append(ups, up)
+	}
+	s.mu.Unlock()
+	var firstErr error
+	for _, up := range ups {
+		if err := up.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
 // bumpVersion 递增 index_version 并返回新值。
 func (s *Service) bumpVersion() int {
 	s.mu.Lock()

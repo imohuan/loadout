@@ -370,9 +370,26 @@ async function copyConfig(endpoint: {
                       </TableCell>
                       <TableCell>{{ labels[server.transport] || server.transport }}</TableCell>
                       <TableCell>
-                        <Badge :variant="server.enabled === false ? 'secondary' : 'default'">{{
-                          server.enabled === false ? '禁用' : '启用'
-                        }}</Badge>
+                        <TooltipProvider>
+                          <Tooltip v-if="server.status === 'failed'">
+                            <TooltipTrigger as-child
+                              ><Badge variant="destructive">失败</Badge></TooltipTrigger
+                            >
+                            <TooltipContent class="max-w-xs break-words">{{
+                              server.error || '进程启动失败或已退出'
+                            }}</TooltipContent>
+                          </Tooltip>
+                          <Badge
+                            v-else-if="server.status === 'running'"
+                            class="bg-green-500/15 text-green-700 border-green-500/20 dark:text-green-300"
+                            >运行中</Badge
+                          >
+                          <Badge
+                            v-else
+                            :variant="server.enabled === false ? 'secondary' : 'default'"
+                            >{{ server.enabled === false ? '已停止' : '启用' }}</Badge
+                          >
+                        </TooltipProvider>
                       </TableCell>
                       <TableCell>
                         <div class="flex justify-end gap-1">

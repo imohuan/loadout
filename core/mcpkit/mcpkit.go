@@ -16,6 +16,8 @@ import (
 	"sync"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"loadout/core/cmdutil"
 )
 
 // implementationVersion 是注册客户端/服务端实现时使用的默认版本号。
@@ -70,6 +72,10 @@ type Upstream struct {
 	mu      sync.Mutex
 	cfg     UpstreamConfig
 	session *mcp.ClientSession
+	// cmd stdio 子进程引用（用于判断进程存活；非 stdio 传输恒为 nil）。
+	cmd *exec.Cmd
+	// lastErr 最近一次建连失败的错误（供 UI 展示失败原因）。
+	lastErr error
 }
 
 // NewUpstream 根据配置创建一个懒连接的上游 MCP 客户端。
@@ -116,16 +122,51 @@ func (u *Upstream) CallTool(ctx context.Context, name string, args map[string]an
 	return out, nil
 }
 
-// Close 关闭上游连接；若尚未建立连接则不做任何事。
+// Connect 显式建立上游连接（stdio 会拉起子进程并保持运行）；已连接时为空操作。
+// 供「开关启动」与「启动自动恢复」使用：调用后进程常驻后台，直到 Close。
+func (u *Upstream) Connect(ctx context.Context) error {
+	_, err := u.ensureSession(ctx)
+	return err
+}
+
+// Alive 报告 stdio 子进程是否仍在运行（非 stdio 传输或未连接返回 false）。
+// 用于前端展示「运行中 / 已崩溃」状态；崩溃不自动重启，由调用方决定处理。
+func (u *Upstream) Alive() bool {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	// Process 非 nil 且 ProcessState 为 nil ⇒ 进程已 Start 且尚未 Wait 结束。
+	return u.cmd != nil && u.cmd.Process != nil && u.cmd.ProcessState == nil
+}
+
+// LastError 返回最近一次建连失败的错误（无失败记录返回空串）。供 UI 展示失败原因。
+func (u *Upstream) LastError() string {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.lastErr == nil {
+		return ""
+	}
+	return u.lastErr.Error()
+}
+
+// Close 关闭上游连接；若尚未建立连接则不做任何事。stdio 下会终止子进程。
+// 注意：若建连仍在进行中（session 尚未建立但子进程已 Start），直接 Kill 进程，
+// 避免「开关快速切换」留下孤儿 MCP server。
 func (u *Upstream) Close() error {
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	if u.session == nil {
-		return nil
+	if u.session != nil {
+		err := u.session.Close()
+		u.session = nil
+		u.cmd = nil
+		u.lastErr = nil
+		return err
 	}
-	err := u.session.Close()
-	u.session = nil
-	return err
+	if u.cmd != nil && u.cmd.Process != nil {
+		_ = u.cmd.Process.Kill()
+	}
+	u.cmd = nil
+	u.lastErr = nil
+	return nil
 }
 
 // ensureSession 返回当前会话；若尚未建连，则按配置建立连接（并发安全）。
@@ -133,10 +174,12 @@ func (u *Upstream) ensureSession(ctx context.Context) (*mcp.ClientSession, error
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	if u.session != nil {
+		u.lastErr = nil
 		return u.session, nil
 	}
-	transport, err := buildTransport(u.cfg)
+	transport, err := u.buildTransport()
 	if err != nil {
+		u.lastErr = err
 		return nil, err
 	}
 	client := mcp.NewClient(&mcp.Implementation{
@@ -145,8 +188,15 @@ func (u *Upstream) ensureSession(ctx context.Context) (*mcp.ClientSession, error
 	}, nil)
 	session, err := client.Connect(ctx, transport, nil)
 	if err != nil {
+		// 建连失败时回收已启动的子进程，避免泄漏一个孤儿 MCP server。
+		if u.cmd != nil && u.cmd.Process != nil {
+			_ = u.cmd.Process.Kill()
+		}
+		u.cmd = nil
+		u.lastErr = err
 		return nil, err
 	}
+	u.lastErr = nil
 	u.session = session
 	return session, nil
 }
@@ -159,27 +209,30 @@ func upstreamClientName(name string) string {
 	return "loadout-mcpkit"
 }
 
-// buildTransport 根据配置构造对应的 MCP 传输实现。
-func buildTransport(cfg UpstreamConfig) (mcp.Transport, error) {
-	switch cfg.Transport {
+// buildTransport 根据配置构造对应的 MCP 传输实现（记录 stdio 子进程引用供 Alive 判断）。
+func (u *Upstream) buildTransport() (mcp.Transport, error) {
+	switch u.cfg.Transport {
 	case "stdio":
-		cmd := exec.Command(cfg.Command, cfg.Args...)
-		if len(cfg.Env) > 0 {
-			cmd.Env = append(os.Environ(), mapToEnv(cfg.Env)...)
+		cmd := exec.Command(u.cfg.Command, u.cfg.Args...)
+		// 桌面 exe（windowsgui）下不弹黑色终端框；其他平台为空操作。
+		cmdutil.HideWindow(cmd)
+		if len(u.cfg.Env) > 0 {
+			cmd.Env = append(os.Environ(), mapToEnv(u.cfg.Env)...)
 		}
+		u.cmd = cmd
 		return &mcp.CommandTransport{Command: cmd}, nil
 	case "http":
 		return &mcp.StreamableClientTransport{
-			Endpoint:   cfg.URL,
-			HTTPClient: newHTTPClient(cfg.Headers),
+			Endpoint:   u.cfg.URL,
+			HTTPClient: newHTTPClient(u.cfg.Headers),
 		}, nil
 	case "sse":
 		return &mcp.SSEClientTransport{
-			Endpoint:   cfg.URL,
-			HTTPClient: newHTTPClient(cfg.Headers),
+			Endpoint:   u.cfg.URL,
+			HTTPClient: newHTTPClient(u.cfg.Headers),
 		}, nil
 	default:
-		return nil, fmt.Errorf("mcpkit: unsupported transport %q (want \"stdio\", \"http\" or \"sse\")", cfg.Transport)
+		return nil, fmt.Errorf("mcpkit: unsupported transport %q (want \"stdio\", \"http\" or \"sse\")", u.cfg.Transport)
 	}
 }
 
