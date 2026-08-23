@@ -16,6 +16,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	"loadout/core/cmdutil"
 )
 
 // Platform 对应 `unifyai --list-platforms --json` 输出的单个平台（附录 B.1）。
@@ -83,6 +85,7 @@ func (s *Service) PlatformInfo() (ListPlatformsResult, error) {
 	}
 	args := append(append([]string{}, base...), "--list-platforms", "--json")
 	proc := exec.Command(cmd, args...)
+	cmdutil.HideWindow(proc) // 桌面 exe 下不弹黑色终端框
 	// 后台服务 PATH 可能不完整，把 npx 所在目录补到最前（含 node）。
 	proc.Env = envWithBinDir(cmd)
 	out, err := proc.Output()

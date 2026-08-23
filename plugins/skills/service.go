@@ -20,6 +20,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"loadout/core/cmdutil"
 	"loadout/core/config"
 	"loadout/core/db"
 	"loadout/core/linkfs"
@@ -36,6 +37,7 @@ const maxExtractBytes = 64 << 20 // 64 MiB
 // runCommand 执行外部命令并返回合并输出。包级变量，测试可替换为 fake。
 var runCommand = func(name string, args ...string) (string, error) {
 	cmd := exec.Command(name, args...)
+	cmdutil.HideWindow(cmd) // 桌面 exe 下不弹黑色终端框
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
@@ -966,6 +968,7 @@ func (s *Service) syncLockFile() error {
 // 包级变量，测试可替换为 fake。
 var runCommandStream = func(name string, args []string, onLine func(string)) error {
 	cmd := exec.Command(name, args...)
+	cmdutil.HideWindow(cmd) // 桌面 exe 下不弹黑色终端框
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return err
