@@ -8,5 +8,5 @@ import "embed"
 
 // Dist 前端构建产物（frontend/dist），用 http.FileServer 挂载到管理后台路径。
 //
-//go:embed dist
+//go:embed all:dist
 var Dist embed.FS

@@ -36,8 +36,16 @@ func Run(assets embed.FS) {
 			// 使用代理 handler 包装静态资源服务器
 			// API 请求 (/api/*, /v1/*, /mcp/*) 代理到 Loadout Server (127.0.0.1:3000)
 			// 其他请求走静态资源服务 (开发模式自动代理到 Vite)
+			//
+			// 外层再套一层 SPA fallback：让 wails.localhost 或本地浏览器直接刷新
+			// 任意前端路由（如 /settings）时，回退到 index.html 让 Vue Router 接管，
+			// 避免裸 FileServer 报 404。资源文件（.js / .css / .png）的 404 不会
+			// 被改写，前端资源缺失时仍能看到真实 404。
 			Handler: server.NewProxyHandler(
-				application.AssetFileServerFS(assets),
+				server.SPAFallback(
+					application.BundledAssetFileServer(assets),
+					assets,
+				),
 				"http://127.0.0.1:3000",
 			),
 		},
@@ -56,6 +64,20 @@ func Run(assets embed.FS) {
 		MinHeight: config.App.Custom.Window.MinHeight,
 		URL:       "/",
 		Frameless: config.App.Custom.Window.Frameless,
+
+		// 关掉 Edge/Chromium 在 webview 内置的右键菜单（中文「返回/刷新/另存为/打印...」）。
+		// 桌面端 UX 是应用本身，不需要把浏览器 chrome 暴露给用户；若以后想提供
+		// 「选中复制」之类的菜单，在前端用 @contextmenu + 自绘菜单实现即可。
+		DefaultContextMenuDisabled: true,
+
+		// 全局快捷键：Ctrl+R 触发 webview 刷新（等价于浏览器 F5）。
+		// wails KeyBindings 走 accelerator 解析（大小写不敏感），同一份配置在
+		// macOS 上会被自动换为 Cmd+R，在 Linux 上保持 Ctrl+R。
+		KeyBindings: map[string]func(window application.Window){
+			"Ctrl+R": func(w application.Window) {
+				w.Reload()
+			},
+		},
 	})
 	win.Show()
 
