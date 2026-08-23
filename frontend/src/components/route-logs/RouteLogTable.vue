@@ -346,7 +346,7 @@ function isFailureResult(result?: string) {
                 <TableCell class="whitespace-nowrap">
                   <router-link v-if="log.request_log_id"
                     :to="`/request-logs/${log.request_log_id}`"
-                    class="text-xs text-primary hover:underline" @click.stop>完整日志</router-link>
+                    class="text-xs text-primary hover:underline" @click.stop>进入日志</router-link>
                   <span v-else class="text-xs text-muted-foreground">-</span>
                 </TableCell>
               </TableRow>
@@ -412,7 +412,7 @@ function isFailureResult(result?: string) {
                           }}</span>
                           <router-link v-if="attempt.request_log_id"
                             :to="`/request-logs/${attempt.request_log_id}`"
-                            class="text-xs text-primary hover:underline" @click.stop>日志</router-link>
+                            class="text-xs text-primary hover:underline" @click.stop>进入日志</router-link>
                         </div>
                         <RouteLogErrorCell v-if="attempt.error_message || attempt.error_body" :json="attempt.error_body"
                           :message="attempt.failure_class
