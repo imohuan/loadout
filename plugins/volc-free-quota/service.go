@@ -30,7 +30,7 @@ type Service struct {
 	db     *sql.DB
 	st     *store.Store
 	lg     *slog.Logger
-	client *volcBillingClient
+	client billingFetcher
 
 	// inMemoryChannels 是 doRefresh 期间缓存的渠道 ID→渠道记录，避免刷新热路径再查 channels。
 	// 缓存有效到下次显式失效（channel 增删）——插件自身不实现失效，靠定期重建。
@@ -38,11 +38,12 @@ type Service struct {
 	lastChannelCache  map[string]channelSnapshot
 	lastChannelCacheT time.Time
 
-	// debounce 远程刷新（v16）：请求成功后 scheduleRefresh() 重置计时器，
-	// interval 内无新请求才刷一次 billing（比固定 ticker 准且省请求）。
-	refreshMu       sync.Mutex
-	refreshInterval time.Duration
-	refreshTimer    *time.Timer
+	// 后台定时刷新（rev2）：纯 ticker 每 interval 无条件刷一次（去 debounce——
+	// 请求活动/无请求时 debounce 都可能导致远程永不刷新，额度恢复检测不到）。
+	// refreshing 是 in-flight 标记（Refresh 入口互斥，手动/定时共用）。
+	bgMu       sync.Mutex
+	refreshing bool
+	bgCancel   context.CancelFunc
 }
 
 // channelSnapshot 渠道关键字段（model_states 写入需要的）。
@@ -77,52 +78,61 @@ func accountID(accessKey string) string {
 	return hex.EncodeToString(sum[:])[:16]
 }
 
-// StartBackgroundRefresh 启动"静默 debounce"远程刷新。
+// errRefreshInFlight 并发刷新冲突的哨兵错误（HandleRefresh 用 errors.Is 判断返回 409）。
+var errRefreshInFlight = errors.New("刷新进行中，请稍后再试")
+
+// StartBackgroundRefresh 启动后台定时刷新：纯 ticker，每 interval 无条件刷一次远程。
 //
 //   - interval <= 0 表示不启动（仍可手动调用 Refresh）。
-//   - runNow=true 启动时立即触发一次刷新（拿到首份数据建底数）。
+//   - runNow=true 时异步立即触发一次刷新（不阻塞启动；拿到首份数据建底数）。
+//   - ticker 每 interval 触发 safeRefresh；Refresh 入口的 refreshing 锁保证并发不重复拉
+//     billing（手动 HTTP 刷新与定时刷新互斥）。
 //
-// 与固定 ticker 不同：每次模型请求成功（HandleProxyUpstreamSucceeded）都会调用
-// scheduleRefresh() 重置计时器——请求活动期间不刷远程（billing 结算未完成，拉到的
-// 数据不准且易 429），请求停止后静默 interval（默认 15 分钟）才刷一次，此时数据可靠。
-// 本地 token 扣减（local_remaining）是实时的，不依赖这次刷新。
+// 与旧 debounce（v16）的区别（rev2 审计 E）：debounce 只在请求成功后重置计时器，
+// 请求活动期间 timer 被持续重置、无请求时永不触发——两种情况下远程都永不刷新，
+// 额度恢复（8:00~11:30）检测不到。纯 ticker 无条件刷，滞后数据由 computeLocalRemaining
+// 的"今天扣完不记 + 下降校准"保护，不会误判。
 //
-// 返回 Disposer（unload 时调用）。
+// 返回 Disposer（unload 时调用，停 ticker goroutine）。
 func (s *Service) StartBackgroundRefresh(interval time.Duration, runNow bool) func() {
-	s.refreshMu.Lock()
-	s.refreshInterval = interval
-	s.refreshMu.Unlock()
 	if runNow {
-		if _, err := s.Refresh(context.Background(), ""); err != nil {
-			s.lg.Warn("volc-free-quota: 启动首次刷新失败", "err", err)
-		}
+		go s.safeRefresh() // 异步，不阻塞启动
 	}
-	return func() {
-		s.refreshMu.Lock()
-		if s.refreshTimer != nil {
-			s.refreshTimer.Stop()
-			s.refreshTimer = nil
+	if interval <= 0 {
+		return func() {}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	s.bgMu.Lock()
+	s.bgCancel = cancel
+	s.bgMu.Unlock()
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				s.safeRefresh()
+			}
 		}
-		s.refreshMu.Unlock()
+	}()
+	return func() {
+		s.bgMu.Lock()
+		if s.bgCancel != nil {
+			s.bgCancel()
+			s.bgCancel = nil
+		}
+		s.bgMu.Unlock()
 	}
 }
 
-// scheduleRefresh 重置 debounce 计时器：请求成功后调用，interval 内无新请求才刷远程。
-// 热路径（每请求一次），只做 timer 重置，开销可忽略。
-func (s *Service) scheduleRefresh() {
-	s.refreshMu.Lock()
-	defer s.refreshMu.Unlock()
-	if s.refreshInterval <= 0 {
-		return // 未启用 debounce
+// safeRefresh 后台刷新统一入口：失败记 Warn（ticker 下周期自动重试），
+// 并发由 Refresh 入口的 refreshing 锁保证。
+func (s *Service) safeRefresh() {
+	if _, err := s.Refresh(context.Background(), ""); err != nil {
+		s.lg.Warn("volc-free-quota: 后台刷新失败", "err", err)
 	}
-	if s.refreshTimer != nil {
-		s.refreshTimer.Stop()
-	}
-	s.refreshTimer = time.AfterFunc(s.refreshInterval, func() {
-		if _, err := s.Refresh(context.Background(), ""); err != nil {
-			s.lg.Warn("volc-free-quota: 静默刷新失败", "err", err)
-		}
-	})
 }
 
 // ===== 事件钩子 =====
@@ -156,9 +166,8 @@ func (s *Service) HandleProxyUpstreamSucceeded(payload any) (any, error) {
 		s.lg.Warn("volc-free-quota: 记录使用次数失败", "channel_id", p.ChannelID, "model", p.Model, "err", err)
 	}
 	s.decrementLocalRemaining(aid, p.Model, p.Usage.TotalTokens)
-	// 请求成功 → 重置 debounce 计时器：billing 结算未完成，静默 interval 后再刷远程，
-	// 期间本地扣减（上面那行）已实时反映消耗。
-	s.scheduleRefresh()
+	// 定时刷新由 StartBackgroundRefresh 的纯 ticker 负责（rev2 去 debounce），
+	// 热路径不再做 timer 重置。
 	return payload, nil
 }
 
@@ -178,7 +187,8 @@ func (s *Service) decrementLocalRemaining(accountID, apiModel string, tokens int
 	if accountID == "" || apiModel == "" || tokens <= 0 {
 		return
 	}
-	rows, err := s.db.Query(`SELECT instance_no, model, configuration_name, local_remaining FROM volc_quota_packages WHERE account_id = ? AND initial_total > 0 ORDER BY local_remaining DESC`, accountID)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	rows, err := s.db.Query(`SELECT instance_no, model, configuration_name, local_remaining FROM volc_quota_packages WHERE account_id = ? AND initial_total > 0`+activePackageCond+` ORDER BY local_remaining DESC`, accountID, now)
 	if err != nil {
 		s.lg.Warn("volc-free-quota: 查询资源包余额失败", "account_id", accountID, "model", apiModel, "err", err)
 		return
@@ -207,7 +217,6 @@ func (s *Service) decrementLocalRemaining(accountID, apiModel string, tokens int
 			"hint", "该 API 模型没有对应的 volc_quota_packages 行（model 为 configuration_code 提取名），请检查渠道是否已刷新远程额度")
 		return
 	}
-	now := time.Now().UTC().Format(time.RFC3339Nano)
 	remaining := int64(tokens)
 	for i := range matched {
 		if remaining <= 0 {
@@ -242,47 +251,71 @@ func (s *Service) decrementLocalRemaining(accountID, apiModel string, tokens int
 			"account_id", accountID, "api_model", apiModel, "matched_model", m.model,
 			"configuration_name", m.confName, "instance_no", m.instanceNo,
 			"tokens", deduct, "before", m.before, "after", after)
-		// 资源包本次扣到 0 → 实时同步 model_states（cooldown 到次日 00:00 本地时区）。
-		// 不再等 runNow/15min debounce 才能让模型状态页显示已关闭，让用户立刻看到结果。
-		if after == 0 && m.before > 0 {
-			s.syncModelStatesExhausted(context.Background(), accountID, m.model)
-		}
 	}
 	if remaining > 0 {
 		// 所有匹配包都扣到 0 仍未扣完：说明免费额度已彻底耗尽，剩余部分不记账（日志提醒）。
 		s.lg.Warn("volc-free-quota: 免费额度已扣完，剩余 tokens 未入账",
 			"account_id", accountID, "api_model", apiModel, "unaccounted", remaining)
 	}
+	// 聚合双向同步（唯一判定入口，rev2）：单包扣到 0 不再直接禁用模型（可能其他包还有余额），
+	// 改为按 API 模型聚合 SUM(local_remaining) 三态判定（用完→冷却 / 恢复→解除 / 中间态不动）。
+	// 幂等：状态无变化时 UPDATE 影响 0 行，每次请求成功后调用可接受。
+	s.syncModelStatesByAggregate(context.Background(), accountID)
 }
 
-// syncModelStatesExhausted 把 quota 模型名映射到该账号下所有 API 模型名，对每个
-// (channel_id, api_model) 写冷却 + last_error='模型免费额度用完'。调用方：decrementLocalRemaining
-// 在某个资源包从有余额扣到 0 时调用，做到用户请求触发即时同步 model_states（不等
-// runNow 或 15min debounce 刷新）。
-func (s *Service) syncModelStatesExhausted(ctx context.Context, accountID, quotaModel string) {
+// syncModelStatesByAggregate 按账号聚合余额三态同步 model_states（唯一判定入口）。
+//
+//   - 某 API 模型所有匹配 quota model 的聚合 SUM(local_remaining) <= minRemaining（默认 0）
+//     → 写冷却（用完）
+//   - SUM > config.VolcQuotaReviveThreshold（默认 45 万）→ 解除冷却（恢复）
+//   - 中间态（0 < SUM <= 45 万）→ 不动（小额残留不算恢复，也不重复禁用，避免状态摇摆）
+//
+// 关键（rev2 审计 C）：多 quota model（如 deepseek-v4-flash / deepseek-v4-flash-0731）
+// 可能映射到同一 API 模型（deepseek-v4-flash-ga-260731），必须按 API 模型合并 SUM 后
+// 统一判定，否则同循环内先 re-enable 后 disable 随机抖动（map 无序迭代）。
+//
+// 调用方：refreshOne（刷新后）、decrementLocalRemaining（请求扣减后）。幂等。
+// 返回本次判为"用完"并写冷却的 API 模型名（排序后，供 RefreshResult.DisabledModels）。
+func (s *Service) syncModelStatesByAggregate(ctx context.Context, accountID string) []string {
 	channelIDs := s.channelsForAccount(accountID)
 	if len(channelIDs) == 0 {
-		return
+		return nil
 	}
 	apiModels, err := s.channelsAPIModels(ctx, channelIDs)
 	if err != nil || len(apiModels) == 0 {
-		return
+		return nil
 	}
-	matched := s.matchQuotaToAPIModels(quotaModel, apiModels)
-	if len(matched) == 0 {
-		return
-	}
-	until := untilNextDayMidnightLocal()
-	for _, m := range matched {
-		seen := make(map[string]struct{})
-		_ = seen // 占位，避免未用报错
-		for _, chID := range channelIDs {
-			if err := s.disableModelForFreeQuota(ctx, chID, m, until); err != nil {
-				s.lg.Warn("volc-free-quota: 实时同步 model_states 失败",
-					"channel_id", chID, "model", m, "err", err)
-			}
+	agg := s.aggregateLocalRemaining(accountID)
+	// 按 API 模型合并：apiModel -> 所有匹配 quota model 的聚合和
+	apiAgg := make(map[string]int64)
+	for quotaModel, sum := range agg {
+		for _, m := range s.matchQuotaToAPIModels(quotaModel, apiModels) {
+			apiAgg[m] += sum
 		}
 	}
+	minRemaining := int64(config.VolcQuotaMinRemaining)
+	reviveThreshold := int64(config.VolcQuotaReviveThreshold)
+	disabledSet := make(map[string]struct{})
+	for m, sum := range apiAgg {
+		switch {
+		case sum <= minRemaining: // 用完（聚合判据）
+			until := untilNextDayRecovery()
+			for _, chID := range channelIDs {
+				if err := s.disableModelForFreeQuota(ctx, chID, m, until); err != nil {
+					s.lg.Warn("volc-free-quota: 聚合同步禁用失败", "channel_id", chID, "model", m, "err", err)
+				}
+			}
+			disabledSet[m] = struct{}{}
+		case sum > reviveThreshold: // 恢复（聚合判据，>45 万才解除禁用）
+			for _, chID := range channelIDs {
+				if err := s.reEnableModelForFreeQuota(ctx, chID, m); err != nil {
+					s.lg.Warn("volc-free-quota: 聚合同步恢复失败", "channel_id", chID, "model", m, "err", err)
+				}
+			}
+			// 中间态（0 < sum <= 45 万）：不动
+		}
+	}
+	return disabledSorted(disabledSet)
 }
 
 // accountIDForChannel 按渠道 ID 查出该渠道配置的 AK，返回账号指纹；未配置返回 ""。
@@ -371,7 +404,7 @@ func (s *Service) disableCandidatesForQuota(ctx context.Context, channelIDs []st
 	if len(channelIDs) == 0 || model == "" {
 		return
 	}
-	until := untilNextDayMidnightLocal()
+	until := untilNextDayRecovery() // 次日 12:00 北京时间兜底（rev2 审计 G，与刷新路径一致）
 	for _, chID := range channelIDs {
 		if err := s.disableModelForFreeQuota(ctx, chID, model, until); err != nil {
 			s.lg.Warn("volc-free-quota: 拦截后同步 model_states 失败",
@@ -458,14 +491,16 @@ func (s *Service) checkAllCandidatesExhausted(candidateIDs []string, requestMode
 	}
 	// 全局最低保留阈值（core/config 程序级配置，非 per-渠道）。
 	minRemaining := int64(config.VolcQuotaMinRemaining)
-	// 取出候选账号中所有匹配该 model 的资源包本地余额记录。
+	// 取出候选账号中所有匹配该 model 的资源包本地余额记录（仅活跃包：非过期状态 + 未到期）。
 	placeholders := strings.Repeat("?,", len(accountIDs))
 	placeholders = strings.TrimSuffix(placeholders, ",")
-	args := make([]any, 0, len(accountIDs))
+	args := make([]any, 0, len(accountIDs)+1)
 	for _, id := range accountIDs {
 		args = append(args, id)
 	}
-	rows, err := s.db.Query(`SELECT account_id, model, initial_total, local_remaining FROM volc_quota_packages WHERE account_id IN (`+placeholders+`) AND initial_total > 0`, args...)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	args = append(args, now)
+	rows, err := s.db.Query(`SELECT account_id, model, initial_total, local_remaining FROM volc_quota_packages WHERE account_id IN (`+placeholders+`) AND initial_total > 0`+activePackageCond, args...)
 	if err != nil {
 		return false, false, err
 	}
@@ -718,6 +753,20 @@ func (s *Service) ListPackages(ctx context.Context, accountID string) ([]Package
 // 每个账号只调一次火山接口（同账号多 Key 共享额度，重复查询浪费 QPS 且结果一致）。
 // 返回 RefreshResult 给前端展示：失败/禁用条数。
 func (s *Service) Refresh(ctx context.Context, channelID string) (RefreshResult, error) {
+	// in-flight 互斥（rev2 审计 D）：手动 HTTP 刷新与后台 ticker 并发时只放行一个，
+	// 避免 billing 双倍 QPS（接口上限 10，会 429）与 local_remaining 读-算-写互相覆盖。
+	s.bgMu.Lock()
+	if s.refreshing {
+		s.bgMu.Unlock()
+		return RefreshResult{}, errRefreshInFlight
+	}
+	s.refreshing = true
+	s.bgMu.Unlock()
+	defer func() {
+		s.bgMu.Lock()
+		s.refreshing = false
+		s.bgMu.Unlock()
+	}()
 	result := RefreshResult{RefreshedAt: time.Now().UTC().Format(time.RFC3339Nano)}
 	configs, err := s.ListConfigs(ctx)
 	if err != nil {
@@ -799,60 +848,60 @@ func (s *Service) refreshOne(ctx context.Context, cfg Config) ([]string, error) 
 	if err != nil {
 		return nil, err
 	}
-	now := time.Now().UTC().Format(time.RFC3339Nano)
+	now := time.Now().UTC()
+	nowStr := now.Format(time.RFC3339Nano)
 	// 账号指纹：该账号的额度快照归属。
 	aid := cfg.AccountID
 	if aid == "" {
 		aid = accountID(cfg.AccessKey)
 	}
 
-	// 该账号下所有渠道 Key 的 API 模型并集（禁用要作用于这些 Key 的模型）。
-	channelIDs := s.channelsForAccount(aid)
-	apiModels, err := s.channelsAPIModels(ctx, channelIDs)
+	// v17：扣减/拦截/UI 都从 packages 行直接读，不再维护聚合表。
+	// 禁用判据（rev2）：不再"任何资源包 available=0 即禁用"（单包判据会误禁用多包模型），
+	// UPSERT 完成后按聚合余额统一判定（syncModelStatesByAggregate）。
+
+	// 预取旧值：instance_no -> (initial_total, local_remaining, synced_at)。
+	// computeLocalRemaining 需要旧值（跨天判定用 synced_at），不能只靠 UPSERT 内部 CASE。
+	oldRows, err := s.db.QueryContext(ctx,
+		`SELECT instance_no, initial_total, local_remaining, synced_at FROM volc_quota_packages WHERE account_id = ?`, aid)
 	if err != nil {
 		return nil, err
 	}
-
-	// v17：扣减/拦截/UI 都从 packages 行直接读，不再维护聚合表。
-	// 禁用判据改为"任何资源包 available=0"→ 把对应 API 模型写入 model_states。
-	disabled := make(map[string]struct{})
-	seenAPIModels := make(map[string]struct{}) // 去重（多个 resource 映射到同一 API 模型）
-	for _, p := range pkgs {
-		if !p.looksLikeArkFreePackage() {
-			continue
-		}
-		availAmt := parseAmount(p.AvailableAmount)
-		if availAmt > 0 {
-			continue // 仅对耗尽资源包做自动 disable
-		}
-		// label 用 configuration_code 提取名（与扣减/拦截锚点一致）。
-		label := modelNameFromConfigCode(p.ConfigurationCode, p.Product)
-		if label == "" {
-			continue
-		}
-		for _, m := range s.matchQuotaToAPIModels(label, apiModels) {
-			if _, ok := seenAPIModels[m]; ok {
-				continue
+	type oldPkg struct {
+		init   int64
+		local  int64
+		synced time.Time
+	}
+	oldByInst := make(map[string]oldPkg)
+	for oldRows.Next() {
+		var inst string
+		var op oldPkg
+		var syncedStr string
+		if err := oldRows.Scan(&inst, &op.init, &op.local, &syncedStr); err == nil {
+			// synced_at 解析失败（脏数据/NULL）→ 视为"今天"（保守：不触发跨天复活，
+			// 避免 billing 滞后把今天扣完的包拉回）。
+			if t, perr := time.Parse(time.RFC3339Nano, syncedStr); perr == nil {
+				op.synced = t
+			} else {
+				op.synced = now
 			}
-			seenAPIModels[m] = struct{}{}
-			for _, chID := range channelIDs {
-				if err := s.disableModelForFreeQuota(ctx, chID, m, untilNextDayMidnightLocal()); err != nil {
-					return nil, err
-				}
-			}
-			disabled[m] = struct{}{}
+			oldByInst[inst] = op
 		}
 	}
+	if err := oldRows.Err(); err != nil {
+		oldRows.Close()
+		return nil, err
+	}
+	oldRows.Close()
 
 	// 逐条 UPSERT 资源包明细（volc_quota_packages）：
 	//   - model 用 configuration_code 提取名（去掉资源包类型后缀），扣减锚点，
 	//     如 "DeepSeek_V4_flash_0731_data_collaboration_resource_pack" → "deepseek-v4-flash-0731"
 	//   - initial_total 只在首次写入（定下扣减基准后不动，用户要求保留）。
-	//   - local_remaining 校准策略（v16）：
-	//       * 首次写入（旧 initial_total=0）→ = 本次总额（建底数）
-	//       * 本地已耗尽（local_remaining<=0 且旧 initial_total>0）→ 保持 0，不复活
-	//         （billing 可能滞后返回旧可用量，直接覆盖会让已耗尽的模型"复活"）
-	//       * 正常 → 用 billing available_amount 校准（billing 是权威，本地扣减只是间隔期兜底）
+	//   - local_remaining（rev2）：Go 侧 computeLocalRemaining 按旧值 + billing available 算好
+	//     传参（首次=avail 建底数 / 今天扣完保持 0 / 跨天+avail>0 记 avail / 下降校准 / 上升保持）。
+	//   - synced_at（rev2 审计 B，P0）：仅首次写入设置，刷新保留；只有扣减（decrementLocalRemaining）
+	//     才更新。否则 ticker 每 15min 刷新会把它覆盖为"今天"，跨天判定永远失效、模型永不复活。
 	//   - 不再 DELETE 重建（billing API 返回全量，但本地余额必须跨刷新保留）。
 	//   - 本次 billing 已不返回的旧包（过期/删除）保留不动，由旧数据清理兜底。
 	for _, p := range pkgs {
@@ -865,6 +914,8 @@ func (s *Service) refreshOne(ctx context.Context, cfg Config) ([]string, error) 
 		totalAmt := parseAmount(p.TotalAmount)
 		availAmt := parseAmount(p.AvailableAmount)
 		usedAmt := parseAmount(p.UsedAmount)
+		old := oldByInst[p.InstanceNo]
+		newLocal := computeLocalRemaining(old.init, old.local, old.synced, availAmt, now)
 		if _, err := s.db.ExecContext(ctx, `
 			INSERT INTO volc_quota_packages(account_id, instance_no, product, product_name, configuration_code,
 			       configuration_name, model, total_amount, available_amount, used_amount, unit, status,
@@ -885,24 +936,19 @@ func (s *Service) refreshOne(ctx context.Context, cfg Config) ([]string, error) 
 				expiry_time = excluded.expiry_time,
 				-- initial_total 只在首次写入（定基准），后续不动
 				initial_total = CASE WHEN volc_quota_packages.initial_total = 0 THEN excluded.initial_total ELSE volc_quota_packages.initial_total END,
-				-- local_remaining：首次=总额；已耗尽不复活；已低于最低保留阈值（min_remaining）不校准
-				-- （防止 billing 滞后把已触发拦截的余额拉回，绕过阈值防线）；否则用 billing 校准。
-				local_remaining = CASE
-					WHEN volc_quota_packages.initial_total = 0 THEN excluded.local_remaining
-					WHEN volc_quota_packages.local_remaining <= 0 THEN 0
-					WHEN volc_quota_packages.local_remaining <= ? THEN volc_quota_packages.local_remaining
-					ELSE excluded.available_amount
-				END,
-				synced_at = excluded.synced_at`,
+				-- local_remaining 已由 computeLocalRemaining 算好（跨天/校准/防回弹）
+				local_remaining = excluded.local_remaining,
+				-- synced_at 仅首次写入；刷新保留（扣减才更新），保跨天判定有效
+				synced_at = CASE WHEN volc_quota_packages.initial_total = 0 THEN excluded.synced_at ELSE volc_quota_packages.synced_at END`,
 			aid, p.InstanceNo, p.Product, p.ProductName, p.ConfigurationCode, p.ConfigurationName,
 			modelNameFromConfigCode(p.ConfigurationCode, p.Product),
 			totalAmt, availAmt, usedAmt, p.Unit, p.Status, p.EffectiveTime, p.ExpiryTime,
-			totalAmt, availAmt, // initial_total, local_remaining（首次写入=总额/可用）
-			now, int64(config.VolcQuotaMinRemaining)); err != nil {
+			totalAmt, newLocal, nowStr); err != nil {
 			return nil, err
 		}
 	}
-	return append([]string(nil), disabledSorted(disabled)...), nil
+	// 聚合双向同步（唯一判定入口）：用完 → 冷却；恢复（>45 万）→ 解除；中间态不动。
+	return s.syncModelStatesByAggregate(ctx, aid), nil
 }
 
 // disabledSorted 从 map 收集去重的 API 模型名，按字符串排序（稳定输出）。
@@ -912,6 +958,49 @@ func disabledSorted(set map[string]struct{}) []string {
 		out = append(out, k)
 	}
 	sort.Strings(out)
+	return out
+}
+
+// inactiveQuotaStatuses 非活动资源包状态（聚合/扣减/拦截统一排除，口径一致）。
+// billing API 的 status 取值：Effective / UsedUp / Expired / NotEffective /
+// FailedToCreate / Refunded。过期/失效/退款包的残留余额会撑住聚合判据，必须排除。
+const inactiveQuotaStatuses = `('Expired','NotEffective','FailedToCreate','Refunded')`
+
+// activePackageCond 聚合/扣减/拦截共用的"活跃包"过滤条件（status + 到期时间）。
+// 运行期问题（code review P1）：billing 客户端只拉 Effective/UsedUp，refreshOne 从不把
+// 本地行标成 Expired——某包到期后 billing 不再返回，本地行仍保留 Effective+正余额，
+// 若不按 expiry_time 过滤会永久计入聚合（既不判耗尽、扣减还继续吃幽灵余额）。
+// expiry_time 由 billing 返回，实测全非空且 RFC3339 格式（字典序 == 时间序）；
+// 空串防御性视为活跃（不排除）。
+const activePackageCond = ` AND status NOT IN ` + inactiveQuotaStatuses + ` AND (expiry_time = '' OR expiry_time >= ?)`
+
+// aggregateLocalRemaining 返回该账号下每个 quota model 的聚合本地余额（SUM(local_remaining)）。
+//
+// 一个模型可能挂多个资源包（billing 按 InstanceNo 逐条返回），判断必须按 model 聚合，
+// 不能看单个包（如 deepseek-v4-flash-0731 有 7 个包，5 个 UsedUp + 2 个活包，聚合 201 万）。
+// 口径与 decrementLocalRemaining 扣减、checkAllCandidatesExhausted 拦截一致：
+//   - 只统计 initial_total > 0（有扣减基准的包）
+//   - 排除非活动状态（Expired 等）与已到期（expiry_time < now）的包
+func (s *Service) aggregateLocalRemaining(accountID string) map[string]int64 {
+	out := make(map[string]int64)
+	if accountID == "" {
+		return out
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	rows, err := s.db.Query(`SELECT model, SUM(local_remaining) FROM volc_quota_packages
+		WHERE account_id = ? AND initial_total > 0`+activePackageCond+`
+		GROUP BY model`, accountID, now)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var m string
+		var sum int64
+		if err := rows.Scan(&m, &sum); err == nil && m != "" {
+			out[m] = sum
+		}
+	}
 	return out
 }
 
@@ -1212,7 +1301,8 @@ func isConfigCodeSuffix(seg string) bool {
 //   - status='cooling'，让 model-health 的 CheckNow 在 disabled_until 到期后自动恢复。
 //   - manual_enabled 保留原值（CONFLICT 不更新）；用户手动启停的偏好不被覆盖。
 //   - last_error 写 "模型免费额度用完"，UI 在 model-status 页面会展示这条信息。
-//   - 冷却到次日 0:00（本地时区）——火山引擎账单资源包每日重置。
+//   - 冷却到 untilNextDayRecovery（次日 12:00 北京时间兜底；正常由定时刷新提前 re-enable）。
+//   - fail_count 不累加：免费额度不是健康失败（rev2 审计 F），冷却次数无意义且会无限增长。
 func (s *Service) disableModelForFreeQuota(ctx context.Context, channelID, model string, until time.Time) error {
 	untilStr := until.UTC().Format(time.RFC3339Nano)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
@@ -1224,25 +1314,78 @@ func (s *Service) disableModelForFreeQuota(ctx context.Context, channelID, model
 			disabled_until=excluded.disabled_until,
 			last_error=excluded.last_error,
 			last_failure_class=excluded.last_failure_class,
-			fail_count=model_states.fail_count+1,
 			last_checked_at=excluded.last_checked_at,
 			updated_at=excluded.updated_at`,
 		channelID, model, untilStr, now, now)
 	return err
 }
 
-// untilNextDayMidnightLocal 返回距离次日 0:00（本地时区）的目标 time。
+// reEnableModelForFreeQuota 额度恢复（聚合 > 阈值）后解除该模型的免费额度冷却：
 //
-// 用户设定："冷却时间改为 距离第二天到0点的间隔（因为每天0点刷新）"。
-func untilNextDayMidnightLocal() time.Time {
-	now := time.Now()
-	loc := now.Location()
-	tomorrow := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, loc)
-	// 防御性：万一本地时区异常，回退到 UTC。
-	if loc == nil || loc.String() == "" {
-		tomorrow = time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, time.UTC)
+//   - 只解除「免费额度耗尽」写入的冷却（last_failure_class='free_quota_exhausted'
+//     或旧数据 last_error 匹配），不碰 model-health 因真实上游故障（upstream_error /
+//     5xx）写的冷却——避免与 model-health 冷却互搏振荡（解除→再冷却→再解除）。
+//   - 不碰用户手动禁用（manual_enabled=0 行不动）。
+//   - fail_count 清零：免费额度恢复后旧的冷却计数无意义（disableModelForFreeQuota
+//     已不再累加 fail_count，这里清掉存量旧值）。
+func (s *Service) reEnableModelForFreeQuota(ctx context.Context, channelID, model string) error {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE model_states SET status='available', disabled_until=NULL, last_error='', last_failure_class='', fail_count=0, updated_at=?
+		WHERE channel_id=? AND model=? AND manual_enabled=1 AND status != 'available'
+		  AND (last_failure_class='free_quota_exhausted' OR last_error='模型免费额度用完')`,
+		now, channelID, model)
+	return err
+}
+
+// beijingTZ 北京时间固定 +8 时区（中国无夏令时；FixedZone 零依赖，Windows 不依赖系统 tzdata）。
+var beijingTZ = time.FixedZone("Asia/Shanghai", 8*3600)
+
+// untilNextDayRecovery 返回额度恢复兜底时间：次日 12:00（北京时间）。
+//
+// 实测火山免费额度每日恢复时间不固定（8:00~11:30），12:00 留 30min 缓冲。
+// 正常由 15min 定时刷新检测 billing 恢复后提前 re-enable（见 syncModelStatesByAggregate），
+// 此值只是刷新全挂时 model-health CheckNow 的兜底恢复点。
+func untilNextDayRecovery() time.Time {
+	now := time.Now().In(beijingTZ)
+	return time.Date(now.Year(), now.Month(), now.Day()+1, 12, 0, 0, 0, beijingTZ)
+}
+
+// sameBeijingDay 两个时间是否同一北京日期（跨天判定用）。
+func sameBeijingDay(a, b time.Time) bool {
+	ab := a.In(beijingTZ)
+	bb := b.In(beijingTZ)
+	return ab.Year() == bb.Year() && ab.YearDay() == bb.YearDay()
+}
+
+// computeLocalRemaining 包级余额校准纯函数（账本级，只记数，不做模型级裁决）。
+//
+// 输入：oldInitial（旧初始总额，0=首次写入）、oldLocal（旧本地余额）、
+// oldSyncedAt（最近一次本地扣减时间，北京时间跨天判定用）、avail（billing available）、now（当前时间）。
+//
+// 分支：
+//  1. 首次写入（oldInitial == 0）→ = avail（建底数，全量额度）
+//  2. 已耗尽（oldLocal <= 0）：
+//       - 扣减发生在今天（北京日期相同）→ 保持 0（billing 可能结算滞后，不记）
+//       - 扣减发生在昨天或更早（跨天）且 avail > 0 → = avail（billing 有值即记上；
+//         是否"算恢复"由聚合层 config.VolcQuotaReviveThreshold 裁决）
+//       - 否则 → 保持 0
+//  3. avail < oldLocal → = avail（billing 权威下降校准，防本地漏扣）
+//  4. 其余（billing 上升，含结算滞后回升）→ 保持 oldLocal（本地扣减为准，防回弹）
+func computeLocalRemaining(oldInitial, oldLocal int64, oldSyncedAt time.Time, avail int64, now time.Time) int64 {
+	if oldInitial == 0 {
+		return avail
 	}
-	return tomorrow
+	if oldLocal <= 0 {
+		if !sameBeijingDay(oldSyncedAt, now) && avail > 0 {
+			return avail
+		}
+		return 0
+	}
+	if avail < oldLocal {
+		return avail
+	}
+	return oldLocal
 }
 
 // ===== ListStatus 聚合（设置页用） =====
@@ -1423,6 +1566,11 @@ func (s *Service) HandleRefresh(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := s.Refresh(r.Context(), req.ChannelID)
 	if err != nil {
+		// 后台定时刷新占用中 → 409（可重试），避免 502 误导为上游故障。
+		if errors.Is(err, errRefreshInFlight) {
+			s.writeError(w, http.StatusConflict, "刷新额度失败: "+err.Error())
+			return
+		}
 		s.writeError(w, http.StatusBadGateway, "刷新额度失败: "+err.Error())
 		return
 	}

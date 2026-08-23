@@ -18,6 +18,12 @@ import (
 	"github.com/volcengine/volcengine-go-sdk/volcengine/session"
 )
 
+// billingFetcher 拉取资源包的抽象接口（Service.client 字段类型）。
+// 生产实现是 *volcBillingClient；测试注入 fake 以测并发锁/刷新流程（不触发真实网络）。
+type billingFetcher interface {
+	FetchPackages(ctx context.Context, accessKey, secretKey string) ([]rawPackage, error)
+}
+
 // volcBillingClient 火山引擎账单 SDK 客户端封装：按 AK/SK 查询资源包清单。
 //
 // 复用测试目录/main.go 的策略：翻页拉取全量 ResourceType=Package 的资源包，

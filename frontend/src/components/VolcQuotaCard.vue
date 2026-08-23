@@ -356,13 +356,13 @@ const displayName = (ch: Channel) => ch.channel_name || ch.name
       <CardDescription>
         为方舟渠道 Key 配置 AK/SK（火山引擎控制台访问授权），自动查询免费模型额度；每次请求按
         total_tokens 本地扣减余额（不依赖账单接口，账单 429
-        也能拦截）；额度耗尽后自动禁用该模型（冷却至次日 0 点，错误信息「模型免费额度用完」）。
+        也能拦截）；额度耗尽后自动禁用该模型（每 15 分钟检测恢复，错误信息「模型免费额度用完」）。
       </CardDescription>
     </CardHeader>
     <CardContent class="space-y-3">
       <div class="flex flex-wrap items-center justify-between gap-2">
         <div class="text-xs text-muted-foreground">
-          共 {{ configs.length }} 个 Key 配置<span v-if="loaded">，额度每天 0 点重置</span>
+          共 {{ configs.length }} 个 Key 配置<span v-if="loaded">，额度每日自动恢复（8~11:30 不等）</span>
         </div>
         <div class="flex items-center gap-2">
           <Button variant="outline" size="sm" :disabled="refreshingAll" @click="refreshLocal">

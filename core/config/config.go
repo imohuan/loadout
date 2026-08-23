@@ -122,7 +122,14 @@ var DefaultVisionModel = "qwen3.7-flash-2026-07-15" // env: LOADOUT_DEFAULT_VISI
 // VolcQuotaMinRemaining 本地免费额度最低保留阈值：local_remaining <= 该值即视为
 // "耗尽"并拦截（volc-free-quota 插件，force_block=1 生效）。默认 0 = 扣到 0 才拦；
 // 配 10000 则剩余不足 1 万就停止，防止额度冲成负数。
-var VolcQuotaMinRemaining = 200000 // env: LOADOUT_VOLC_QUOTA_MIN_REMAINING
+// 注：实际生效值由 Load 里的 intEnv 决定（默认 0）；此声明值仅为可读性占位，Load 会覆盖。
+var VolcQuotaMinRemaining = 0 // env: LOADOUT_VOLC_QUOTA_MIN_REMAINING（Load 内 intEnv 默认 0）
+
+// VolcQuotaReviveThreshold 免费额度恢复判定门槛：火山每日恢复 50 万免费额度，
+// 聚合余额（SUM(local_remaining)）必须超过该值（默认 45 万）才判定"今日已恢复"
+// 并解除 model_states 冷却。45 万排除结算滞后的残留小额——昨天剩几万时 billing
+// 也会显示，但那不是"今日恢复"。
+var VolcQuotaReviveThreshold = 450000 // env: LOADOUT_VOLC_QUOTA_REVIVE_THRESHOLD
 
 // VisionDescriptionPrompt 视觉描述提示词（多图合并描述）。
 // 空字符串时使用 vision 插件内置的结构化板块模板（plugins/vision/prompt.go）。
@@ -248,6 +255,7 @@ func Load() {
 
 	DefaultVisionModel = strEnv("LOADOUT_DEFAULT_VISION_MODEL", "qwen-vl-max")
 	VolcQuotaMinRemaining = intEnv("LOADOUT_VOLC_QUOTA_MIN_REMAINING", 0)
+	VolcQuotaReviveThreshold = intEnv("LOADOUT_VOLC_QUOTA_REVIVE_THRESHOLD", 450000)
 	VisionDescriptionPrompt = strEnv("LOADOUT_VISION_DESCRIPTION_PROMPT", "")
 	VisionCompressEnabled = boolEnv("LOADOUT_VISION_COMPRESS_ENABLED", true)
 	VisionCompressMinBytes = intEnv("LOADOUT_VISION_COMPRESS_MIN_BYTES", 512*1024)
