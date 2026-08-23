@@ -5,7 +5,7 @@ import (
 	"proxyui/backend/app"
 )
 
-//go:embed frontend/dist
+//go:embed all:frontend/dist
 var assets embed.FS
 
 func main() {

@@ -62,6 +62,8 @@ jobs:
       - name: copy dist to desktop embed dir
         shell: pwsh
         run: |
+          # 先清空再复制，防止旧产物残留导致 embed 混合（index.html 与 assets hash 不一致）
+          if (Test-Path apps/desktop/frontend/dist) { Remove-Item -Recurse -Force apps/desktop/frontend/dist }
           New-Item -ItemType Directory -Force apps/desktop/frontend/dist | Out-Null
           Copy-Item -Recurse -Force frontend/dist/* apps/desktop/frontend/dist/
       - uses: actions/setup-go@v5
