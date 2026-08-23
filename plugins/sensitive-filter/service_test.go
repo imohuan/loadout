@@ -579,3 +579,26 @@ func TestProxyNestedText(t *testing.T) {
 		t.Fatalf("替换后 JSON 非法: %s", body)
 	}
 }
+
+// TestSubRequestSkipSecurity 子请求跳过安检：视觉识别/续流走 model-gateway 主链路时
+// 带 __sub_request_skip_security 标记（识别 body 是数 MB base64，整体替换是性能灾难
+// 且会误命中改坏图）。命中敏感词规则也应原样透传、不替换。
+func TestSubRequestSkipSecurity(t *testing.T) {
+	svc, st := newTestService(t)
+	seedRoute(t, st, types.CapabilityRoute{
+		Models: []string{"deepseek-chat"}, Capability: capabilityName, Route: types.RouteProxy,
+		Replacements: []types.SensitiveReplacement{{From: "脏话", To: "***"}},
+	})
+	pipe := proxyPipe(t, map[string]any{"messages": []any{
+		map[string]any{"role": "user", "content": "说了脏话"},
+	}})
+	pipe.Metadata["__sub_request_skip_security"] = true
+
+	out, err := runHook(svc, pipe)
+	if err != nil {
+		t.Fatalf("skip_security 子请求不应报错: %v", err)
+	}
+	if string(out.Request.Body) != string(pipe.Request.Body) {
+		t.Fatalf("skip_security 子请求 body 被替换:\n got: %s\nwant: %s", out.Request.Body, pipe.Request.Body)
+	}
+}

@@ -1,6 +1,7 @@
 package visionv2
 
 import (
+	"context"
 	"log/slog"
 	"path/filepath"
 	"sync"
@@ -9,6 +10,7 @@ import (
 	"loadout/core/db"
 	"loadout/core/store"
 	"loadout/plugins/contracts"
+	modelgateway "loadout/plugins/model-gateway"
 )
 
 // toolLoopState 单个请求的工具循环状态（Service 单例按 requestID 隔离）。
@@ -29,10 +31,18 @@ type Service struct {
 	lg       *slog.Logger
 	repo     *db.Repository
 	routeLog contracts.RouteLog
+	// gw 子请求通道：视觉识别 / 续流走 model-gateway 主链路（request-log/额度/failover）。
+	gw       SubRequestForwarder
 	cacheDir string
 
 	mu     sync.Mutex
 	states map[string]*toolLoopState // key: pipe.RequestID
+}
+
+// SubRequestForwarder 子请求转发接口：vision_v2 只依赖这一个方法，不耦合整个
+// model-gateway Service（测试可 mock）。实现为 modelgateway.Service.ForwardSubRequest。
+type SubRequestForwarder interface {
+	ForwardSubRequest(ctx context.Context, pipe *modelgateway.ProxyPipeline, streamWriter func(line []byte) error) (*modelgateway.ProxyPipeline, []byte, error)
 }
 
 func NewService(st *store.Store, repo *db.Repository, lg *slog.Logger) *Service {
@@ -40,6 +50,9 @@ func NewService(st *store.Store, repo *db.Repository, lg *slog.Logger) *Service 
 }
 
 func (s *Service) SetRouteLog(rl contracts.RouteLog) { s.routeLog = rl }
+
+// SetGateway 注入 model-gateway 服务（子请求通道用）。
+func (s *Service) SetGateway(gw SubRequestForwarder) { s.gw = gw }
 
 func (s *Service) state(id string) *toolLoopState {
 	s.mu.Lock()

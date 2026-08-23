@@ -220,6 +220,7 @@ func TestDescribeWithFailoverReturnsChannelID(t *testing.T) {
 	}
 	svc := NewService(st, repo, slog.Default())
 	svc.cacheDir = t.TempDir()
+	svc.SetGateway(newMockForwarder(map[string]string{"ch1": srv1.URL, "ch2": srv2.URL}))
 	if err := repo.ReplaceChannels(context.Background(), []db.Channel{
 		{ID: "ch1", Name: "c1", BaseURL: srv1.URL, ManualEnabled: true},
 		{ID: "ch2", Name: "c2", BaseURL: srv2.URL, ManualEnabled: true},
@@ -236,7 +237,7 @@ func TestDescribeWithFailoverReturnsChannelID(t *testing.T) {
 		{ChannelIDs: []string{"ch2"}, ViaModel: "qwen3-vl-flash-2026-01-22"},
 	}}
 
-	text, successChannelID, err := svc.describeWithFailover(context.Background(), imgID, "看颜色", nil, route)
+	text, successChannelID, _, err := svc.describeWithFailover(context.Background(), imgID, "看颜色", nil, route, "parent-test")
 	if err != nil {
 		t.Fatalf("describeWithFailover 报错: %v", err)
 	}
@@ -251,6 +252,56 @@ func TestDescribeWithFailoverReturnsChannelID(t *testing.T) {
 	}
 	if srv2Calls.Load() != 1 {
 		t.Errorf("srv2 被调 %d 次, want 1（第 2 个候选成功）", srv2Calls.Load())
+	}
+}
+
+// TestDescribeWithFailoverReturnsReqLogID 验证视觉识别子请求走网关后，request_log_id
+// 从网关 pipe 的 __request_log_attempt_id 回填（request-log 在 ProxyBeforeAttempt 写入，
+// mockForwarder 模拟该行为）——前端"完整日志"按钮依赖此字段。
+func TestDescribeWithFailoverReturnsReqLogID(t *testing.T) {
+	setVisionConfig(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"红色海报"}}]}`))
+	}))
+	defer srv.Close()
+
+	database, err := db.OpenMemory()
+	if err != nil {
+		t.Fatalf("db.OpenMemory: %v", err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	repo, err := db.NewRepository(database)
+	if err != nil {
+		t.Fatalf("db.NewRepository: %v", err)
+	}
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	svc := NewService(st, repo, slog.Default())
+	svc.cacheDir = t.TempDir()
+	svc.SetGateway(newMockForwarder(map[string]string{"ch1": srv.URL}))
+	if err := repo.ReplaceChannels(context.Background(), []db.Channel{
+		{ID: "ch1", Name: "c1", BaseURL: srv.URL, ManualEnabled: true},
+	}); err != nil {
+		t.Fatalf("ReplaceChannels: %v", err)
+	}
+
+	imgID, err := svc.SaveImageDataURI(tinyPNGDataURI)
+	if err != nil {
+		t.Fatalf("SaveImageDataURI: %v", err)
+	}
+	route := &types.CapabilityRoute{ViaOptions: []types.ViaOption{
+		{ChannelIDs: []string{"ch1"}, ViaModel: "doubao-seed-2-0-mini-260428"},
+	}}
+
+	_, _, reqLogID, err := svc.describeWithFailover(context.Background(), imgID, "看颜色", nil, route, "parent-test")
+	if err != nil {
+		t.Fatalf("describeWithFailover 报错: %v", err)
+	}
+	if reqLogID != "mock-reqlog-ch1" {
+		t.Errorf("reqLogID = %q, want mock-reqlog-ch1（request-log 关联 UUID 回填）", reqLogID)
 	}
 }
 
@@ -299,7 +350,7 @@ func TestDescribeWithFailoverCacheHitNoChannel(t *testing.T) {
 		{ChannelIDs: []string{"ch1"}, ViaModel: "qwen3-vl-flash-2026-01-22"},
 	}}
 
-	text, successChannelID, err := svc.describeWithFailover(context.Background(), imgID, "看颜色", nil, route)
+	text, successChannelID, _, err := svc.describeWithFailover(context.Background(), imgID, "看颜色", nil, route, "parent-test")
 	if err != nil {
 		t.Fatalf("describeWithFailover 报错: %v", err)
 	}

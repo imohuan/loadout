@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"time"
 	"unicode"
@@ -626,6 +627,118 @@ func (s *Service) proxyForward(w http.ResponseWriter, r *http.Request, pipe *Pro
 	return nil
 }
 
+// ForwardSubRequest 内部子请求通道：供能力插件（vision_v2 等）发起走主链路完整管线的
+// 请求（渠道解析 + 每 attempt ProxyBeforeAttempt 安检/日志 + failover），与外部 HTTP
+// 入口共享同一转发核心。解决「插件内部 http.Client 直连绕过网关 → request-log/安检/
+// 额度/failover 全部缺失」的架构问题，日后类似内部请求统一走此通道。
+//
+// 语义：
+//   - 强制 metadata["__sub_request"]=true：能力插件检测到后跳过自身处理（防递归，
+//     如视觉模型自身也配置了 vision 路由时不会二次触发）；
+//   - 强制 metadata["__sub_request_skip_security"]=true：跳过 sensitive/field-filter
+//     安检（识别 body 含数 MB base64，安检会误伤）；request-log / 额度照常；
+//   - 独立 sub- RequestID：route-log/request-log 的关联行天然与主请求隔离，
+//     不污染主请求的 step 命名空间；调用方从返回 pipe 读 __request_log_attempt_id 回填；
+//   - ctx 继承调用方（客户端断连子请求同步取消）；
+//   - streamWriter 非 nil：流式子请求，上游 SSE 行逐行回调（调用方负责解析/转发）；
+//     nil：非流式，返回完整响应 body。
+//
+// 返回 (最终 pipe, 响应 body, error)。调用方负责构造 pipe 并设置渠道上下文：
+//   - 识别场景：新建 pipe，只带 __channel_candidates / __current_channel_base_url
+//     （via_options 展开），**不设 __current_channel**（否则 proxyForward 渠道过滤锁死）；
+//   - 续流场景：可复用原主渠道 metadata（__current_channel / __current_channel_base_url）。
+func (s *Service) ForwardSubRequest(ctx context.Context, pipe *ProxyPipeline, streamWriter func(line []byte) error) (*ProxyPipeline, []byte, error) {
+	if pipe == nil || pipe.Request == nil {
+		return nil, nil, fmt.Errorf("model-gateway: 子请求缺少 Request")
+	}
+	if pipe.RequestID == "" {
+		pipe.RequestID = "sub-" + newRequestID()
+	}
+	if pipe.Metadata == nil {
+		pipe.Metadata = map[string]any{}
+	}
+	pipe.Metadata["__sub_request"] = true
+	pipe.Metadata["__sub_request_skip_security"] = true
+	// 子请求语义：不参与 v2 前缀拆分（model 已是真实名），清掉 hint 防渠道误锁。
+	delete(pipe.Metadata, "__channel_hint")
+
+	// 构造内部 http.Request（httptest 同构）：子请求无真实客户端连接，
+	// 但转发核心依赖 r.Context() 做断连判定与日志 ctx，必须继承调用方 ctx。
+	r := httptest.NewRequest(http.MethodPost, "/v1/"+pipe.Request.Path, nil)
+	if pipe.Request.Header != nil {
+		r.Header = pipe.Request.Header.Clone()
+	}
+	r = r.WithContext(ctx)
+	pipe.HTTPRequest = r
+
+	started := time.Now()
+	s.proxyBeginLog(r, pipe)
+
+	// 输入 hook：aggregate/volc-free-quota 照常；vision/sensitive/field-filter
+	// 对 __sub_request 早退（见各自 handler 开头）。
+	out, err := s.ctx.Waterfall(ProxyBeforeUpstream, pipe)
+	if err != nil {
+		s.proxyRejectedLog(r, pipe, err)
+		return pipe, nil, err
+	}
+	rewritten, ok := out.(*ProxyPipeline)
+	if !ok {
+		return pipe, nil, fmt.Errorf("model-gateway: 能力插件返回了非法载荷: %T", out)
+	}
+	pipe = rewritten
+	if pipe.Metadata == nil {
+		pipe.Metadata = map[string]any{}
+	}
+	// hook 重建 pipe 后重设子请求标记（防递归与安检跳过不能丢）。
+	pipe.Metadata["__sub_request"] = true
+	pipe.Metadata["__sub_request_skip_security"] = true
+
+	var w http.ResponseWriter
+	var recorder *httptest.ResponseRecorder
+	if streamWriter != nil {
+		w = &subRequestStreamWriter{write: streamWriter, header: http.Header{}}
+	} else {
+		recorder = httptest.NewRecorder()
+		w = recorder
+	}
+	pipe.ResponseWriter = w
+
+	// 转发（复用主链路：resolveProxyChannels → 每 attempt ProxyBeforeAttempt → failover）。
+	fwdErr := s.proxyForward(w, r, pipe, pipe.Request.Model, started)
+	var body []byte
+	if recorder != nil {
+		body = recorder.Body.Bytes()
+	}
+	if fwdErr != nil {
+		return pipe, body, fwdErr
+	}
+	// 非流式：上游错误经 writeProxyError 写到 recorder（proxyForward 返回 nil），
+	// 需转 error 返回给调用方，否则识别/续流会把错误 JSON 当成功响应处理。
+	if recorder != nil && recorder.Code >= 400 {
+		return pipe, body, fmt.Errorf("model-gateway: 子请求失败(%d): %s", recorder.Code, truncateErrorBody(string(body)))
+	}
+	return pipe, body, nil
+}
+
+// subRequestStreamWriter 流式子请求的响应捕获：proxyStream 逐行 Write → 逐行回调
+// streamWriter（SSE 行）；Flush no-op（回调已同步逐行返回，无需缓冲刷出）。
+// Header/WriteHeader no-op（子请求不透传响应头；status 记录仅供诊断）。
+type subRequestStreamWriter struct {
+	write  func(line []byte) error
+	header http.Header
+	status int
+}
+
+func (w *subRequestStreamWriter) Header() http.Header         { return w.header }
+func (w *subRequestStreamWriter) WriteHeader(status int)      { w.status = status }
+func (w *subRequestStreamWriter) Write(p []byte) (int, error) {
+	if err := w.write(p); err != nil {
+		return 0, err
+	}
+	return len(p), nil
+}
+func (w *subRequestStreamWriter) Flush() {}
+
 // proxyStream 流式透传：透传上游响应头后逐行读取上游 SSE，每行触发
 // ProxyStreamChunk hook（插件返回 nil 删除该块），最后返回提取的 usage。
 func (s *Service) proxyStream(w http.ResponseWriter, resp *http.Response, pipe *ProxyPipeline) contracts.TokenUsage {
@@ -690,6 +803,9 @@ func (s *Service) proxyStream(w http.ResponseWriter, resp *http.Response, pipe *
 				}
 			}
 			if len(data) > 0 {
+				// 写失败（客户端断连 / 子请求回调报错）不中断读流：SSE 上游可能已开始
+				// 发送大量数据，中断会浪费已建立的连接；断连最终由 request context
+				// （pipe.HTTPRequest.Context()）取消兜底，与主链路流式语义一致。
 				_, _ = w.Write(data)
 				// 实时估算：CJK 约 1 token/字，其他约 4 字符/token；500ms 或 64 块节流。
 				// 只统计 data: 前缀后的内容，避免 JSON 包装（键名/括号/换行）虚增 token 数。
@@ -1012,10 +1128,21 @@ func stripCopilotClientMetadata(body []byte) []byte {
 
 // ---- proxy 版路由日志（与旧 HandleChat 的 route-log 语义一致，最后统一合并） ----
 
+// isSubRequest 检测 pipe 是否为子请求（视觉识别/续流走 model-gateway 主链路时的标记）。
+// 子请求的日志归属：调用方（vision_v2 等）已在主请求折叠下写自己的 attempt，
+// 不应再创建顶级 route_requests 行 / 重复 attempt 行；request-log 走自己钩子独立记录完整日志。
+func isSubRequest(pipe *ProxyPipeline) bool {
+	if pipe == nil || pipe.Metadata == nil {
+		return false
+	}
+	v, _ := pipe.Metadata["__sub_request"].(bool)
+	return v
+}
+
 // proxyBeginLog 写/更新一条请求日志（Start 为 UPSERT，可重复调用：
 // 首次在 before-upstream hook 之前写占位 running，hook 之后二次调用补全虚拟模型名）。
 func (s *Service) proxyBeginLog(r *http.Request, pipe *ProxyPipeline) {
-	if s.routeLog == nil || pipe.Request == nil {
+	if s.routeLog == nil || pipe.Request == nil || isSubRequest(pipe) {
 		return
 	}
 	virtual, _ := pipe.Metadata["__virtual_model"].(string)
@@ -1041,7 +1168,7 @@ func (s *Service) proxyBeginLog(r *http.Request, pipe *ProxyPipeline) {
 //
 // 前端 RouteLogTable 由此渲染 "@ 渠道名(Key1, Key2)" 而非空 channel_id。
 func (s *Service) proxyAttemptLog(r *http.Request, pipe *ProxyPipeline, model, channelID, channelName string, channelIDs []string, channelBaseURL string, started time.Time, result, failureClass string, statusCode int, stream bool, usage contracts.TokenUsage, err error, errorBody string) {
-	if s.routeLog == nil {
+	if s.routeLog == nil || isSubRequest(pipe) {
 		return
 	}
 	step, _ := pipe.Metadata["__route_step"].(int)
@@ -1111,7 +1238,7 @@ func (s *Service) proxyAttemptLog(r *http.Request, pipe *ProxyPipeline, model, c
 // 而流式主链路可能要再传数十秒，导致 UI 显示"已成功"但请求仍在进行中。
 // 语义对齐视觉链路的 visionAttempt（先 running 后 success，同 step UPSERT）。
 func (s *Service) proxyStreamAttempt(r *http.Request, pipe *ProxyPipeline, model, channelID, channelName string, channelIDs []string, channelBaseURL string, started time.Time, statusCode int, done bool, stream bool, usage contracts.TokenUsage) {
-	if s.routeLog == nil {
+	if s.routeLog == nil || isSubRequest(pipe) {
 		return
 	}
 	step, _ := pipe.Metadata["__route_step"].(int)
@@ -1195,7 +1322,7 @@ func (s *Service) proxyStreamAttempt(r *http.Request, pipe *ProxyPipeline, model
 
 // proxyFinishLog 收尾一条转发日志（成功或最终失败）。
 func (s *Service) proxyFinishLog(r *http.Request, pipe *ProxyPipeline, model, channelID, channelName, result string, status int, dur time.Duration, err error, stream bool, usage contracts.TokenUsage, errorBody string) {
-	if s.routeLog == nil {
+	if s.routeLog == nil || isSubRequest(pipe) {
 		return
 	}
 	message := ""
@@ -1230,7 +1357,7 @@ func (s *Service) proxyFinishLog(r *http.Request, pipe *ProxyPipeline, model, ch
 // 聚合模型"无可用目标"等场景：目标列表在 metadata 时，每个目标写一条 skipped attempt，
 // 让用户在同一行日志下看到完整候选清单。
 func (s *Service) proxyRejectedLog(r *http.Request, pipe *ProxyPipeline, err error) {
-	if s.routeLog == nil {
+	if s.routeLog == nil || isSubRequest(pipe) {
 		return
 	}
 	if pipe.RequestID == "" {

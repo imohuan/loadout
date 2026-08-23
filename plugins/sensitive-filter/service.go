@@ -117,6 +117,13 @@ func (s *Service) HandleProxyBeforeUpstream(payload any) (any, error) {
 	if !ok || pipe == nil || pipe.Request == nil || len(pipe.Request.Body) == 0 {
 		return payload, nil
 	}
+	// 子请求（vision_v2 视觉识别/续流走网关通道）：跳过安检——识别 body 含数 MB
+	// base64 图片，整体替换是性能灾难且可能误命中改坏图；续流 body 含工具结果占位符。
+	if pipe.Metadata != nil {
+		if v, _ := pipe.Metadata["__sub_request_skip_security"].(bool); v {
+			return payload, nil
+		}
+	}
 	if !json.Valid(pipe.Request.Body) {
 		return payload, nil
 	}

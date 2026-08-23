@@ -518,3 +518,51 @@ func TestDecideRoutesNativeStops(t *testing.T) {
 		t.Fatalf("native 命中后 proxy 规则不应执行（client_metadata 被误删）: %s", got.Request.Body)
 	}
 }
+
+// TestSubRequestSkipSecurityRequest 子请求跳过请求侧安检：带 __sub_request_skip_security
+// 的 pipe 即使命中 field_filter 路由（含 strip 规则）也原样透传，不删请求字段——
+// 视觉识别 body 是数 MB base64 dataURI，删字段会破坏图片数据。
+func TestSubRequestSkipSecurityRequest(t *testing.T) {
+	svc, st := newTestService(t)
+	seedRoute(t, st, types.CapabilityRoute{
+		Models: []string{"deepseek-chat"}, Capability: capabilityName, Route: types.RouteProxy,
+		FieldRules: &types.FieldRules{RequestStrip: []string{"messages"}},
+	})
+	pipe := proxyPipe(t, map[string]any{"model": "deepseek-chat", "messages": []any{map[string]any{"role": "user", "content": "hi"}}})
+	pipe.Metadata["__sub_request_skip_security"] = true
+
+	out, err := svc.HandleProxyBeforeUpstream(pipe)
+	if err != nil {
+		t.Fatalf("skip_security 子请求不应报错: %v", err)
+	}
+	rp := out.(*modelgateway.ProxyPipeline)
+	if string(rp.Request.Body) != string(pipe.Request.Body) {
+		t.Fatalf("skip_security 子请求 body 被改:\n got: %s\nwant: %s", rp.Request.Body, pipe.Request.Body)
+	}
+}
+
+// TestSubRequestSkipSecurityResponse 子请求跳过响应侧安检：响应处理同样透传。
+func TestSubRequestSkipSecurityResponse(t *testing.T) {
+	svc, st := newTestService(t)
+	seedRoute(t, st, types.CapabilityRoute{
+		Models: []string{"gpt-4o"}, Capability: capabilityName, Route: types.RouteProxy,
+		FieldRules: &types.FieldRules{ResponseStrip: []string{"usage"}},
+	})
+	pipe := proxyPipe(t, map[string]any{"model": "gpt-4o"})
+	pipe.Metadata["__sub_request_skip_security"] = true
+	after := &modelgateway.AfterUpstreamPayload{
+		Pipe: pipe,
+		Response: &modelgateway.ProxyResponse{
+			StatusCode: 200,
+			Body:       []byte(`{"choices":[{"message":{"content":"hi"}}],"usage":{"total_tokens":10}}`),
+		},
+	}
+	out, err := svc.HandleProxyAfterUpstream(after)
+	if err != nil {
+		t.Fatalf("skip_security 子请求响应处理不应报错: %v", err)
+	}
+	got := out.(*modelgateway.AfterUpstreamPayload)
+	if string(got.Response.Body) != string(after.Response.Body) {
+		t.Fatalf("skip_security 子请求响应被删字段:\n got: %s\nwant: %s", got.Response.Body, after.Response.Body)
+	}
+}

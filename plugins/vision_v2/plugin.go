@@ -33,12 +33,17 @@ func (p *visionPlugin) Apply(ctx plugin.Context) error {
 	if !ok {
 		return fmt.Errorf("vision_v2: missing route-log service")
 	}
+	gw, ok := ctx.Get("model-gateway").(*modelgateway.Service)
+	if !ok || gw == nil {
+		return fmt.Errorf("vision_v2: missing model-gateway service")
+	}
 	repo, err := db.NewRepository(database)
 	if err != nil {
 		return fmt.Errorf("vision_v2: 初始化渠道仓储失败: %w", err)
 	}
 	svc := NewService(st, repo, lg)
 	svc.SetRouteLog(routeLog)
+	svc.SetGateway(gw)
 	ctx.Set("vision_v2", svc)
 	// 注册 ProxyBeforeAttempt 而非 ProxyBeforeUpstream：渠道匹配需要真实的
 	// __current_channel / __current_channel_base_url（ProxyBeforeAttempt 每次渠道尝试前已写入）。

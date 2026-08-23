@@ -499,11 +499,20 @@ func (s *Service) resolveChannels(ctx context.Context, model string, metadata ma
 			unknown = append(unknown, candidate)
 			continue
 		}
+		matched := false
 		for _, listed := range channel.Models {
 			if listed.Enabled && listed.Model == model {
 				known = append(known, candidate)
+				matched = true
 				break
 			}
+		}
+		// 显式指定渠道（candidates / 渠道级 base_url / 单 Key）但 Models 未列出该模型：
+		// 仍保留进 unknown——调用方已显式约束渠道（如 vision via_options 指定视觉渠道，
+		// 该渠道 Models 列表未必包含视觉模型名），Models 匹配只应约束「自动路由」。
+		// 否则显式候选会被静默丢弃导致 failover/502。
+		if !matched && (len(specifiedIDs) > 0 || specifiedBaseURL != "" || specified != "") {
+			unknown = append(unknown, candidate)
 		}
 	}
 	return append(known, unknown...), nil

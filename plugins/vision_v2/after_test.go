@@ -168,6 +168,7 @@ func TestAfterUpstreamToolLoopChat(t *testing.T) {
 	}
 	svc.repo = repo
 	svc.st = st
+	svc.SetGateway(newMockForwarder(map[string]string{"vision": vision.URL, "main": main.URL}))
 	// 注入真实 route-log（与主链路同库），断言视觉识别/续流的 attempt 序列。
 	rl := routelog.NewService(database, slog.Default())
 	svc.SetRouteLog(rl)

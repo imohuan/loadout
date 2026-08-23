@@ -136,6 +136,14 @@ func (s *Service) HandleProxyBeforeUpstream(payload any) (any, error) {
 	if !ok || pipe == nil || pipe.Request == nil {
 		return payload, nil
 	}
+	// 子请求（vision_v2 视觉识别/续流走网关通道）：跳过安检——字段过滤可能
+	// 删掉识别请求的 image_url / 续流 body 的字段，破坏视觉请求。
+	if pipe.Metadata != nil {
+		if v, _ := pipe.Metadata["__sub_request_skip_security"].(bool); v {
+			pipe.Metadata[routeMetaKey] = nil
+			return payload, nil
+		}
+	}
 
 	routes, err := s.decideRoutes(pipe)
 	if err != nil {
@@ -253,6 +261,10 @@ func (s *Service) warnRulesMiss(model, dir string, keep, strip []string) {
 func (s *Service) HandleProxyAfterUpstream(payload any) (any, error) {
 	after, ok := payload.(*modelgateway.AfterUpstreamPayload)
 	if !ok || after == nil || after.Pipe == nil || after.Response == nil || after.Pipe.Metadata == nil {
+		return payload, nil
+	}
+	// 子请求（vision_v2 视觉识别/续流走网关通道）：跳过安检（响应侧同样不处理）。
+	if v, _ := after.Pipe.Metadata["__sub_request_skip_security"].(bool); v {
 		return payload, nil
 	}
 

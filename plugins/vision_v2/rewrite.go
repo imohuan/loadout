@@ -101,10 +101,17 @@ func replaceMessagesBody(m map[string]any, format visionProxyFormat, messages []
 
 // HandleProxyBeforeUpstream 主处理器（三格式）：
 // 路由判断 → 图片替换占位符（落盘）→ 工具注入 → 写回 Body。无图/native/非视觉路径原样返回。
+// 子请求（视觉识别/续流走 model-gateway 主链路）直接放行：__sub_request 标记防递归——
+// 视觉识别请求调视觉模型（doubao），若该模型自身配置了 vision 路由，不二次触发占位符改写。
 func (s *Service) HandleProxyBeforeUpstream(payload any) (any, error) {
 	pipe, ok := payload.(*modelgateway.ProxyPipeline)
 	if !ok || pipe == nil || pipe.Request == nil || len(pipe.Request.Body) == 0 {
 		return payload, nil
+	}
+	if pipe.Metadata != nil {
+		if v, _ := pipe.Metadata["__sub_request"].(bool); v {
+			return payload, nil // 子请求：不参与视觉改写
+		}
 	}
 	format, ok := visionFormatByPath(pipe.Request.Path)
 	if !ok {

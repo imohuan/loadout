@@ -1,13 +1,11 @@
 package visionv2
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -44,6 +42,12 @@ func (s *Service) HandleProxyStreamChunk(payload any) (any, error) {
 	sp, ok := payload.(*modelgateway.StreamChunkPayload)
 	if !ok || sp == nil || sp.Data == nil || sp.Pipe == nil {
 		return payload, nil
+	}
+	// 子请求（视觉识别/续流走 model-gateway 主链路）：流由调用方处理，不拦截。
+	if sp.Pipe.Metadata != nil {
+		if v, _ := sp.Pipe.Metadata["__sub_request"].(bool); v {
+			return sp, nil
+		}
 	}
 	if !s.isVisionRequest(sp.Pipe) {
 		return sp, nil // 非视觉请求：不建 state，直接透传
@@ -251,13 +255,13 @@ func (s *Service) executeToolLoop(pipe *modelgateway.ProxyPipeline, st *toolLoop
 				"image_id":        c.ImageID,
 				"prompt":          c.Prompt,
 			}
-			s.visionAttempt(ctx, pipe.RequestID, step, viaModelOf(route), start, 0, "running", "", "", 1, extra)
+			s.visionAttempt(ctx, pipe.RequestID, step, viaModelOf(route), start, 0, "running", "", "", "", 1, extra)
 			s.lg.Info("视觉识别开始", "req", pipe.RequestID, "step", step, "tool", c.Name, "image_id", c.ImageID, "prompt", c.Prompt)
 
-			text, chID, err := s.describeWithFailover(ctx, c.ImageID, c.Prompt, s.toolStreamWriter(pipe, st.format), route)
+			text, chID, reqLogID, err := s.describeWithFailover(ctx, c.ImageID, c.Prompt, s.toolStreamWriter(pipe, st.format), route, pipe.RequestID)
 			if err != nil {
 				extra["cache_hit"] = false
-				s.visionAttempt(ctx, pipe.RequestID, step, viaModelOf(route), start, time.Since(start), "failed", "", err.Error(), 1, extra)
+				s.visionAttempt(ctx, pipe.RequestID, step, viaModelOf(route), start, time.Since(start), "failed", "", err.Error(), reqLogID, 1, extra)
 				s.lg.Warn("视觉识别失败", "req", pipe.RequestID, "step", step, "image_id", c.ImageID, "err", err)
 				return false, err
 			}
@@ -265,7 +269,7 @@ func (s *Service) executeToolLoop(pipe *modelgateway.ProxyPipeline, st *toolLoop
 			if chID != "" {
 				extra["via_channel"] = chID
 			}
-			s.visionAttempt(ctx, pipe.RequestID, step, viaModelOf(route), start, time.Since(start), "success", chID, "", 1, extra)
+			s.visionAttempt(ctx, pipe.RequestID, step, viaModelOf(route), start, time.Since(start), "success", chID, "", reqLogID, 1, extra)
 			s.lg.Info("视觉识别完成", "req", pipe.RequestID, "step", step, "image_id", c.ImageID, "cache_hit", chID == "", "duration_ms", time.Since(start).Milliseconds())
 			toolResults = append(toolResults, buildToolResultMessage(c, text, st.format))
 		}
@@ -295,34 +299,29 @@ func (s *Service) executeToolLoop(pipe *modelgateway.ProxyPipeline, st *toolLoop
 		if contCh := s.mainChannelForContinuation(pipe); contCh != nil {
 			continuationChID = contCh.ID
 		}
-		resp, err := s.doUpstream(pipe, reqBody)
-		if err != nil {
-			return false, err
-		}
-		// 4. 续流：读新流逐行写客户端 + 检测新工具调用
+		// 续流走 model-gateway 子请求通道（request-log/安检/额度/主链路语义），
+		// 逐行回调：写客户端 + acc.Feed 检测新工具调用。
 		var newCalls []ToolCall
 		acc := NewStreamAccumulator(st.format)
 		flusher, _ := pipe.ResponseWriter.(http.Flusher)
-		reader := bufio.NewReader(resp.Body)
-		for {
-			line, err := reader.ReadString('\n')
-			if len(line) > 0 {
-				if _, werr := fmt.Fprint(pipe.ResponseWriter, line); werr != nil {
-					resp.Body.Close()
-					return false, werr
-				}
-				if flusher != nil {
-					flusher.Flush()
-				}
-				acc.Feed(line, &newCalls)
+		subWriter := func(line []byte) error {
+			if _, werr := fmt.Fprintf(pipe.ResponseWriter, "%s", line); werr != nil {
+				return werr
 			}
-			if isStreamEnd(line, st.format) || err != nil {
-				break
+			if flusher != nil {
+				flusher.Flush()
 			}
+			acc.Feed(string(line), &newCalls)
+			return nil
 		}
-		resp.Body.Close()
+		contFinal, _, err := s.continuationViaGateway(pipe, reqBody, subWriter)
+		if err != nil {
+			return false, err
+		}
+		// 续流走 model-gateway 子请求通道，request-log 已在子请求钩子里写完独立完整日志。
+		// 续流的 RouteAttempt.RequestLogID 从子 pipe metadata 回填，前端「完整日志」按钮依赖它。
+		contReqLogID, _ := contFinal.Metadata[modelgateway.MetadataRequestLogAttemptID].(string)
 		// 续流结束：写主链路 attempt（点分层级，如 "1.2"——主请求的子步骤，与视觉识别兄弟）。
-		// 续流不走 model-gateway 主链路（vision_v2 直接 doUpstream），由这里补日志。
 		// 主链路段不推进（仍是 __main_step），子段计数器继续递增。
 		mainStep2, _ := pipe.Metadata["__main_step"].(int)
 		if mainStep2 == 0 {
@@ -336,16 +335,17 @@ func (s *Service) executeToolLoop(pipe *modelgateway.ProxyPipeline, st *toolLoop
 		}
 		if s.routeLog != nil {
 			_, _ = s.routeLog.Attempt(ctx, contracts.RouteAttempt{
-				RequestID:  pipe.RequestID,
-				StepNo:     contStep,
-				Action:     "首次尝试",
-				Model:      contModel,
-				ChannelID:  continuationChID,
-				StartedAt:  continuationStart,
-				FinishedAt: pointerTime(time.Now()),
-				Result:     "success",
-				Stream:     true,
-				Duration:   contracts.DurationMS(time.Since(continuationStart)),
+				RequestID:    pipe.RequestID,
+				StepNo:       contStep,
+				Action:       "首次尝试",
+				Model:        contModel,
+				ChannelID:    continuationChID,
+				StartedAt:    continuationStart,
+				FinishedAt:   pointerTime(time.Now()),
+				Result:       "success",
+				Stream:       true,
+				Duration:     contracts.DurationMS(time.Since(continuationStart)),
+				RequestLogID: contReqLogID,
 			})
 		}
 		s.lg.Info("续流", "req", pipe.RequestID, "step", contStep, "status", 200, "new_calls", len(newCalls))
@@ -457,45 +457,48 @@ func (s *Service) mainChannelForContinuation(pipe *modelgateway.ProxyPipeline) *
 	return nil
 }
 
-// doUpstream 发起工具循环的续流请求：POST {channel.BaseURL}/{pipe.Request.Path}，
-// 带 Content-Type/Authorization，body 为 reqBody。渠道复用原主链路
-// （mainChannelForContinuation：__current_channel → __last_tried_channel → 路由兜底）。
-// 返回上游响应（调用方负责 Close Body）。超时 config.VisionTimeout。
-func (s *Service) doUpstream(pipe *modelgateway.ProxyPipeline, reqBody []byte) (*http.Response, error) {
-	ch := s.mainChannelForContinuation(pipe)
-	if ch == nil {
-		return nil, errors.New("vision_v2: 无法定位主链路渠道")
+// continuationViaGateway 发起工具循环的续流请求，走 model-gateway 子请求通道：
+// 复用原主链路渠道上下文（__current_channel / __current_channel_base_url），
+// 获得 request-log 完整日志 / 安检（跳过）/ 额度统计。
+// streamWriter 非 nil = 流式续流（逐行回调）；nil = 非流式，返回完整 body。
+func (s *Service) continuationViaGateway(pipe *modelgateway.ProxyPipeline, reqBody []byte, streamWriter func(line []byte) error) (*modelgateway.ProxyPipeline, []byte, error) {
+	if s.gw == nil {
+		return nil, nil, errors.New("vision_v2: model-gateway 子请求通道未初始化")
 	}
 	ctx := context.Background()
 	if pipe.HTTPRequest != nil && pipe.HTTPRequest.Context() != nil {
 		ctx = pipe.HTTPRequest.Context()
 	}
-	target := strings.TrimRight(ch.BaseURL, "/") + "/" + pipe.Request.Path
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(reqBody))
-	if err != nil {
-		return nil, err
+	// 续流语义：复用原主渠道（与视觉识别不同，识别走 via_options 候选，续流必须回主对话渠道）。
+	// 注意：续流锁定主渠道，主渠道不可用（禁用/熔断）时续流直接失败、无 failover——
+	// 这是设计约定（续流是主请求的延续，不应切到别的渠道），异常由工具循环外层报错兜底。
+	md := map[string]any{}
+	// 子请求关联主请求（供 request-log / UI 关联展示）。
+	if pipe.RequestID != "" {
+		md["__parent_request_id"] = pipe.RequestID
 	}
-	req.Header.Set("Content-Type", "application/json")
-	if ch.APIKey != "" {
-		req.Header.Set("Authorization", "Bearer "+ch.APIKey)
+	if v, ok := pipe.Metadata["__current_channel"].(string); ok && v != "" {
+		md["__current_channel"] = v
 	}
-	// 流式续流（SSE 可能长时间吐字，总超时会提前截断）不设 http.Client 总 Timeout：
-	// 客户端断开由 request context（pipe.HTTPRequest.Context()）取消兜底，与主链路
-	// 流式（proxyForward 流式分支 Timeout=0）语义一致。非流式续流保持 VisionTimeout 防挂死。
-	client := &http.Client{Timeout: config.VisionTimeout}
-	if pipe.Request != nil && pipe.Request.Stream {
-		client = &http.Client{}
+	if v, ok := pipe.Metadata["__current_channel_base_url"].(string); ok && v != "" {
+		md["__current_channel_base_url"] = v
 	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
+	if v, ok := pipe.Metadata["__last_tried_channel"].(string); ok && v != "" {
+		md["__last_tried_channel"] = v
 	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		resp.Body.Close()
-		return nil, fmt.Errorf("vision_v2: 续流上游返回错误(%d): %s", resp.StatusCode, string(b))
+	sub := &modelgateway.ProxyPipeline{
+		Request: &modelgateway.ProxyRequest{
+			Method: pipe.Request.Method,
+			Path:   pipe.Request.Path,
+			Query:  pipe.Request.Query,
+			Header: pipe.Request.Header.Clone(),
+			Body:   reqBody,
+			Model:  pipe.Request.Model,
+			Stream: pipe.Request.Stream,
+		},
+		Metadata: md,
 	}
-	return resp, nil
+	return s.gw.ForwardSubRequest(ctx, sub, streamWriter)
 }
 
 // resolveChannel 按 channel_id 查渠道表（SQLite，与主路由同源）并解密 api_key。

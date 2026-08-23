@@ -183,6 +183,7 @@ func TestToolLoopStreamChat(t *testing.T) {
 	}
 	svc.repo = repo
 	svc.st = st
+	svc.SetGateway(newMockForwarder(map[string]string{"bailian": vision.URL, "main": main.URL}))
 	rl := &mockVisionRouteLog{}
 	svc.SetRouteLog(rl)
 	if err := repo.ReplaceChannels(context.Background(), []db.Channel{
@@ -297,6 +298,9 @@ func TestToolLoopStreamChat(t *testing.T) {
 		if visionStep.Model != "qwen3-vl-flash-2026-01-22" {
 			t.Errorf("step1.1 Model = %q, want qwen3-vl-flash-2026-01-22", visionStep.Model)
 		}
+		if visionStep.RequestLogID != "mock-reqlog-bailian" {
+			t.Errorf("step1.1 RequestLogID = %q, want mock-reqlog-bailian（request-log 回填）", visionStep.RequestLogID)
+		}
 	}
 	if contStep == nil {
 		t.Error("缺少 step=1.2 的续流 attempt")
@@ -309,6 +313,9 @@ func TestToolLoopStreamChat(t *testing.T) {
 		}
 		if !contStep.Stream {
 			t.Error("step1.2 Stream = false, want true（续流为 SSE 流式）")
+		}
+		if contStep.RequestLogID != "mock-reqlog-main" {
+			t.Errorf("step1.2 RequestLogID = %q, want mock-reqlog-main（续流 request-log 回填）", contStep.RequestLogID)
 		}
 	}
 	// 主链路段不被视觉推进（__route_step 仍 1），子段计数器到 2（识别 1.1、续流 1.2）。
@@ -364,6 +371,7 @@ func TestVisionAttemptStepSequence(t *testing.T) {
 	}
 	svc.repo = repo
 	svc.st = st
+	svc.SetGateway(newMockForwarder(map[string]string{"bailian": vision.URL, "main": main.URL}))
 	rl := &mockVisionRouteLog{}
 	svc.SetRouteLog(rl)
 	if err := repo.ReplaceChannels(context.Background(), []db.Channel{
@@ -613,6 +621,7 @@ func TestDescribeWithFailoverOrder(t *testing.T) {
 	}
 	svc := NewService(st, repo, slog.Default())
 	svc.cacheDir = t.TempDir()
+	svc.SetGateway(newMockForwarder(map[string]string{"ch1": srv1.URL, "ch2": srv2.URL, "ch3": srv3.URL}))
 	if err := repo.ReplaceChannels(context.Background(), []db.Channel{
 		{ID: "ch1", Name: "c1", BaseURL: srv1.URL, ManualEnabled: true},
 		{ID: "ch2", Name: "c2", BaseURL: srv2.URL, ManualEnabled: true},
@@ -633,7 +642,7 @@ func TestDescribeWithFailoverOrder(t *testing.T) {
 		{ChannelIDs: []string{"ch3"}, ViaModel: "qwen3.7-flash-2026-07-15"},
 	}}
 
-	text, successChannelID, err := svc.describeWithFailover(context.Background(), imgID, "看颜色", nil, route)
+	text, successChannelID, _, err := svc.describeWithFailover(context.Background(), imgID, "看颜色", nil, route, "parent-test")
 	if err != nil {
 		t.Fatalf("describeWithFailover 报错: %v", err)
 	}
@@ -703,7 +712,7 @@ func TestDescribeWithFailoverCacheHit(t *testing.T) {
 	route := &types.CapabilityRoute{ViaOptions: []types.ViaOption{
 		{ChannelIDs: []string{"ch1"}, ViaModel: "qwen3-vl-flash-2026-01-22"},
 	}}
-	text, successChannelID, err := svc.describeWithFailover(context.Background(), imgID, "看颜色", nil, route)
+	text, successChannelID, _, err := svc.describeWithFailover(context.Background(), imgID, "看颜色", nil, route, "parent-test")
 	if err != nil {
 		t.Fatalf("describeWithFailover 报错: %v", err)
 	}

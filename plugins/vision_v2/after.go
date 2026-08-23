@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"time"
 
@@ -168,19 +167,19 @@ func (s *Service) toolLoopNonStream(pipe *modelgateway.ProxyPipeline, calls []To
 				"image_id":        c.ImageID,
 				"prompt":          c.Prompt,
 			}
-			s.visionAttempt(ctx, pipe.RequestID, step, viaModelOf(route), start, 0, "running", "", "", 1, extra)
+			s.visionAttempt(ctx, pipe.RequestID, step, viaModelOf(route), start, 0, "running", "", "", "", 1, extra)
 			s.lg.Info("视觉识别开始", "req", pipe.RequestID, "step", step, "tool", c.Name, "image_id", c.ImageID)
-			text, chID, err := s.describeWithFailover(ctx, c.ImageID, c.Prompt, nil, route)
+			text, chID, reqLogID, err := s.describeWithFailover(ctx, c.ImageID, c.Prompt, nil, route, pipe.RequestID)
 			if err != nil {
 				extra["cache_hit"] = false
-				s.visionAttempt(ctx, pipe.RequestID, step, viaModelOf(route), start, time.Since(start), "failed", "", err.Error(), 1, extra)
+				s.visionAttempt(ctx, pipe.RequestID, step, viaModelOf(route), start, time.Since(start), "failed", "", err.Error(), reqLogID, 1, extra)
 				return nil, err
 			}
 			extra["cache_hit"] = (chID == "")
 			if chID != "" {
 				extra["via_channel"] = chID
 			}
-			s.visionAttempt(ctx, pipe.RequestID, step, viaModelOf(route), start, time.Since(start), "success", chID, "", 1, extra)
+			s.visionAttempt(ctx, pipe.RequestID, step, viaModelOf(route), start, time.Since(start), "success", chID, "", reqLogID, 1, extra)
 			s.lg.Info("视觉识别完成", "req", pipe.RequestID, "step", step, "image_id", c.ImageID, "cache_hit", chID == "", "duration_ms", time.Since(start).Milliseconds())
 			toolResults = append(toolResults, buildToolResultMessage(c, text, format))
 		}
@@ -192,7 +191,7 @@ func (s *Service) toolLoopNonStream(pipe *modelgateway.ProxyPipeline, calls []To
 		messages = append(messages, buildAssistantToolMessage(calls, format))
 		messages = append(messages, toolResults...)
 		bodyMap[msgArrayKey(format)] = messages
-		// 3. 非流式续流请求（复用原主链路渠道）。
+		// 3. 非流式续流请求（复用原主链路渠道，走 model-gateway 子请求通道）。
 		reqBody, err := json.Marshal(bodyMap)
 		if err != nil {
 			return nil, err
@@ -203,17 +202,13 @@ func (s *Service) toolLoopNonStream(pipe *modelgateway.ProxyPipeline, calls []To
 		if ch != nil {
 			chID = ch.ID
 		}
-		resp, err := s.doUpstream(pipe, reqBody)
+		_, respBody, err := s.continuationViaGateway(pipe, reqBody, nil)
 		if err != nil {
 			return nil, err
 		}
-		var respBody []byte
-		if resp.Body != nil {
-			respBody, _ = io.ReadAll(resp.Body)
-			resp.Body.Close()
-		}
 		// 4. 续流结束：补写主链路 attempt（点分层级，如 "1.2"——主请求的子步骤，与视觉识别兄弟）。
-		//    续流不走 model-gateway 主链路（vision_v2 直接 doUpstream），由这里补日志。
+		//    续流走 model-gateway 子请求通道（request-log 完整日志由网关侧自动记录），
+		//    route-log 的 attempt 仍由这里补（主请求下的子步骤）。
 		mainStep2, _ := pipe.Metadata["__main_step"].(int)
 		if mainStep2 == 0 {
 			mainStep2, _ = pipe.Metadata["__route_step"].(int)
@@ -221,8 +216,8 @@ func (s *Service) toolLoopNonStream(pipe *modelgateway.ProxyPipeline, calls []To
 		subStep2 := s.nextVisionSubStep(pipe)
 		contStep := fmt.Sprintf("%d.%d", mainStep2, subStep2)
 		result, errMsg := "success", ""
-		if resp.StatusCode >= 400 {
-			result, errMsg = "failed", summarizeContinuationError(respBody)
+		if err != nil {
+			result, errMsg = "failed", err.Error()
 		}
 		if s.routeLog != nil {
 			if _, lerr := s.routeLog.Attempt(ctx, contracts.RouteAttempt{
@@ -241,9 +236,9 @@ func (s *Service) toolLoopNonStream(pipe *modelgateway.ProxyPipeline, calls []To
 				s.lg.Warn("route log 续流 attempt failed", "err", lerr)
 			}
 		}
-		s.lg.Info("续流完成", "req", pipe.RequestID, "step", contStep, "status", resp.StatusCode, "new_calls", 0)
-		if resp.StatusCode >= 400 {
-			return nil, fmt.Errorf("vision_v2: 非流式续流失败(%d): %s", resp.StatusCode, errMsg)
+		s.lg.Info("续流完成", "req", pipe.RequestID, "step", contStep, "new_calls", 0)
+		if err != nil {
+			return nil, err
 		}
 		next := parseToolCallsNonStream(respBody, format)
 		if len(next) == 0 {
@@ -272,6 +267,12 @@ func (s *Service) HandleProxyAfterUpstream(payload any) (any, error) {
 	ap, ok := payload.(*modelgateway.AfterUpstreamPayload)
 	if !ok || ap == nil || ap.Response == nil || ap.Pipe == nil || ap.Pipe.Request == nil {
 		return payload, nil
+	}
+	// 子请求（视觉识别/续流走 model-gateway 主链路）：响应由调用方处理，不解析工具。
+	if ap.Pipe.Metadata != nil {
+		if v, _ := ap.Pipe.Metadata["__sub_request"].(bool); v {
+			return payload, nil
+		}
 	}
 	format, ok := visionFormatByPath(ap.Pipe.Request.Path)
 	if !ok || len(ap.Response.Body) == 0 {
