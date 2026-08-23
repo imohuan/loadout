@@ -64,18 +64,16 @@ const passwordVisible = ref(false)
               <TooltipProvider>
                 <Tooltip>
                   <TooltipTrigger as-child>
-                    <Button
+                    <button
                       type="button"
-                      variant="ghost"
-                      size="icon"
-                      class="absolute top-0 right-0 size-9"
                       :aria-label="passwordVisible ? '隐藏密码' : '显示密码'"
                       :disabled="pending"
+                      class="absolute top-0 right-0 inline-flex size-9 items-center justify-center text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring rounded-sm disabled:opacity-50 disabled:pointer-events-none"
                       @click="passwordVisible = !passwordVisible"
                     >
                       <RiEyeOffLine v-if="passwordVisible" size="17" aria-hidden="true" />
                       <RiEyeLine v-else size="17" aria-hidden="true" />
-                    </Button>
+                    </button>
                   </TooltipTrigger>
                   <TooltipContent>{{ passwordVisible ? '隐藏密码' : '显示密码' }}</TooltipContent>
                 </Tooltip>
@@ -94,3 +92,13 @@ const passwordVisible = ref(false)
     </Card>
   </section>
 </template>
+
+<style scoped>
+/* 隐藏 WebView2/Edge 自动注入的密码 reveal 按钮，避免与上方自定义 toggle 重复显示。
+   仅作用于本组件的密码 input（其他密码框没自定义 toggle，保留 WebView2 reveal）。
+   ::-ms-reveal 是 Edge/WebView2 密码字段右侧内嵌的眼睛图标（浏览器标准 UI）。 */
+:deep(input::-ms-reveal),
+:deep(input::-ms-clear) {
+  display: none;
+}
+</style>
