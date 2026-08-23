@@ -191,6 +191,10 @@ type RouteLogPage struct {
 
 type RouteRequestView struct {
 	RequestID            string         `json:"request_id"`
+	// RequestLogID request-log 插件的关联主键（独立库 request-log.db 的 request_logs.id，
+	// UUID）。由 request-log 插件在请求发出前生成并 UPDATE 本列；为空表示未命中
+	// request_log 能力路由（前端据此决定是否显示"完整日志"入口）。
+	RequestLogID         string         `json:"request_log_id,omitempty"`
 	RequestedModel       string         `json:"requested_model"`
 	VirtualModel         string         `json:"virtual_model,omitempty"`
 	StartedAt            time.Time      `json:"started_at"`

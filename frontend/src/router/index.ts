@@ -7,6 +7,7 @@ const ModelTestView = () => import('@/views/ModelTestView.vue')
 const AggregatesView = () => import('@/views/AggregatesView.vue')
 const ModelStatusView = () => import('@/views/ModelStatusView.vue')
 const RouteLogsView = () => import('@/views/RouteLogsView.vue')
+const RequestLogDetailView = () => import('@/views/RequestLogDetailView.vue')
 const McpView = () => import('@/views/McpView.vue')
 const CapabilityRoutesView = () => import('@/views/CapabilityRoutesView.vue')
 const ManagementView = () => import('@/views/ManagementView.vue')
@@ -52,6 +53,12 @@ const router = createRouter({
           name: 'route-logs',
           component: RouteLogsView,
           meta: { title: '转发日志' },
+        },
+        {
+          path: 'request-logs/:id',
+          name: 'request-log-detail',
+          component: RequestLogDetailView,
+          meta: { title: '完整请求日志' },
         },
         {
           path: 'integrations',

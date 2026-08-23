@@ -203,6 +203,11 @@ const ProxyUpstreamFailed = "proxy:upstream-failed"
 // aggregate 插件订阅它，记录目标模型已经恢复可用。
 const ProxyUpstreamSucceeded = "proxy:upstream-succeeded"
 
+// MetadataRequestLogID pipe.Metadata 中"请求实例唯一 ID"的键（32 位 hex UUID）。
+// 由 model-gateway 在 proxyAttempt（实际请求发出位置）生成并写入 metadata，
+// 事件 emit 时随 *ProxyPipeline 带给消费方（request-log 插件读取，不自造）。
+const MetadataRequestLogID = "__request_log_id"
+
 // ProxyRequest 透明代理请求侧：原始字节，不做字段清洗。
 type ProxyRequest struct {
 	Method string      // 原样透传的方法

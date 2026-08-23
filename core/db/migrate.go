@@ -525,6 +525,17 @@ CREATE INDEX idx_route_attempts_channel_started_at ON route_attempts(channel_id,
 CREATE INDEX idx_route_attempts_model_started_at ON route_attempts(model, started_at DESC);
 CREATE INDEX idx_route_attempts_result_started_at ON route_attempts(result, started_at DESC);
 `,
+	}, {
+		version: 24,
+		name:    "route-requests-request-log-id",
+		sql: `
+-- request-log 插件的关联列：route_requests 行指向独立库 request-log.db 的
+-- request_logs 表主键 UUID。UUID 由 request-log 插件在 proxy:before-attempt
+-- （请求发出之前）生成并 UPDATE 本列；route-log 列表/详情带出，前端据此跳转。
+-- 可空：未命中 request_log 能力路由的请求为 NULL。不加 UNIQUE（每行独立生成，
+-- 天然唯一；SQLite 对 NULL 不做唯一性检查）。不加索引（无按此列查询需求）。
+ALTER TABLE route_requests ADD COLUMN request_log_id TEXT;
+`,
 	}}
 
 // Migrate applies all pending schema migrations and rejects an incompatible

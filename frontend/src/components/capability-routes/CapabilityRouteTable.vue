@@ -184,6 +184,9 @@ function channelScopeLabel(channels: Channel[], ids?: string[], baseURLs?: strin
                         <template v-else-if="route.capability === 'field_filter'">
                           {{ fieldRulesLabel(route) || '—' }}
                         </template>
+                        <template v-else-if="route.capability === 'request_log'">
+                          记录完整请求/响应
+                        </template>
                         <template v-else>
                           <template v-for="(o, i) in viaOptions(route)" :key="i">
                             <ModelChannelRef

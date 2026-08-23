@@ -282,6 +282,7 @@ function isFailureResult(result?: string) {
               <TableHead>Tokens</TableHead>
               <TableHead>缓存</TableHead>
               <TableHead>耗时</TableHead>
+              <TableHead class="w-24">完整日志</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody><template v-for="log in pagedLogs" :key="log.request_id">
@@ -342,9 +343,15 @@ function isFailureResult(result?: string) {
                 <TableCell class="whitespace-nowrap tabular-nums text-sm font-mono">{{
                   formatDuration(log.duration_ms)
                 }}</TableCell>
+                <TableCell class="whitespace-nowrap">
+                  <router-link v-if="log.request_log_id"
+                    :to="`/request-logs/${log.request_log_id}`"
+                    class="text-xs text-primary hover:underline" @click.stop>完整日志</router-link>
+                  <span v-else class="text-xs text-muted-foreground">-</span>
+                </TableCell>
               </TableRow>
               <TableRow v-if="showDetails(log)">
-                <TableCell colspan="10" class="bg-muted/30 p-4">
+                <TableCell colspan="11" class="bg-muted/30 p-4">
                   <div v-if="loadingDetail === log.request_id" class="text-sm text-muted-foreground">
                     正在加载时间线...
                   </div>

@@ -40,6 +40,7 @@ const sensitiveListRef = ref<SensitiveWordListHandle | null>(null)
 const CAP_VISION = 'vision'
 const CAP_SENSITIVE = 'sensitive_filter'
 const CAP_FIELD_FILTER = 'field_filter'
+const CAP_REQUEST_LOG = 'request_log'
 
 // 字段过滤规则编辑态：模板用 v-model 绑定原始文本（每行一个字段路径），
 // 提交时才 split/trim 解析为数组——避免输入时受控转换吞字符/丢空格。
@@ -249,6 +250,7 @@ const capabilityOptions = [
   { value: CAP_VISION, label: 'vision（视觉）' },
   { value: CAP_SENSITIVE, label: 'sensitive_filter（敏感词过滤）' },
   { value: CAP_FIELD_FILTER, label: 'field_filter（字段过滤）' },
+  { value: CAP_REQUEST_LOG, label: 'request_log（完整请求日志）' },
 ]
 // 路由方式选项：vision 保持两态；敏感词过滤提供三态（error = 命中敏感词直接拒绝）；
 // 字段过滤两态（error 无意义：实现为 fail-open 透传）。
@@ -281,6 +283,12 @@ const routeHint = computed(() => {
       native: '请求/响应方向原样透传，不做字段过滤（适合通配规则下的精确豁免）。',
     }[form.route]
   }
+  if (form.capability === CAP_REQUEST_LOG) {
+    return {
+      proxy: '记录该模型/渠道下每次请求的完整输入输出（独立库 request-log.db，脱敏后落库）；转发日志页可从该行跳转查看详情。',
+      native: '不记录完整请求日志（请求体/响应体均不落库）。',
+    }[form.route]
+  }
   return {
     proxy: '图片被拦截，候选视觉模型看图生成文字描述后再转发给目标模型。',
     native: '图片原样透传给目标模型自行处理（适合支持视觉的模型，或通配规则下的精确豁免）。',
@@ -296,6 +304,8 @@ function submit() {
       if (!form.replacements.some((r) => r.from.trim())) return
     } else if (isFieldFilter) {
       if (!hasFieldRulesText()) return
+    } else if (form.capability === CAP_REQUEST_LOG) {
+      // request_log 无额外配置（脱敏开关在独立 config 表），直接放行
     } else if (!form.viaOptions.some((o) => o.model.trim())) {
       return
     }
@@ -625,7 +635,7 @@ function submit() {
             add-label="添加规则"
           />
         </div>
-        <div v-else-if="form.route === 'proxy'" class="space-y-2">
+        <div v-else-if="form.capability === CAP_VISION && form.route === 'proxy'" class="space-y-2">
           <Label>视觉候选（从上到下依次请求，失败换下一个）</Label>
           <ModelChannelList v-model="form.viaOptions" :channels="channels" add-label="添加候选" />
         </div>

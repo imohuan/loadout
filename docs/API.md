@@ -54,6 +54,15 @@
 > 目标二选一：`channel_id` 复用已存渠道（后端解密密钥，不回传明文），或临时 `base_url` + `api_key`（不落盘）。
 > 每次 `/api/test/chat` 都会以 `request_id` 写入转发日志（route-log），可在 `/api/route-logs` 查看完整时间线。
 > `GET /api/route-logs` 支持 `page`（默认 1）/`pageSize`（默认 20，上限 100）分页参数，返回 `{items: [...], total: N}`；`GET /api/route-logs/{request_id}` 返回单条完整时间线（attempts 按 step 排序）。
+> 转发日志行带 `request_log_id`（UUID，request-log 插件在请求发出前写入）：非空时前端显示「完整日志」入口，跳转 `/api/request-logs/{id}`。
+
+### 完整请求日志（request-log 插件）
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/request-logs` | 列表 + 搜索，返回 `{items: [...], total: N}`；过滤参数：`model`、`channel`、`request_id`、`result`、`status_code`、`stream`(0/1)、`from`/`to`(RFC3339)、`limit`(默认 100 上限 500)、`offset` |
+| GET | `/api/request-logs/{id}` | 按 UUID 查详情（含 `request_json`/`response_json` 完整快照）；卡 running 超时自动 self-heal 收尾；未命中 404 |
+
+> 请求/响应完整 JSON 存独立库 `request-log.db`（`request_logs` 单表），与 `route_requests` 通过 `request_log_id`（UUID）关联。脱敏默认开（Authorization 等敏感头打码、`sk-` 密钥打码、base64 图片转占位标记），开关在 `request_log_config` 表。能力开关在 `capability_routes`（capability=`request_log`，route=`native` 不记录 / `proxy` 记录）。
 
 ### 能力路由（视觉附加）
 | 方法 | 路径 | 说明 |

@@ -310,7 +310,7 @@ func (s *Service) List(ctx context.Context, filter contracts.RouteLogFilter) (co
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
-	query := `SELECT request_id, requested_model, COALESCE(virtual_model, ''), started_at, finished_at, result, COALESCE(final_model, ''), COALESCE(final_channel_id, ''), COALESCE(final_channel_ids_json, '[]'), COALESCE(final_channel_base_url, ''), COALESCE(final_channel_name, ''), COALESCE(http_status, 0), COALESCE(duration_ms, 0), error_message, COALESCE(error_body, ''), COALESCE(stream, 0), COALESCE(prompt_tokens, 0), COALESCE(completion_tokens, 0), COALESCE(cached_tokens, 0) FROM route_requests r` + where + ` ORDER BY r.started_at DESC LIMIT ? OFFSET ?`
+	query := `SELECT request_id, COALESCE(request_log_id, ''), requested_model, COALESCE(virtual_model, ''), started_at, finished_at, result, COALESCE(final_model, ''), COALESCE(final_channel_id, ''), COALESCE(final_channel_ids_json, '[]'), COALESCE(final_channel_base_url, ''), COALESCE(final_channel_name, ''), COALESCE(http_status, 0), COALESCE(duration_ms, 0), error_message, COALESCE(error_body, ''), COALESCE(stream, 0), COALESCE(prompt_tokens, 0), COALESCE(completion_tokens, 0), COALESCE(cached_tokens, 0) FROM route_requests r` + where + ` ORDER BY r.started_at DESC LIMIT ? OFFSET ?`
 	args := append(whereArgs, limit, offset)
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -330,7 +330,7 @@ func (s *Service) List(ctx context.Context, filter contracts.RouteLogFilter) (co
 }
 
 func (s *Service) Detail(ctx context.Context, requestID string) (contracts.RouteRequestView, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT request_id, requested_model, COALESCE(virtual_model, ''), started_at, finished_at, result, COALESCE(final_model, ''), COALESCE(final_channel_id, ''), COALESCE(final_channel_ids_json, '[]'), COALESCE(final_channel_base_url, ''), COALESCE(final_channel_name, ''), COALESCE(http_status, 0), COALESCE(duration_ms, 0), error_message, COALESCE(error_body, ''), COALESCE(stream, 0), COALESCE(prompt_tokens, 0), COALESCE(completion_tokens, 0), COALESCE(cached_tokens, 0) FROM route_requests WHERE request_id=?`, requestID)
+	row := s.db.QueryRowContext(ctx, `SELECT request_id, COALESCE(request_log_id, ''), requested_model, COALESCE(virtual_model, ''), started_at, finished_at, result, COALESCE(final_model, ''), COALESCE(final_channel_id, ''), COALESCE(final_channel_ids_json, '[]'), COALESCE(final_channel_base_url, ''), COALESCE(final_channel_name, ''), COALESCE(http_status, 0), COALESCE(duration_ms, 0), error_message, COALESCE(error_body, ''), COALESCE(stream, 0), COALESCE(prompt_tokens, 0), COALESCE(completion_tokens, 0), COALESCE(cached_tokens, 0) FROM route_requests WHERE request_id=?`, requestID)
 	view, err := scanRequest(row)
 	if err != nil {
 		return contracts.RouteRequestView{}, err
@@ -419,7 +419,7 @@ func scanRequest(scanner scanner) (contracts.RouteRequestView, error) {
 	var stream int
 	var promptTokens, completionTokens, cachedTokens int
 	var finalChannelIDsJSON string
-	if err := scanner.Scan(&view.RequestID, &view.RequestedModel, &view.VirtualModel, &started, &finished, &view.Result, &view.FinalModel, &view.FinalChannelID, &finalChannelIDsJSON, &view.FinalChannelBaseURL, &view.FinalChannelName, &view.HTTPStatus, &duration, &view.ErrorMessage, &view.ErrorBody, &stream, &promptTokens, &completionTokens, &cachedTokens); err != nil {
+	if err := scanner.Scan(&view.RequestID, &view.RequestLogID, &view.RequestedModel, &view.VirtualModel, &started, &finished, &view.Result, &view.FinalModel, &view.FinalChannelID, &finalChannelIDsJSON, &view.FinalChannelBaseURL, &view.FinalChannelName, &view.HTTPStatus, &duration, &view.ErrorMessage, &view.ErrorBody, &stream, &promptTokens, &completionTokens, &cachedTokens); err != nil {
 		return view, err
 	}
 	view.FinalChannelIDs = decodeStringSlice(finalChannelIDsJSON)

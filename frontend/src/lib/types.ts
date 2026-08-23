@@ -97,6 +97,8 @@ export interface RouteAttempt {
 
 export interface RouteLog {
   request_id: string
+  /** request-log 插件关联主键（独立库 request_logs.id，UUID）；非空时前端显示"完整日志"入口 */
+  request_log_id?: string
   requested_model: string
   final_model?: string
   final_channel_id?: string
@@ -126,6 +128,31 @@ export interface RouteLog {
 export interface RouteLogPage {
   items: RouteLog[]
   total: number
+}
+
+/** request-log 插件：完整请求日志列表行（不含 request_json/response_json） */
+export interface RequestLogItem {
+  id: string
+  request_id: string
+  model: string
+  channel: string
+  http_status?: number
+  stream: boolean
+  started_at: string
+  finished_at?: string
+  duration_ms?: number
+  result: string
+}
+
+export interface RequestLogPage {
+  items: RequestLogItem[]
+  total: number
+}
+
+/** request-log 插件：详情（含完整 request/response JSON） */
+export interface RequestLogDetail extends RequestLogItem {
+  request_json: unknown
+  response_json?: unknown
 }
 
 export interface Skill {

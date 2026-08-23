@@ -15,6 +15,7 @@ import (
 	mcphub "loadout/plugins/mcp-hub"
 	modelgateway "loadout/plugins/model-gateway"
 	modelhealth "loadout/plugins/model-health"
+	requestlog "loadout/plugins/request-log"
 	routelog "loadout/plugins/route-log"
 	sensitivefilter "loadout/plugins/sensitive-filter"
 	skills "loadout/plugins/skills"
@@ -34,6 +35,7 @@ func All() []plugin.Plugin {
 		modelgateway.New(),
 		modelhealth.New(),
 		routelog.New(),
+		requestlog.New(),
 		aggregate.New(),
 		// 原 vision 插件已停用，由 visionv2 取代
 		visionv2.New(),

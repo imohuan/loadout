@@ -54,6 +54,38 @@ func TestRouteLogRejectsSensitiveMetadata(t *testing.T) {
 	}
 }
 
+// TestRouteLogCarriesRequestLogID 回归：request-log 插件会 UPDATE route_requests.request_log_id
+// （请求发出前生成 UUID），route-log 的 List/Detail 必须带出该字段，前端据此显示跳转入口。
+func TestRouteLogCarriesRequestLogID(t *testing.T) {
+	database := logDB(t)
+	service := NewService(database, nil)
+	ctx := context.Background()
+	started := time.Now().Add(-time.Second)
+	if err := service.Start(ctx, contracts.RouteRequest{RequestID: "r3", RequestedModel: "m", StartedAt: started}); err != nil {
+		t.Fatal(err)
+	}
+	// 模拟 request-log 插件写入关联列
+	if _, err := database.Exec(`UPDATE route_requests SET request_log_id = ? WHERE request_id = ?`, "uuid-1234", "r3"); err != nil {
+		t.Fatal(err)
+	}
+
+	detail, err := service.Detail(ctx, "r3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.RequestLogID != "uuid-1234" {
+		t.Fatalf("Detail RequestLogID = %q, want uuid-1234", detail.RequestLogID)
+	}
+
+	page, err := service.List(ctx, contracts.RouteLogFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 1 || page.Items[0].RequestLogID != "uuid-1234" {
+		t.Fatalf("List RequestLogID 未带出: %+v", page.Items)
+	}
+}
+
 // TestRouteLogRetryMergesSameRequestID 回归：客户端重试复用同一 X-Request-Id 时，
 // 同 request_id 的 Start/Attempt 必须合并（UPSERT），不能报主键冲突或产生多行。
 func TestRouteLogRetryMergesSameRequestID(t *testing.T) {

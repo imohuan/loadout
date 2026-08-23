@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -262,6 +264,17 @@ func (s *Service) rejectBySecurity(w http.ResponseWriter, r *http.Request, pipe 
 //
 // pipe' 为安检可能改写后的管线，调用方应更新。
 //
+// newRequestInstanceID 生成请求实例唯一 ID：crypto/rand 16 字节 → 32 位 hex。
+// 与外部 request_id（X-Request-Id，客户端可复用/重试）解耦：每个渠道尝试实例
+// 一个 ID，request-log 插件用它做 request_logs 主键。
+func newRequestInstanceID() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b)
+}
+
 // 与 ProxyBeforeUpstream（入口只执行一次：聚合改写/额度拦截）的区别：本函数每次
 // 渠道尝试都触发安检，切换渠道/切换模型后能力路由按当前渠道上下文重新匹配。
 func (s *Service) proxyAttempt(w http.ResponseWriter, r *http.Request, pipe *ProxyPipeline, ch ResolvedChannel, model string, started time.Time, res *attemptResult) (*ProxyPipeline, bool) {
@@ -277,6 +290,13 @@ func (s *Service) proxyAttempt(w http.ResponseWriter, r *http.Request, pipe *Pro
 	// 显式赋值（含空）：同循环内渠道从有 BaseURL 到无 BaseURL 时不残留旧值，
 	// 聚合递归时也不会因残留值把 resolveChannels 锁死在旧渠道。
 	pipe.Metadata["__current_channel_base_url"] = ch.BaseURL
+
+	// 请求实例唯一 ID（request-log 插件消费）：在"实际请求发出"的位置生成——
+	// 只有真走到渠道尝试的请求才有 ID，额度拦截等更早截断的请求不会有。
+	// 幂等：failover 同 pipe 重复尝试时 metadata 已有，不重复生成。
+	if pipe.Metadata[MetadataRequestLogID] == nil {
+		pipe.Metadata[MetadataRequestLogID] = newRequestInstanceID()
+	}
 
 	// 安检：每次渠道尝试前执行输入侧能力（敏感词过滤、字段过滤）。
 	out, aerr := s.ctx.Waterfall(ProxyBeforeAttempt, pipe)
