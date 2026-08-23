@@ -1,11 +1,15 @@
 <script setup lang="ts">
 /**
  * 对话预览面板：把「请求 messages + 响应结果」渲染成对话气泡。
+ * 支持流式与非流式两种模式（props.stream 分流解析路径）：
+ *   - 流式：response_json.body 是 SSE 原文 → parseStreamBody 逐 chunk 累积
+ *   - 非流式：response_json.body 是完整 JSON 响应 → parseNonStreamBody 直接提取
+ * 两者输出同构的 ParsedStream，渲染链共用。
  *
  * 数据流：
  *   request_json.body（JSON 字符串）→ parse → messages[] → NormalizedMessage[]
- *   response_json.body（SSE 原文）  → parseStreamBody → contentAccum / reasoningAccum
- *     → 追加为最后一条 assistant 消息（reasoning 进 thinking 块，content 进正文块）
+ *   response_json.body →（流式 parseStreamBody / 非流式 parseNonStreamBody）→
+ *     contentAccum / reasoningAccum / toolCalls → 追加为最后一条 assistant 消息
  *   底部保留：chunks 统计行 + 逐 chunk 时间轴（用户明确要求保留）
  *
  * 组件来源：backup/codex-base-ui/web/src/components/chat（全部复制 + 修复依赖）
@@ -13,7 +17,7 @@
 import { computed } from 'vue'
 import ChatView from '@/components/chat/ChatView.vue'
 import StreamChunkTimeline from './StreamChunkTimeline.vue'
-import { parseStreamBody, extractResponseBody } from '@/lib/parseSSE'
+import { parseStreamBody, parseNonStreamBody, extractResponseBody } from '@/lib/parseSSE'
 import type { NormalizedMessage } from '@/lib/chatTypes'
 
 const props = defineProps<{
@@ -220,8 +224,12 @@ function stringifyToolContent(content: unknown): string {
 }
 
 // ---- 解析响应并追加为最后一条 assistant 消息 ----
+// 流式：SSE 原文逐 chunk；非流式：完整 JSON 响应直接提取。两者输出同构 ParsedStream。
 
-const parsed = computed(() => parseStreamBody(extractResponseBody(props.responseJson)))
+const parsed = computed(() => {
+  const body = extractResponseBody(props.responseJson)
+  return props.stream ? parseStreamBody(body) : parseNonStreamBody(body ?? '')
+})
 
 const responseMessages = computed<NormalizedMessage[]>(() => {
   const p = parsed.value
@@ -274,7 +282,13 @@ const stats = computed(() => {
   }
 })
 
-const showPanel = computed(() => props.stream === true)
+// 显示条件：有请求消息（失败/被拦截请求的对话历史也照常可见）或有响应内容；
+// 两者皆无才走 v-else 空态。
+const showPanel = computed(() => {
+  const p = parsed.value
+  const hasResponse = !!p.contentAccum || !!p.reasoningAccum || p.toolCalls.length > 0
+  return requestMessages.value.length > 0 || hasResponse
+})
 
 function formatUsage(u: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number; prompt_tokens_details?: { cached_tokens?: number }; completion_tokens_details?: { reasoning_tokens?: number } } | undefined): string {
   if (!u) return '—'
@@ -290,7 +304,7 @@ function formatUsage(u: { prompt_tokens?: number; completion_tokens?: number; to
 </script>
 
 <template>
-  <div v-if="showPanel" class="space-y-4">
+  <div v-if="showPanel" class="space-y-2">
     <!-- 统计行 -->
     <div class="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs">
       <span class="inline-flex items-center gap-1.5">
@@ -349,16 +363,25 @@ function formatUsage(u: { prompt_tokens?: number; completion_tokens?: number; to
 
     <!-- 请求区：请求 messages -->
     <div class="overflow-hidden">
-      <ChatView :messages="requestMessages" :empty-text="emptyText ?? '请求中没有可渲染的 messages 内容。'" />
+      <ChatView dense :messages="requestMessages" :empty-text="emptyText ?? '请求中没有可渲染的 messages 内容。'" />
     </div>
 
-    <!-- 响应区：响应结果，独立背景 -->
+    <!-- 响应区：响应结果，独立背景 + 顶部响应标识 -->
     <div v-if="responseMessages.length" class="overflow-hidden rounded-md bg-muted/40">
-      <ChatView :messages="responseMessages" />
+      <div class="flex items-center gap-2 border-b border-border/60 px-6 py-1.5 text-xs">
+        <span class="rounded-sm bg-emerald-500/15 px-1.5 py-0.5 font-medium text-emerald-700 dark:text-emerald-300">响应</span>
+        <span class="text-muted-foreground">模型回复</span>
+      </div>
+      <ChatView dense :messages="responseMessages" />
     </div>
 
-    <!-- 逐 chunk 时间轴（用户明确要求保留） -->
-    <StreamChunkTimeline class="border-t border-border pt-2" :chunks="parsed.chunks" />
+    <!-- 逐 chunk 时间轴（用户明确要求保留）；非流式时标题换「完整响应」（合成 1 条 chunk，展开看原文） -->
+    <StreamChunkTimeline
+      class="border-t border-border pt-2"
+      :chunks="parsed.chunks"
+      :collapsed-title="props.stream ? undefined : '完整响应 · 展开看原文'"
+      :expanded-title="props.stream ? undefined : '完整响应 · 展开看原文'"
+    />
   </div>
 
   <div
@@ -367,7 +390,7 @@ function formatUsage(u: { prompt_tokens?: number; completion_tokens?: number; to
   >
     {{
       emptyText ??
-      '当前日志非流式或 SSE 正文不可解析，未生成对话预览。'
+      '当前日志缺少可渲染的请求消息与响应内容，未生成对话预览。'
     }}
   </div>
 </template>
