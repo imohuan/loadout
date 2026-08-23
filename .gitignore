@@ -18,6 +18,7 @@ wailsjs/
 # Frontend (Vue/Vite)
 dist
 node_modules/
+backup/
 
 # IDE
 .idea/

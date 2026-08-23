@@ -111,6 +111,10 @@ type RouteAttempt struct {
 	ChannelBaseURL    string         `json:"channel_base_url,omitempty"`
 	// ChannelName 渠道名称快照：Key 被删除后仍能显示「@渠道名(Unknown)」。
 	ChannelName       string         `json:"channel_name,omitempty"`
+	// RequestLogID 本次 attempt 的独立 request-log 主键（request-log.db request_logs.id）。
+	// 由 request-log 插件在 before-attempt 生成，model-gateway 写 attempt 行时落库；
+	// 为空表示该 attempt 未命中 request_log 能力路由（前端不显示日志入口）。
+	RequestLogID      string         `json:"request_log_id,omitempty"`
 	StartedAt         time.Time      `json:"started_at"`
 	FinishedAt        *time.Time     `json:"finished_at,omitempty"`
 	// FirstByteAt 流式尝试收到上游响应头的时刻（TTFB）。仅流式 attempt 有值，

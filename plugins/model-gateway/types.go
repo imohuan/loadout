@@ -208,6 +208,19 @@ const ProxyUpstreamSucceeded = "proxy:upstream-succeeded"
 // 事件 emit 时随 *ProxyPipeline 带给消费方（request-log 插件读取，不自造）。
 const MetadataRequestLogID = "__request_log_id"
 
+// MetadataRequestLogAttemptID 每次渠道尝试的 request-log 关联 UUID 键。request-log
+// 插件在 proxy:before-attempt 生成新 UUID 并覆写（同时覆写 MetadataRequestLogID，
+// 供收尾事件反查），model-gateway 写 route_attempts 行时读取落 request_log_id 列
+// （per-attempt 独立日志，区别于 pipe 级 MetadataRequestLogID 的原始语义）。
+const MetadataRequestLogAttemptID = "__request_log_attempt_id"
+
+// ProxyAttemptFailed 单次渠道尝试失败的纯通知事件（proxy:attempt-failed）。
+// 与 ProxyUpstreamFailed（聚合全败后 failover 专用，仅聚合路径触发）的区别：
+// 本事件在**每次**渠道尝试写 failed attempt 行时 emit（普通模型与聚合模型的
+// 中间失败 attempt 都能收到），payload 复用 ProxyFailurePayload。aggregate 不订阅
+// 本事件（不触发 failover）；request-log 订阅它即时收尾失败 attempt 的半条日志。
+const ProxyAttemptFailed = "proxy:attempt-failed"
+
 // ProxyRequest 透明代理请求侧：原始字节，不做字段清洗。
 type ProxyRequest struct {
 	Method string      // 原样透传的方法

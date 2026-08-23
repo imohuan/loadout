@@ -45,11 +45,13 @@ const capabilityName = "request_log"
 
 // metadataKey UUID 在 pipe.Metadata 中的键——单一来源是 model-gateway 的
 // MetadataRequestLogID 常量（proxyAttempt 实际请求位置生成，emit 时随管线传入）。
+// 本插件在 HandleBeforeAttempt 里覆写为本次 attempt 的 UUID（per-attempt 独立日志），
+// 收尾事件（after-upstream/stream-chunk/upstream-failed）经 pipeRequestLogID 读它命中本次行。
 const metadataKey = modelgateway.MetadataRequestLogID
 
-// recordedKey 本请求已记录的标记（与 UUID 分离：UUID 由 model-gateway 先写入，
-// 不能用作"已记录"判断，否则首次调用也会被早退跳过）。
-const recordedKey = "__request_log_recorded"
+// attemptMetadataKey 本次 attempt 的 request-log 关联 UUID 键：model-gateway 写
+// route_attempts 行时读取落 request_log_id 列（前端内层行渲染「日志」按钮）。
+const attemptMetadataKey = modelgateway.MetadataRequestLogAttemptID
 
 // Service 完整请求日志适配器：查能力路由、抓请求/响应快照落独立库。
 // 所有写库 best-effort：handler 永不 return error（否则中断整个 /v1 转发），
@@ -189,14 +191,11 @@ func (s *Service) HandleBeforeAttempt(payload any) (any, error) {
 	if pipe.Metadata == nil {
 		pipe.Metadata = map[string]any{}
 	}
-	// 已记录（failover 同 pipe 重复触发）：直接跳过，不重记
-	if recorded, _ := pipe.Metadata[recordedKey].(bool); recorded {
-		return payload, nil
-	}
+	// 能力路由匹配用「当前 attempt 的真实模型」：聚合插件在 before-upstream 已把
+	// pipe.Request.Model 改写为真实模型（aggregate/service.go:124），虚拟名只留在
+	// __virtual_model 里供 route-log 展示。不能拿虚拟名覆盖——否则用户只配置物理模型
+	// （如 hy3）时，聚合内部切换到的真实模型永远匹配不上（与 sensitive-filter 对齐）。
 	model := pipe.Request.Model
-	if vm, _ := pipe.Metadata["__virtual_model"].(string); vm != "" {
-		model = vm
-	}
 	scope := types.ChannelScopeFromMetadata(pipe.Metadata, s.requestChannelBaseURL)
 	routes, err := s.DecideRoutesScope(model, scope)
 	if err != nil {
@@ -207,18 +206,17 @@ func (s *Service) HandleBeforeAttempt(payload any) (any, error) {
 		return payload, nil // 未命中 / native：不记录（列保持 NULL，前端不显示入口）
 	}
 
-	// 取 UUID：优先消费 model-gateway 传入（实际请求位置生成）；缺失则反查复用；
-	// 都没有才自造（防御）。
-	uuid, _ := pipe.Metadata[metadataKey].(string)
-	if uuid == "" {
-		uuid = s.lookupRequestLogID(pipe.RequestID)
-	}
-	if uuid == "" {
-		uuid = newRequestLogID()
-	}
+	// 每次渠道尝试独立 UUID（per-attempt 语义）：不复用 model-gateway 的 pipe 级 UUID
+	//（failover 同 pipe 所有 attempt 共享同一个，无法区分），每次生成新 UUID 写新行。
+	uuid := newRequestLogID()
+	// 覆写 metadata：收尾事件（after/stream-chunk/upstream-failed）经 pipeRequestLogID
+	// 读 metadataKey 命中本次行；model-gateway 写 route_attempts 行读 attemptMetadataKey
+	// 落 request_log_id 列（前端内层行渲染「日志」按钮）。
 	pipe.Metadata[metadataKey] = uuid
+	pipe.Metadata[attemptMetadataKey] = uuid
 
-	// UPDATE 关联列（best-effort；loadout 连接为空或行不存在时忽略，不影响记录）
+	// UPDATE 关联列（best-effort；loadout 连接为空或行不存在时忽略，不影响记录）。
+	// COALESCE 条件保证仅首次命中写入——外层按钮指向第一次渠道尝试的日志。
 	if s.loadout != nil {
 		if _, err := s.loadout.Exec(`UPDATE route_requests SET request_log_id = ? WHERE request_id = ? AND COALESCE(request_log_id, '') = ''`, uuid, pipe.RequestID); err != nil {
 			s.lg.Warn("request-log: 写 route_requests.request_log_id 失败", "request_id", pipe.RequestID, "err", err)
@@ -233,29 +231,13 @@ func (s *Service) HandleBeforeAttempt(payload any) (any, error) {
 		s.lg.Warn("request-log: 序列化请求快照失败", "request_id", pipe.RequestID, "err", err)
 		return payload, nil
 	}
-	// 复用 UUID 场景（客户端重试同一 X-Request-Id 的新请求）刷新内容为本次请求：
-	// 新 request_json/started_at，清空上次的响应/终态。failover 同 pipe 走 recorded
-	// 早退不经过此处；仅"新 pipe 同 request_id"会触发 DO UPDATE。
-	if _, err := s.reqDB.Exec(`INSERT INTO request_logs(id, request_id, model, channel, stream, started_at, result, request_json, created_at) VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?) ON CONFLICT(id) DO UPDATE SET request_id = excluded.request_id, model = excluded.model, channel = excluded.channel, stream = excluded.stream, started_at = excluded.started_at, result = 'running', request_json = excluded.request_json, finished_at = NULL, response_json = NULL, http_status = NULL, duration_ms = NULL`,
+	// 纯 INSERT：每次 attempt 独立 UUID 恒不冲突（无需 ON CONFLICT 分支）。
+	if _, err := s.reqDB.Exec(`INSERT INTO request_logs(id, request_id, model, channel, stream, started_at, result, request_json, created_at) VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?)`,
 		uuid, pipe.RequestID, model, channel, boolToInt(pipe.Request.Stream), started.Format(time.RFC3339Nano), string(reqJSON), started.Format(time.RFC3339Nano)); err != nil {
 		s.lg.Warn("request-log: 写 request_logs 半条失败", "request_id", pipe.RequestID, "err", err)
 		return payload, nil
 	}
-	pipe.Metadata[recordedKey] = true
 	return payload, nil
-}
-
-// lookupRequestLogID 按外部 request_id 反查已生成的 UUID（客户端重试复用同一
-// X-Request-Id 时 route-log 会合并为一条，这里复用同一 UUID 避免孤儿行）。
-func (s *Service) lookupRequestLogID(requestID string) string {
-	if s.loadout == nil || requestID == "" {
-		return ""
-	}
-	var id string
-	if err := s.loadout.QueryRow(`SELECT COALESCE(request_log_id, '') FROM route_requests WHERE request_id = ?`, requestID).Scan(&id); err != nil {
-		return ""
-	}
-	return id
 }
 
 // ---- 输出方向：非流式收尾（2xx 走 after-upstream，失败走 upstream-failed） ----
@@ -315,10 +297,10 @@ func (s *Service) HandleUpstreamFailed(payload any) (any, error) {
 
 // responseSnapshot request_logs.response_json 的结构。
 type responseSnapshot struct {
-	StatusCode int         `json:"status_code"`
-	Headers    http.Header `json:"headers,omitempty"`
-	Body       string      `json:"body,omitempty"`
-	Truncated  bool        `json:"truncated,omitempty"` // 流式缓冲触顶截断标记
+	StatusCode int             `json:"status_code"`
+	Headers    headerSnapshot  `json:"headers,omitempty"`
+	Body       string          `json:"body,omitempty"`
+	Truncated  bool            `json:"truncated,omitempty"` // 流式缓冲触顶截断标记
 }
 
 // pipeRequestLogID 取本次请求的 UUID：metadata 优先（同 pipe），丢失则按
@@ -753,13 +735,13 @@ func newRequestLogID() string {
 
 // requestSnapshot request_logs.request_json 的结构（body 存原始字符串保真，前端再格式化）。
 type requestSnapshot struct {
-	Method  string      `json:"method"`
-	Path    string      `json:"path"`
-	Query   string      `json:"query"`
-	Headers http.Header `json:"headers"`
-	Body    string      `json:"body"`
-	Model   string      `json:"model"`
-	Stream  bool        `json:"stream"`
+	Method  string         `json:"method"`
+	Path    string         `json:"path"`
+	Query   string         `json:"query"`
+	Headers headerSnapshot `json:"headers"`
+	Body    string         `json:"body"`
+	Model   string         `json:"model"`
+	Stream  bool           `json:"stream"`
 }
 
 // buildRequestSnapshot 序列化请求快照（脱敏 + base64 图片占位）。
@@ -780,9 +762,57 @@ func buildRequestSnapshot(pipe *modelgateway.ProxyPipeline, model string, redact
 // sensitiveHeaderKeys 打码的敏感头（不区分大小写，子串匹配）。
 var sensitiveHeaderKeys = []string{"authorization", "api-key", "x-api-key", "cookie", "proxy-authorization"}
 
+// headerSnapshot HTTP headers 快照：底层仍是 map[string][]string，但 JSON
+// 序列化时单值输出为字符串，多值保留数组，避免前端看到所有 header 都是数组。
+type headerSnapshot map[string][]string
+
+func (h headerSnapshot) MarshalJSON() ([]byte, error) {
+	m := make(map[string]any, len(h))
+	for k, vv := range h {
+		switch len(vv) {
+		case 0:
+			m[k] = ""
+		case 1:
+			m[k] = vv[0]
+		default:
+			m[k] = vv
+		}
+	}
+	return json.Marshal(m)
+}
+
+// Get 模拟 http.Header.Get：返回 key 的第一个值（大小写不敏感）。
+func (h headerSnapshot) Get(key string) string {
+	return http.Header(h).Get(key)
+}
+
+// UnmarshalJSON 支持单值字符串或多值数组两种写法，兼容序列化后的 JSON。
+func (h *headerSnapshot) UnmarshalJSON(data []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	out := make(headerSnapshot, len(raw))
+	for k, v := range raw {
+		var arr []string
+		if err := json.Unmarshal(v, &arr); err == nil {
+			out[k] = arr
+			continue
+		}
+		var s string
+		if err := json.Unmarshal(v, &s); err == nil {
+			out[k] = []string{s}
+			continue
+		}
+		return fmt.Errorf("header %q: cannot unmarshal %s", k, v)
+	}
+	*h = out
+	return nil
+}
+
 // redactHeaders 复制 headers，敏感键的值替换为 ***。
-func redactHeaders(h http.Header, enabled bool) http.Header {
-	out := make(http.Header, len(h))
+func redactHeaders(h http.Header, enabled bool) headerSnapshot {
+	out := make(headerSnapshot, len(h))
 	for k, vv := range h {
 		if enabled && isSensitiveHeader(k) {
 			out[k] = []string{"***"}

@@ -613,3 +613,49 @@ func TestDetailSortsByStepNo(t *testing.T) {
 		}
 	}
 }
+
+// TestAttemptPersistsRequestLogID 回归：per-attempt 的 request_log_id 必须落库，
+// 且流式 attempt 的 success UPSERT（done=true 传空）不能清空已写入的值。
+func TestAttemptPersistsRequestLogID(t *testing.T) {
+	database := logDB(t)
+	service := NewService(database, nil)
+	ctx := context.Background()
+	started := time.Now()
+	if err := service.Start(ctx, contracts.RouteRequest{RequestID: "r-attempt-log", RequestedModel: "m", StartedAt: started}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Attempt(ctx, contracts.RouteAttempt{
+		RequestID: "r-attempt-log", StepNo: "1", Model: "m", StartedAt: started,
+		RequestLogID: "uuid-attempt-1", Result: "success",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var got string
+	if err := database.QueryRow(`SELECT request_log_id FROM route_attempts WHERE request_id='r-attempt-log'`).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got != "uuid-attempt-1" {
+		t.Fatalf("request_log_id = %q, want uuid-attempt-1", got)
+	}
+	// UPSERT 保留旧值：done=true 传空 RequestLogID 不清空
+	if _, err := service.Attempt(ctx, contracts.RouteAttempt{
+		RequestID: "r-attempt-log", StepNo: "1", Model: "m", StartedAt: started,
+		Result: "success", // RequestLogID 空
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.QueryRow(`SELECT request_log_id FROM route_attempts WHERE request_id='r-attempt-log'`).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got != "uuid-attempt-1" {
+		t.Fatalf("request_log_id after UPSERT = %q, want preserved uuid-attempt-1", got)
+	}
+	// Detail 必须带出 per-attempt 的 request_log_id
+	detail, err := service.Detail(ctx, "r-attempt-log")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(detail.Attempts) != 1 || detail.Attempts[0].RequestLogID != "uuid-attempt-1" {
+		t.Fatalf("Detail attempts[0].RequestLogID = %q, want uuid-attempt-1 (attempts=%d)", detail.Attempts[0].RequestLogID, len(detail.Attempts))
+	}
+}

@@ -301,3 +301,47 @@ func TestProxyAggregateSkipsMissingModel(t *testing.T) {
 		t.Fatalf("响应体应为 glm-5 上游内容: %s", rr.Body.String())
 	}
 }
+
+// TestProxyAttemptLogCarriesRequestLogID 回归：proxyAttemptLog 写 attempt 行时必须
+// 带出 request-log 插件注入的 MetadataRequestLogAttemptID（per-attempt 独立日志关联）。
+func TestProxyAttemptLogCarriesRequestLogID(t *testing.T) {
+	svc, _ := newTestService(t)
+	log := &mockRouteLog{}
+	svc.SetRoutingServices(nil, nil, log)
+	echo, _ := newEchoServer(t, `{"id":"resp_ok","object":"response"}`, 0, nil)
+	defer echo.Close()
+	if err := svc.st.Write(types.FileChannels, []types.Channel{
+		{ID: "ch-a", Name: "渠道A", BaseURL: echo.URL, Enabled: true},
+	}); err != nil {
+		t.Fatalf("写渠道表失败: %v", err)
+	}
+
+	// 模拟 request-log：before-attempt 时生成 per-attempt UUID 写入 metadata
+	svc.ctx.On(ProxyBeforeAttempt, func(payload any) (any, error) {
+		pipe, ok := payload.(*ProxyPipeline)
+		if !ok || pipe == nil {
+			return payload, nil
+		}
+		pipe.Metadata[MetadataRequestLogAttemptID] = "uuid-attempt-1"
+		return pipe, nil
+	})
+
+	body := `{"model":"gpt-5","input":[{"role":"user","content":"hi"}]}`
+	req := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(body))
+	rr := httptest.NewRecorder()
+	svc.HandleProxy(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d, 期望 200", rr.Code)
+	}
+	// 非流式路径：running 占位 + success UPSERT 同 step 两次 Attempt 调用，
+	// 两次都必须带出 per-attempt 的 RequestLogID。
+	if len(log.attempts) != 2 {
+		t.Fatalf("attempts = %d, 期望 2（running 占位 + success 收尾）", len(log.attempts))
+	}
+	for i, a := range log.attempts {
+		if a.RequestLogID != "uuid-attempt-1" {
+			t.Fatalf("attempts[%d].RequestLogID = %q, 期望 uuid-attempt-1", i, a.RequestLogID)
+		}
+	}
+}

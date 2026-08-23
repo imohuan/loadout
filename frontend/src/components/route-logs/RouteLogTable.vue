@@ -410,6 +410,9 @@ function isFailureResult(result?: string) {
                           <span class="text-xs text-muted-foreground font-mono font-bold">{{
                             formatDuration(attempt.duration_ms)
                           }}</span>
+                          <router-link v-if="attempt.request_log_id"
+                            :to="`/request-logs/${attempt.request_log_id}`"
+                            class="text-xs text-primary hover:underline" @click.stop>日志</router-link>
                         </div>
                         <RouteLogErrorCell v-if="attempt.error_message || attempt.error_body" :json="attempt.error_body"
                           :message="attempt.failure_class

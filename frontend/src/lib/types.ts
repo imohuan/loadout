@@ -93,6 +93,8 @@ export interface RouteAttempt {
   /** 结构化扩展信息（如视觉识别的 called_via_tool/tool/image_id/prompt），
    *  called_via_tool=true 时 UI 渲染 MCP-{tool} 标签 */
   metadata?: Record<string, unknown>
+  /** 本次 attempt 的独立 request-log 主键（命中 request_log 能力路由才有；空则无日志入口） */
+  request_log_id?: string
 }
 
 export interface RouteLog {

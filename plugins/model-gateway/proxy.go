@@ -1060,6 +1060,10 @@ func (s *Service) proxyAttemptLog(r *http.Request, pipe *ProxyPipeline, model, c
 	if err != nil {
 		message = err.Error()
 	}
+	// 本次 attempt 的 request-log 关联：request-log 插件在 before-attempt 生成新 UUID
+	// 写入 MetadataRequestLogAttemptID（并覆写 MetadataRequestLogID）；写 attempt 行时
+	// 落 request_log_id 列，前端内层行据此渲染「日志」跳转。
+	requestLogID, _ := pipe.Metadata[MetadataRequestLogAttemptID].(string)
 	if _, logErr := s.routeLog.Attempt(r.Context(), contracts.RouteAttempt{
 		RequestID:        pipe.RequestID,
 		StepNo:           fmt.Sprintf("%d", step),
@@ -1081,6 +1085,7 @@ func (s *Service) proxyAttemptLog(r *http.Request, pipe *ProxyPipeline, model, c
 		PromptTokens:     usage.PromptTokens,
 		CompletionTokens: usage.CompletionTokens,
 		CachedTokens:     usage.CachedTokens,
+		RequestLogID:     requestLogID,
 	}); logErr != nil {
 		s.lg.Warn("route log attempt failed", "err", logErr)
 	}
@@ -1147,6 +1152,8 @@ func (s *Service) proxyStreamAttempt(r *http.Request, pipe *ProxyPipeline, model
 	// 与 proxyFinishLog 一致：attempt 写入必须用与 client disconnect 解耦的 context，
 	// 防止客户端提前断开时 ExecContext 静默失败（running/success 都写不进库）。
 	attemptCtx := context.WithoutCancel(r.Context())
+	// 本次 attempt 的 request-log 关联（同 proxyAttemptLog 语义，两阶段共用同一 UUID）。
+	requestLogID, _ := pipe.Metadata[MetadataRequestLogAttemptID].(string)
 	if _, logErr := s.routeLog.Attempt(attemptCtx, contracts.RouteAttempt{
 		RequestID:        pipe.RequestID,
 		StepNo:           fmt.Sprintf("%d", step),
@@ -1166,6 +1173,7 @@ func (s *Service) proxyStreamAttempt(r *http.Request, pipe *ProxyPipeline, model
 		PromptTokens:     usage.PromptTokens,
 		CompletionTokens: usage.CompletionTokens,
 		CachedTokens:     usage.CachedTokens,
+		RequestLogID:     requestLogID,
 	}); logErr != nil {
 		s.lg.Warn("route log stream attempt failed", "err", logErr)
 	}

@@ -165,6 +165,22 @@ func TestHandleBeforeAttemptCapturesRequest(t *testing.T) {
 	if got := snap.Headers.Get("Authorization"); got != "***" {
 		t.Fatalf("Authorization header = %q, want ***", got)
 	}
+	// 回归：单值 header 应序列化为字符串，而非 []string
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(reqJSON), &raw); err != nil {
+		t.Fatal(err)
+	}
+	headersJSON, ok := raw["headers"]
+	if !ok {
+		t.Fatalf("headers field missing in %s", reqJSON)
+	}
+	var rawHeaders map[string]json.RawMessage
+	if err := json.Unmarshal(headersJSON, &rawHeaders); err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(rawHeaders["Content-Type"])) != `"application/json"` {
+		t.Fatalf("Content-Type header serialized as %s, want string", rawHeaders["Content-Type"])
+	}
 	if strings.Contains(snap.Body, "sk-secret-xyz") {
 		t.Fatal("body still contains raw sk- secret")
 	}
@@ -176,7 +192,11 @@ func TestHandleBeforeAttemptCapturesRequest(t *testing.T) {
 	}
 }
 
-func TestHandleBeforeAttemptIdempotentSamePipe(t *testing.T) {
+// TestHandleBeforeAttemptPerAttemptLogs 回归：同 pipe 多次触发（failover）必须
+// 每次生成新 UUID 写新行（per-attempt 独立日志），并覆写 metadata 两个 key——
+// metadataKey（收尾事件反查）与 MetadataRequestLogAttemptID（model-gateway 关联
+// route_attempts 行）。
+func TestHandleBeforeAttemptPerAttemptLogs(t *testing.T) {
 	reqDB, _ := openRequestLogDB(t.TempDir() + "/request-log.db")
 	defer reqDB.Close()
 	svc := testService(t, []types.CapabilityRoute{
@@ -188,22 +208,38 @@ func TestHandleBeforeAttemptIdempotentSamePipe(t *testing.T) {
 	if _, err := svc.HandleBeforeAttempt(pipe); err != nil {
 		t.Fatal(err)
 	}
-	// failover 同一 pipe 再次触发：metadata 已有 UUID，直接跳过
+	firstID, _ := pipe.Metadata[metadataKey].(string)
+	firstAttemptID, _ := pipe.Metadata[attemptMetadataKey].(string)
+	if firstID == "" || firstAttemptID == "" {
+		t.Fatalf("first attempt: metadata keys missing, id=%q attempt_id=%q", firstID, firstAttemptID)
+	}
+	if firstID != firstAttemptID {
+		t.Fatalf("first attempt: metadataKey=%q != attemptMetadataKey=%q", firstID, firstAttemptID)
+	}
+	// failover 同一 pipe 再次触发：新 UUID、新行
 	if _, err := svc.HandleBeforeAttempt(pipe); err != nil {
 		t.Fatal(err)
+	}
+	secondID, _ := pipe.Metadata[metadataKey].(string)
+	secondAttemptID, _ := pipe.Metadata[attemptMetadataKey].(string)
+	if secondID == "" || secondID == firstID {
+		t.Fatalf("second attempt must get new id, first=%q second=%q", firstID, secondID)
+	}
+	if secondID != secondAttemptID {
+		t.Fatalf("second attempt: metadataKey=%q != attemptMetadataKey=%q", secondID, secondAttemptID)
 	}
 	var count int
 	if err := reqDB.QueryRow(`SELECT count(*) FROM request_logs`).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
-	if count != 1 {
-		t.Fatalf("rows = %d, want 1 (idempotent)", count)
+	if count != 2 {
+		t.Fatalf("rows = %d, want 2 (per-attempt logs)", count)
 	}
 }
 
-// TestHandleBeforeAttemptReuseOnRetry 客户端重试复用同一 X-Request-Id：
-// 新 pipe 不带 metadata，但 route_requests 列已有 UUID → 复用，不产生孤儿行。
-func TestHandleBeforeAttemptReuseOnRetry(t *testing.T) {
+// TestHandleBeforeAttemptNewLogOnRetry 客户端重试（新 pipe 同 X-Request-Id）：
+// per-attempt 语义下每次渠道尝试独立日志 → 重试产生新 UUID、新行，不复用旧 UUID。
+func TestHandleBeforeAttemptNewLogOnRetry(t *testing.T) {
 	loadout, err := db.Open(t.TempDir() + "/loadout.db")
 	if err != nil {
 		t.Fatal(err)
@@ -226,56 +262,21 @@ func TestHandleBeforeAttemptReuseOnRetry(t *testing.T) {
 	}
 	uuid1, _ := first.Metadata[metadataKey].(string)
 
-	// 客户端重试：新 pipe（新 metadata），同 request_id
+	// 客户端重试：新 pipe（新 metadata），同 request_id → 新 UUID、新行
 	retry := testPipe("req-3")
-	delete(retry.Metadata, metadataKey)
 	if _, err := svc.HandleBeforeAttempt(retry); err != nil {
 		t.Fatal(err)
 	}
 	uuid2, _ := retry.Metadata[metadataKey].(string)
-	if uuid1 == "" || uuid1 != uuid2 {
-		t.Fatalf("retry must reuse uuid: %q vs %q", uuid1, uuid2)
+	if uuid1 == "" || uuid2 == "" || uuid1 == uuid2 {
+		t.Fatalf("retry must produce new uuid: %q vs %q", uuid1, uuid2)
 	}
 	var count int
 	if err := reqDB.QueryRow(`SELECT count(*) FROM request_logs`).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
-	if count != 1 {
-		t.Fatalf("rows = %d, want 1 (reuse on retry)", count)
-	}
-}
-
-// TestHandleBeforeAttemptConsumesInjectedUUID 回归：model-gateway 已在实际请求位置
-// （proxyAttempt）生成 UUID 并写入 metadata，handler 必须消费而非自造。
-func TestHandleBeforeAttemptConsumesInjectedUUID(t *testing.T) {
-	reqDB, _ := openRequestLogDB(t.TempDir() + "/request-log.db")
-	defer reqDB.Close()
-	svc := testService(t, []types.CapabilityRoute{
-		{Models: []string{"*"}, Capability: capabilityName, Route: types.RouteProxy},
-	})
-	svc.reqDB = reqDB
-
-	pipe := testPipe("req-inj")
-	pipe.Metadata[metadataKey] = "injected-uuid-0001" // 模拟 model-gateway 生成
-	if _, err := svc.HandleBeforeAttempt(pipe); err != nil {
-		t.Fatal(err)
-	}
-	var count int
-	if err := reqDB.QueryRow(`SELECT count(*) FROM request_logs WHERE id = 'injected-uuid-0001'`).Scan(&count); err != nil {
-		t.Fatal(err)
-	}
-	if count != 1 {
-		t.Fatalf("rows with injected uuid = %d, want 1 (must consume not regenerate)", count)
-	}
-	// 已记录标记：同 pipe 再次触发早退
-	if _, err := svc.HandleBeforeAttempt(pipe); err != nil {
-		t.Fatal(err)
-	}
-	if err := reqDB.QueryRow(`SELECT count(*) FROM request_logs`).Scan(&count); err != nil {
-		t.Fatal(err)
-	}
-	if count != 1 {
-		t.Fatalf("rows after re-entry = %d, want 1 (recorded early-exit)", count)
+	if count != 2 {
+		t.Fatalf("rows = %d, want 2 (per-attempt: retry = new log)", count)
 	}
 }
 
@@ -295,6 +296,40 @@ func TestHandleBeforeAttemptNoRouteSkips(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatalf("rows = %d, want 0 (no route)", count)
+	}
+}
+
+// TestHandleBeforeAttemptVirtualModelMatchesPhysical 回归：聚合模型（虚拟名）内部
+// 切换到真实模型后，能力路由必须按「当前 attempt 的真实模型」匹配（与 sensitive-filter
+// 对齐），不能被 __virtual_model 一票否决。配置只含真实模型 hy3 时必须命中记录。
+func TestHandleBeforeAttemptVirtualModelMatchesPhysical(t *testing.T) {
+	reqDB, _ := openRequestLogDB(t.TempDir() + "/request-log.db")
+	defer reqDB.Close()
+	svc := testService(t, []types.CapabilityRoute{
+		{Models: []string{"hy3"}, Capability: capabilityName, Route: types.RouteProxy},
+	})
+	svc.reqDB = reqDB
+
+	pipe := testPipe("req-virtual")
+	pipe.Request.Model = "hy3"                              // 聚合已改写为真实模型
+	pipe.Metadata["__virtual_model"] = "volcengine_auto"    // 虚拟名仅保留在 metadata
+	if _, err := svc.HandleBeforeAttempt(pipe); err != nil {
+		t.Fatal(err)
+	}
+
+	var count int
+	if err := reqDB.QueryRow(`SELECT count(*) FROM request_logs`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("rows = %d, want 1 (virtual model must not override physical match)", count)
+	}
+	var model string
+	if err := reqDB.QueryRow(`SELECT model FROM request_logs LIMIT 1`).Scan(&model); err != nil {
+		t.Fatal(err)
+	}
+	if model != "hy3" {
+		t.Fatalf("model = %q, want hy3 (log records real model)", model)
 	}
 }
 

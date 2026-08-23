@@ -27,6 +27,7 @@ func TestRouteAttemptJSONFieldNames(t *testing.T) {
 		StatusCode:        502,
 		ErrorMessage:      "model disabled",
 		Duration:          dur,
+		RequestLogID:      "uuid-attempt-1",
 		Metadata:          map[string]any{"foo": "bar"},
 	}
 
@@ -42,7 +43,7 @@ func TestRouteAttemptJSONFieldNames(t *testing.T) {
 	wantKeys := []string{
 		"request_id", "previous_attempt_id", "step_no", "action", "model",
 		"channel_id", "started_at", "finished_at", "result", "failure_class",
-		"status_code", "error_message", "duration_ms",
+		"status_code", "error_message", "duration_ms", "request_log_id",
 	}
 	for _, key := range wantKeys {
 		if _, ok := decoded[key]; !ok {
@@ -54,6 +55,7 @@ func TestRouteAttemptJSONFieldNames(t *testing.T) {
 		"ChannelID", "StartedAt", "FinishedAt", "Result", "FailureClass",
 		"StatusCode", "ErrorMessage", "Duration", "Metadata",
 		"Stream", "PromptTokens", "CompletionTokens", "CachedTokens",
+		"RequestLogID",
 	}
 	for _, key := range forbidden {
 		if _, ok := decoded[key]; ok {

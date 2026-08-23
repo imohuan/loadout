@@ -536,6 +536,16 @@ CREATE INDEX idx_route_attempts_result_started_at ON route_attempts(result, star
 -- 天然唯一；SQLite 对 NULL 不做唯一性检查）。不加索引（无按此列查询需求）。
 ALTER TABLE route_requests ADD COLUMN request_log_id TEXT;
 `,
+	}, {
+		version: 25,
+		name:    "route-attempts-request-log-id",
+		sql: `
+-- request-log 插件 per-attempt 关联列：route_attempts 行指向 request_logs 独立库
+-- 主键 UUID。UUID 由 request-log 插件在每次 proxy:before-attempt 生成并暂存
+-- pipe.Metadata[__request_log_attempt_id]，model-gateway 写 attempt 行时落本列。
+-- 可空：未命中 request_log 能力路由的 attempt（含视觉子段）为 NULL。
+ALTER TABLE route_attempts ADD COLUMN request_log_id TEXT;
+`,
 	}}
 
 // Migrate applies all pending schema migrations and rejects an incompatible
