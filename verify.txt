@@ -1,4 +1,0 @@
- M .workbuddy/memory/2026-08-22.md
- M frontend/src/components/route-logs/RouteLogTable.vue
-?? frontend/src/lib/errorExtract.ts
-?? verify.txt
