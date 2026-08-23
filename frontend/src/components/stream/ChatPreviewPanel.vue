@@ -283,10 +283,11 @@ const stats = computed(() => {
 })
 
 // 显示条件：有请求消息（失败/被拦截请求的对话历史也照常可见）或有响应内容；
-// 两者皆无才走 v-else 空态。
+// 响应内容含 chunks>0（claude redacted_thinking / 仅 usage 等结构合法但无文本的响应
+// 也进面板展示统计行与时间轴）；两者皆无才走 v-else 空态。
 const showPanel = computed(() => {
   const p = parsed.value
-  const hasResponse = !!p.contentAccum || !!p.reasoningAccum || p.toolCalls.length > 0
+  const hasResponse = p.chunks.length > 0 || !!p.contentAccum || !!p.reasoningAccum || p.toolCalls.length > 0
   return requestMessages.value.length > 0 || hasResponse
 })
 
