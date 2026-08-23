@@ -71,6 +71,8 @@ const npxCmd = ref('')
 // ===== 更新日志（SSE 实时进度，通用组件）=====
 const updateStatus = ref<StreamStatus>('idle')
 const updateTrigger = ref(0)
+// 「更新日志」Tab 默认隐藏，点击「检查并更新」后才显示。
+const showLogsTab = ref(false)
 
 function onUpdateDone() {
   void refreshSkills()
@@ -316,6 +318,7 @@ async function syncSkills() {
 async function checkUpdates() {
   if (updateStatus.value === 'running') return
   // 触发通用日志组件连接 SSE（后端自动启动更新任务），日志实时推送到「更新日志」Tab。
+  showLogsTab.value = true
   activeTab.value = 'logs'
   updateTrigger.value++
 }
@@ -377,7 +380,7 @@ async function restoreAllBackups() {
           <TabsTrigger value="skills">技能列表</TabsTrigger>
           <TabsTrigger value="presets">预设列表</TabsTrigger>
           <TabsTrigger value="platforms">平台状态</TabsTrigger>
-          <TabsTrigger value="logs">更新日志</TabsTrigger>
+          <TabsTrigger v-if="showLogsTab" value="logs">更新日志</TabsTrigger>
         </TabsList>
         <TabsContent value="skills" class="space-y-4">
           <Card class="rounded-md">
@@ -635,7 +638,7 @@ async function restoreAllBackups() {
             </CardContent>
           </Card>
         </TabsContent>
-        <TabsContent value="logs" class="space-y-4">
+        <TabsContent v-if="showLogsTab" value="logs" class="space-y-4">
           <StreamLogPanel
             :stream-url="'/api/skills/update-stream'"
             :trigger="updateTrigger"
