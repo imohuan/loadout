@@ -7,6 +7,7 @@
     v-else-if="isUpdatePlan && parsedPlan.length > 0"
     :plan="parsedPlan"
   />
+  <VisionLookTool v-else-if="isVisionLook" :tool-call="toolCall" />
   <ImageTool v-else-if="isImage" :tool-call="toolCall" />
   <EditTool v-else-if="isEdit" :tool-call="toolCall" />
   <ShellTool v-else :tool-call="toolCall" />
@@ -18,6 +19,7 @@ import type { ToolCall, PlanStep } from '@/lib/chatTypes';
 import ShellTool from './ShellTool.vue';
 import EditTool from './EditTool.vue';
 import ImageTool from './ImageTool.vue';
+import VisionLookTool from './VisionLookTool.vue';
 import TodoListCard from './TodoListCard.vue';
 import ErrorCard from './ErrorCard.vue';
 
@@ -26,6 +28,13 @@ const props = defineProps<{
 }>();
 
 const toolNameLower = computed(() => (props.toolCall.toolName || '').toLowerCase());
+
+const isVisionLook = computed(() => {
+  const n = toolNameLower.value;
+  // vision 插件：图片被替换成 <vision_img_xxx> 标记，AI 通过 look_at_image 查看。
+  // 必须在 isImage 之前精确匹配，否则会被 'image' 子串误判进 ImageTool。
+  return n === 'look_at_image' || n === 'lookatimage' || n === 'look-at-image';
+});
 
 const isImage = computed(() =>
   toolNameLower.value.includes('image') || toolNameLower.value.includes('view_image')
