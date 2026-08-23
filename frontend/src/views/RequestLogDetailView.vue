@@ -9,7 +9,7 @@ import { toast } from 'vue-sonner'
 import AxJsonViewer from '@/components/ui/AxJsonViewer.vue'
 import EmptyState from '@/components/EmptyState.vue'
 import ChatPreviewPanel from '@/components/stream/ChatPreviewPanel.vue'
-import { extractResponseBody, looksLikeSSE } from '@/lib/parseSSE'
+import { extractResponseBody } from '@/lib/parseSSE'
 
 // responseSnapshot 与后端 plugins/request-log/service.go 中的结构对齐：
 //   { status_code, headers, body?, truncated? }
@@ -28,28 +28,22 @@ const log = ref<RequestLogDetail | null>(null)
 const error = ref('')
 const loading = ref(true)
 
-// stream response_json → 可视化面板用的结构体
+// response_json → 可视化面板用的结构体（流式 + 非流式共用；折叠项恒渲染，内容判定在 ChatPreviewPanel）
 const streamView = computed<{
-  visible: boolean
   body: string | undefined
   truncated: boolean
   statusCode?: number
   isDone: boolean
 }>(() => {
   const r = log.value?.response_json as ResponseSnapshot | undefined
-  if (!log.value || log.value.stream !== true) {
-    return { visible: false, body: undefined, truncated: false, isDone: false }
-  }
   const body = extractResponseBody(r)
   const truncated = !!(r && typeof r === 'object' && (r as { truncated?: unknown }).truncated)
   const statusCode =
     r && typeof r === 'object' && typeof (r as { status_code?: unknown }).status_code === 'number'
       ? ((r as { status_code: number }).status_code)
       : undefined
-  const looks = body ? looksLikeSSE(body) : false
-  const isDone = log.value.result === 'success' || log.value.result === 'failed'
+  const isDone = log.value?.result === 'success' || log.value?.result === 'failed'
   return {
-    visible: looks || truncated || !!body,
     body,
     truncated,
     statusCode,
@@ -253,12 +247,12 @@ async function copyAllJson() {
                 </p>
               </AccordionContent>
             </AccordionItem>
-            <AccordionItem v-if="log.stream" value="stream">
+            <AccordionItem value="stream">
               <AccordionTrigger>
                 <span class="inline-flex items-center">
                   <RiArrowRightSLine
                     class="mr-2 size-4 shrink-0 text-muted-foreground transition-transform duration-200 group-aria-expanded/accordion-trigger:rotate-90" />
-                  流式响应可视化
+                  响应可视化
                   <template v-if="streamView.truncated">
                     <span class="ml-2 text-xs font-normal text-amber-600 dark:text-amber-400">（已截断）</span>
                   </template>
