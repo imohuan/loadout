@@ -93,7 +93,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, nextTick, computed } from 'vue';
+import { ref, computed } from 'vue';
 import type { NormalizedMessage } from '@/lib/chatTypes';
 import AxImageViewer from '../ui/AxImageViewer.vue';
 
@@ -108,7 +108,8 @@ const emit = defineEmits<{
 const isEditing = ref(false);
 const draftText = ref('');
 const draftImages = ref<string[]>([]);
-const editTextarea = ref<HTMLTextAreaElement | null>(null);
+// editTextarea 仅被 enterEdit 使用，随编辑入口一并禁用（2026-08-23）
+// const editTextarea = ref<HTMLTextAreaElement | null>(null);
 const copied = ref(false);
 let copyTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -144,14 +145,15 @@ function toDisplayUrl(imgPath: string): string {
   return `/api/image?path=${encodeURIComponent(imgPath)}`;
 }
 
-function enterEdit() {
-  draftText.value = props.message.content ?? '';
-  draftImages.value = (props.message.images || []).map((img) => img.data || img.path);
-  isEditing.value = true;
-  nextTick(() => {
-    editTextarea.value?.focus();
-  });
-}
+// 编辑入口已随模板按钮一并禁用（2026-08-23），需要恢复编辑功能时取消本注释并取消上方按钮注释
+// function enterEdit() {
+//   draftText.value = props.message.content ?? '';
+//   draftImages.value = (props.message.images || []).map((img) => img.data || img.path);
+//   isEditing.value = true;
+//   nextTick(() => {
+//     editTextarea.value?.focus();
+//   });
+// }
 
 function cancelEdit() {
   isEditing.value = false;
