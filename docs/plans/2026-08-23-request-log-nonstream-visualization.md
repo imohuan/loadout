@@ -524,3 +524,29 @@ git commit -m "feat(request-log): 详情页响应可视化支持非流式"
 3. 流式请求行为零回归（chunks 时间轴、截断标记、空态）。
 4. 失败/被拦截请求：折叠项恒渲染，请求区 messages 对话历史可见（用户拍板）；request 无 messages 且响应不可解析时才显示空态。
 5. 零新依赖；无死代码（streamView.visible 已移除）；git 提交记录按 Task 粒度拆分。
+
+---
+
+## 执行记录（2026-08-23 已完成）
+
+**Commits：**
+- `d99f17e` Task 1：parseSSE.ts 新增 parseNonStreamBody（31 项 node 脚本断言全过）
+- `bac898b` Task 2：ChatPreviewPanel 双模式分流
+- `97d22d5` Task 3：详情页响应可视化支持非流式
+
+**执行中发现并修复（已回写上文）：**
+1. **探测条件过宽**：`typeof obj.type === 'string'` 会把 `{"type":"error"}` 误判 claude 并合成空 chunk——收紧为只看 content 数组/stop_reason（node 脚本实测 `type=error` 与 `claude 空 content` 两断言 FAIL 后修复，重跑全过）。
+2. **plan 代码 bug**：claude 分支修订时丢失 `const input = block.input` 声明（input 未定义），写代码时补回。
+
+**真实环境验证（Chrome 页面逐条核对，已清理验证数据）：**
+
+| 场景 | 结果 |
+|---|---|
+| chat 非流式（reasoning_content + tool_calls + usage） | ✅ 标题「响应可视化」；统计行 已完成·tool_calls / chunks 1·parsed 1 / 正文 25 字 / 思考 17 字 / 工具 1 / usage 完整；思考块+正文+工具卡片 get_weather 全渲染 |
+| claude 非流式（thinking + text + tool_use） | ✅ 协议徽标 claude；thinking 块+text+tool_use 全渲染；usage 显示 —（formatUsage 不认 claude 字段，与流式一致，接受） |
+| responses 非流式（reasoning + message + function_call） | ✅ 协议徽标 responses；reasoning 块+正文+function_call 全渲染 |
+| 失败请求（429 错误 JSON） | ✅ 折叠项渲染；请求区 messages 对话历史显示；响应区空（无响应消息） |
+| 流式回归（1710 chunks 真实记录） | ✅ 标题「响应可视化」；时间轴走默认「1710 chunks · 逐 chunk 时间轴」逐条显示；徽标「是」 |
+
+**验证数据清理：** 4 条 ns* 假数据已从 request-log.db 删除（库回到原有 24 条）；tmp 造数脚本已删。
+**类型检查：** vue-tsc 通过（唯一报错 UserMessage.vue TS6133 为并行 session 既有改动，与本次无关，未动）。
