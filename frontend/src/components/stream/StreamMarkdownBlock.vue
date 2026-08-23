@@ -9,7 +9,7 @@
  * 3. highlight.js 仅按需引入 core + 必要语言，避免全量打包。
  */
 import { computed } from 'vue'
-import { marked } from 'marked'
+import { Marked, marked } from 'marked'
 import DOMPurify from 'dompurify'
 import hljs from 'highlight.js/lib/common'
 
@@ -25,8 +25,10 @@ const props = withDefaults(
   { streaming: false, emptyText: '（无内容）' },
 )
 
-// marked 配置：开 GFM、行内 HTML 不解析、围栏交给 highlight.js。
-marked.setOptions({
+// 注意：用独立 Marked 实例而非 marked.setOptions / marked.use ——
+// 后两者会污染全局单例，影响同页其它组件（chat/TextBlock.vue 也 import marked）。
+// new Marked() 实例隔离，breaks 只作用于本组件。
+const md = new Marked({
   gfm: true,
   breaks: true,
 })
@@ -51,8 +53,7 @@ renderer.code = (codeObj) => {
   }
   return `<pre class="hljs rounded-md bg-zinc-900/95 p-3 overflow-x-auto text-xs leading-relaxed"><code class="hljs${langClass}">${highlighted}</code></pre>`
 }
-// 把渲染器实例交给 marked（marked v18 接受 Renderer 实例）
-marked.use({ renderer })
+md.use({ renderer })
 
 const ALLOWED_TAGS = [
   'h1',
@@ -92,7 +93,7 @@ const safeHtml = computed<string>(() => {
   if (!raw || raw.trim().length === 0) return ''
   let html: string
   try {
-    html = marked.parse(raw, { async: false }) as string
+    html = md.parse(raw, { async: false }) as string
   } catch {
     // 流式中 markdown 经常围栏未闭合；降级到 escaped text，保留可读性
     html = `<pre class="whitespace-pre-wrap font-mono text-xs leading-relaxed">${escapeHtml(raw)}</pre>`

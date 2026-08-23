@@ -1089,6 +1089,15 @@ func (s *Service) proxyAttemptLog(r *http.Request, pipe *ProxyPipeline, model, c
 	}); logErr != nil {
 		s.lg.Warn("route log attempt failed", "err", logErr)
 	}
+	// 单次渠道尝试失败 → 纯通知事件（request-log 订阅，即时收尾失败 attempt 的半条）。
+	// 用 Emit（非 Waterfall）避免订阅者改写 pipe 影响 failover；与 ProxyUpstreamFailed
+	// （聚合全败专用）互补——普通模型失败、聚合模型中间失败 attempt 都能收到。
+	if result == "failed" {
+		s.ctx.Emit(ProxyAttemptFailed, &ProxyFailurePayload{
+			Pipe: pipe, Model: model, ChannelID: channelID, Error: err,
+			StatusCode: statusCode, ErrorBody: errorBody,
+		})
+	}
 }
 
 // proxyStreamAttempt 流式尝试的两阶段日志：done=false 时分配 step 写 running 占位，

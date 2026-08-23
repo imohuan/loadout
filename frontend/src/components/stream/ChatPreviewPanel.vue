@@ -13,7 +13,7 @@
 import { computed } from 'vue'
 import ChatView from '@/components/chat/ChatView.vue'
 import StreamChunkTimeline from './StreamChunkTimeline.vue'
-import { parseStreamBody, extractResponseBody, looksLikeSSE } from '@/lib/parseSSE'
+import { parseStreamBody, extractResponseBody } from '@/lib/parseSSE'
 import type { NormalizedMessage } from '@/lib/chatTypes'
 
 const props = defineProps<{
@@ -257,11 +257,6 @@ const responseMessages = computed<NormalizedMessage[]>(() => {
   return out
 })
 
-const allMessages = computed<NormalizedMessage[]>(() => [
-  ...requestMessages.value,
-  ...responseMessages.value,
-])
-
 // ---- 统计行（保留原面板信息密度） ----
 
 const stats = computed(() => {
@@ -291,11 +286,6 @@ function formatUsage(u: { prompt_tokens?: number; completion_tokens?: number; to
   if (u.completion_tokens_details?.reasoning_tokens != null)
     parts.push(`reasoning_tokens=${u.completion_tokens_details.reasoning_tokens}`)
   return parts.length ? parts.join(' · ') : '—'
-}
-
-function looksLikeStream(): boolean {
-  const body = extractResponseBody(props.responseJson)
-  return body ? looksLikeSSE(body) : false
 }
 </script>
 
@@ -357,16 +347,18 @@ function looksLikeStream(): boolean {
       </span>
     </div>
 
-    <!-- 对话预览区：请求 messages + 响应结果 -->
-    <div
-      class="overflow-hidden rounded-md border border-border"
-      :class="looksLikeStream() ? 'bg-muted/40' : 'bg-background/60'"
-    >
-      <ChatView :messages="allMessages" :empty-text="emptyText ?? '请求中没有可渲染的 messages 内容。'" />
+    <!-- 请求区：请求 messages -->
+    <div class="overflow-hidden">
+      <ChatView :messages="requestMessages" :empty-text="emptyText ?? '请求中没有可渲染的 messages 内容。'" />
+    </div>
+
+    <!-- 响应区：响应结果，独立背景 -->
+    <div v-if="responseMessages.length" class="overflow-hidden rounded-md bg-muted/40">
+      <ChatView :messages="responseMessages" />
     </div>
 
     <!-- 逐 chunk 时间轴（用户明确要求保留） -->
-    <StreamChunkTimeline :chunks="parsed.chunks" />
+    <StreamChunkTimeline class="border-t border-border pt-2" :chunks="parsed.chunks" />
   </div>
 
   <div

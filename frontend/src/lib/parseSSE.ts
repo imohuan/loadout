@@ -207,10 +207,12 @@ class ToolCallAggregator {
     if (frag.name) agg.name = frag.name
     if (frag.arguments) {
       agg.argumentsRaw += frag.arguments
+      // 每次增量后重新 parse：拼到一半恰好合法、之后又追加导致最终非法的中间态，
+      // 必须把 argumentsParsed 归 null，避免 UI 展示陈旧对象与 argumentsRaw 不一致。
       try {
         agg.argumentsParsed = JSON.parse(agg.argumentsRaw)
       } catch {
-        /* 未拼完，忽略 */
+        agg.argumentsParsed = null
       }
     }
   }
@@ -552,17 +554,26 @@ function parseResponsesStream(body: string): ParsedStream {
       if (typeof ev.text === 'string') {
         fields.contentDelta = ev.text
       }
-    } else if (type === 'response.reasoning_summary_text.delta' || type === 'response.reasoning_text.delta' || type === 'response.reasoning_summary_text.done' || type === 'response.reasoning_text.done') {
-      const seg = type.endsWith('.done') ? ev.summary_text ?? ev.text : ev.delta
+    } else if (type === 'response.reasoning_summary_text.delta' || type === 'response.reasoning_text.delta') {
+      if (typeof ev.delta === 'string') {
+        fields.reasoningDelta = ev.delta
+        reasoningAccum += ev.delta
+      }
+    } else if (type === 'response.reasoning_summary_text.done' || type === 'response.reasoning_text.done') {
+      // done 事件带全文（summary_text/text），delta 已逐片累加过；这里只落到
+      // fields 供时间轴展示，不重复累加（与 output_text.done 语义一致）。
+      const seg = ev.summary_text ?? ev.text
       if (typeof seg === 'string') {
         fields.reasoningDelta = seg
-        reasoningAccum += seg
       }
     } else if (type === 'response.output_item.added') {
       const item = ev.item as Record<string, unknown> | undefined
       if (item?.type === 'function_call') {
         const idx = nextItemIdx++
-        itemToIndex.set(String(ev.item_id ?? ''), idx)
+        // 注意：added/done 事件的 id 在 item.id 里（顶层无 item_id）；
+        // 仅 function_call_arguments.delta 顶层带 item_id（两者等值）。
+        const key = typeof item.id === 'string' ? item.id : ''
+        itemToIndex.set(key, idx)
         agg.addFragment({
           index: idx,
           id: typeof item.id === 'string' ? item.id : undefined,
@@ -579,7 +590,8 @@ function parseResponsesStream(body: string): ParsedStream {
     } else if (type === 'response.output_item.done') {
       const item = ev.item as Record<string, unknown> | undefined
       if (item?.type === 'function_call') {
-        const idx = itemToIndex.get(String(ev.item_id ?? ''))
+        const key = typeof item.id === 'string' ? item.id : ''
+        const idx = itemToIndex.get(key)
         if (idx != null) {
           agg.setFull(idx, {
             id: typeof item.id === 'string' ? item.id : undefined,

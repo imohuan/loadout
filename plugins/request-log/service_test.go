@@ -789,3 +789,53 @@ func TestHandleStreamChunkTruncates(t *testing.T) {
 		t.Fatalf("response_json missing truncated flag: %s", respJSON)
 	}
 }
+
+// TestHealStuckFetchesAttemptErrorBody 回归：self-heal 必须按 UUID 反查
+// route_attempts 拿到对应 attempt 的 error_body/status_code（per-attempt 错误信息在
+// route_attempts 表，不在 route_requests）。原反查只看 route_requests，外层 success 时
+// 把失败 attempt 误标 stream_interrupted、response_json 为空——丢失真正的上游错误。
+func TestHealStuckFetchesAttemptErrorBody(t *testing.T) {
+	loadout, err := db.Open(t.TempDir() + "/loadout.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer loadout.Close()
+	// 外层 result=success（最后一次 attempt 成功），但 step 1 是 429 失败——必须按
+	// request_log_id 反查 attempt 行才能拿到 error_body。
+	if _, err := loadout.Exec(`INSERT INTO route_requests(request_id, requested_model, started_at, finished_at, result, final_model) VALUES ('r-heal', 'auto', '2026-08-23T00:00:00Z', '2026-08-23T00:00:02Z', 'success', 'hy3')`); err != nil {
+		t.Fatal(err)
+	}
+	const errBody = `{"error":{"data":{"code":14018,"msg":"额度已用尽"}}}`
+	if _, err := loadout.Exec(`INSERT INTO route_attempts(request_id, step_no, action, model, channel_id, started_at, finished_at, result, status_code, error_message, error_body, request_log_id) VALUES ('r-heal', '1', '首次尝试', 'hy3', 'c1', '2026-08-23T00:00:00Z', '2026-08-23T00:00:01Z', 'failed', 429, '上游返回错误(429)', ?, 'uuid-failed-1')`, errBody); err != nil {
+		t.Fatal(err)
+	}
+
+	reqDB, _ := openRequestLogDB(t.TempDir() + "/request-log.db")
+	defer reqDB.Close()
+	svc := testService(t, nil)
+	svc.reqDB = reqDB
+	svc.loadout = loadout
+
+	// 种子 running 行（started_at 设为很久以前，超出 60s self-heal 阈值）
+	started, _ := time.Parse(time.RFC3339Nano, "2026-08-23T00:00:00Z")
+	if _, err := reqDB.Exec(`INSERT INTO request_logs(id, request_id, model, channel, stream, started_at, result, request_json, created_at) VALUES ('uuid-failed-1', 'r-heal', 'hy3', 'c1', 0, '2026-08-23T00:00:00Z', 'running', '{}', '2026-08-23T00:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+
+	svc.healStuck("uuid-failed-1", "r-heal", started)
+
+	var result, resp string
+	var status int
+	if err := reqDB.QueryRow(`SELECT result, COALESCE(http_status, 0), COALESCE(response_json, '') FROM request_logs WHERE id = ?`, "uuid-failed-1").Scan(&result, &status, &resp); err != nil {
+		t.Fatal(err)
+	}
+	if result != "failed" {
+		t.Fatalf("result = %q, want failed (must NOT mislabel as stream_interrupted)", result)
+	}
+	if status != 429 {
+		t.Fatalf("http_status = %d, want 429", status)
+	}
+	if !strings.Contains(resp, "14018") || !strings.Contains(resp, "额度已用尽") {
+		t.Fatalf("response_json missing attempt error body: %s", resp)
+	}
+}

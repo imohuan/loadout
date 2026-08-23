@@ -170,6 +170,9 @@ func (s *Service) subscribe(ctx plugin.Context) {
 	ctx.On(modelgateway.ProxyBeforeAttempt, s.HandleBeforeAttempt)
 	ctx.On(modelgateway.ProxyAfterUpstream, s.HandleAfterUpstream)
 	ctx.On(modelgateway.ProxyUpstreamFailed, s.HandleUpstreamFailed)
+	// proxy:attempt-failed：每次渠道尝试失败即触发（普通模型 + 聚合中间失败 attempt），
+	// payload 与 ProxyUpstreamFailed 同构（*ProxyFailurePayload），直接复用收尾逻辑。
+	ctx.On(modelgateway.ProxyAttemptFailed, s.HandleUpstreamFailed)
 	ctx.On(modelgateway.ProxyStreamChunk, s.HandleStreamChunk)
 }
 
@@ -634,11 +637,23 @@ func (s *Service) healStuck(id, requestID string, started time.Time) {
 	status := 0
 	errBody := ""
 	if s.loadout != nil {
-		var rr string
-		if err := s.loadout.QueryRow(`SELECT COALESCE(result, '') FROM route_requests WHERE request_id = ?`, requestID).Scan(&rr); err == nil && rr == "failed" {
+		// per-attempt 优先：失败 attempt 的错误信息在 route_attempts 表（429 等真实上游
+		// 错误体），按 request_log_id 精确反查本行对应的 attempt。route_requests 只存
+		// 外层最终结果——per-attempt 语义下外层 success 时它为空，反查 attempt 才能
+		// 拿到失败详情（原实现只查 route_requests 会把失败 attempt 误标 stream_interrupted）。
+		var attemptErr string
+		var attemptStatus int
+		if err := s.loadout.QueryRow(`SELECT COALESCE(error_body, ''), COALESCE(status_code, 0) FROM route_attempts WHERE request_log_id = ? ORDER BY started_at DESC LIMIT 1`, id).Scan(&attemptErr, &attemptStatus); err == nil && (attemptErr != "" || attemptStatus != 0) {
+			errBody = attemptErr
+			status = attemptStatus
 			result = "failed"
-			_ = s.loadout.QueryRow(`SELECT COALESCE(http_status, 0) FROM route_requests WHERE request_id = ?`, requestID).Scan(&status)
-			_ = s.loadout.QueryRow(`SELECT COALESCE(error_body, '') FROM route_requests WHERE request_id = ?`, requestID).Scan(&errBody)
+		} else {
+			var rr string
+			if err := s.loadout.QueryRow(`SELECT COALESCE(result, '') FROM route_requests WHERE request_id = ?`, requestID).Scan(&rr); err == nil && rr == "failed" {
+				result = "failed"
+				_ = s.loadout.QueryRow(`SELECT COALESCE(http_status, 0) FROM route_requests WHERE request_id = ?`, requestID).Scan(&status)
+				_ = s.loadout.QueryRow(`SELECT COALESCE(error_body, '') FROM route_requests WHERE request_id = ?`, requestID).Scan(&errBody)
+			}
 		}
 	}
 	// error_body 还原进 response_json（普通模型失败无事件，这是唯一拿到错误详情的途径）

@@ -345,3 +345,48 @@ func TestProxyAttemptLogCarriesRequestLogID(t *testing.T) {
 		}
 	}
 }
+
+// TestProxyAttemptLogEmitsAttemptFailed 回归：每次渠道尝试失败（非流式 4xx/5xx）必须
+// emit proxy:attempt-failed，让 request-log 即时收尾失败 attempt 的半条日志——
+// 修复「普通模型失败、聚合模型中间失败 attempt 收不到 ProxyUpstreamFailed」。
+func TestProxyAttemptLogEmitsAttemptFailed(t *testing.T) {
+	svc, _ := newTestService(t)
+	log := &mockRouteLog{}
+	svc.SetRoutingServices(nil, nil, log)
+	echo, _ := newEchoServer(t, `{"error":{"message":"quota exhausted"}}`, 429, nil)
+	defer echo.Close()
+	if err := svc.st.Write(types.FileChannels, []types.Channel{
+		{ID: "ch-a", Name: "渠道A", BaseURL: echo.URL, Enabled: true},
+	}); err != nil {
+		t.Fatalf("写渠道表失败: %v", err)
+	}
+
+	var got *ProxyFailurePayload
+	svc.ctx.On(ProxyAttemptFailed, func(payload any) (any, error) {
+		if fp, ok := payload.(*ProxyFailurePayload); ok {
+			got = fp
+		}
+		return payload, nil
+	})
+
+	body := `{"model":"gpt-5","input":[{"role":"user","content":"hi"}]}`
+	req := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(body))
+	rr := httptest.NewRecorder()
+	svc.HandleProxy(rr, req)
+
+	if rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("状态码 = %d, 期望 429", rr.Code)
+	}
+	if got == nil {
+		t.Fatal("ProxyAttemptFailed 未触发（失败 attempt 必须 emit）")
+	}
+	if got.StatusCode != 429 {
+		t.Fatalf("StatusCode = %d, 期望 429", got.StatusCode)
+	}
+	if !strings.Contains(got.ErrorBody, "quota exhausted") {
+		t.Fatalf("ErrorBody = %q, 期望包含 quota exhausted", got.ErrorBody)
+	}
+	if got.Model != "gpt-5" || got.ChannelID != "ch-a" {
+		t.Fatalf("payload model/channel = %q/%q, 期望 gpt-5/ch-a", got.Model, got.ChannelID)
+	}
+}
