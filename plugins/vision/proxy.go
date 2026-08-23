@@ -288,16 +288,13 @@ func (s *Service) HandleProxyBeforeUpstream(payload any) (any, error) {
 	//   - 聚合单 Key 目标 → __current_channel=具体 key id；
 	//   - 聚合渠道级/Key 多选目标 → __current_channel="" + __channel_candidates（候选 Key 集合）
 	//     + __current_channel_base_url（渠道组地址）。必须读齐三者，否则聚合流量匹配不到渠道约束路由。
-	scope := channelScopeFromMetadata(pipe.Metadata, s.requestChannelBaseURL)
+	scope := channelScopeFromMetadata(pipe.Metadata, s.requestChannelBaseURLs)
 	route, err := s.DecideRouteScope(model, scope)
 	if err != nil {
 		return nil, visionError(err.Error())
 	}
-	if route == nil || route.Route == types.RouteNative {
-		return payload, nil
-	}
-	if route.Route == types.RouteError {
-		return nil, visionError(fmt.Sprintf("模型 %q 不支持视觉能力", model))
+	if route == nil || route.Route != types.RouteProxy {
+		return payload, nil // 非 proxy（native / 历史 error 降级）：原样透传
 	}
 
 	// proxy：按 via_options 依次尝试视觉兜底（视觉模型 + 可选渠道，失败换下一个）。

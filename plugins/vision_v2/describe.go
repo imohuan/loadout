@@ -200,7 +200,7 @@ func (s *Service) channelsForModel(ctx context.Context, model string) ([]modelga
 			}
 			key = k
 		}
-		rc := modelgateway.ResolvedChannel{ID: ch.ID, Name: ch.Name, BaseURL: ch.BaseURL, APIKey: key}
+		rc := modelgateway.ResolvedChannel{ID: ch.ID, Name: ch.Name, ChannelName: ch.ChannelName, BaseURL: ch.BaseURL, APIKey: key}
 		if len(ch.Models) == 0 {
 			unknown = append(unknown, rc)
 		} else if channelHasModel(ch.Models, model) {
@@ -222,6 +222,8 @@ func channelHasModel(models []db.ChannelModel, model string) bool {
 
 // callVision 单渠道调用视觉模型（chat/completions 格式，独立于主请求格式）。
 // viaModel 为该渠道绑定的视觉模型名（来自路由 via_options）；空时兜底 config.DefaultVisionModel。
+// 日志不由本函数写：调用方（executeToolLoop / toolLoopNonStream）的 visionAttempt
+// 会把视觉识别 attempt 挂在主请求折叠下作为 step=4.x 子步骤（与截图期望一致）。
 func (s *Service) callVision(ctx context.Context, dataURI, prompt string, ch modelgateway.ResolvedChannel, viaModel string, streamWriter func(string) error) (string, error) {
 	if viaModel == "" {
 		viaModel = config.DefaultVisionModel

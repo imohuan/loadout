@@ -46,12 +46,10 @@ function busy(route: CapabilityRoute, action: string) {
 const routeLabel: Record<string, string> = {
   native: '原生透传',
   proxy: '附加代理',
-  error: '拒绝',
 }
 const routeVariant: Record<string, 'outline' | 'default' | 'destructive'> = {
   native: 'outline',
   proxy: 'default',
-  error: 'destructive',
 }
 // 视觉候选数组（模板里逐项渲染 <ChannelRef>，格式统一为「模型 @渠道名(Keys)」）。
 function viaOptions(route: CapabilityRoute) {

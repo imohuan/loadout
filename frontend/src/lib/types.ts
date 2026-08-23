@@ -230,7 +230,7 @@ export interface CapabilityRoute {
   channel_ids?: string[] // 目标模型绑定的渠道 Key 列表（多选）；空 = 全渠道；含 "*" = 通用全匹配（任何渠道生效）
   channel_base_urls?: string[] // 渠道级（base_url 组）：新增 Key 仍命中，与 channel_ids 并存
   capability: string // 能力，如 vision / sensitive_filter / field_filter
-  route: 'native' | 'proxy' | 'error' | string // 路由方式：原生透传 / 附加代理 / 拒绝
+  route: 'native' | 'proxy' | string // 路由方式：原生透传 / 附加代理（历史 'error' 数据降级为透传）
   via_options?: ViaOption[] // proxy 时的候选，顺序即兜底优先级（vision 用）
   replacements?: SensitiveReplacement[] // proxy 时的敏感词替换规则，顺序即替换顺序（sensitive_filter 用）
   field_rules?: FieldRules // 字段过滤规则（field_filter 用；nil/undefined = 未配置，原样透传）

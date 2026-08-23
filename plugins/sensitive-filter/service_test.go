@@ -2,7 +2,6 @@ package sensitivefilter
 
 import (
 	"encoding/json"
-	"errors"
 	"log/slog"
 	"testing"
 
@@ -61,7 +60,7 @@ func TestDecideRoute(t *testing.T) {
 		// 渠道约束：仅 ch-b 命中。
 		{Models: []string{"gpt-5"}, ChannelIDs: []string{"ch-b"}, Capability: capabilityName, Route: types.RouteProxy, Replacements: []types.SensitiveReplacement{{From: "x", To: "y"}}},
 		// 通用全匹配：* 对任何渠道（含未知）命中。
-		{Models: []string{"claude-x"}, ChannelIDs: []string{"*"}, Capability: capabilityName, Route: types.RouteError},
+		{Models: []string{"claude-x"}, ChannelIDs: []string{"*"}, Capability: capabilityName, Route: types.RouteNative},
 		// 其他能力不命中 sensitive_filter。
 		{Models: []string{"vision-model"}, Capability: "vision", Route: types.RouteProxy, ViaOptions: []types.ViaOption{{ViaModel: "qwen-vl-max"}}},
 	}
@@ -196,30 +195,32 @@ func TestNativePassthrough(t *testing.T) {
 }
 
 // TestErrorReject 验证 error 路由：命中敏感词直接拒绝。
-func TestErrorReject(t *testing.T) {
+// TestErrorDataDegradedPassthrough 历史 route="error" 数据按 native（透传）降级：
+// 命中敏感词也不拒绝，body 原样透传（「不支持就不管他」语义）。
+func TestErrorDataDegradedPassthrough(t *testing.T) {
 	svc, st := newTestService(t)
 	seedRoute(t, st, types.CapabilityRoute{
-		Models: []string{"deepseek-chat"}, Capability: capabilityName, Route: types.RouteError,
+		Models: []string{"deepseek-chat"}, Capability: capabilityName, Route: "error",
 		Replacements: []types.SensitiveReplacement{{From: "违禁词", To: ""}},
 	})
 	pipe := proxyPipe(t, map[string]any{"messages": []any{
 		map[string]any{"role": "user", "content": "说了违禁词"},
 	}})
-	_, err := runHook(svc, pipe)
-	if err == nil {
-		t.Fatal("error 路由命中应拒绝")
+	before := append([]byte(nil), pipe.Request.Body...)
+	out, err := runHook(svc, pipe)
+	if err != nil {
+		t.Fatalf("历史 error 数据降级后不应拒绝: %v", err)
 	}
-	var gw *modelgateway.GatewayError
-	if !errors.As(err, &gw) || gw.Type != "sensitive_filter_error" {
-		t.Fatalf("错误类型应为 sensitive_filter_error: %v", err)
+	if string(out.Request.Body) != string(before) {
+		t.Fatalf("历史 error 数据应按 native 原样透传，body 被改写")
 	}
 }
 
-// TestErrorNotHitPassthrough 验证 error 路由未命中敏感词时原样透传。
+// TestErrorNotHitPassthrough 验证历史 error 数据未命中敏感词时原样透传（降级 native 语义）。
 func TestErrorNotHitPassthrough(t *testing.T) {
 	svc, st := newTestService(t)
 	seedRoute(t, st, types.CapabilityRoute{
-		Models: []string{"deepseek-chat"}, Capability: capabilityName, Route: types.RouteError,
+		Models: []string{"deepseek-chat"}, Capability: capabilityName, Route: "error",
 		Replacements: []types.SensitiveReplacement{{From: "违禁词", To: ""}},
 	})
 	pipe := proxyPipe(t, map[string]any{"messages": []any{
@@ -367,43 +368,43 @@ func TestNoRoutePassthrough(t *testing.T) {
 	}
 }
 
-// TestErrorRegexHitReject 验证 error 路由的正则规则命中也拒绝。
-func TestErrorRegexHitReject(t *testing.T) {
+// TestErrorRegexHitDegradedPassthrough 历史 error 数据的正则规则命中也不拒绝（降级 native 透传）。
+func TestErrorRegexHitDegradedPassthrough(t *testing.T) {
 	svc, st := newTestService(t)
 	seedRoute(t, st, types.CapabilityRoute{
-		Models: []string{"deepseek-chat"}, Capability: capabilityName, Route: types.RouteError,
+		Models: []string{"deepseek-chat"}, Capability: capabilityName, Route: "error",
 		Replacements: []types.SensitiveReplacement{{From: `\d{11}`, To: "", Regex: true}},
 	})
 	pipe := proxyPipe(t, map[string]any{"messages": []any{
 		map[string]any{"role": "user", "content": "电话 13812345678"},
 	}})
-	_, err := runHook(svc, pipe)
-	if err == nil {
-		t.Fatal("error 路由正则命中应拒绝")
+	before := append([]byte(nil), pipe.Request.Body...)
+	out, err := runHook(svc, pipe)
+	if err != nil {
+		t.Fatalf("历史 error 数据正则命中不应拒绝: %v", err)
 	}
-	var gw *modelgateway.GatewayError
-	if !errors.As(err, &gw) || gw.Type != "sensitive_filter_error" {
-		t.Fatalf("错误类型应为 sensitive_filter_error: %v", err)
+	if string(out.Request.Body) != string(before) {
+		t.Fatalf("历史 error 数据应按 native 原样透传，body 被改写")
 	}
 }
 
-// TestErrorInvalidRegexReject 验证 error 路由正则非法也拒绝（与 proxy 的失败语义一致）。
-func TestErrorInvalidRegexReject(t *testing.T) {
+// TestErrorInvalidRegexDegradedPassthrough 历史 error 数据的非法正则也不报错（native 短路，不解析规则）。
+func TestErrorInvalidRegexDegradedPassthrough(t *testing.T) {
 	svc, st := newTestService(t)
 	seedRoute(t, st, types.CapabilityRoute{
-		Models: []string{"deepseek-chat"}, Capability: capabilityName, Route: types.RouteError,
+		Models: []string{"deepseek-chat"}, Capability: capabilityName, Route: "error",
 		Replacements: []types.SensitiveReplacement{{From: `([a-`, To: "", Regex: true}},
 	})
 	pipe := proxyPipe(t, map[string]any{"messages": []any{
 		map[string]any{"role": "user", "content": "文本"},
 	}})
-	_, err := runHook(svc, pipe)
-	if err == nil {
-		t.Fatal("error 路由非法正则应报错")
+	before := append([]byte(nil), pipe.Request.Body...)
+	out, err := runHook(svc, pipe)
+	if err != nil {
+		t.Fatalf("历史 error 数据非法正则应透传不报错: %v", err)
 	}
-	var gw *modelgateway.GatewayError
-	if !errors.As(err, &gw) || gw.Type != "sensitive_filter_error" {
-		t.Fatalf("错误类型应为 sensitive_filter_error: %v", err)
+	if string(out.Request.Body) != string(before) {
+		t.Fatalf("历史 error 数据应按 native 原样透传，body 被改写")
 	}
 }
 
@@ -433,11 +434,11 @@ func TestEmptyFromSkipped(t *testing.T) {
 	}
 }
 
-// TestEmptyFromErrorNotHit 验证 error 模式空 from 规则被跳过，不误拒任何请求。
+// TestEmptyFromErrorNotHit 验证历史 error 数据空 from 规则被跳过，不误拒任何请求（降级 native）。
 func TestEmptyFromErrorNotHit(t *testing.T) {
 	svc, st := newTestService(t)
 	seedRoute(t, st, types.CapabilityRoute{
-		Models: []string{"deepseek-chat"}, Capability: capabilityName, Route: types.RouteError,
+		Models: []string{"deepseek-chat"}, Capability: capabilityName, Route: "error",
 		Replacements: []types.SensitiveReplacement{{From: "", To: "x"}},
 	})
 	pipe := proxyPipe(t, map[string]any{"messages": []any{

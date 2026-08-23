@@ -600,10 +600,11 @@ func (s *Service) proxyForward(w http.ResponseWriter, r *http.Request, pipe *Pro
 	lastChannelName := ""
 	lastChannelGroup := ""
 	if lastChannelID != "" {
-		// 复用最后一次候选的展示名——与 attempt 日志里 channel_name/group 字段保持一致。
+		// 复用最后一次候选的展示名——与 attempt 日志里 channel_name 字段保持一致
+		//（channel_name 是渠道级名称，同 base_url 一组共享；ch.Name 是 Key 名，不落 final 快照）。
 		for _, ch := range candidates {
 			if ch.ID == lastChannelID {
-				lastChannelName = ch.Name
+				lastChannelName = ch.ChannelName
 				lastChannelGroup = ch.ChannelName
 				break
 			}

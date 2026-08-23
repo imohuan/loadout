@@ -4,6 +4,7 @@ import { RiDeleteBinLine, RiLoader4Line, RiRefreshLine } from '@remixicon/vue'
 import { useRouteLogs } from '@/composables/useRouteLogs'
 import type { RouteLogFilters } from '@/composables/useRouteLogs'
 import { useChannels } from '@/composables/useChannels'
+import { groupChannelNames } from '@/composables/useChannels'
 import { useListLoader } from '@/composables/useListLoader'
 import { useAsyncTask } from '@/composables/useAsyncTask'
 import { useConfirm } from '@/composables/useConfirm'
@@ -39,6 +40,9 @@ function onPageSizeChange(nextSize: number) {
   void refresh()
 }
 const { data: channels } = useListLoader(channelService.list)
+// 渠道筛选下拉：按渠道名（channel_name）去重归组，展示「渠道名」而非单个 Key。
+// 与表格展示（ModelChannelRef 按 base_url 分组）维度一致：一个渠道名 = 一组 Key。
+const channelOptions = computed(() => groupChannelNames(channels.value || []))
 const { run, isPending } = useAsyncTask()
 const { confirmDialog } = useConfirm()
 
@@ -184,6 +188,14 @@ onScopeDispose(stopAutoRefresh)
 
 async function apply(next: RouteLogFilters) {
   await run('apply', async () => {
+    // 渠道名存在性守卫：渠道被删除/改名后，form 里残留的旧 channel_name 在下拉中
+    // 已无对应项，若不清理会出现「下拉显示所有渠道、实际仍被旧筛选过滤」的脏选中态。
+    if (
+      next.channel_name &&
+      !channelOptions.value.some((option) => option.name === next.channel_name)
+    ) {
+      next = { ...next, channel_name: undefined }
+    }
     filters.value = next
     page.value = 1 // 过滤条件变化回到第一页，避免高页码下先拉到空页
     await refresh()
@@ -247,7 +259,7 @@ async function clear() {
       >
     </PageHeader>
     <RouteLogFiltersForm
-      :channels="channels || []"
+      :channels="channelOptions"
       :is-pending="isPending"
       @apply="apply"
       @reset="apply({})"

@@ -2,7 +2,6 @@ package vision
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"testing"
 
@@ -390,11 +389,12 @@ func TestHandleBeforeUpstreamProxy(t *testing.T) {
 	}
 }
 
-// TestHandleBeforeUpstreamError 验证 error 路由返回 vision_capability_error。
-func TestHandleBeforeUpstreamError(t *testing.T) {
+// TestHandleBeforeUpstreamErrorDataDegraded 历史 route="error" 数据按 native（透传）降级：
+// 不再报 vision_capability_error，请求原样返回。
+func TestHandleBeforeUpstreamErrorDataDegraded(t *testing.T) {
 	svc, _ := newTestService(t)
 	if err := svc.repo.ReplaceCapabilityRoutes(context.Background(), []types.CapabilityRoute{
-		{Models: []string{"deepseek-chat"}, Capability: "vision", Route: types.RouteError},
+		{Models: []string{"deepseek-chat"}, Capability: "vision", Route: "error"},
 	}); err != nil {
 		t.Fatalf("写能力路由表失败: %v", err)
 	}
@@ -405,15 +405,11 @@ func TestHandleBeforeUpstreamError(t *testing.T) {
 			{Type: "image_url", ImageURL: "http://img/a.png"},
 		}}}},
 	}
-	_, err := svc.handleBeforeUpstream(pipe)
-	if err == nil {
-		t.Fatal("error 路由应报错")
+	out, err := svc.handleBeforeUpstream(pipe)
+	if err != nil {
+		t.Fatalf("历史 error 数据降级后不应报错: %v", err)
 	}
-	var gw *modelgateway.GatewayError
-	if !errors.As(err, &gw) {
-		t.Fatalf("应返回 *GatewayError，实际 %T", err)
-	}
-	if gw.Type != "vision_capability_error" {
-		t.Fatalf("错误类型应为 vision_capability_error，实际 %q", gw.Type)
+	if out == nil {
+		t.Fatal("应返回原管线（native 透传）")
 	}
 }

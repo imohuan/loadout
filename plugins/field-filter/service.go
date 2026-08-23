@@ -29,38 +29,23 @@ func NewService(st *store.Store, lg *slog.Logger) *Service {
 func (s *Service) SetRepository(repo *db.Repository) { s.repo = repo }
 
 // decideRoutes 查能力路由：model + 请求渠道上下文的 field_filter 路由。
-// 未命中返回空列表；若命中 native/error 路由，立即返回该项，跳过后续匹配；
+// 未命中返回空列表；命中 native（及历史 error 降级）立即返回该项，跳过后续匹配；
 // 若有多个匹配的 proxy 路由，返回全部匹配项（叠加规则）。
 // 读表/解析失败 fail-open：记录日志并返回 nil，不拒绝请求。
-// 逻辑照 sensitive-filter 的 DecideRouteScope（含聚合模型渠道上下文）。
+// 选择策略统一走 types.SelectCapabilityRoutes（与 sensitive-filter/vision/request-log 一致）。
 func (s *Service) decideRoutes(pipe *modelgateway.ProxyPipeline) ([]*types.CapabilityRoute, error) {
 	if pipe == nil || pipe.Request == nil {
 		// 无请求上下文，返回空列表
 		return nil, nil
 	}
-	scope := types.ChannelScopeFromMetadata(pipe.Metadata, s.requestChannelBaseURL)
+	scope := types.ChannelScopeFromMetadata(pipe.Metadata, s.requestChannelBaseURLs)
 	if s.repo != nil {
 		routes, err := s.repo.ListCapabilityRoutes(context.Background())
 		if err == nil {
-			var matched []*types.CapabilityRoute
-			for i := range routes {
-				if routes[i].Capability == capabilityName &&
-					types.MatchModels(routes[i].Models, pipe.Request.Model) &&
-					types.MatchChannelScopeEx(routes[i].ChannelIDs, routes[i].ChannelBaseURLs, scope) {
-					// 遇到 native/error 路由直接返回，终止后续匹配
-					if routes[i].Route != types.RouteProxy {
-						return []*types.CapabilityRoute{&routes[i]}, nil
-					}
-					// proxy 路由收集全部匹配项
-					matched = append(matched, &routes[i])
-				}
-			}
-			return matched, nil
+			return types.SelectCapabilityRoutes(routes, capabilityName, pipe.Request.Model, scope), nil
 		}
 		s.lg.Warn("field-filter: 从 SQLite 读能力路由表失败，回退 JSON", "err", err)
 	}
-
-	var matched []*types.CapabilityRoute
 
 	var routes []types.CapabilityRoute
 	if err := s.st.Read(types.FileCapabilityRoutes, &routes); err != nil {
@@ -71,53 +56,71 @@ func (s *Service) decideRoutes(pipe *modelgateway.ProxyPipeline) ([]*types.Capab
 		return nil, nil
 	}
 
-	for i := range routes {
-		if routes[i].Capability == capabilityName &&
-			types.MatchModels(routes[i].Models, pipe.Request.Model) &&
-			types.MatchChannelScopeEx(routes[i].ChannelIDs, routes[i].ChannelBaseURLs, scope) {
-			// 遇到 native/error 路由直接返回，终止后续匹配
-			if routes[i].Route != types.RouteProxy {
-				return []*types.CapabilityRoute{&routes[i]}, nil
-			}
-			// proxy 路由收集全部匹配项
-			matched = append(matched, &routes[i])
-		}
-	}
+	selected := types.SelectCapabilityRoutes(routes, capabilityName, pipe.Request.Model, scope)
 	s.lg.Debug("field-filter: 未命中 field_filter 路由（透传）",
 		"model", pipe.Request.Model, "routes", len(routes),
 		"scope_ids", scope.IDs, "scope_base_urls", scope.BaseURLs)
 
-	// 返回所有匹配的 proxy 路由
-	return matched, nil
+	// 返回匹配结果（native 短路或 proxy 全收集）
+	return selected, nil
 }
 
-// requestChannelBaseURL 取请求渠道的 base_url（用于渠道级匹配）。
+// requestChannelBaseURLs 反查渠道 base_url 列表：term 可为渠道 key id（精确匹配，返回该 key
+// 所在渠道组的 base_url）或渠道名 ChannelName（返回组内全部启用 Key 共享的 base_url，去重）。
+// 无渠道或查不到返回空 slice。入口阶段（BeforeUpstream）只有 __channel_hint 渠道名时
+// 也能反查，供渠道级约束（channel_base_urls）路由匹配。
 // repo 为 nil（无 db 环境/测试）时从 store 渠道表兜底读取，保证 channel_base_urls
 // 约束在 JSON 模式下同样生效。
-func (s *Service) requestChannelBaseURL(channelID string) string {
-	if channelID == "" {
-		return ""
+func (s *Service) requestChannelBaseURLs(term string) []string {
+	if term == "" {
+		return nil
+	}
+	find := func(channels []types.Channel) []string {
+		var byID string
+		var byName []string
+		for _, ch := range channels {
+			if ch.ID == term {
+				byID = ch.BaseURL
+			}
+			if ch.Enabled && ch.ChannelName == term && ch.BaseURL != "" {
+				byName = append(byName, ch.BaseURL)
+			}
+		}
+		if byID != "" {
+			return []string{byID}
+		}
+		return byName
 	}
 	if s.repo != nil {
 		channels, err := s.repo.ListChannels(context.Background())
 		if err == nil {
-			for _, ch := range channels {
-				if ch.ID == channelID {
-					return ch.BaseURL
-				}
+			if out := find(toTypesChannels(channels)); len(out) > 0 {
+				return out
 			}
-			return ""
 		}
 	}
 	var channels []types.Channel
 	if err := s.st.Read(types.FileChannels, &channels); err == nil {
-		for _, ch := range channels {
-			if ch.ID == channelID {
-				return ch.BaseURL
-			}
+		if out := find(channels); len(out) > 0 {
+			return out
 		}
 	}
-	return ""
+	return nil
+}
+
+// toTypesChannels 把 db.Channel 转为 types.Channel（field-filter 的 store 兜底查询复用 find）。
+func toTypesChannels(channels []db.Channel) []types.Channel {
+	out := make([]types.Channel, 0, len(channels))
+	for _, ch := range channels {
+		out = append(out, types.Channel{
+			ID:          ch.ID,
+			Name:        ch.Name,
+			ChannelName: ch.ChannelName,
+			BaseURL:     ch.BaseURL,
+			Enabled:     ch.ManualEnabled,
+		})
+	}
+	return out
 }
 
 // routeMetaKey 命中路由在 pipe.Metadata 的暂存 key（before hook 写入，after hook 复用，

@@ -685,7 +685,7 @@ onBeforeUnmount(() => {
                 </Popover>
               </div>
               <div class="space-y-2">
-                <Label for="test-suffix">模型后缀</Label>
+                <Label for="test-suffix">接口后缀</Label>
                 <Select :model-value="suffixMode" @update:model-value="setSuffixMode">
                   <SelectTrigger id="test-suffix">
                     <SelectValue placeholder="选择模型后缀模式" />

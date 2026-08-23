@@ -47,8 +47,8 @@ func (s *Service) DecideRoute(model, channelID string) (*types.CapabilityRoute, 
 	scope := types.ChannelRequestScope{}
 	if channelID != "" {
 		scope.IDs = []string{channelID}
-		if bu := s.requestChannelBaseURL(channelID); bu != "" {
-			scope.BaseURLs = []string{bu}
+		if bus := s.requestChannelBaseURLs(channelID); len(bus) > 0 {
+			scope.BaseURLs = bus
 		}
 	}
 	routes, err := s.DecideRoutesScope(model, scope)
@@ -59,25 +59,12 @@ func (s *Service) DecideRoute(model, channelID string) (*types.CapabilityRoute, 
 }
 
 // DecideRoutesScope 查能力路由表：model + 请求渠道上下文（含聚合模型的候选 Key 集合）。
-// 返回所有匹配的路由；若命中 native/error 路由，立即返回该项，跳过后续匹配。
+// 返回所有匹配的路由；命中 native（及历史 error 降级）立即返回该项，跳过后续匹配。
 func (s *Service) DecideRoutesScope(model string, scope types.ChannelRequestScope) ([]*types.CapabilityRoute, error) {
 	if s.repo != nil {
 		routes, err := s.repo.ListCapabilityRoutes(context.Background())
 		if err == nil {
-			var matched []*types.CapabilityRoute
-			for i := range routes {
-				if routes[i].Capability == capabilityName &&
-					types.MatchModels(routes[i].Models, model) &&
-					types.MatchChannelScopeEx(routes[i].ChannelIDs, routes[i].ChannelBaseURLs, scope) {
-					// 遇到 native/error 路由直接返回，终止后续匹配
-					if routes[i].Route != types.RouteProxy {
-						return []*types.CapabilityRoute{&routes[i]}, nil
-					}
-					// proxy 路由收集全部匹配项
-					matched = append(matched, &routes[i])
-				}
-			}
-			return matched, nil
+			return types.SelectCapabilityRoutes(routes, capabilityName, model, scope), nil
 		}
 		s.lg.Error("sensitive-filter: 从 SQLite 读能力路由表失败，回退 JSON", "err", err)
 	}
@@ -89,45 +76,42 @@ func (s *Service) DecideRoutesScope(model string, scope types.ChannelRequestScop
 		s.lg.Error("sensitive-filter: 读取能力路由表失败，按透传处理", "err", err)
 		return nil, nil
 	}
-	var matched []*types.CapabilityRoute
-	for i := range routes {
-		if routes[i].Capability == capabilityName &&
-			types.MatchModels(routes[i].Models, model) &&
-			types.MatchChannelScopeEx(routes[i].ChannelIDs, routes[i].ChannelBaseURLs, scope) {
-			// 遇到 native/error 路由直接返回，终止后续匹配
-			if routes[i].Route != types.RouteProxy {
-				return []*types.CapabilityRoute{&routes[i]}, nil
-			}
-			// proxy 路由收集全部匹配项
-			matched = append(matched, &routes[i])
-		}
-	}
-	return matched, nil
+	return types.SelectCapabilityRoutes(routes, capabilityName, model, scope), nil
 }
 
-// requestChannelBaseURL 取请求渠道的 base_url（用于渠道级匹配），无渠道或查不到返回空串。
-func (s *Service) requestChannelBaseURL(channelID string) string {
-	if channelID == "" || s.repo == nil {
-		return ""
+// requestChannelBaseURLs 反查渠道 base_url 列表：term 可为渠道 key id（精确匹配，返回该 key
+// 所在渠道组的 base_url）或渠道名 ChannelName（返回组内全部启用 Key 共享的 base_url，去重）。
+// 无渠道或查不到返回空 slice。入口阶段（BeforeUpstream）只有 __channel_hint 渠道名时
+// 也能反查，供渠道级约束（channel_base_urls）路由匹配。
+func (s *Service) requestChannelBaseURLs(term string) []string {
+	if term == "" || s.repo == nil {
+		return nil
 	}
 	channels, err := s.repo.ListChannels(context.Background())
 	if err != nil {
-		return ""
+		return nil
 	}
+	var byID string
+	var byName []string
 	for _, ch := range channels {
-		if ch.ID == channelID {
-			return ch.BaseURL
+		if ch.ID == term {
+			byID = ch.BaseURL
+		}
+		if ch.ManualEnabled && ch.ChannelName == term && ch.BaseURL != "" {
+			byName = append(byName, ch.BaseURL)
 		}
 	}
-	return ""
+	if byID != "" {
+		return []string{byID}
+	}
+	return byName
 }
 
 // HandleProxyBeforeUpstream 每次渠道尝试安检 hook（proxy:before-attempt）：
 // 对请求体做敏感词过滤。仅处理合法 JSON body（非 JSON 原样透传，避免误伤二进制/表单）；
-// 未命中路由、native 路由原样透传。
+// 未命中路由、非 proxy 路由（native / 历史 error 降级）原样透传。
 // proxy：整体 stringify → 逐条替换 → 校验；若整体替换破坏 JSON（如替换词含引号/换行），
 // 自动降级为「只替换 messages 下的文本字段」再放行，绝不报错拒绝请求。
-// error：命中任一敏感词直接拒绝。
 func (s *Service) HandleProxyBeforeUpstream(payload any) (any, error) {
 	pipe, ok := payload.(*modelgateway.ProxyPipeline)
 	if !ok || pipe == nil || pipe.Request == nil || len(pipe.Request.Body) == 0 {
@@ -140,7 +124,7 @@ func (s *Service) HandleProxyBeforeUpstream(payload any) (any, error) {
 	model := pipe.Request.Model
 	// 聚合渠道级/Key 多选目标会写 __channel_candidates（__current_channel 为空），
 	// 必须读齐 metadata 三个字段，否则聚合流量匹配不到渠道约束路由。
-	scope := types.ChannelScopeFromMetadata(pipe.Metadata, s.requestChannelBaseURL)
+	scope := types.ChannelScopeFromMetadata(pipe.Metadata, s.requestChannelBaseURLs)
 	routes, err := s.DecideRoutesScope(model, scope)
 	if err != nil {
 		// 防御：DecideRoute 现为 fail-open，正常不会走到这里。
@@ -152,26 +136,9 @@ func (s *Service) HandleProxyBeforeUpstream(payload any) (any, error) {
 		return payload, nil
 	}
 
-	// 处理 native/error 路由：直接透传或拒绝
-	if routes[0].Route == types.RouteNative {
-		s.lg.Debug("sensitive-filter: native 路由，原样透传", "model", model, "channel_id", channelID, "path", pipe.Request.Path)
-		return payload, nil
-	}
-	if routes[0].Route == types.RouteError {
-		text := string(pipe.Request.Body)
-		// 先合并所有 error 路由的规则
-		var allRules []types.SensitiveReplacement
-		for _, route := range routes {
-			allRules = append(allRules, route.Replacements...)
-		}
-		hit, err := containsAny(text, allRules)
-		if err != nil {
-			return nil, sensitiveError(err.Error())
-		}
-		if hit {
-			s.lg.Warn("敏感词过滤命中，请求被拒绝", "model", model, "channel_id", channelID, "path", pipe.Request.Path)
-			return nil, sensitiveError(fmt.Sprintf("请求命中敏感词过滤规则，模型 %q 已拒绝", model))
-		}
+	// 处理非 proxy 路由（native，及历史 error 数据降级）：原样透传
+	if routes[0].Route != types.RouteProxy {
+		s.lg.Debug("sensitive-filter: 非 proxy 路由，原样透传", "model", model, "channel_id", channelID, "path", pipe.Request.Path, "route", routes[0].Route)
 		return payload, nil
 	}
 
@@ -309,29 +276,6 @@ func replaceStringValues(v any, rules []types.SensitiveReplacement) {
 			replaceStringValues(item, rules)
 		}
 	}
-}
-
-// containsAny 判断 text 是否命中任一规则（error 模式用）。
-// 正则规则编译失败视为配置错误，返回 error 让请求拒绝（与 replaceAll 的失败语义一致，
-// 避免同一条坏正则在不同 route 下安全姿态相反）。空 from 规则跳过（配置防御）。
-func containsAny(text string, rules []types.SensitiveReplacement) (bool, error) {
-	for _, r := range rules {
-		if r.From == "" {
-			continue
-		}
-		if r.Regex {
-			re, err := regexp.Compile(r.From)
-			if err != nil {
-				return false, fmt.Errorf("敏感词正则规则非法 %q: %w", r.From, err)
-			}
-			if re.MatchString(text) {
-				return true, nil
-			}
-		} else if strings.Contains(text, r.From) {
-			return true, nil
-		}
-	}
-	return false, nil
 }
 
 // replaceAll 按数组顺序执行替换；正则规则用 regexp.ReplaceAllString（支持 $1 捕获组）。

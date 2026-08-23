@@ -832,7 +832,7 @@ func (s *Service) handleRouteLogsList(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "route-log 未装配")
 		return
 	}
-	filter := contracts.RouteLogFilter{Model: r.URL.Query().Get("model"), ChannelID: r.URL.Query().Get("channel_id"), Result: r.URL.Query().Get("result")}
+	filter := contracts.RouteLogFilter{Model: r.URL.Query().Get("model"), ChannelID: r.URL.Query().Get("channel_id"), ChannelName: r.URL.Query().Get("channel_name"), Result: r.URL.Query().Get("result")}
 	if value := r.URL.Query().Get("from"); value != "" {
 		if parsed, err := time.Parse(time.RFC3339, value); err == nil {
 			filter.StartedAfter = &parsed

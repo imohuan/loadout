@@ -179,6 +179,9 @@ type RouteFinish struct {
 type RouteLogFilter struct {
 	Model         string
 	ChannelID     string
+	// ChannelName 渠道级名称过滤（同 base_url 一组共享一个渠道名）。
+	// 比 ChannelID（Key 粒度）更粗：日志按渠道名快照匹配，任一 attempt 命中即算。
+	ChannelName   string
 	Result        string
 	StartedAfter  *time.Time
 	StartedBefore *time.Time

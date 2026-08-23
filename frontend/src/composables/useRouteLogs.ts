@@ -3,7 +3,7 @@ import type { RouteLog, RouteLogPage } from '@/lib/types'
 
 export interface RouteLogFilters {
   model?: string
-  channel_id?: string
+  channel_name?: string
   result?: string
   from?: string
   to?: string
@@ -22,7 +22,7 @@ export function useRouteLogs() {
   ) {
     const search = new URLSearchParams()
     if (filters.model) search.set('model', filters.model)
-    if (filters.channel_id) search.set('channel_id', filters.channel_id)
+    if (filters.channel_name) search.set('channel_name', filters.channel_name)
     if (filters.result) search.set('result', filters.result)
     if (toISOString(filters.from)) search.set('from', toISOString(filters.from)!)
     if (toISOString(filters.to)) search.set('to', toISOString(filters.to)!)

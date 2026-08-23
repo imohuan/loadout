@@ -1172,9 +1172,10 @@ func TestProxyLogsUpstreamErrorDetails(t *testing.T) {
 		t.Fatalf("slog 缺汇总日志 msg=all channels failed for model\n%s", logs)
 	}
 	// summary 必须包含 last_channel_id / last_status / last_error 等关键诊断字段。
+	// last_channel_name 与 attempt 口径统一为渠道名（ch.ChannelName），不再是 Key 名。
 	mustContainSummary := []string{
 		`"last_channel_id":"ch-err"`,
-		`"last_channel_name":"err-key"`,
+		`"last_channel_name":"workbuddy"`,
 		`"last_channel_group":"workbuddy"`,
 		`"last_status":500`,
 		`"last_error":"上游返回错误(500): rate-limited"`, // 修 bug 后只拼一次前缀

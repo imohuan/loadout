@@ -85,8 +85,8 @@ func (s *Service) DecideRoute(model, channelID string) (*types.CapabilityRoute, 
 	scope := types.ChannelRequestScope{}
 	if channelID != "" {
 		scope.IDs = []string{channelID}
-		if bu := s.requestChannelBaseURL(channelID); bu != "" {
-			scope.BaseURLs = []string{bu}
+		if bus := s.requestChannelBaseURLs(channelID); len(bus) > 0 {
+			scope.BaseURLs = bus
 		}
 	}
 	routes, err := s.DecideRoutesScope(model, scope)
@@ -97,24 +97,14 @@ func (s *Service) DecideRoute(model, channelID string) (*types.CapabilityRoute, 
 }
 
 // DecideRoutesScope 查能力路由表：model + 请求渠道上下文（含聚合模型的候选 Key 集合）。
-// 返回所有匹配的路由；native/error 路由立即返回，proxy 路由收集全部匹配项。
+// 返回所有匹配的路由；native（及历史 error 降级）立即返回，proxy 路由收集全部匹配项。
+// 选择策略统一走 types.SelectCapabilityRoutes（与 vision/sensitive/field-filter 一致）。
 // 读表/解析失败 fail-open：记录日志并返回 nil（按 native 透传），不拒绝请求。
 func (s *Service) DecideRoutesScope(model string, scope types.ChannelRequestScope) ([]*types.CapabilityRoute, error) {
 	if s.repo != nil {
 		routes, err := s.repo.ListCapabilityRoutes(context.Background())
 		if err == nil {
-			var matched []*types.CapabilityRoute
-			for i := range routes {
-				if routes[i].Capability == capabilityName &&
-					types.MatchModels(routes[i].Models, model) &&
-					types.MatchChannelScopeEx(routes[i].ChannelIDs, routes[i].ChannelBaseURLs, scope) {
-					if routes[i].Route != types.RouteProxy {
-						return []*types.CapabilityRoute{&routes[i]}, nil
-					}
-					matched = append(matched, &routes[i])
-				}
-			}
-			return matched, nil
+			return types.SelectCapabilityRoutes(routes, capabilityName, model, scope), nil
 		}
 		s.lg.Error("request-log: 从 SQLite 读能力路由表失败，回退 JSON", "err", err)
 	}
@@ -126,35 +116,35 @@ func (s *Service) DecideRoutesScope(model string, scope types.ChannelRequestScop
 		s.lg.Error("request-log: 读取能力路由表失败，按透传处理", "err", err)
 		return nil, nil
 	}
-	var matched []*types.CapabilityRoute
-	for i := range routes {
-		if routes[i].Capability == capabilityName &&
-			types.MatchModels(routes[i].Models, model) &&
-			types.MatchChannelScopeEx(routes[i].ChannelIDs, routes[i].ChannelBaseURLs, scope) {
-			if routes[i].Route != types.RouteProxy {
-				return []*types.CapabilityRoute{&routes[i]}, nil
-			}
-			matched = append(matched, &routes[i])
-		}
-	}
-	return matched, nil
+	return types.SelectCapabilityRoutes(routes, capabilityName, model, scope), nil
 }
 
-// requestChannelBaseURL 取请求渠道的 base_url（用于渠道级匹配），无渠道或查不到返回空串。
-func (s *Service) requestChannelBaseURL(channelID string) string {
-	if channelID == "" || s.repo == nil {
-		return ""
+// requestChannelBaseURLs 反查渠道 base_url 列表：term 可为渠道 key id（精确匹配，返回该 key
+// 所在渠道组的 base_url）或渠道名 ChannelName（返回组内全部启用 Key 共享的 base_url，去重）。
+// 无渠道或查不到返回空 slice。入口阶段（BeforeUpstream）只有 __channel_hint 渠道名时
+// 也能反查，供渠道级约束（channel_base_urls）路由匹配。
+func (s *Service) requestChannelBaseURLs(term string) []string {
+	if term == "" || s.repo == nil {
+		return nil
 	}
 	channels, err := s.repo.ListChannels(context.Background())
 	if err != nil {
-		return ""
+		return nil
 	}
+	var byID string
+	var byName []string
 	for _, ch := range channels {
-		if ch.ID == channelID {
-			return ch.BaseURL
+		if ch.ID == term {
+			byID = ch.BaseURL
+		}
+		if ch.ManualEnabled && ch.ChannelName == term && ch.BaseURL != "" {
+			byName = append(byName, ch.BaseURL)
 		}
 	}
-	return ""
+	if byID != "" {
+		return []string{byID}
+	}
+	return byName
 }
 
 // redactEnabled 读脱敏开关（request_log_config.redact，默认 1=开）。
@@ -204,7 +194,7 @@ func (s *Service) HandleBeforeAttempt(payload any) (any, error) {
 	// __virtual_model 里供 route-log 展示。不能拿虚拟名覆盖——否则用户只配置物理模型
 	// （如 hy3）时，聚合内部切换到的真实模型永远匹配不上（与 sensitive-filter 对齐）。
 	model := pipe.Request.Model
-	scope := types.ChannelScopeFromMetadata(pipe.Metadata, s.requestChannelBaseURL)
+	scope := types.ChannelScopeFromMetadata(pipe.Metadata, s.requestChannelBaseURLs)
 	routes, err := s.DecideRoutesScope(model, scope)
 	if err != nil {
 		s.lg.Warn("request-log: 能力路由决策失败，跳过记录", "request_id", pipe.RequestID, "err", err)

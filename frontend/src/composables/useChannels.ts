@@ -43,6 +43,23 @@ export function groupChannelsByBaseURL(channels: Channel[]): ChannelGroup[] {
   return [...groups.entries()].map(([baseUrl, keys]) => ({ baseUrl, keys }))
 }
 
+// groupChannelNames 按「渠道名」维度去重，保留 channels 原序。一个渠道名 = 一组同
+// base_url 的 Key，用于转发日志的渠道筛选下拉。
+// 只收 channel_name 非空的渠道：日志快照里落的是 ch.ChannelName（空则落 ''），
+// 若把空名渠道兜底成 Key 名展示，选了也匹配不到任何日志（死选项）。空名渠道
+// 无法被渠道名筛选命中，属后端快照语义，这里直接不下拉。
+export function groupChannelNames(channels: Channel[]): { name: string }[] {
+  const seen = new Set<string>()
+  const out: { name: string }[] = []
+  for (const ch of channels) {
+    const name = ch.channel_name
+    if (!name || seen.has(name)) continue
+    seen.add(name)
+    out.push({ name })
+  }
+  return out
+}
+
 export function useChannels() {
   const list = () => api<Channel[]>('/api/channels')
   const save = (input: ChannelInput, id?: string) =>

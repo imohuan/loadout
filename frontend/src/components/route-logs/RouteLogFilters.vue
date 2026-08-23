@@ -1,10 +1,9 @@
 <script setup lang="ts">
 import { reactive, watch } from 'vue'
 import { RiFilter3Line, RiLoader4Line, RiRefreshLine } from '@remixicon/vue'
-import type { Channel } from '@/lib/types'
 import type { RouteLogFilters } from '@/composables/useRouteLogs'
 
-const props = defineProps<{ channels: Channel[]; isPending?: (key: string) => boolean }>()
+const props = defineProps<{ channels: { name: string }[]; isPending?: (key: string) => boolean }>()
 const emit = defineEmits<{ apply: [filters: RouteLogFilters]; reset: [] }>()
 const form = reactive<RouteLogFilters>({})
 watch(
@@ -32,8 +31,8 @@ function reset() {
     <div class="min-w-36 flex-1 space-y-1">
       <Label for="log-channel">渠道</Label>
       <Select
-        :model-value="form.channel_id || '__all__'"
-        @update:model-value="form.channel_id = $event === '__all__' ? undefined : String($event)"
+        :model-value="form.channel_name || '__all__'"
+        @update:model-value="form.channel_name = $event === '__all__' ? undefined : String($event)"
       >
         <SelectTrigger id="log-channel" class="w-full">
           <SelectValue placeholder="所有渠道" />
@@ -41,7 +40,7 @@ function reset() {
         <SelectContent position="popper" side="bottom" align="start" :side-offset="2">
           <SelectGroup>
             <SelectItem value="__all__">所有渠道</SelectItem>
-            <SelectItem v-for="channel in channels" :key="channel.id" :value="channel.id">
+            <SelectItem v-for="channel in channels" :key="channel.name" :value="channel.name">
               {{ channel.name }}
             </SelectItem>
           </SelectGroup>

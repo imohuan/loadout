@@ -90,7 +90,8 @@ func TestRouteCapability(t *testing.T) {
 	routes := []types.CapabilityRoute{
 		{Models: []string{"deepseek-chat"}, Capability: "vision", Route: types.RouteProxy, ViaOptions: []types.ViaOption{{ViaModel: "qwen-vl-max"}}},
 		{Models: []string{"gpt-4o-mini"}, Capability: "vision", Route: types.RouteNative},
-		{Models: []string{"deepseek-*"}, Capability: "vision", Route: types.RouteError},
+		// 通配仅覆盖 deepseek-v4-*：不与上面的精确 deepseek-chat 冲突（避免短路优先误伤精确 proxy）。
+		{Models: []string{"deepseek-v4-*"}, Capability: "vision", Route: "error"},
 		// 渠道约束：仅 ch-b 上的 gpt-4o 命中 native；ch-a 上的 gpt-4o 不命中（全渠道无约束路由时）。
 		{Models: []string{"gpt-4o"}, ChannelIDs: []string{"ch-b"}, Capability: "vision", Route: types.RouteNative},
 		// 通用全匹配：* 渠道对任何渠道（含未知渠道）都命中。
@@ -108,13 +109,13 @@ func TestRouteCapability(t *testing.T) {
 		t.Fatalf("应命中 proxy 路由: %+v", hit)
 	}
 
-	// 通配符前缀匹配
+	// 通配符前缀匹配（历史 error 数据原样返回，选择策略短路命中）
 	wild, err := svc.RouteCapability("deepseek-v4-flash", "vision", "")
 	if err != nil {
 		t.Fatalf("RouteCapability 出错: %v", err)
 	}
-	if wild == nil || wild.Route != types.RouteError {
-		t.Fatalf("deepseek-v4-flash 应命中 deepseek-* 通配: %+v", wild)
+	if wild == nil || wild.Route != "error" {
+		t.Fatalf("deepseek-v4-flash 应命中 deepseek-v4-* 通配: %+v", wild)
 	}
 
 	miss, err := svc.RouteCapability("deepseek-chat", "tts", "")

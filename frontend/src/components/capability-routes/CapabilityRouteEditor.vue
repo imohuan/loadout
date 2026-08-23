@@ -252,14 +252,13 @@ const capabilityOptions = [
   { value: CAP_FIELD_FILTER, label: 'field_filter（字段过滤）' },
   { value: CAP_REQUEST_LOG, label: 'request_log（完整请求日志）' },
 ]
-// 路由方式选项：vision 保持两态；敏感词过滤提供三态（error = 命中敏感词直接拒绝）；
-// 字段过滤两态（error 无意义：实现为 fail-open 透传）。
+// 路由方式选项：sensitive_filter 三态里 error（命中拒绝）已废弃移除——
+// 「不支持就不管他」：命中敏感词不再直接拒绝，只能替换（proxy）或透传（native）。
 const routeOptions = computed(() =>
   form.capability === CAP_SENSITIVE
     ? [
         { value: 'proxy', label: '附加代理（替换）' },
         { value: 'native', label: '原生透传' },
-        { value: 'error', label: '命中拒绝' },
       ]
     : [
         { value: 'proxy', label: '附加代理' },
@@ -273,7 +272,6 @@ const routeHint = computed(() => {
       proxy:
         '请求体按替换规则整体过滤：敏感词被替换后再转发给目标模型；整体替换若破坏 JSON，自动降级为只替换 messages 文本。',
       native: '请求体原样透传，不做敏感词过滤（适合通配规则下的精确豁免）。',
-      error: '请求体命中任一敏感词规则直接拒绝，不转发上游（依赖下方规则列表）。',
     }[form.route]
   }
   if (form.capability === CAP_FIELD_FILTER) {
@@ -299,6 +297,9 @@ function submit() {
   if (!form.models.length) return
   const isSensitive = form.capability === CAP_SENSITIVE
   const isFieldFilter = form.capability === CAP_FIELD_FILTER
+  // 遗留 route="error" 数据归一化为 native（语义即「不支持就不管他」降级透传），
+  // 避免编辑保存时把已废弃的 error 值写回 DB。
+  if (form.route === 'error') form.route = 'native'
   if (form.route === 'proxy') {
     if (isSensitive) {
       if (!form.replacements.some((r) => r.from.trim())) return
@@ -309,10 +310,6 @@ function submit() {
     } else if (!form.viaOptions.some((o) => o.model.trim())) {
       return
     }
-  }
-  if (form.route === 'error' && isSensitive) {
-    // error 路由依赖 replacements 做命中判断，必须有规则。
-    if (!form.replacements.some((r) => r.from.trim())) return
   }
   const viaOptions =
     form.route === 'proxy' && form.capability === CAP_VISION

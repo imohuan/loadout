@@ -53,20 +53,25 @@ func (s *Service) SetRoutingServices(database *sql.DB, health contracts.ModelHea
 
 // RouteCapability 查能力路由：给定 model + capability + 请求渠道，返回命中条目；
 // channelID 为请求当前渠道（空 = 未知，仅全渠道/通配路由命中）。
+// 选择策略统一走 types.SelectCapabilityRoutes（native/历史 error 短路优先，proxy 取首候选）。
 // 未命中返回 nil（视为 native 透传）。SQLite 优先，fallback capability_routes.json。
 func (s *Service) RouteCapability(model, capability, channelID string) (*types.CapabilityRoute, error) {
 	requestBaseURL := s.requestChannelBaseURL(channelID)
+	scope := types.ChannelRequestScope{}
+	if channelID != "" {
+		scope.IDs = []string{channelID}
+	}
+	if requestBaseURL != "" {
+		scope.BaseURLs = []string{requestBaseURL}
+	}
 	if s.routing != nil {
 		routes, err := s.routing.ListCapabilityRoutes(context.Background())
 		if err == nil {
-			for i := range routes {
-				if routes[i].Capability == capability &&
-					types.MatchModels(routes[i].Models, model) &&
-					types.MatchChannelScope(routes[i].ChannelIDs, routes[i].ChannelBaseURLs, channelID, requestBaseURL) {
-					return &routes[i], nil
-				}
+			selected := types.SelectCapabilityRoutes(routes, capability, model, scope)
+			if len(selected) == 0 {
+				return nil, nil
 			}
-			return nil, nil
+			return selected[0], nil
 		}
 		s.lg.Warn("modelgateway: 从 SQLite 读能力路由失败，回退 JSON", "err", err)
 	}
@@ -77,14 +82,11 @@ func (s *Service) RouteCapability(model, capability, channelID string) (*types.C
 		}
 		return nil, fmt.Errorf("modelgateway: 读取能力路由表失败: %w", err)
 	}
-	for i := range routes {
-		if routes[i].Capability == capability &&
-			types.MatchModels(routes[i].Models, model) &&
-			types.MatchChannelScope(routes[i].ChannelIDs, routes[i].ChannelBaseURLs, channelID, requestBaseURL) {
-			return &routes[i], nil
-		}
+	selected := types.SelectCapabilityRoutes(routes, capability, model, scope)
+	if len(selected) == 0 {
+		return nil, nil
 	}
-	return nil, nil
+	return selected[0], nil
 }
 
 // requestChannelBaseURL 取请求渠道的 base_url（用于渠道级匹配），无渠道或查不到返回空串。

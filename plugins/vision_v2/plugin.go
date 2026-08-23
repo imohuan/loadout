@@ -40,7 +40,11 @@ func (p *visionPlugin) Apply(ctx plugin.Context) error {
 	svc := NewService(st, repo, lg)
 	svc.SetRouteLog(routeLog)
 	ctx.Set("vision_v2", svc)
-	ctx.On(modelgateway.ProxyBeforeUpstream, svc.HandleProxyBeforeUpstream)
+	// 注册 ProxyBeforeAttempt 而非 ProxyBeforeUpstream：渠道匹配需要真实的
+	// __current_channel / __current_channel_base_url（ProxyBeforeAttempt 每次渠道尝试前已写入）。
+	// 挂在 ProxyBeforeUpstream 时渠道上下文为空，channel_base_urls 约束的路由（如
+	// workbuddy 原生透传）永远匹配不上，会被全渠道附加代理兜底抢走。
+	ctx.On(modelgateway.ProxyBeforeAttempt, svc.HandleProxyBeforeUpstream)
 	ctx.On(modelgateway.ProxyStreamChunk, svc.HandleProxyStreamChunk)
 	ctx.On(modelgateway.ProxyAfterUpstream, svc.HandleProxyAfterUpstream)
 	return nil

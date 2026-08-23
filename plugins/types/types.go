@@ -89,8 +89,37 @@ type ChannelModelDetail struct {
 const (
 	RouteNative = "native" // 模型原生支持，直接透传
 	RouteProxy  = "proxy"  // 转发给 via_options（视觉等能力）
-	RouteError  = "error"  // 明确不支持且不附加，直接报错
+	// RouteError 已废弃：历史 route="error" 数据运行时按 native（透传）降级处理，
+	// 见 SelectCapabilityRoutes 注释。常量删除后不再有新数据写入 error。
 )
+
+// SelectCapabilityRoutes 按能力路由表选择命中的路由（所有能力插件统一入口：
+// vision / sensitive-filter / field-filter / request-log 共用，避免各插件选择策略分叉）：
+//
+//   - 模型命中 MatchModels 且渠道命中 MatchChannelScopeEx 才算匹配；
+//   - 非 proxy 路由（native，及历史数据 error）命中即短路返回该项——豁免/降级语义优先，
+//     不依赖路由表 position 排序（历史 error 自动按 native 透传处理，即「不支持就不管他」）；
+//     注意：短路会屏蔽同 model+channel 的其它 proxy 替换规则（与旧 native/error 优先语义一致，
+//     若需替换与豁免并存，豁免行须精确限定 model/渠道，避免宽通配误伤）；
+//   - proxy 路由收集全部匹配项（叠加规则，如字段过滤多条规则合并），返回数组。
+//
+// 返回 nil = 无匹配（调用方按透传处理）。读表/解析失败由调用方自行 fail-open。
+func SelectCapabilityRoutes(routes []CapabilityRoute, capability, model string, scope ChannelRequestScope) []*CapabilityRoute {
+	var matched []*CapabilityRoute
+	for i := range routes {
+		if routes[i].Capability != capability ||
+			!MatchModels(routes[i].Models, model) ||
+			!MatchChannelScopeEx(routes[i].ChannelIDs, routes[i].ChannelBaseURLs, scope) {
+			continue
+		}
+		// 非 proxy（native / 历史 error）：短路返回，豁免优先于叠加代理
+		if routes[i].Route != RouteProxy {
+			return []*CapabilityRoute{&routes[i]}
+		}
+		matched = append(matched, &routes[i])
+	}
+	return matched
+}
 
 // MatchModels 判断 model 是否命中目标模型列表：支持 `*` 全匹配、`prefix*` 前缀匹配、精确匹配。
 func MatchModels(models []string, model string) bool {
@@ -172,22 +201,30 @@ type ChannelRequestScope struct {
 //   - __current_channel（单 key，聚合单 Key 目标或普通请求写入）
 //   - __channel_candidates（聚合渠道级/Key 多选目标写入的候选 Key 集合）
 //   - __current_channel_base_url（聚合渠道级目标写入的组地址）
+//   - __channel_hint（v2 前缀渠道名；仅当上述字段全空时兜底反查渠道组 base_urls）
 //
-// resolveBaseURL 非 nil 时按单 key id 补查渠道表 base_url（渠道级匹配需要，调用方传自己的查询闭包）。
+// resolveBaseURLs 非 nil 时按 term 反查渠道表 base_url 列表（渠道级匹配需要，调用方传自己的查询闭包；
+// term 可为渠道 key id 或渠道名 ChannelName，返回匹配渠道组的全部 base_urls，去重）。
 // 注意：聚合模型对渠道级/Key 多选目标写 __current_channel=""，绝不能只看这一个字段。
-func ChannelScopeFromMetadata(md map[string]any, resolveBaseURL func(string) string) ChannelRequestScope {
+func ChannelScopeFromMetadata(md map[string]any, resolveBaseURLs func(string) []string) ChannelRequestScope {
 	scope := ChannelRequestScope{}
 	if md == nil {
 		return scope
 	}
-	channelID, _ := md["__current_channel"].(string)
-	if channelID != "" {
-		scope.IDs = append(scope.IDs, channelID)
-		if resolveBaseURL != nil {
-			if bu := resolveBaseURL(channelID); bu != "" {
+	appendBaseURLs := func(term string) {
+		if resolveBaseURLs == nil {
+			return
+		}
+		for _, bu := range resolveBaseURLs(term) {
+			if bu != "" && !containsString(scope.BaseURLs, bu) {
 				scope.BaseURLs = append(scope.BaseURLs, bu)
 			}
 		}
+	}
+	channelID, _ := md["__current_channel"].(string)
+	if channelID != "" {
+		scope.IDs = append(scope.IDs, channelID)
+		appendBaseURLs(channelID)
 	}
 	if candidates, ok := md["__channel_candidates"].([]string); ok {
 		for _, c := range candidates {
@@ -197,17 +234,34 @@ func ChannelScopeFromMetadata(md map[string]any, resolveBaseURL func(string) str
 			scope.IDs = append(scope.IDs, c)
 			// 关键：候选 key 也要反查 base_url 进 scope.BaseURLs——
 			// 否则路由是渠道级约束（channel_base_urls）而请求只有候选 key id 时匹配不到。
-			if resolveBaseURL != nil {
-				if bu := resolveBaseURL(c); bu != "" {
-					scope.BaseURLs = append(scope.BaseURLs, bu)
-				}
-			}
+			appendBaseURLs(c)
 		}
 	}
 	if bu, ok := md["__current_channel_base_url"].(string); ok && bu != "" {
-		scope.BaseURLs = append(scope.BaseURLs, bu)
+		if !containsString(scope.BaseURLs, bu) {
+			scope.BaseURLs = append(scope.BaseURLs, bu)
+		}
+	}
+	// 兜底：入口阶段（ProxyBeforeUpstream）渠道 id/base_url 尚未写入，
+	// 但 v2 前缀已把渠道名写进 __channel_hint。按 hint 反查渠道组 base_urls，
+	// 让渠道级约束（channel_base_urls）路由在入口阶段也能命中——否则
+	// channel_base_urls 非空的路由永远匹配不到，被全渠道兜底路由抢走。
+	if len(scope.IDs) == 0 && len(scope.BaseURLs) == 0 {
+		if hint, ok := md["__channel_hint"].(string); ok && hint != "" {
+			appendBaseURLs(hint)
+		}
 	}
 	return scope
+}
+
+// containsString 判断 slice 是否含指定元素（ChannelScopeFromMetadata 去重用）。
+func containsString(ss []string, s string) bool {
+	for _, v := range ss {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }
 
 // MatchChannelScopeEx 判断请求渠道上下文是否命中路由的渠道约束。

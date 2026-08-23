@@ -578,6 +578,128 @@ func TestListPagination(t *testing.T) {
 	}
 }
 
+// TestListFiltersByChannelName：渠道名过滤应命中 final_channel_name 快照与任一 attempt 的
+// channel_name 快照（渠道级粒度，一个渠道名 = 一组 Key）。
+func TestListFiltersByChannelName(t *testing.T) {
+	service := NewService(logDB(t), nil)
+	ctx := context.Background()
+	base := time.Now().Add(-time.Hour)
+	// r-cn-a：final 快照与 attempt 快照都带「火山引擎」
+	if err := service.Start(ctx, contracts.RouteRequest{RequestID: "r-cn-a", RequestedModel: "m", StartedAt: base}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Attempt(ctx, contracts.RouteAttempt{
+		RequestID: "r-cn-a", StepNo: "1", Action: "首次尝试", Model: "m",
+		ChannelID: "key-a1", ChannelName: "火山引擎",
+		StartedAt: base, FinishedAt: pointer(base.Add(time.Second)), Result: "success",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Finish(ctx, contracts.RouteFinish{RequestID: "r-cn-a", FinishedAt: base.Add(time.Second), Result: "success", FinalChannelID: "key-a1", FinalChannelName: "火山引擎"}); err != nil {
+		t.Fatal(err)
+	}
+	// r-cn-b：final 快照为空（Finish 未带渠道名），仅 attempt 带「豆包」→ 走 attempts 分支
+	if err := service.Start(ctx, contracts.RouteRequest{RequestID: "r-cn-b", RequestedModel: "m", StartedAt: base.Add(time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Attempt(ctx, contracts.RouteAttempt{
+		RequestID: "r-cn-b", StepNo: "1", Action: "首次尝试", Model: "m",
+		ChannelID: "key-b1", ChannelName: "豆包",
+		StartedAt: base.Add(time.Minute), FinishedAt: pointer(base.Add(time.Minute).Add(time.Second)), Result: "success",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Finish(ctx, contracts.RouteFinish{RequestID: "r-cn-b", FinishedAt: base.Add(time.Minute).Add(time.Second), Result: "success", FinalChannelID: "key-b1"}); err != nil {
+		t.Fatal(err)
+	}
+	// 按「火山引擎」过滤：仅命中 r-cn-a（final 快照路径）
+	pageA, err := service.List(ctx, contracts.RouteLogFilter{ChannelName: "火山引擎", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pageA.Total != 1 || pageA.Items[0].RequestID != "r-cn-a" {
+		t.Fatalf("火山引擎过滤 total=%d items=%+v, want 1 条 r-cn-a", pageA.Total, pageA.Items)
+	}
+	// 按「豆包」过滤：仅命中 r-cn-b（attempt 快照路径，final 为空）
+	pageB, err := service.List(ctx, contracts.RouteLogFilter{ChannelName: "豆包", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pageB.Total != 1 || pageB.Items[0].RequestID != "r-cn-b" {
+		t.Fatalf("豆包过滤 total=%d items=%+v, want 1 条 r-cn-b", pageB.Total, pageB.Items)
+	}
+	// 按不存在的渠道名过滤：0 条
+	pageNone, err := service.List(ctx, contracts.RouteLogFilter{ChannelName: "不存在", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pageNone.Total != 0 {
+		t.Fatalf("不存在过滤 total=%d, want 0", pageNone.Total)
+	}
+}
+
+// TestListFiltersByChannelNameMixedAttempts：同一请求多渠道名（failover A→B）时，
+// A/B 两个渠道名过滤应各自命中同一条日志且 Total=1（无重复计数）；
+// final 快照与 attempt 快照不一致时按对应分支命中。
+func TestListFiltersByChannelNameMixedAttempts(t *testing.T) {
+	service := NewService(logDB(t), nil)
+	ctx := context.Background()
+	base := time.Now().Add(-time.Hour)
+	// r-mix：attempt A（豆包）失败 → attempt B（火山引擎）成功，final 取 B
+	if err := service.Start(ctx, contracts.RouteRequest{RequestID: "r-mix", RequestedModel: "m", StartedAt: base}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Attempt(ctx, contracts.RouteAttempt{
+		RequestID: "r-mix", StepNo: "1", Action: "首次尝试", Model: "m",
+		ChannelID: "key-a1", ChannelName: "豆包",
+		StartedAt: base, FinishedAt: pointer(base.Add(time.Second)), Result: "failed", ErrorMessage: "balance",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Attempt(ctx, contracts.RouteAttempt{
+		RequestID: "r-mix", StepNo: "2", Action: "切换渠道", Model: "m",
+		ChannelID: "key-b1", ChannelName: "火山引擎",
+		StartedAt: base.Add(time.Second), FinishedAt: pointer(base.Add(2 * time.Second)), Result: "success",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Finish(ctx, contracts.RouteFinish{RequestID: "r-mix", FinishedAt: base.Add(2 * time.Second), Result: "success", FinalChannelID: "key-b1", FinalChannelName: "火山引擎"}); err != nil {
+		t.Fatal(err)
+	}
+	// 按「豆包」过滤：仅 attempt A 命中（final 是火山引擎），Total=1 无重复计数
+	pageA, err := service.List(ctx, contracts.RouteLogFilter{ChannelName: "豆包", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pageA.Total != 1 || pageA.Items[0].RequestID != "r-mix" {
+		t.Fatalf("豆包过滤 total=%d items=%+v, want 1 条 r-mix", pageA.Total, pageA.Items)
+	}
+	// 按「火山引擎」过滤：final + attempt B 双命中同一行，Total 仍 1（EXISTS 谓词不重复计数）
+	pageB, err := service.List(ctx, contracts.RouteLogFilter{ChannelName: "火山引擎", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pageB.Total != 1 || pageB.Items[0].RequestID != "r-mix" {
+		t.Fatalf("火山引擎过滤 total=%d items=%+v, want 1 条 r-mix", pageB.Total, pageB.Items)
+	}
+	// ChannelName + ChannelID 组合（AND）：final 指向 key-b1（火山引擎）→ 火山引擎+key-b1 命中；
+	// 渠道名不存在时组合 0 条。
+	combined, err := service.List(ctx, contracts.RouteLogFilter{ChannelName: "火山引擎", ChannelID: "key-b1", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if combined.Total != 1 {
+		t.Fatalf("组合过滤(火山引擎+key-b1) total=%d, want 1", combined.Total)
+	}
+	mismatch, err := service.List(ctx, contracts.RouteLogFilter{ChannelName: "不存在", ChannelID: "key-b1", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mismatch.Total != 0 {
+		t.Fatalf("组合过滤(不存在+key-b1) total=%d, want 0（渠道名不存在）", mismatch.Total)
+	}
+}
+
 // TestDetailSortsByStepNo：step_no 为 TEXT 后 SQL ORDER BY 字典序错误（"1.10" < "1.2"），
 // Detail 应在 Go 侧按点分数值比较排序。乱序插入 "1"、"1.2"、"1.1"、"2" → 返回 1 < 1.1 < 1.2 < 2。
 func TestDetailSortsByStepNo(t *testing.T) {

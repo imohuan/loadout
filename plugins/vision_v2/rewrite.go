@@ -111,16 +111,24 @@ func (s *Service) HandleProxyBeforeUpstream(payload any) (any, error) {
 		return payload, nil
 	}
 	// 路由判断（复制旧 DecideRouteScope 语义）
-	scope := channelScopeFromMetadata(pipe.Metadata, s.requestChannelBaseURL)
+	scope := channelScopeFromMetadata(pipe.Metadata, s.requestChannelBaseURLs)
 	route, err := s.DecideRouteScope(pipe.Request.Model, scope)
 	if err != nil {
 		return nil, visionError(err.Error())
 	}
-	if route == nil || route.Route == types.RouteNative {
-		return payload, nil // 原生视觉：透传
-	}
-	if route.Route == types.RouteError {
-		return nil, visionError(fmt.Sprintf("模型 %q 不支持视觉能力", pipe.Request.Model))
+	// 非 proxy（native / 历史 error 降级）：原样透传。
+	// failover 防御：若前一个 attempt 走 proxy 已改写 body（图片→占位符）并置
+	// __vision_v2_active，本 attempt 命中 native 时若残留该标记，后续
+	// StreamChunk/AfterUpstream 会误把 native 透传流当视觉请求拦截。这里清除标记，
+	// 并放行透传（body 占位符已无法还原，属罕见「先 proxy 后 native」failover 的已知
+	// 限制：native 模型收到占位符文本而非原图，见 plan 2026-08-23-vision-v2-route-context-fix.md）。
+	if route == nil || route.Route != types.RouteProxy {
+		if pipe.Metadata != nil {
+			delete(pipe.Metadata, "__vision_v2_active")
+			delete(pipe.Metadata, "__vision_v2_format")
+			delete(pipe.Metadata, "__vision_v2_route")
+		}
+		return payload, nil
 	}
 	s.lg.Info("视觉路由命中", "model", pipe.Request.Model, "route", "proxy", "via_candidates", len(route.ViaOptions))
 

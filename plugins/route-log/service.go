@@ -278,6 +278,13 @@ func listWhere(filter contracts.RouteLogFilter) (string, []any) {
 		query += ` AND (r.final_channel_id = ? OR EXISTS (SELECT 1 FROM json_each(r.final_channel_ids_json) WHERE value = ?) OR EXISTS (SELECT 1 FROM route_attempts a WHERE a.request_id = r.request_id AND (a.channel_id = ? OR EXISTS (SELECT 1 FROM json_each(a.channel_ids_json) WHERE value = ?))))`
 		args = append(args, filter.ChannelID, filter.ChannelID, filter.ChannelID, filter.ChannelID)
 	}
+	if filter.ChannelName != "" {
+		// 渠道名过滤（渠道级粒度）：匹配 final_channel_name 快照或任一 attempt 的
+		// channel_name 快照。渠道改名后旧日志保留旧名快照，按新名过滤会漏旧记录
+		//（当前为快照语义，不做历史名重建，属已知限制）。
+		query += ` AND (r.final_channel_name = ? OR EXISTS (SELECT 1 FROM route_attempts a WHERE a.request_id = r.request_id AND a.channel_name = ?))`
+		args = append(args, filter.ChannelName, filter.ChannelName)
+	}
 	if filter.Result != "" {
 		query += ` AND r.result = ?`
 		args = append(args, filter.Result)
