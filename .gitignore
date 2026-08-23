@@ -58,3 +58,7 @@ backend/app/appicon_windows_amd64.syso
 # Local build cache & broken git backup
 .gocache/
 .git.broken/
+.git.backup-*/
+
+# Frontend build log
+frontend/build.out

@@ -133,18 +133,124 @@ export const INITIAL_MCP_SERVERS: McpServerInfo[] = [
   },
 ]
 
-// ---- 模型来源（文档 §5.2 降级链路） ----
+// ---- 模型来源（文档 §5.2：OpenRouter 元数据缓存 + 降级链路） ----
 
-export type ModelSourceKind = 'proxy' | 'fallback' | 'none'
+export type ModelSourceKind = 'openrouter' | 'none'
 
 export interface ModelSourceStatus {
   kind: ModelSourceKind
-  /** 代理/Provider 地址 */
-  url: string
-  /** 模型数量 */
-  count: number
-  /** 降级原因（proxy 失败时） */
+  /** OpenRouter API 地址 */
+  baseUrl: string
+  /** API Key（掩码后展示），未配置为空串 */
+  apiKeyMasked: string
+  /** 元数据缓存模型数量 */
+  modelCount: number
+  /** 其中支持视觉的模型数 */
+  visionCount: number
+  /** 其中支持思考的模型数 */
+  reasoningCount: number
+  /** 缓存文件修改时间（RFC3339），无缓存为空串 */
+  cachedAt: string
+  /** 缓存缺失/异常原因 */
   degraded?: string
+}
+
+/** 界面初始模型来源（后端接口失败时的兜底）。 */
+export const INITIAL_MODEL_SOURCE: ModelSourceStatus = {
+  kind: 'none',
+  baseUrl: 'https://openrouter.ai/api/v1',
+  apiKeyMasked: '',
+  modelCount: 0,
+  visionCount: 0,
+  reasoningCount: 0,
+  cachedAt: '',
+  degraded: '未加载',
+}
+
+// ---- OpenCodex 代理模型列表（文档 §5.2 降级链路的首选源） ----
+
+export interface OpenCodexModel {
+  provider: string
+  modelId: string
+  displayName: string
+  contextWindow: number | null
+  maxOutputTokens: number | null
+  /** 匹配 OpenRouter 元数据后的能力标记 */
+  supportsVision?: boolean
+  supportsThinking?: boolean
+}
+
+export interface OpenCodexModelsResult {
+  source: string
+  proxyUrl: string
+  port: number
+  hasApiKey: boolean
+  apiKeyPreview: string | null
+  providerCount: number
+  enabledProviderCount: number
+  rawCount: number
+  degraded: boolean
+  degradedReason: string | null
+  /** 命中 OpenRouter 元数据缓存的模型数 */
+  orMatchedCount?: number
+  /** OpenRouter 缓存总模型数 */
+  orTotal?: number
+  models: OpenCodexModel[]
+  count: number
+  error?: string
+}
+
+/** 按 provider 分组的模型列表（用于 UI 折叠展示）。 */
+export interface OpenCodexGroup {
+  provider: string
+  models: OpenCodexModel[]
+}
+
+/** 界面初始 OpenCodex 模型来源（后端接口失败时的兜底）。 */
+export const INITIAL_OPENCODEX_MODELS: OpenCodexModelsResult = {
+  source: '',
+  proxyUrl: 'http://localhost:10100/v1/models',
+  port: 10100,
+  hasApiKey: false,
+  apiKeyPreview: null,
+  providerCount: 0,
+  enabledProviderCount: 0,
+  rawCount: 0,
+  degraded: true,
+  degradedReason: '未加载',
+  orMatchedCount: 0,
+  orTotal: 0,
+  models: [],
+  count: 0,
+}
+
+/** 拉取 OpenCodex 代理模型列表（后端调 unifyai --list-models --json）。
+ *  enableVision=true 时强制所有模型标记为支持视觉（--enable-vision）。 */
+export async function fetchOpenCodexModels(enableVision = false): Promise<OpenCodexModelsResult> {
+  try {
+    const qs = enableVision ? '?enableVision=1' : ''
+    const res = await fetch(`/api/unifyai/opencodex-models${qs}`)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const data = (await res.json()) as OpenCodexModelsResult
+    return { ...INITIAL_OPENCODEX_MODELS, ...data }
+  } catch (err) {
+    console.warn('[unifyai] 获取 OpenCodex 模型列表失败，使用初始占位', err)
+    return { ...INITIAL_OPENCODEX_MODELS, degradedReason: '后端接口不可用' }
+  }
+}
+
+/** 按 provider 分组，保持出现顺序。 */
+export function groupOpenCodexModels(models: OpenCodexModel[]): OpenCodexGroup[] {
+  const groups: OpenCodexGroup[] = []
+  for (const m of models) {
+    let g = groups.find((x) => x.provider === m.provider)
+    if (!g) {
+      g = { provider: m.provider, models: [] }
+      groups.push(g)
+    }
+    g.models.push(m)
+  }
+  return groups
 }
 
 // ---- 同步状态机（文档 §6.2） ----
@@ -196,14 +302,19 @@ export type SyncMode = 'all' | 'models' | 'mcp'
 const NOT_IMPLEMENTED = '后端接口未接入，当前返回模拟数据'
 
 /**
- * 读取模型源配置并获取模型列表（文档 §5.2）：
- *   ① OpenCodex 代理 http://localhost:10100/v1/models（3s 超时）
- *   ② 失败 → 逐个 Provider GET {baseUrl}/models（需 baseUrl + apiKey）
- * TODO(backend): 替换为真实调用后返回 ModelSourceStatus。
+ * 读取 OpenRouter 模型来源与元数据缓存状态（后端读 ~/.unifyai/cache/openrouter-models.json）。
+ * 失败时回落 INITIAL_MODEL_SOURCE（kind=none），保证页面可用。
  */
 export async function fetchModelSource(): Promise<ModelSourceStatus> {
-  console.warn(NOT_IMPLEMENTED)
-  return { kind: 'proxy', url: 'http://localhost:10100', count: 372 }
+  try {
+    const res = await fetch('/api/unifyai/model-source')
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const data = (await res.json()) as ModelSourceStatus
+    return { ...INITIAL_MODEL_SOURCE, ...data }
+  } catch (err) {
+    console.warn('[unifyai] 获取模型来源失败，使用初始占位', err)
+    return { ...INITIAL_MODEL_SOURCE, degraded: '后端接口不可用' }
+  }
 }
 
 /**
@@ -235,13 +346,51 @@ export async function saveMcpServers(servers: McpServerInfo[]): Promise<void> {
 }
 
 /**
- * 从 MCP 管理（Loadout 上游服务器）导入为 mcp.json 条目：
- * stdio → local(command=[cmd, ...args])；http/sse → remote(url + headers)。
+ * MCP 管理的三类端点：单 MCP（上游服务器）、分组（tool group）、聚合（smart aggregate）。
+ * 与 useMcpManagement.ts 的 McpEndpoint.kind 同义，独立维护避免互相耦合。
  */
-export async function fetchManagedMcpServers(): Promise<McpServerInfo[]> {
-  const res = await fetch('/api/mcp-servers')
-  if (!res.ok) throw new Error(`读取 MCP 管理失败：HTTP ${res.status}`)
-  const list = (await res.json()) as Array<{
+export type McpImportKind = '单 MCP' | '分组' | '聚合'
+
+/**
+ * 从 MCP 管理导入时，列表里每项的展示 + 预转换好的 mcp.json 条目。
+ * server 字段已经是可直接落 mcp.json 的 McpServerInfo 形态，单 MCP 为 local/remote 原始，
+ * 分组/聚合统一为 remote（URL 指向本机 loadout server 的 /mcp/<label>）。
+ */
+export interface McpImportSource {
+  name: string
+  kind: McpImportKind
+  /** loadout server 上的端点路径，例如 /mcp/beimai_june、/mcp/@到的、/mcp/$smart */
+  path: string
+  /** 该端点暴露的工具数，仅展示用 */
+  count: number
+  /** 转换后可直接 append 到 mcp.json 的条目 */
+  server: McpServerInfo
+}
+
+/**
+ * 从 MCP 管理（Loadout 上游服务器 / 分组 / 聚合）导入为 mcp.json 条目：
+ * - stdio → local(command=[cmd, ...args])
+ * - http/sse → remote(url + headers)
+ * - 分组 → remote(url = origin + /mcp/<group>)
+ * - 聚合 → remote(url = origin + /mcp/$smart)
+ *
+ * 三类端点都能用同一个导入对话框选，落到 mcp.json 后由 UnifyAI 同步给下游工具。
+ */
+export async function fetchManagedMcpServers(): Promise<McpImportSource[]> {
+  const origin = typeof window !== 'undefined' ? window.location.origin : ''
+  // 三个接口互不依赖 → 并行请求；任一失败不阻塞导入（catch 兜底 null → 空数组）。
+  // Go 后端空表会返回 JSON `null`（useMcpManagement 用 `?? []` 防御同理），
+  // 这里统一在 parseArray 里兜底，避免 .map/.reduce 在 null 上抛 TypeError。
+  async function parseArray(res: Response | null): Promise<unknown[]> {
+    if (!res?.ok) return []
+    try {
+      const parsed = await res.json()
+      return Array.isArray(parsed) ? parsed : []
+    } catch {
+      return []
+    }
+  }
+  type ServerItem = {
     name: string
     transport: string
     command?: string
@@ -250,26 +399,101 @@ export async function fetchManagedMcpServers(): Promise<McpServerInfo[]> {
     headers?: Record<string, string>
     env?: Record<string, string>
     enabled?: boolean
-  }>
-  return (list || []).map((item) => {
+  }
+  type GroupItem = { name: string; tools?: unknown[] }
+  type ToolsItem = { tools?: unknown[] }
+  const [serverList, groupList, toolsList] = (await Promise.all([
+    fetch('/api/mcp-servers').then(parseArray).catch(() => []),
+    fetch('/api/groups').then(parseArray).catch(() => []),
+    fetch('/api/mcp-tools').then(parseArray).catch(() => []),
+  ])) as [ServerItem[], GroupItem[], ToolsItem[]]
+  // 聚合端点暴露的工具总数（与 useMcpManagement 端 $smart 计数口径一致）
+  const aggregateCount = toolsList.reduce(
+    (sum: number, item: ToolsItem) => sum + (item.tools?.length || 0),
+    0,
+  )
+
+  const single = serverList.map<McpImportSource>((item) => {
+    const enabled = item.enabled !== false
     if (item.transport === 'stdio') {
       return {
         name: item.name,
-        type: 'local' as const,
-        enabled: item.enabled !== false,
-        command: [item.command || 'npx', ...(item.args || [])],
-        env: item.env,
+        kind: '单 MCP' as const,
+        path: `/mcp/${item.name}`,
+        count: 0,
+        server: {
+          name: item.name,
+          type: 'local' as const,
+          enabled,
+          command: [item.command || 'npx', ...(item.args || [])],
+          env: item.env,
+        },
       }
     }
+    const hasHeaders = !!(item.headers && Object.keys(item.headers).length)
     return {
       name: item.name,
-      type: 'remote' as const,
-      enabled: item.enabled !== false,
-      url: item.url || '',
-      headers: item.headers,
-      hasAuth: !!(item.headers && Object.keys(item.headers).length),
+      kind: '单 MCP' as const,
+      path: `/mcp/${item.name}`,
+      count: 0,
+      server: {
+        name: item.name,
+        type: 'remote' as const,
+        enabled,
+        url: item.url || '',
+        headers: item.headers,
+        hasAuth: hasHeaders,
+      },
     }
   })
+
+  const groups = groupList.map<McpImportSource>((group) => ({
+    name: group.name,
+    kind: '分组' as const,
+    path: `/mcp/${group.name}`,
+    count: group.tools?.length || 0,
+    server: {
+      name: group.name,
+      type: 'remote' as const,
+      enabled: true,
+      url: `${origin}/mcp/${encodeURIComponent(group.name)}`,
+    },
+  }))
+
+  const aggregate: McpImportSource = {
+    // 聚合端点固定是 loadout server 上的 /mcp/$smart，但 mcp.json 的 key 不能带 $
+    // （OpenCode/Codex/Claude 等 TOML/JSON 配置对 `$` 不友好），落到同步工具前
+    // 重命名为 `mcp-smart`。name 是 UI 列表的勾选 key + mcp.json key，前后一致；
+    // path / url 仍是 `$smart`，指向原聚合端点不变。
+    name: 'mcp-smart',
+    kind: '聚合' as const,
+    path: '/mcp/$smart',
+    count: aggregateCount,
+    server: {
+      name: 'mcp-smart',
+      type: 'remote' as const,
+      enabled: true,
+      url: `${origin}/mcp/$smart`,
+    },
+  }
+
+  return [...single, ...groups, aggregate]
+}
+
+/**
+ * kind → 徽标 tint 配色（沿用全局徽标/指标 tint 规范：
+ *   bg-{color}-500/15 text-{color}-700 dark:text-{color}-300 border-{color}-500/20）。
+ * 与 McpPanel endpoints 列表同色家族，便于跨页面识别。
+ */
+export function importKindBadgeClass(kind: McpImportKind): string {
+  switch (kind) {
+    case '单 MCP':
+      return 'bg-slate-500/15 text-slate-700 dark:text-slate-300 border-slate-500/20'
+    case '分组':
+      return 'bg-violet-500/15 text-violet-700 dark:text-violet-300 border-violet-500/20'
+    case '聚合':
+      return 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/20'
+  }
 }
 
 /**
@@ -290,6 +514,11 @@ export function buildArgs(opts: {
   dryRun: boolean
   source: string
   verbose: boolean
+  /**
+   * 多模态视觉开关（--enable-vision）。由前端「强制视觉」Switch 显式传入：
+   * true → 追加 --enable-vision；false / 未传 → 不追加。
+   */
+  enableVision?: boolean
 }): string[] {
   const args: string[] = []
   if (opts.mode === 'models') args.push('--models-only')
@@ -314,14 +543,14 @@ export function buildArgs(opts: {
     args.push('--source', opts.source)
   }
   if (opts.verbose) args.push('--verbose')
-  // 启用视觉能力（UnifyAI 多模态支持）
-  args.push('--enable-vision')
+  // 视觉能力开关（--enable-vision）：只由「强制视觉」Switch 决定，命令预览与实际执行共用。
+  if (opts.enableVision) args.push('--enable-vision')
   return args
 }
 
-/** 命令预览文本：unifyai + 参数 */
+/** 命令预览文本：npx unifyai@latest + 参数（与后端 resolveCmd 执行方式一致） */
 export function buildCommand(opts: Parameters<typeof buildArgs>[0]): string {
-  return ['unifyai', ...buildArgs(opts)].join(' ')
+  return ['npx', 'unifyai@latest', ...buildArgs(opts)].join(' ')
 }
 
 export const DEFAULT_SOURCE = '~/.opencodex/config.json'

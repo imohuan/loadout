@@ -167,6 +167,8 @@ func (s *Service) Routes() []plugin.RouteSpec {
 
 		// UnifyAI 配置同步
 		{Method: http.MethodGet, Pattern: "GET /api/unifyai/platforms", Auth: plugin.AuthSession, Handler: s.session(s.handleUnifyaiPlatforms)},
+		{Method: http.MethodGet, Pattern: "GET /api/unifyai/model-source", Auth: plugin.AuthSession, Handler: s.session(s.handleUnifyaiModelSource)},
+		{Method: http.MethodGet, Pattern: "GET /api/unifyai/opencodex-models", Auth: plugin.AuthSession, Handler: s.session(s.handleUnifyaiOpenCodexModels)},
 		{Method: http.MethodPost, Pattern: "POST /api/unifyai/run", Auth: plugin.AuthSession, Handler: s.session(s.handleUnifyaiRun)},
 		{Method: http.MethodGet, Pattern: "GET /api/unifyai/stream", Auth: plugin.AuthSession, Handler: s.session(s.handleUnifyaiStream)},
 		{Method: http.MethodGet, Pattern: "GET /api/unifyai/mcp-servers", Auth: plugin.AuthSession, Handler: s.session(s.handleUnifyaiMcpServersList)},
@@ -1974,6 +1976,21 @@ func (s *Service) handleUnifyaiPlatforms(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	writeJSON(w, http.StatusOK, res)
+}
+
+// handleUnifyaiModelSource 返回 OpenRouter 模型来源与元数据缓存状态
+// （读 ~/.unifyai/cache/openrouter-models.json，不经 CLI）。
+func (s *Service) handleUnifyaiModelSource(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.unify.ModelSource())
+}
+
+// handleUnifyaiOpenCodexModels 返回 OpenCodex 代理的模型列表
+// （调 unifyai --list-models --json，实时请求 localhost 代理 /v1/models）。
+// 支持 ?enableVision=1：强制所有模型标记为支持视觉。
+func (s *Service) handleUnifyaiOpenCodexModels(w http.ResponseWriter, r *http.Request) {
+	enableVision := r.URL.Query().Get("enableVision") == "1" ||
+		r.URL.Query().Get("enableVision") == "true"
+	writeJSON(w, http.StatusOK, s.unify.OpenCodexModels(enableVision))
 }
 
 // handleUnifyaiRun 启动 unifyai 任务（单实例），立即返回；日志走

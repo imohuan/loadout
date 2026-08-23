@@ -1,1 +1,0 @@
-fix(vision-v2): 视觉调用按路由 via_options 依次 failover（对齐旧 vision，含 route-log）

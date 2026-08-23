@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { toast } from 'vue-sonner'
 import {
   RiArrowDownSLine,
@@ -9,21 +9,32 @@ import {
   RiCodeSSlashLine,
   RiFileList3Line,
   RiServerLine,
+  RiBracesLine,
 } from '@remixicon/vue'
-import type { ModelSourceKind, ModelSourceStatus } from '@/lib/unifyai'
+import type {
+  ModelSourceKind,
+  ModelSourceStatus,
+  OpenCodexGroup,
+  OpenCodexModelsResult,
+} from '@/lib/unifyai'
+import { groupOpenCodexModels } from '@/lib/unifyai'
 
 const props = defineProps<{
   /** 实时拼装的 CLI 命令 */
   command: string
   /** 模型来源状态（文档 §5.2） */
   modelSource: ModelSourceStatus
+  /** OpenCodex 代理模型列表（--list-models） */
+  opencodexModels: OpenCodexModelsResult
+  /** 强制视觉开关（--enable-vision） */
+  enableVision: boolean
+  /** 切换强制视觉后重新拉取模型列表 */
+  onToggleVision: (v: boolean) => void
   /** MCP 配置文件路径 */
   mcpSourcePath: string
   /** MCP 服务器启用数 / 总数 */
   mcpEnabled: number
   mcpTotal: number
-  /** 元数据缓存更新时间（空 = 未刷新） */
-  metadataUpdatedAt?: string
 }>()
 
 const expanded = ref(true)
@@ -37,10 +48,26 @@ const modelLabel: Record<
   ModelSourceKind,
   { text: string; variant: 'default' | 'outline' | 'destructive' }
 > = {
-  proxy: { text: 'OpenCodex 代理', variant: 'default' },
-  fallback: { text: '已降级逐个 Provider', variant: 'outline' },
+  openrouter: { text: 'OpenRouter', variant: 'default' },
   none: { text: '模型源不可用', variant: 'destructive' },
 }
+
+/** 缓存时间 → 本地时间（无值返回空串） */
+function formatCachedAt(iso: string): string {
+  if (!iso) return ''
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return ''
+  return d.toLocaleString('zh-CN', { hour12: false })
+}
+
+const cachedAtText = computed(() => formatCachedAt(props.modelSource.cachedAt))
+
+/** OpenCodex 模型按 provider 分组 */
+const opencodexGroups = computed<OpenCodexGroup[]>(() =>
+  groupOpenCodexModels(props.opencodexModels.models),
+)
+/** 模型卡片内联展开/折叠 */
+const opencodexExpanded = ref(false)
 </script>
 
 <template>
@@ -61,18 +88,29 @@ const modelLabel: Record<
           <span class="grid size-8 shrink-0 place-items-center rounded-md bg-muted">
             <RiCloudLine size="16" class="text-muted-foreground" />
           </span>
-          <div class="min-w-0">
+          <div class="min-w-0 flex-1">
             <div class="flex flex-wrap items-center gap-1.5 text-sm">
               <span class="font-medium">模型来源</span>
               <Badge :variant="modelLabel[modelSource.kind].variant" class="font-normal">
                 {{ modelLabel[modelSource.kind].text }}
               </Badge>
+              <template v-if="modelSource.kind === 'openrouter'">
+                <Badge variant="secondary" class="font-normal">{{ modelSource.modelCount }} 个模型</Badge>
+                <Badge variant="outline" class="font-normal">👁 {{ modelSource.visionCount }} 视觉</Badge>
+                <Badge variant="outline" class="font-normal">🧠 {{ modelSource.reasoningCount }} 思考</Badge>
+              </template>
             </div>
             <p class="mt-0.5 truncate font-mono text-xs text-muted-foreground">
-              {{ modelSource.url }} · {{ modelSource.count }} 个模型
+              {{ modelSource.baseUrl || 'https://openrouter.ai/api/v1' }}
+              <template v-if="modelSource.apiKeyMasked"> · API Key {{ modelSource.apiKeyMasked }}</template>
             </p>
-            <p v-if="metadataUpdatedAt" class="mt-0.5 text-xs text-emerald-600">
-              元数据缓存：{{ metadataUpdatedAt }} 已刷新
+            <p v-if="modelSource.kind === 'none' && modelSource.degraded" class="mt-0.5 text-xs text-amber-600">
+              {{ modelSource.degraded }}
+            </p>
+            <p v-if="modelSource.kind === 'openrouter'" class="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs">
+              <span v-if="cachedAtText" class="text-emerald-600">元数据缓存：{{ cachedAtText }} 已刷新</span>
+              <span v-else class="text-amber-600">元数据缓存：尚未刷新</span>
+              <span v-if="modelSource.apiKeyMasked" class="text-muted-foreground">公开端点，无需密钥</span>
             </p>
           </div>
         </div>
@@ -90,6 +128,72 @@ const modelLabel: Record<
             <p class="mt-0.5 truncate font-mono text-xs text-muted-foreground">
               {{ mcpSourcePath }}
             </p>
+          </div>
+        </div>
+        <div class="flex items-start gap-3 rounded-md border p-3 sm:col-span-2">
+          <span class="grid size-8 shrink-0 place-items-center rounded-md bg-muted">
+            <RiBracesLine size="16" class="text-muted-foreground" />
+          </span>
+          <div class="min-w-0 flex-1">
+            <div class="flex flex-wrap items-center gap-1.5 text-sm">
+              <span class="font-medium">OpenCodex 模型</span>
+              <Badge variant="secondary" class="font-normal">{{ opencodexModels.count }} 个模型</Badge>
+              <Badge variant="outline" class="font-normal"
+                >{{ opencodexModels.enabledProviderCount }} 个 provider</Badge
+              >
+              <Badge
+                v-if="opencodexModels.orMatchedCount != null"
+                variant="outline"
+                class="border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+              >
+                OpenRouter 匹配 {{ opencodexModels.orMatchedCount }}/{{ opencodexModels.orTotal }}
+              </Badge>
+              <Badge v-if="opencodexModels.hasApiKey" variant="outline" class="font-normal">
+                Key {{ opencodexModels.apiKeyPreview }}
+              </Badge>
+              <label class="ml-auto flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
+                <span>强制视觉</span>
+                <Switch :model-value="enableVision" @update:model-value="onToggleVision" />
+              </label>
+            </div>
+            <p class="mt-0.5 truncate font-mono text-xs text-muted-foreground">
+              {{ opencodexModels.proxyUrl }}
+            </p>
+            <p v-if="opencodexModels.degraded" class="mt-0.5 text-xs text-amber-600">
+              {{ opencodexModels.degradedReason }}
+            </p>
+            <template v-else-if="opencodexModels.count > 0">
+              <button
+                type="button"
+                class="mt-1 flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+                @click="opencodexExpanded = !opencodexExpanded"
+              >
+                <RiArrowDownSLine v-if="opencodexExpanded" size="14" />
+                <RiArrowRightSLine v-else size="14" />
+                {{ opencodexExpanded ? '收起' : '展开' }}（按 provider 分组）
+              </button>
+              <div v-show="opencodexExpanded" class="mt-1.5 space-y-2">
+                <div v-for="g in opencodexGroups" :key="g.provider" class="rounded-md border bg-muted/30 p-2">
+                  <p class="text-xs font-medium text-muted-foreground">
+                    {{ g.provider }}（{{ g.models.length }}）
+                  </p>
+                  <ul class="mt-1 grid gap-x-4 gap-y-0.5 sm:grid-cols-2">
+                    <li
+                      v-for="m in g.models"
+                      :key="m.displayName"
+                      class="truncate font-mono text-[11px] text-muted-foreground"
+                      :title="m.displayName"
+                    >
+                      <span v-if="m.supportsThinking" class="mr-0.5">🧠</span>
+                      <span v-else class="mr-0.5 opacity-40">🧠</span>
+                      <span v-if="m.supportsVision" class="mr-0.5">👁️</span>
+                      <span v-else class="mr-0.5 opacity-40">👁️</span>
+                      {{ m.modelId }}
+                    </li>
+                  </ul>
+                </div>
+              </div>
+            </template>
           </div>
         </div>
       </div>

@@ -1,7 +1,0 @@
-0000000000000000000000000000000000000000 776182673082ce66d94d46a518a544dde0b25d57 imohuan <2652293750@qq.com> 1787381703 +0800	commit (initial): init
-776182673082ce66d94d46a518a544dde0b25d57 e98cc86eddc73f852b45e4bd80185dff2555362b imohuan <2652293750@qq.com> 1787382291 +0800	commit: fix(frontend): field_rules 输入框无法输入——Textarea 改用 v-model
-e98cc86eddc73f852b45e4bd80185dff2555362b 7fb58e4c959668c3dc8e1cedc72c0118fd685a9e imohuan <2652293750@qq.com> 1787383295 +0800	commit: 1
-7fb58e4c959668c3dc8e1cedc72c0118fd685a9e 39bdc3e0e7db3be91b32255ee1532115dc8aeccc imohuan <2652293750@qq.com> 1787385253 +0800	commit: 1
-39bdc3e0e7db3be91b32255ee1532115dc8aeccc 21a1ca0830b293e505e50a9a7326756c4207a6d3 imohuan <2652293750@qq.com> 1787387035 +0800	commit: fix(vision-v2): 视觉模型名透传 via_options（不再硬编码 DefaultVisionModel）
-21a1ca0830b293e505e50a9a7326756c4207a6d3 d79fe16b698f4dae530e1b32131f75dce2692ff7 imohuan <2652293750@qq.com> 1787387073 +0800	commit: feat(field-filter): 补齐四象限——新增 request_header_strip + 统一命名
-d79fe16b698f4dae530e1b32131f75dce2692ff7 2e24b2b7e74ac573923cbeb4ab44479e2f2c1d7a imohuan <2652293750@qq.com> 1787387622 +0800	commit: fix(vision-v2): 视觉调用按路由 via_options 依次 failover（对齐旧 vision，含 route-log）

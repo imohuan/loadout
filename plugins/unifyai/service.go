@@ -16,9 +16,150 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"loadout/core/cmdutil"
 )
+
+// OpenRouterMeta 对应 openrouter-models.json 中单个模型的元数据条目
+// （unifyai --update-metadata 从 https://openrouter.ai/api/v1/models 拉取后缓存）。
+type OpenRouterMeta struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Context   int64  `json:"context"`
+	Output    int64  `json:"output"`
+	Vision    bool   `json:"vision"`
+	Reasoning bool   `json:"reasoning"`
+}
+
+// ModelSourceStatus 对应 UI「模型来源」卡片：OpenRouter 连接信息 + 元数据缓存状态。
+type ModelSourceStatus struct {
+	Kind           string `json:"kind"` // openrouter | none
+	BaseURL        string `json:"baseUrl"`
+	APIKeyMasked   string `json:"apiKeyMasked"` // 未配置为空串
+	ModelCount     int    `json:"modelCount"`
+	VisionCount    int    `json:"visionCount"`
+	ReasoningCount int    `json:"reasoningCount"`
+	CachedAt       string `json:"cachedAt"` // 缓存文件修改时间（RFC3339），无缓存为空
+	Degraded       string `json:"degraded,omitempty"`
+}
+
+// openrouterBaseURL 是 unifyai --update-metadata 拉取模型数据的公开端点。
+const openrouterBaseURL = "https://openrouter.ai/api/v1"
+
+// metadataCachePath 返回 OpenRouter 元数据缓存文件路径（~/.unifyai/cache/openrouter-models.json），
+// 与 unifyai 源码 metadata-fetcher.mjs 的 CACHE_FILE 保持一致。
+func metadataCachePath() string {
+	if home, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(home, ".unifyai", "cache", "openrouter-models.json")
+	}
+	return "openrouter-models.json"
+}
+
+// ModelSource 读取 OpenRouter 元数据缓存（不经 CLI，快、离线可用）。
+// 缓存缺失/损坏时返回 Kind=none（不报错），UI 据此提示先执行刷新。
+func (s *Service) ModelSource() ModelSourceStatus {
+	res := ModelSourceStatus{Kind: "openrouter", BaseURL: openrouterBaseURL}
+	// API Key：OpenRouter /models 是公开端点，仅当配置了环境变量时回显掩码。
+	if key := os.Getenv("OPENROUTER_API_KEY"); key != "" {
+		res.APIKeyMasked = maskSecret(key)
+	}
+	data, err := os.ReadFile(metadataCachePath())
+	if err != nil {
+		res.Kind = "none"
+		res.Degraded = "元数据缓存不存在，请先点击「更新元数据」"
+		return res
+	}
+	var metas []OpenRouterMeta
+	if err := json.Unmarshal(data, &metas); err != nil {
+		res.Kind = "none"
+		res.Degraded = "元数据缓存解析失败，请重新「更新元数据」"
+		return res
+	}
+	res.ModelCount = len(metas)
+	for _, m := range metas {
+		if m.Vision {
+			res.VisionCount++
+		}
+		if m.Reasoning {
+			res.ReasoningCount++
+		}
+	}
+	if fi, err := os.Stat(metadataCachePath()); err == nil {
+		res.CachedAt = fi.ModTime().Format(time.RFC3339)
+	}
+	return res
+}
+
+// maskSecret 把密钥掩码成 sk-xxxx****xxxx 形式（前后各留 4 位）。
+func maskSecret(secret string) string {
+	if len(secret) <= 8 {
+		return "****"
+	}
+	return secret[:4] + "****" + secret[len(secret)-4:]
+}
+
+// OpenCodexModel 对应 unifyai --list-models --json 输出的单个模型。
+type OpenCodexModel struct {
+	Provider          string `json:"provider"`
+	ModelID           string `json:"modelId"`
+	DisplayName       string `json:"displayName"`
+	ContextWindow     int64  `json:"contextWindow"`
+	MaxOutputTokens   int64  `json:"maxOutputTokens"`
+	SupportsVision    bool   `json:"supportsVision"`
+	SupportsThinking  bool   `json:"supportsThinking"`
+}
+
+// OpenCodexModelsResult 对应 unifyai --list-models --json 的完整输出。
+type OpenCodexModelsResult struct {
+	Source               string           `json:"source"`
+	ProxyURL             string           `json:"proxyUrl"`
+	Port                 int              `json:"port"`
+	HasAPIKey            bool             `json:"hasApiKey"`
+	APIKeyPreview        string           `json:"apiKeyPreview"`
+	ProviderCount        int              `json:"providerCount"`
+	EnabledProviderCount int              `json:"enabledProviderCount"`
+	RawCount             int              `json:"rawCount"`
+	Degraded             bool             `json:"degraded"`
+	DegradedReason       string           `json:"degradedReason"`
+	ORMatchedCount       int              `json:"orMatchedCount"`
+	ORTotal              int              `json:"orTotal"`
+	Models               []OpenCodexModel `json:"models"`
+	Count                int              `json:"count"`
+	Error                string           `json:"error,omitempty"`
+}
+
+// OpenCodexModels 获取 OpenCodex 代理的模型列表（--list-models --json）。
+// enableVision=true 时追加 --enable-vision（强制所有模型标记为支持视觉）。
+// CLI 不可用/代理不可达时返回 Degraded=true + 原因（不报错），保证页面可用。
+func (s *Service) OpenCodexModels(enableVision bool) OpenCodexModelsResult {
+	cmd, base, err := resolveCmd()
+	if err != nil {
+		return OpenCodexModelsResult{Degraded: true, DegradedReason: err.Error()}
+	}
+	args := append(append([]string{}, base...), "--list-models", "--json")
+	if enableVision {
+		args = append(args, "--enable-vision")
+	}
+	proc := exec.Command(cmd, args...)
+	cmdutil.HideWindow(proc)
+	proc.Env = envWithBinDir(cmd)
+	out, err := proc.Output()
+	if err != nil {
+		s.lg.Warn("unifyai: --list-models 执行失败", "err", err)
+		return OpenCodexModelsResult{Degraded: true, DegradedReason: err.Error()}
+	}
+	var res OpenCodexModelsResult
+	if err := json.Unmarshal(out, &res); err != nil {
+		s.lg.Warn("unifyai: 解析 --list-models JSON 失败", "err", err)
+		return OpenCodexModelsResult{Degraded: true, DegradedReason: "解析 --list-models 输出失败"}
+	}
+	if res.Error != "" {
+		res.Degraded = true
+		res.DegradedReason = res.Error
+	}
+	return res
+}
 
 // Platform 对应 `unifyai --list-platforms --json` 输出的单个平台（附录 B.1）。
 type Platform struct {

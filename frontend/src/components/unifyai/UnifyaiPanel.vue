@@ -18,6 +18,7 @@ import {
   RiSettings3Line,
 } from '@remixicon/vue'
 import PageHeader from '@/components/PageHeader.vue'
+import { useConfirm } from '@/composables/useConfirm'
 import PlatformCard from '@/components/unifyai/PlatformCard.vue'
 import ExcludeMatrix from '@/components/unifyai/ExcludeMatrix.vue'
 import CommandPreview from '@/components/unifyai/CommandPreview.vue'
@@ -25,16 +26,21 @@ import StreamLogPanel, { type StreamStatus } from '@/components/StreamLogPanel.v
 import {
   DEFAULT_SOURCE,
   INITIAL_MCP_SERVERS,
+  INITIAL_MODEL_SOURCE,
+  INITIAL_OPENCODEX_MODELS,
   PLATFORMS,
   buildArgs,
   buildCommand,
   fetchManagedMcpServers,
   fetchMcpServers,
   fetchModelSource,
+  fetchOpenCodexModels,
+  importKindBadgeClass,
   saveMcpServers,
-  updateMetadata,
+  type McpImportSource,
   type McpServerInfo,
   type ModelSourceStatus,
+  type OpenCodexModelsResult,
   type Platform,
   type PlatformId,
   type SyncMode,
@@ -43,6 +49,7 @@ import {
 // ---------- 同步内容三态 ----------
 const modeTab = ref<SyncMode>('all')
 const mode = computed<SyncMode>(() => modeTab.value)
+const { confirmDialog } = useConfirm()
 
 // ---------- 目标平台（数据来自后端 --list-platforms --json，失败回落内置） ----------
 const platforms = ref<Platform[]>(PLATFORMS)
@@ -115,7 +122,7 @@ async function onDisabledChange(next: Set<string>) {
 
 /** 删除服务器：确认后移除 + 保存 */
 async function removeServer(name: string) {
-  const confirmed = window.confirm(`确定删除 MCP 服务器「${name}」？将从 mcp.json 中移除。`)
+  const confirmed = await confirmDialog(`确定删除 MCP 服务器「${name}」？将从 mcp.json 中移除。`)
   if (!confirmed) return
   allServers.value = allServers.value.filter((s) => s.name !== name)
   const next = new Set(disabledServers.value)
@@ -133,7 +140,7 @@ async function removeServer(name: string) {
 
 // ---------- 添加 / 导入 MCP 工具 ----------
 const addDialogOpen = ref(false)
-const importSource = ref<McpServerInfo[]>([])
+const importSource = ref<McpImportSource[]>([])
 const importSelected = ref<string[]>([])
 const importing = ref(false)
 const addForm = reactive({
@@ -190,19 +197,23 @@ function toggleImport(name: string) {
   else importSelected.value.push(name)
 }
 
-/** 把选中的 MCP 管理服务器导入到本地列表并保存 */
+/** 把选中的 MCP 管理项（单 MCP / 分组 / 聚合）导入到本地 mcp.json */
 async function importSelectedServers() {
   const picked = importSource.value.filter((s) => importSelected.value.includes(s.name))
   if (!picked.length) return
   const existing = new Set(allServers.value.map((s) => s.name))
   const added: string[] = []
-  for (const srv of picked) {
-    if (existing.has(srv.name)) {
-      toast.warning(`「${srv.name}」已存在，跳过`)
+  for (const item of picked) {
+    // 分组 / 聚合端点会复用上游 name，可能与已有条目冲突。这里在保存前去重一次，
+    // 避免落 mcp.json 后下游工具拿到同名双 entry。existing 随循环更新，
+    // 防止 picked 内同名项（如「单 MCP 叫 mcp-smart」+「聚合 mcp-smart」）重复 append。
+    if (existing.has(item.server.name)) {
+      toast.warning(`「${item.server.name}」已存在，跳过`)
       continue
     }
-    allServers.value = [...allServers.value, { ...srv }]
-    added.push(srv.name)
+    allServers.value = [...allServers.value, { ...item.server }]
+    existing.add(item.server.name)
+    added.push(item.server.name)
   }
   if (!added.length) return
   const next = { ...matrix.value }
@@ -636,7 +647,20 @@ function initMatrix() {
 }
 
 // ---------- 数据源状态 ----------
-const modelSource = ref<ModelSourceStatus>({ kind: 'none', url: '', count: 0 })
+const modelSource = ref<ModelSourceStatus>({ ...INITIAL_MODEL_SOURCE })
+const opencodexModels = ref<OpenCodexModelsResult>({ ...INITIAL_OPENCODEX_MODELS })
+/** 强制视觉（--enable-vision）：切换后重新拉取 OpenCodex 模型列表 */
+const enableVision = ref(false)
+async function reloadOpenCodexModels() {
+  const res = await fetchOpenCodexModels(enableVision.value)
+  opencodexModels.value = res
+}
+/** 「强制视觉」开关回调：写 ref 后再重拉模型列表（ref 赋值必须在 script 内做，
+ *  不能依赖模板内联函数的解包赋值，避免 HMR/编译器下状态不同步）。 */
+function handleToggleVision(v: boolean) {
+  enableVision.value = v
+  reloadOpenCodexModels()
+}
 const mcpSourcePath = ref('./mcp.json（cwd 优先，回退 ~/.unifyai/mcp.json）')
 
 // ---------- 高级选项 ----------
@@ -681,6 +705,8 @@ const commandOpts = computed(() => ({
   dryRun: false,
   source: sourcePath.value,
   verbose: verbose.value,
+  // 「强制视觉」开关同时影响命令预览（command）和实际执行（streamUrl）——两路都走同一 buildArgs。
+  enableVision: enableVision.value,
 }))
 
 const command = computed(() => buildCommand(commandOpts.value))
@@ -750,19 +776,42 @@ function confirmAndExecute() {
 // ---------- 帮助 ----------
 const helpOpen = ref(false)
 
-// ---------- 元数据缓存刷新（--update-metadata，模拟反馈） ----------
+// ---------- 元数据缓存刷新（真实调用 unifyai CLI：--update-metadata） ----------
 const metadataUpdating = ref(false)
-const metadataUpdatedAt = ref('')
 async function handleUpdateMetadata() {
   if (metadataUpdating.value) return
   metadataUpdating.value = true
   try {
-    await updateMetadata()
-    await new Promise((resolve) => setTimeout(resolve, 500))
-    metadataUpdatedAt.value = new Date().toLocaleTimeString('zh-CN', { hour12: false })
-    toast.success('模型元数据缓存已刷新', {
-      description: 'OpenRouter 410+ 模型元数据已更新（context / vision / reasoning）',
+    // 通过后端桥接启动 unifyai --update-metadata（SSE 日志走 /api/unifyai/stream）。
+    const res = await fetch('/api/unifyai/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ args: ['--update-metadata'] }),
     })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const body = await res.json()
+    if (body.error) throw new Error(body.error)
+    // CLI 拉取 OpenRouter 数据通常 2~5s，轮询后端缓存状态直到 CachedAt 更新或超时。
+    const deadline = Date.now() + 20_000
+    let updated: ModelSourceStatus | null = null
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 800))
+      const src = await fetchModelSource()
+      if (src.kind === 'openrouter' && src.modelCount > 0) {
+        updated = src
+        break
+      }
+    }
+    if (updated) {
+      modelSource.value = updated
+      toast.success('模型元数据缓存已刷新', {
+        description: `OpenRouter ${updated.modelCount} 个模型已更新（含 ${updated.visionCount} 视觉 / ${updated.reasoningCount} 思考）`,
+      })
+    } else {
+      toast.error('元数据刷新超时', { description: 'CLI 任务可能已结束但缓存未就绪，请查看日志' })
+    }
+  } catch (err) {
+    toast.error('元数据刷新失败', { description: String(err) })
   } finally {
     metadataUpdating.value = false
   }
@@ -772,6 +821,7 @@ async function handleUpdateMetadata() {
 onMounted(() => {
   initMatrix()
   fetchModelSource().then((source) => (modelSource.value = source))
+  reloadOpenCodexModels()
   // 从后端读取 mcp.json（真实数据，失败回落内置示例）
   fetchMcpServers().then((servers) => {
     allServers.value = servers
@@ -955,10 +1005,12 @@ onMounted(() => {
     <CommandPreview
       :command="command"
       :model-source="modelSource"
+      :opencodex-models="opencodexModels"
+      :enable-vision="enableVision"
+      :on-toggle-vision="handleToggleVision"
       :mcp-source-path="mcpSourcePath"
       :mcp-enabled="enabledServers.length"
       :mcp-total="allServers.length"
-      :metadata-updated-at="metadataUpdatedAt"
     />
 
     <!-- ⑤ 高级选项 + 操作区 -->
@@ -1062,7 +1114,7 @@ onMounted(() => {
           <TabsContent value="import" class="space-y-3 pt-2">
             <div class="flex items-center justify-between gap-2">
               <p class="text-sm text-muted-foreground">
-                勾选 MCP 管理中的上游服务器，导入为同步工具。
+                勾选 MCP 管理中的端点（单 MCP / 分组 / 聚合），导入为同步工具。
               </p>
               <Button variant="outline" size="sm" :disabled="importing" @click="loadImportSource">
                 <RiLoader4Line v-if="importing" size="14" class="animate-spin" />
@@ -1076,7 +1128,7 @@ onMounted(() => {
             >
               <label
                 v-for="srv in importSource"
-                :key="srv.name"
+                :key="`${srv.kind}:${srv.name}`"
                 class="flex min-w-0 cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 hover:bg-muted/40"
               >
                 <Checkbox
@@ -1084,12 +1136,33 @@ onMounted(() => {
                   @update:model-value="toggleImport(srv.name)"
                 />
                 <span class="min-w-0 flex-1 overflow-hidden">
-                  <span class="block truncate font-mono text-sm">{{ srv.name }}</span>
+                  <span class="flex items-baseline gap-2">
+                    <span class="truncate font-mono text-sm">{{ srv.server.name }}</span>
+                    <span class="truncate text-xs text-muted-foreground">{{ srv.path }}</span>
+                  </span>
                   <span class="block truncate text-xs text-muted-foreground">
-                    {{ srv.type === 'local' ? srv.command?.join(' ') : srv.url }}
+                    <template v-if="srv.kind === '单 MCP'">
+                      {{
+                        srv.server.type === 'local'
+                          ? srv.server.command?.join(' ')
+                          : srv.server.url
+                      }}
+                    </template>
+                    <template v-else-if="srv.kind === '分组'">
+                      {{ srv.count ? `聚合 ${srv.count} 个工具` : '该分组暂无工具' }}
+                    </template>
+                    <template v-else>
+                      智能聚合当前所有启用 MCP 工具
+                      <template v-if="srv.count">
+                        <span class="text-foreground/60"> · </span>
+                        <span class="tabular-nums">{{ srv.count }}</span> 工具
+                      </template>
+                    </template>
                   </span>
                 </span>
-                <Badge variant="secondary" class="shrink-0">{{ srv.type }}</Badge>
+                <Badge :class="['shrink-0 border', importKindBadgeClass(srv.kind)]">
+                  {{ srv.kind }}
+                </Badge>
               </label>
             </div>
             <p v-else-if="importing" class="text-sm text-muted-foreground">正在加载…</p>
