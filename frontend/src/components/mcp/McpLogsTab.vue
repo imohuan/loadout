@@ -5,9 +5,11 @@
 //   GET /api/mcp-servers/{name}/log/files  段文件列表
 //   GET /api/mcp-servers/{name}/log?file=&offset=  增量读（offset 为段内字节偏移）
 // 策略：尾部 512KB 加载 + 「加载更早」向上翻页（跨段回溯）+ 1s 轮询只追最新段。
-import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RiArrowUpLine, RiLoader4Line } from '@remixicon/vue'
 import { toast } from 'vue-sonner'
+import hljs from 'highlight.js/lib/common'
+import DOMPurify from 'dompurify'
 import { api } from '@/lib/api'
 
 interface LogFileInfo {
@@ -31,6 +33,71 @@ interface LogReadResp {
   content: string
 }
 
+// 日志行（解析后）：时间戳 + [KIND] + 正文；msg 字段的 JSON 单独高亮。
+interface LogLine {
+  ts: string
+  kind: string
+  body: string
+  msgHtml: string | null // msg JSON 高亮后的 HTML（已 sanitize）
+}
+
+// [KIND] 染色映射（Tailwind token，与 Badge tint 风格一致）。
+const KIND_CLASS: Record<string, string> = {
+  CONNECT: 'text-blue-600 dark:text-blue-400',
+  CONNECT_OK: 'text-emerald-600 dark:text-emerald-400',
+  CONNECT_FAIL: 'text-red-600 dark:text-red-400',
+  DISCONNECT: 'text-slate-500',
+  FRAME_IN: 'text-violet-600 dark:text-violet-400',
+  FRAME_OUT: 'text-amber-600 dark:text-amber-400',
+  STDERR: 'text-orange-600 dark:text-orange-400',
+}
+
+// goUnquote 把 Go strconv.Quote 转义的字符串还原（\" \\ \n \t \r \uXXXX）。
+// 日志行里 msg="..." 是 Go Quote 后的文本，需反转义才能 JSON.parse。
+function goUnquote(s: string): string {
+  return s
+    .replace(/\\u[0-9a-fA-F]{4}/g, (u) => String.fromCharCode(parseInt(u.slice(2), 16)))
+    .replace(/\\(["\\/bfnrt])/g, (_m, c: string) =>
+      c === 'b' ? '\b' : c === 'f' ? '\f' : c === 'n' ? '\n' : c === 'r' ? '\r' : c === 't' ? '\t' : c,
+    )
+}
+
+// highlightJson 美化并高亮 JSON 文本（hljs json 语言 + DOMPurify 防 XSS）。
+function highlightJson(raw: string): string {
+  try {
+    const obj = JSON.parse(goUnquote(raw))
+    const pretty = JSON.stringify(obj, null, 2)
+    return DOMPurify.sanitize(hljs.highlight(pretty, { language: 'json' }).value)
+  } catch {
+    return ''
+  }
+}
+
+// parseLogLine 解析一行：`2026-08-24T18:23:55.749+08:00 [KIND] msg="..."`。
+function parseLogLine(line: string): LogLine {
+  const m = line.match(/^(\S+) \[([^\]]+)\] (.*)$/)
+  if (!m) {
+    return { ts: '', kind: '', body: line, msgHtml: null }
+  }
+  const [, ts, kind, rest] = m
+  const mm = rest.match(/ msg="((?:[^"\\]|\\.)*)"/)
+  if (mm) {
+    const html = highlightJson(mm[1])
+    if (html) {
+      return { ts, kind, body: rest, msgHtml: html }
+    }
+  }
+  return { ts, kind, body: rest, msgHtml: null }
+}
+
+const lines = computed<LogLine[]>(() => {
+  if (!content.value) return []
+  return content.value
+    .split('\n')
+    .filter((l) => l.trim() !== '')
+    .map(parseLogLine)
+})
+
 const TAIL_BYTES = 512 * 1024 // 首次加载尾部大小
 const PAGE_BYTES = 64 * 1024 // 「加载更早」每次前翻块大小
 const POLL_MS = 1000
@@ -42,7 +109,7 @@ const content = ref('')
 const follow = ref(true)
 const loading = ref(false)
 const errorMsg = ref('')
-const preRef = ref<HTMLPreElement | null>(null)
+const preRef = ref<HTMLElement | null>(null)
 
 // 最新段（轮询目标）与正文最早处游标（「加载更早」回溯用）
 const latestFile = ref('')
@@ -302,14 +369,31 @@ onMounted(loadServers)
         加载中…
       </div>
 
-      <!-- 日志正文 -->
+      <!-- 日志正文（highlight.js 高亮） -->
       <div v-else>
-        <pre
+        <div
           v-if="content"
           ref="preRef"
-          class="max-h-[calc(100dvh-340px)] overflow-auto whitespace-pre-wrap rounded-md border bg-muted/40 p-3 font-mono text-xs leading-relaxed"
-          >{{ content }}</pre
+          class="log-lines max-h-[calc(100dvh-340px)] overflow-auto rounded-md border bg-muted/40 py-1 font-mono text-xs leading-relaxed"
         >
+          <div
+            v-for="(line, i) in lines"
+            :key="i"
+            class="flex gap-2 px-3 py-0.5 hover:bg-muted/40"
+          >
+            <span class="shrink-0 text-muted-foreground/50 tabular-nums">{{ line.ts }}</span>
+            <span
+              v-if="line.kind"
+              class="shrink-0 font-semibold"
+              :class="KIND_CLASS[line.kind] || 'text-muted-foreground'"
+              >[{{ line.kind }}]</span
+            >
+            <span v-if="line.msgHtml" class="min-w-0 flex-1 whitespace-pre-wrap break-all">
+              <span class="text-muted-foreground">msg=</span><span v-html="line.msgHtml"></span>
+            </span>
+            <span v-else class="min-w-0 flex-1 whitespace-pre-wrap break-all">{{ line.body }}</span>
+          </div>
+        </div>
         <div
           v-else
           class="rounded-md border border-dashed p-8 text-center text-sm text-muted-foreground"
@@ -320,3 +404,40 @@ onMounted(loadServers)
     </CardContent>
   </Card>
 </template>
+
+<style scoped>
+/* highlight.js github-dark 配色（复用 StreamMarkdownBlock 同款色板；:deep 让 v-html 里的 hljs span 生效） */
+.log-lines :deep(.hljs) {
+  color: #c9d1d9;
+}
+.log-lines :deep(.hljs-comment),
+.log-lines :deep(.hljs-quote) {
+  color: #8b949e;
+  font-style: italic;
+}
+.log-lines :deep(.hljs-keyword),
+.log-lines :deep(.hljs-selector-tag),
+.log-lines :deep(.hljs-section),
+.log-lines :deep(.hljs-title),
+.log-lines :deep(.hljs-name) {
+  color: #ff7b72;
+}
+.log-lines :deep(.hljs-string),
+.log-lines :deep(.hljs-attr),
+.log-lines :deep(.hljs-property) {
+  color: #a5d6ff;
+}
+.log-lines :deep(.hljs-number),
+.log-lines :deep(.hljs-literal),
+.log-lines :deep(.hljs-symbol),
+.log-lines :deep(.hljs-bullet) {
+  color: #79c0ff;
+}
+.log-lines :deep(.hljs-built_in),
+.log-lines :deep(.hljs-type) {
+  color: #ffa657;
+}
+.log-lines :deep(.hljs-meta) {
+  color: #8b949e;
+}
+</style>
