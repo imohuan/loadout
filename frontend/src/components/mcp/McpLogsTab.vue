@@ -388,8 +388,9 @@ onMounted(loadServers)
               :class="KIND_CLASS[line.kind] || 'text-muted-foreground'"
               >[{{ line.kind }}]</span
             >
-            <span v-if="line.msgHtml" class="min-w-0 flex-1 whitespace-pre-wrap break-all">
-              <span class="text-muted-foreground">msg=</span><span v-html="line.msgHtml"></span>
+            <span v-if="line.msgHtml" class="min-w-0 flex-1">
+              <span class="text-muted-foreground">msg=</span
+              ><code v-html="line.msgHtml" class="log-json"></code>
             </span>
             <span v-else class="min-w-0 flex-1 whitespace-pre-wrap break-all">{{ line.body }}</span>
           </div>
@@ -439,5 +440,15 @@ onMounted(loadServers)
 }
 .log-lines :deep(.hljs-meta) {
   color: #8b949e;
+}
+
+/* 高亮 JSON 块：inline-block 保留与 msg= 同行；white-space: pre 保留换行 + 缩进 */
+.log-json {
+  display: inline-block;
+  white-space: pre;
+  vertical-align: top;
+  padding-left: 0.25rem;
+  font-family: inherit;
+  margin: 0;
 }
 </style>
