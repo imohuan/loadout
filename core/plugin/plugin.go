@@ -13,6 +13,7 @@
 package plugin
 
 import (
+	"context"
 	"net/http"
 )
 
@@ -60,6 +61,27 @@ const (
 	AuthMCPHeader AuthKind = "mcp-key" // MCP 端点
 	AuthPublic    AuthKind = "public"  // 无需认证
 )
+
+// authKindCtxKey 是 request context 中「本次请求认证方式」的私有 key 类型，
+// 避免与其它包用裸 string key 撞车。
+type authKindCtxKey struct{}
+
+// AuthKindKey 是 request context 中标记「本次请求认证方式」的 key。
+// 认证中间件（如 MCPKeyMiddleware）与 admin 测试调用注入，mcp-hub 读取用于工具调用埋点。
+var AuthKindKey = authKindCtxKey{}
+
+// WithAuthKind 把认证方式写入 ctx。
+func WithAuthKind(ctx context.Context, kind AuthKind) context.Context {
+	return context.WithValue(ctx, AuthKindKey, kind)
+}
+
+// AuthKindFrom 读 ctx 中的认证方式；未注入时返回 AuthPublic（缺省合理默认值）。
+func AuthKindFrom(ctx context.Context) AuthKind {
+	if v, ok := ctx.Value(AuthKindKey).(AuthKind); ok {
+		return v
+	}
+	return AuthPublic
+}
 
 // RouteSpec 插件注册的 HTTP 路由。Method 为空表示匹配任意方法。
 type RouteSpec struct {
