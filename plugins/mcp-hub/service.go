@@ -1305,17 +1305,24 @@ func (s *Service) RemoveServerLogs(name string) {
 // InvokeTool 按 server id + 工具名直接调用上游（「测试工具」复用生产路径）：
 // 走连接池（复用常驻连接）、ToolView 路由、callEntry 埋点与日志——与网关调用完全一致。
 // server 未启用 / 工具不可见时返回明确错误。
+// 注意：所有未到达 callEntry 的失败分支必须手动埋点，否则失败尝试不落 mcp_invocations。
 func (s *Service) InvokeTool(ctx context.Context, serverID, toolName string, args map[string]any) (*mcpkit.ToolResult, error) {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	start := time.Now()
 	srv, err := s.findServer(serverID)
 	if err != nil {
+		s.recordInvocation(now, start, "/mcp/"+serverID, err, toolName, "", safeJSON(args), "", authKindFrom(ctx))
 		return nil, err
 	}
 	if !srv.Enabled {
-		return nil, fmt.Errorf("mcphub: MCP 服务器 %q 未启用，无法测试调用", srv.Name)
+		err := fmt.Errorf("mcphub: MCP 服务器 %q 未启用，无法测试调用", srv.Name)
+		s.recordInvocation(now, start, "/mcp/"+srv.Name, err, toolName, srv.Name, safeJSON(args), "", authKindFrom(ctx))
+		return nil, err
 	}
 	endpoint := "/mcp/" + srv.Name
 	tools, err := s.ToolView(endpoint)
 	if err != nil {
+		s.recordInvocation(now, start, endpoint, err, toolName, srv.Name, safeJSON(args), "", authKindFrom(ctx))
 		return nil, err
 	}
 	var entry *ToolEntry
@@ -1326,7 +1333,9 @@ func (s *Service) InvokeTool(ctx context.Context, serverID, toolName string, arg
 		}
 	}
 	if entry == nil {
-		return nil, fmt.Errorf("mcphub: 工具 %q 在服务器 %q 不可见", toolName, srv.Name)
+		err := fmt.Errorf("mcphub: 工具 %q 在服务器 %q 不可见", toolName, srv.Name)
+		s.recordInvocation(now, start, endpoint, err, toolName, srv.Name, safeJSON(args), "", authKindFrom(ctx))
+		return nil, err
 	}
 	return s.callEntry(ctx, *entry, args, endpoint)
 }
