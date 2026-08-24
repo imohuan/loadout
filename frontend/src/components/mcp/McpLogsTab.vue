@@ -6,7 +6,8 @@
 //   GET /api/mcp-servers/{name}/log?file=&offset=  增量读（offset 为段内字节偏移）
 // 策略：尾部 512KB 加载 + 「加载更早」向上翻页（跨段回溯）+ 1s 轮询只追最新段。
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { RiArrowUpLine } from '@remixicon/vue'
+import { RiArrowUpLine, RiLoader4Line } from '@remixicon/vue'
+import { toast } from 'vue-sonner'
 import { api } from '@/lib/api'
 
 interface LogFileInfo {
@@ -144,10 +145,16 @@ async function loadEarlier() {
       el.scrollTop = el.scrollHeight - el.scrollTop - el.clientHeight
     }
   } catch (e) {
-    errorMsg.value = e instanceof Error ? e.message : String(e)
+    // 「加载更早」错误用 toast，不污染主区域；轮询错误也走静默
+    toast.error(e instanceof Error ? e.message : String(e))
   } finally {
     loading.value = false
   }
+}
+
+async function retryLoad() {
+  if (!selected.value) return
+  await selectServer(selected.value)
 }
 
 // 1s 轮询：只追最新段增量；检测滚动后自动切新段。
@@ -260,32 +267,55 @@ onMounted(loadServers)
         </div>
       </div>
 
-      <!-- 错误提示 -->
-      <Alert v-if="errorMsg" variant="destructive" class="py-2">
-        <AlertDescription class="text-xs">{{ errorMsg }}</AlertDescription>
-      </Alert>
-
-      <!-- 空态 -->
+      <!-- 初次加载失败（可重试，不污染主区域） -->
       <div
-        v-if="!loading && !servers.length"
+        v-if="errorMsg"
+        class="rounded-md border border-dashed p-8 text-center"
+      >
+        <p class="text-sm text-muted-foreground">加载失败</p>
+        <p class="mt-1 text-xs text-muted-foreground/70">{{ errorMsg }}</p>
+        <Button size="sm" variant="outline" class="mt-3" :disabled="loading" @click="retryLoad">
+          重试
+        </Button>
+      </div>
+
+      <!-- 空态：无日志 server -->
+      <div
+        v-else-if="!loading && !servers.length"
         class="rounded-md border border-dashed p-8 text-center text-sm text-muted-foreground"
       >
         暂无 MCP 日志
       </div>
+      <!-- 空态：已选 server 但无段文件 -->
       <div
         v-else-if="!loading && selected && !files.length"
         class="rounded-md border border-dashed p-8 text-center text-sm text-muted-foreground"
       >
         等待 MCP 活动…
       </div>
+      <!-- 加载中（无内容时显示，避免空白 pre 突兀） -->
+      <div
+        v-else-if="loading && !content"
+        class="rounded-md border border-dashed p-8 text-center text-sm text-muted-foreground"
+      >
+        <RiLoader4Line class="mx-auto mb-2 size-5 animate-spin" />
+        加载中…
+      </div>
 
       <!-- 日志正文 -->
       <div v-else>
         <pre
+          v-if="content"
           ref="preRef"
           class="max-h-[calc(100dvh-340px)] overflow-auto whitespace-pre-wrap rounded-md border bg-muted/40 p-3 font-mono text-xs leading-relaxed"
           >{{ content }}</pre
         >
+        <div
+          v-else
+          class="rounded-md border border-dashed p-8 text-center text-sm text-muted-foreground"
+        >
+          暂无日志内容（等待连接或活动）
+        </div>
       </div>
     </CardContent>
   </Card>
