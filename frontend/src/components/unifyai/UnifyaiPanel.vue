@@ -5,12 +5,10 @@ import {
   RiAddLine,
   RiArrowDownSLine,
   RiArrowRightSLine,
-  RiCheckLine,
   RiCloseLine,
   RiDeleteBinLine,
   RiEditLine,
   RiImportLine,
-  RiInformationLine,
   RiLoader4Line,
   RiPlayLine,
   RiQuestionLine,
@@ -25,19 +23,28 @@ import CommandPreview from '@/components/unifyai/CommandPreview.vue'
 import StreamLogPanel, { type StreamStatus } from '@/components/StreamLogPanel.vue'
 import {
   DEFAULT_SOURCE,
+  IMPORT_MCP_ARGS,
   INITIAL_MCP_SERVERS,
   INITIAL_MODEL_SOURCE,
   INITIAL_OPENCODEX_MODELS,
   PLATFORMS,
+  SYNC_CONFIG_PATH,
+  type BackendPlatform,
+  type McpMetadataStatus,
   buildArgs,
   buildCommand,
+  buildConfigObject,
+  buildMatrixConfig,
+  fetchAllConfig,
   fetchManagedMcpServers,
-  fetchMcpServers,
   fetchModelSource,
   fetchOpenCodexModels,
   importKindBadgeClass,
   saveMcpServers,
+  saveSyncConfig,
   type McpImportSource,
+  type McpMatrixCell,
+  type McpMatrixResult,
   type McpServerInfo,
   type ModelSourceStatus,
   type OpenCodexModelsResult,
@@ -79,18 +86,14 @@ function disableReason(platform: Platform) {
   return ''
 }
 
-// ---------- MCP 过滤 ----------
+// ---------- MCP 矩阵（行=源全集，列=平台，勾选=开启） ----------
 const allServers = ref<McpServerInfo[]>(INITIAL_MCP_SERVERS)
-/** 已禁用的服务器名集合（UI 仍展示但参与同步时跳过） */
+/** 已禁用的服务器名集合（整行半透明、同步跳过；写回 mcp.json 的 enabled） */
 const disabledServers = ref<Set<string>>(
   new Set(INITIAL_MCP_SERVERS.filter((s) => !s.enabled).map((s) => s.name)),
 )
-/** 实际参与同步的服务器（不在 disabled 集合中） */
-const enabledServers = computed(() =>
-  allServers.value.filter((server) => !disabledServers.value.has(server.name)),
-)
 
-/** 把当前服务器列表写回后端 mcp.json（启用/禁用/添加/删除/导入共用） */
+/** 把服务器列表写回后端 mcp.json（添加/删除/编辑/导入共用） */
 const savingMcp = ref(false)
 async function persistMcpServers() {
   savingMcp.value = true
@@ -105,7 +108,7 @@ async function persistMcpServers() {
   }
 }
 
-/** 启用/禁用切换：更新本地状态 + 自动保存 */
+/** 启用/禁用切换：更新本地状态 + 自动保存（写回 mcp.json 的 enabled 字段） */
 async function onDisabledChange(next: Set<string>) {
   disabledServers.value = next
   // 同步 allServers 的 enabled 字段
@@ -138,166 +141,6 @@ async function removeServer(name: string) {
   }
 }
 
-// ---------- 添加 / 导入 MCP 工具 ----------
-const addDialogOpen = ref(false)
-const importSource = ref<McpImportSource[]>([])
-const importSelected = ref<string[]>([])
-const importing = ref(false)
-const addForm = reactive({
-  name: '',
-  type: 'local' as 'local' | 'remote',
-  enabled: true,
-  command: '',
-  url: '',
-  headers: '',
-  env: [] as Array<{ key: string; value: string }>,
-})
-
-function openAddDialog() {
-  addDialogOpen.value = true
-  importSelected.value = []
-  importSource.value = []
-  addForm.name = ''
-  addForm.type = 'local'
-  addForm.enabled = true
-  addForm.command = ''
-  addForm.url = ''
-  addForm.headers = ''
-  addForm.env = []
-  // 打开即自动拉一次，避免用户再点「加载列表」
-  loadImportSource()
-}
-
-function addEnvRow(rows: Array<{ key: string; value: string }>) {
-  rows.push({ key: '', value: '' })
-}
-
-function removeEnvRow(rows: Array<{ key: string; value: string }>, index: number) {
-  rows.splice(index, 1)
-}
-
-/** 从 MCP 管理加载可导入的服务器 */
-async function loadImportSource() {
-  importing.value = true
-  try {
-    importSource.value = await fetchManagedMcpServers()
-    if (!importSource.value.length) {
-      toast.info('MCP 管理中没有可导入的服务器')
-    }
-  } catch (e) {
-    toast.error(e instanceof Error ? e.message : '读取 MCP 管理失败')
-  } finally {
-    importing.value = false
-  }
-}
-
-function toggleImport(name: string) {
-  const i = importSelected.value.indexOf(name)
-  if (i >= 0) importSelected.value.splice(i, 1)
-  else importSelected.value.push(name)
-}
-
-/** 把选中的 MCP 管理项（单 MCP / 分组 / 聚合）导入到本地 mcp.json */
-async function importSelectedServers() {
-  const picked = importSource.value.filter((s) => importSelected.value.includes(s.name))
-  if (!picked.length) return
-  const existing = new Set(allServers.value.map((s) => s.name))
-  const added: string[] = []
-  for (const item of picked) {
-    // 分组 / 聚合端点会复用上游 name，可能与已有条目冲突。这里在保存前去重一次，
-    // 避免落 mcp.json 后下游工具拿到同名双 entry。existing 随循环更新，
-    // 防止 picked 内同名项（如「单 MCP 叫 mcp-smart」+「聚合 mcp-smart」）重复 append。
-    if (existing.has(item.server.name)) {
-      toast.warning(`「${item.server.name}」已存在，跳过`)
-      continue
-    }
-    allServers.value = [...allServers.value, { ...item.server }]
-    existing.add(item.server.name)
-    added.push(item.server.name)
-  }
-  if (!added.length) return
-  const next = { ...matrix.value }
-  for (const name of added) {
-    next[name] = {
-      opencode: false,
-      codex: false,
-      claudecode: false,
-      reasonix: false,
-      penguin: false,
-    }
-  }
-  matrix.value = next
-  try {
-    await persistMcpServers()
-    addDialogOpen.value = false
-    toast.success(`已导入 ${added.length} 个 MCP 工具`)
-  } catch {
-    /* toast 已提示 */
-  }
-}
-
-/** 手动添加 MCP 工具并保存 */
-async function addManualServer() {
-  const name = addForm.name.trim()
-  if (!name) {
-    toast.error('请输入工具名称')
-    return
-  }
-  if (allServers.value.some((s) => s.name === name)) {
-    toast.error(`「${name}」已存在`)
-    return
-  }
-  const srv: McpServerInfo = {
-    name,
-    type: addForm.type,
-    enabled: addForm.enabled,
-  }
-  if (addForm.type === 'local') {
-    const parts = addForm.command.trim().split(/\s+/).filter(Boolean)
-    if (!parts.length) {
-      toast.error('请输入启动命令（如 npx -y @modelcontextprotocol/server-filesystem /path）')
-      return
-    }
-    srv.command = parts
-    // 环境变量：跳过空 key，保留空 value（用户可能故意置空）
-    const env: Record<string, string> = {}
-    for (const row of addForm.env) {
-      const k = row.key.trim()
-      if (!k) continue
-      env[k] = row.value
-    }
-    if (Object.keys(env).length) srv.env = env
-  } else {
-    if (!addForm.url.trim()) {
-      toast.error('请输入远程地址 URL')
-      return
-    }
-    srv.url = addForm.url.trim()
-    if (addForm.headers.trim()) {
-      const headers: Record<string, string> = {}
-      for (const line of addForm.headers.split('\n')) {
-        const idx = line.indexOf(':')
-        if (idx > 0) headers[line.slice(0, idx).trim()] = line.slice(idx + 1).trim()
-      }
-      if (Object.keys(headers).length) {
-        srv.headers = headers
-        srv.hasAuth = true
-      }
-    }
-  }
-  allServers.value = [...allServers.value, srv]
-  matrix.value = {
-    ...matrix.value,
-    [name]: { opencode: false, codex: false, claudecode: false, reasonix: false, penguin: false },
-  }
-  try {
-    await persistMcpServers()
-    addDialogOpen.value = false
-  } catch {
-    /* toast 已提示 */
-  }
-}
-
 // ---------- 编辑 MCP 工具（行内编辑按钮触发，表单 / JSON 双模式） ----------
 const editDialogOpen = ref(false)
 const editMode = ref<'form' | 'json'>('json')
@@ -318,119 +161,6 @@ function openEditServer(server: McpServerInfo) {
   fillEditForm(server)
   editMode.value = 'json'
   editDialogOpen.value = true
-}
-
-// ---------- 全局编辑 mcp.json（整个服务器列表，顶部按钮触发） ----------
-const jsonFileDialogOpen = ref(false)
-const jsonFileDraft = ref('')
-const savingJsonFile = ref(false)
-
-/** 打开全局编辑：把整个 mcp.json 服务器列表载入 JSON 编辑器 */
-function openJsonFileEdit() {
-  jsonFileDraft.value = JSON.stringify(allServers.value, null, 2)
-  jsonFileDialogOpen.value = true
-}
-
-/** 全局编辑弹窗里的服务器计数（坏 JSON 时返回 0，不抛错） */
-function serverCountInDraft() {
-  try {
-    const parsed = JSON.parse(jsonFileDraft.value)
-    return Array.isArray(parsed) ? parsed.length : 0
-  } catch {
-    return 0
-  }
-}
-
-/** 保存全局编辑：校验整个 JSON 列表后全量替换 + 重建 matrix/disabled + 写回 mcp.json */
-async function saveJsonFile() {
-  if (savingJsonFile.value) return
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(jsonFileDraft.value)
-  } catch (error) {
-    toast.error('JSON 解析失败：' + (error instanceof Error ? error.message : String(error)))
-    return
-  }
-  if (!Array.isArray(parsed)) {
-    toast.error('JSON 必须是服务器数组（[...]）')
-    return
-  }
-  const servers: McpServerInfo[] = []
-  for (const item of parsed) {
-    if (typeof item !== 'object' || item === null) {
-      toast.error('列表项必须是对象')
-      return
-    }
-    const raw = item as Record<string, any>
-    const name = String(raw.name ?? '').trim()
-    if (!name) {
-      toast.error('存在名称为空的服务器条目')
-      return
-    }
-    const type = raw.type === 'remote' ? 'remote' : 'local'
-    const srv: McpServerInfo = { name, type, enabled: raw.enabled !== false }
-    if (type === 'local') {
-      const command = Array.isArray(raw.command)
-        ? raw.command.map(String)
-        : String(raw.command ?? '')
-            .split(/\s+/)
-            .filter(Boolean)
-      if (!command.length) {
-        toast.error(`「${name}」缺少启动命令（command）`)
-        return
-      }
-      srv.command = command
-      if (raw.env && typeof raw.env === 'object') srv.env = raw.env
-    } else {
-      const url = String(raw.url ?? '').trim()
-      if (!url) {
-        toast.error(`「${name}」缺少远程地址（url）`)
-        return
-      }
-      srv.url = url
-      if (raw.headers && typeof raw.headers === 'object') {
-        srv.headers = raw.headers
-        srv.hasAuth = true
-      }
-    }
-    servers.push(srv)
-  }
-  if (!servers.length) {
-    toast.error('服务器列表不能为空')
-    return
-  }
-  savingJsonFile.value = true
-  try {
-    allServers.value = servers
-    // 重建 matrix：保留仍在列表中的服务器原有排除配置，新条目补占位
-    const nextMatrix: Record<string, Record<PlatformId, boolean>> = {}
-    for (const srv of servers) {
-      nextMatrix[srv.name] = matrix.value[srv.name] || {
-        opencode: false,
-        codex: false,
-        claudecode: false,
-        reasonix: false,
-        penguin: false,
-      }
-    }
-    matrix.value = nextMatrix
-    // 重建 disabled：只保留仍在列表中的，再按 enabled 字段对齐
-    const names = new Set(servers.map((s) => s.name))
-    const nextDisabled = new Set(
-      [...disabledServers.value].filter(
-        (n) => names.has(n) && servers.find((s) => s.name === n)?.enabled === false,
-      ),
-    )
-    for (const srv of servers) if (!srv.enabled) nextDisabled.add(srv.name)
-    disabledServers.value = nextDisabled
-    await persistMcpServers()
-    jsonFileDialogOpen.value = false
-    toast.success('mcp.json 已保存')
-  } catch (e) {
-    toast.error(e instanceof Error ? e.message : '保存失败')
-  } finally {
-    savingJsonFile.value = false
-  }
 }
 
 function fillEditForm(server: McpServerInfo) {
@@ -614,36 +344,359 @@ async function saveEditServer() {
   }
 }
 
-const matrix = ref<Record<string, Record<PlatformId, boolean>>>({})
-const whitelist = ref<PlatformId[]>([])
-/** 白名单开关：false=不限定（所有平台同步 MCP）；true=仅 whitelist 中的平台同步 */
-const whitelistEnabled = ref(false)
-
-/** 开关 v-model 包装（get/set） */
-const whitelistChecked = computed({
-  get: () => whitelistEnabled.value,
-  set: (value: boolean) => (whitelistEnabled.value = value),
+// ---------- 添加 / 导入 MCP 工具 ----------
+const addDialogOpen = ref(false)
+const importSource = ref<McpImportSource[]>([])
+const importSelected = ref<string[]>([])
+const importing = ref(false)
+const addForm = reactive({
+  name: '',
+  type: 'local' as 'local' | 'remote',
+  enabled: true,
+  command: '',
+  url: '',
+  headers: '',
+  env: [] as Array<{ key: string; value: string }>,
 })
 
-function toggleWhitelistPlatform(platformId: PlatformId) {
-  whitelist.value = whitelist.value.includes(platformId)
-    ? whitelist.value.filter((id) => id !== platformId)
-    : [...whitelist.value, platformId]
+function openAddDialog() {
+  addDialogOpen.value = true
+  importSelected.value = []
+  importSource.value = []
+  addForm.name = ''
+  addForm.type = 'local'
+  addForm.enabled = true
+  addForm.command = ''
+  addForm.url = ''
+  addForm.headers = ''
+  addForm.env = []
+  // 打开即自动拉一次，避免用户再点「加载列表」
+  loadImportSource()
 }
 
-function initMatrix() {
-  const next: Record<string, Record<PlatformId, boolean>> = {}
-  // 所有服务器都建占位（含 disabled），启用后行状态干净
-  for (const server of allServers.value) {
-    next[server.name] = {
-      opencode: false,
-      codex: false,
-      claudecode: false,
-      reasonix: false,
-      penguin: false,
+function addEnvRow(rows: Array<{ key: string; value: string }>) {
+  rows.push({ key: '', value: '' })
+}
+
+function removeEnvRow(rows: Array<{ key: string; value: string }>, index: number) {
+  rows.splice(index, 1)
+}
+
+/** 从 MCP 管理加载可导入的服务器 */
+async function loadImportSource() {
+  importing.value = true
+  try {
+    importSource.value = await fetchManagedMcpServers()
+    if (!importSource.value.length) {
+      toast.info('MCP 管理中没有可导入的服务器')
+    }
+  } catch (e) {
+    toast.error(e instanceof Error ? e.message : '读取 MCP 管理失败')
+  } finally {
+    importing.value = false
+  }
+}
+
+function toggleImport(name: string) {
+  const i = importSelected.value.indexOf(name)
+  if (i >= 0) importSelected.value.splice(i, 1)
+  else importSelected.value.push(name)
+}
+
+/** 把选中的 MCP 管理项（单 MCP / 分组 / 聚合）导入到本地 mcp.json */
+async function importSelectedServers() {
+  const picked = importSource.value.filter((s) => importSelected.value.includes(s.name))
+  if (!picked.length) return
+  const existing = new Set(allServers.value.map((s) => s.name))
+  const added: string[] = []
+  for (const item of picked) {
+    // 分组 / 聚合端点会复用上游 name，可能与已有条目冲突。这里在保存前去重一次，
+    // 避免落 mcp.json 后下游工具拿到同名双 entry。existing 随循环更新，
+    // 防止 picked 内同名项（如「单 MCP 叫 mcp-smart」+「聚合 mcp-smart」）重复 append。
+    if (existing.has(item.server.name)) {
+      toast.warning(`「${item.server.name}」已存在，跳过`)
+      continue
+    }
+    allServers.value = [...allServers.value, { ...item.server }]
+    existing.add(item.server.name)
+    added.push(item.server.name)
+  }
+  if (!added.length) return
+  const next = { ...matrix.value }
+  for (const name of added) {
+    next[name] = {
+      opencode: undefined,
+      codex: undefined,
+      claudecode: undefined,
+      reasonix: undefined,
+      penguin: undefined,
     }
   }
   matrix.value = next
+  try {
+    await persistMcpServers()
+    addDialogOpen.value = false
+    toast.success(`已导入 ${added.length} 个 MCP 工具`)
+  } catch {
+    /* toast 已提示 */
+  }
+}
+
+/** 手动添加 MCP 工具并保存 */
+async function addManualServer() {
+  const name = addForm.name.trim()
+  if (!name) {
+    toast.error('请输入工具名称')
+    return
+  }
+  if (allServers.value.some((s) => s.name === name)) {
+    toast.error(`「${name}」已存在`)
+    return
+  }
+  const srv: McpServerInfo = {
+    name,
+    type: addForm.type,
+    enabled: addForm.enabled,
+  }
+  if (addForm.type === 'local') {
+    const parts = addForm.command.trim().split(/\s+/).filter(Boolean)
+    if (!parts.length) {
+      toast.error('请输入启动命令（如 npx -y @modelcontextprotocol/server-filesystem /path）')
+      return
+    }
+    srv.command = parts
+    // 环境变量：跳过空 key，保留空 value（用户可能故意置空）
+    const env: Record<string, string> = {}
+    for (const row of addForm.env) {
+      const k = row.key.trim()
+      if (!k) continue
+      env[k] = row.value
+    }
+    if (Object.keys(env).length) srv.env = env
+  } else {
+    if (!addForm.url.trim()) {
+      toast.error('请输入远程地址 URL')
+      return
+    }
+    srv.url = addForm.url.trim()
+    if (addForm.headers.trim()) {
+      const headers: Record<string, string> = {}
+      for (const line of addForm.headers.split('\n')) {
+        const idx = line.indexOf(':')
+        if (idx > 0) headers[line.slice(0, idx).trim()] = line.slice(idx + 1).trim()
+      }
+      if (Object.keys(headers).length) {
+        srv.headers = headers
+        srv.hasAuth = true
+      }
+    }
+  }
+  allServers.value = [...allServers.value, srv]
+  matrix.value = {
+    ...matrix.value,
+    [name]: {
+      opencode: undefined,
+      codex: undefined,
+      claudecode: undefined,
+      reasonix: undefined,
+      penguin: undefined,
+    },
+  }
+  try {
+    await persistMcpServers()
+    addDialogOpen.value = false
+  } catch {
+    /* toast 已提示 */
+  }
+}
+
+// ---------- 全局编辑 mcp.json（整个服务器列表，顶部按钮触发） ----------
+const jsonFileDialogOpen = ref(false)
+const jsonFileDraft = ref('')
+const savingJsonFile = ref(false)
+
+/** 打开全局编辑：把整个 mcp.json 服务器列表载入 JSON 编辑器 */
+function openJsonFileEdit() {
+  jsonFileDraft.value = JSON.stringify(allServers.value, null, 2)
+  jsonFileDialogOpen.value = true
+}
+
+/** 全局编辑弹窗里的服务器计数（坏 JSON 时返回 0，不抛错） */
+function serverCountInDraft() {
+  try {
+    const parsed = JSON.parse(jsonFileDraft.value)
+    return Array.isArray(parsed) ? parsed.length : 0
+  } catch {
+    return 0
+  }
+}
+
+/** 保存全局编辑：校验整个 JSON 列表后全量替换 + 重建 matrix/disabled + 写回 mcp.json */
+async function saveJsonFile() {
+  if (savingJsonFile.value) return
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(jsonFileDraft.value)
+  } catch (error) {
+    toast.error('JSON 解析失败：' + (error instanceof Error ? error.message : String(error)))
+    return
+  }
+  if (!Array.isArray(parsed)) {
+    toast.error('JSON 必须是服务器数组（[...]）')
+    return
+  }
+  const servers: McpServerInfo[] = []
+  for (const item of parsed) {
+    if (typeof item !== 'object' || item === null) {
+      toast.error('列表项必须是对象')
+      return
+    }
+    const raw = item as Record<string, any>
+    const name = String(raw.name ?? '').trim()
+    if (!name) {
+      toast.error('存在名称为空的服务器条目')
+      return
+    }
+    const type = raw.type === 'remote' ? 'remote' : 'local'
+    const srv: McpServerInfo = { name, type, enabled: raw.enabled !== false }
+    if (type === 'local') {
+      const command = Array.isArray(raw.command)
+        ? raw.command.map(String)
+        : String(raw.command ?? '')
+            .split(/\s+/)
+            .filter(Boolean)
+      if (!command.length) {
+        toast.error(`「${name}」缺少启动命令（command）`)
+        return
+      }
+      srv.command = command
+      if (raw.env && typeof raw.env === 'object') srv.env = raw.env
+    } else {
+      const url = String(raw.url ?? '').trim()
+      if (!url) {
+        toast.error(`「${name}」缺少远程地址（url）`)
+        return
+      }
+      srv.url = url
+      if (raw.headers && typeof raw.headers === 'object') {
+        srv.headers = raw.headers
+        srv.hasAuth = true
+      }
+    }
+    servers.push(srv)
+  }
+  if (!servers.length) {
+    toast.error('服务器列表不能为空')
+    return
+  }
+  savingJsonFile.value = true
+  try {
+    allServers.value = servers
+    // 重建 matrix：保留仍在列表中的服务器原有状态，新条目补 undefined 占位
+    const nextMatrix: Record<string, Record<PlatformId, McpMatrixCell>> = {}
+    for (const srv of servers) {
+      nextMatrix[srv.name] = matrix.value[srv.name] || {
+        opencode: undefined,
+        codex: undefined,
+        claudecode: undefined,
+        reasonix: undefined,
+        penguin: undefined,
+      }
+    }
+    matrix.value = nextMatrix
+    // 重建 disabled：只保留仍在列表中的，再按 enabled 字段对齐
+    const names = new Set(servers.map((s) => s.name))
+    const nextDisabled = new Set(
+      [...disabledServers.value].filter(
+        (n) => names.has(n) && servers.find((s) => s.name === n)?.enabled === false,
+      ),
+    )
+    for (const srv of servers) if (!srv.enabled) nextDisabled.add(srv.name)
+    disabledServers.value = nextDisabled
+    await persistMcpServers()
+    jsonFileDialogOpen.value = false
+    toast.success('mcp.json 已保存')
+  } catch (e) {
+    toast.error(e instanceof Error ? e.message : '保存失败')
+  } finally {
+    savingJsonFile.value = false
+  }
+}
+
+
+const matrix = ref<Record<string, Record<PlatformId, McpMatrixCell>>>({})
+
+/** 把 --list-mcp --json 结果应用到界面：源全集（行）+ 各平台 enabled（初始勾选） */
+function applyMatrix(res: McpMatrixResult) {
+  const srcServers: McpServerInfo[] = (res.source?.servers || []).map((item) => {
+    const c = (item.config || {}) as Record<string, unknown>
+    const type = c.type === 'remote' ? 'remote' : 'local'
+    const srv: McpServerInfo = { name: item.name, type, enabled: item.enabled }
+    if (type === 'local') {
+      srv.command = Array.isArray(c.command)
+        ? (c.command as string[]).map(String)
+        : String(c.command || '')
+            .split(/\s+/)
+            .filter(Boolean)
+      if (c.env && typeof c.env === 'object') srv.env = c.env as Record<string, string>
+    } else {
+      srv.url = String(c.url || '')
+      if (c.headers && typeof c.headers === 'object') {
+        srv.headers = c.headers as Record<string, string>
+        srv.hasAuth = true
+      }
+    }
+    return srv
+  })
+  allServers.value = srcServers.length ? srcServers : INITIAL_MCP_SERVERS
+
+  // 行=源全集；单元格=平台 enabled 状态（平台不可读 / 未配置 = undefined）
+  const next: Record<string, Record<PlatformId, McpMatrixCell>> = {}
+  for (const srv of allServers.value) {
+    const row: Record<PlatformId, McpMatrixCell> = {
+      opencode: undefined,
+      codex: undefined,
+      claudecode: undefined,
+      reasonix: undefined,
+      penguin: undefined,
+    }
+    for (const p of res.platforms) {
+      if (!p.readable) continue
+      const pid = p.platform as PlatformId
+      const found = p.servers.find((x) => x.name === srv.name)
+      row[pid] = found ? found.enabled : undefined
+    }
+    next[srv.name] = row
+  }
+  matrix.value = next
+}
+
+async function reloadMatrix() {
+  const all = await fetchAllConfig()
+  applyMatrix(all.mcp)
+}
+
+/** 后端平台列表（--list all → platforms）→ 前端 Platform（保留内置 color） */
+function applyPlatforms(list: BackendPlatform[]) {
+  if (!list.length) return
+  const colorOf = Object.fromEntries(PLATFORMS.map((p) => [p.id, p.color]))
+  const known = new Set<string>(PLATFORMS.map((p) => p.id))
+  platforms.value = list
+    .filter((p) => known.has(String(p.id)))
+    .map((p) => ({
+      id: String(p.id) as PlatformId,
+      name: String(p.name),
+      color: colorOf[String(p.id)] || '#888888',
+      modelSync: p.modelStatus === 'supported' || p.supportsModels === true,
+      mcpSync:
+        p.mcpStatus === 'supported'
+          ? true
+          : p.mcpStatus === 'not_implemented'
+            ? 'unimplemented'
+            : false,
+      configPath: String(p.configPath || ''),
+      format: String(p.configFormat || '').toUpperCase(),
+    }))
 }
 
 // ---------- 数据源状态 ----------
@@ -669,39 +722,20 @@ const sourcePath = ref(DEFAULT_SOURCE)
 const verbose = ref(false)
 
 // ---------- 命令拼装 ----------
-const globalExcludes = computed(() =>
-  enabledServers.value
-    .filter((server) =>
-      platforms.value.every((platform) => matrix.value[server.name]?.[platform.id] === true),
-    )
-    .map((server) => server.name),
-)
-
-const perPlatformExcludes = computed(() => {
-  const result: Record<PlatformId, string[]> = {
+// UI 已从「排除矩阵」切换到「同步矩阵」，不再传 --mcp-exclude / --mcp-exclude-for（CLI 命令保留，供脚本使用）。
+const commandOpts = computed(() => ({
+  mode: mode.value,
+  all: allPlatforms.value,
+  platforms: selectedPlatforms.value,
+  mcpPlatforms: null,
+  globalExcludes: [],
+  perPlatformExcludes: {
     opencode: [],
     codex: [],
     claudecode: [],
     reasonix: [],
     penguin: [],
-  }
-  const global = new Set(globalExcludes.value)
-  for (const server of enabledServers.value) {
-    if (global.has(server.name)) continue
-    for (const platform of platforms.value) {
-      if (matrix.value[server.name]?.[platform.id]) result[platform.id].push(server.name)
-    }
-  }
-  return result
-})
-
-const commandOpts = computed(() => ({
-  mode: mode.value,
-  all: allPlatforms.value,
-  platforms: selectedPlatforms.value,
-  mcpPlatforms: whitelistEnabled.value && whitelist.value.length ? whitelist.value : null,
-  globalExcludes: globalExcludes.value,
-  perPlatformExcludes: perPlatformExcludes.value,
+  },
   dryRun: false,
   source: sourcePath.value,
   verbose: verbose.value,
@@ -709,31 +743,89 @@ const commandOpts = computed(() => ({
   enableVision: enableVision.value,
 }))
 
+// 命令预览：主命令 = 全量同步（--config sync.json，CLI 根据配置自动分发矩阵/全量）
 const command = computed(() => buildCommand(commandOpts.value))
+
+/** sync.json 配置内容预览：始终显示完整配置（全量 + 矩阵合并），实时反映所有 UI 改动 */
+const configPreview = computed(() => buildSyncConfig(dryRunMode.value))
 
 // ---------- 执行（真实 unifyai CLI，经后端 SSE 流式日志） ----------
 const runTrigger = ref(0)
 const runStatus = ref<StreamStatus>('idle')
 const runExitCode = ref<number | null>(null)
 const dryRunMode = ref(false)
+/** 自定义 CLI 参数（矩阵同步 / 导入用）；null = 用 buildArgs 默认命令 */
+const customArgs = ref<string[] | null>(null)
 
 /** SSE 端点：args 数组 JSON 编码进查询参数，连接即触发任务 */
 const streamUrl = computed(() => {
-  const args = buildArgs({ ...commandOpts.value, dryRun: dryRunMode.value })
+  const args = customArgs.value ?? buildArgs({ ...commandOpts.value, dryRun: dryRunMode.value })
   return `/api/unifyai/stream?args=${encodeURIComponent(JSON.stringify(args))}`
 })
 
-function execute(dryRun: boolean) {
+/** 用指定参数启动任务（全量同步 / 矩阵同步 / 导入共用） */
+/**
+ * 用指定参数启动任务（全量同步 / 矩阵同步 / 导入共用）。
+ * 传 config 时先保存到 sync.json（--config 引用的唯一来源）再执行。
+ */
+async function executeWithArgs(args: string[], dryRun = false, config?: unknown) {
   if (runStatus.value === 'running') return
+  if (config !== undefined) {
+    try {
+      await saveSyncConfig(config)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '保存同步配置失败')
+      return
+    }
+  }
+  customArgs.value = args
   dryRunMode.value = dryRun
   runExitCode.value = null
   runTrigger.value++ // 触发 StreamLogPanel 连接 SSE（后端自动启动任务）
+}
+
+/** 构造完整 sync.json 配置（带模型源/平台/模型元数据，CLI 仅消费 mode/platforms/mcp/dryRun/source/enableVision/force） */
+function buildFullConfig(dryRun: boolean) {
+  const modelSourceSummary: McpMetadataStatus = {
+    path: modelSource.value.kind === 'openrouter' ? '~/.unifyai/cache/openrouter-models.json' : '',
+    modelCount: modelSource.value.modelCount,
+    cachedAt: modelSource.value.cachedAt || null,
+  }
+  return buildConfigObject({
+    ...commandOpts.value,
+    dryRun,
+    modelSource: modelSourceSummary,
+    opencodexModels: opencodexModels.value,
+    backendPlatforms: platforms.value as unknown as BackendPlatform[],
+  })
+}
+
+/**
+ * 完整 sync.json（预览与矩阵执行共用）：全量配置 + 当前矩阵（有勾选时合并进 mcp.matrix）。
+ * computed 依赖 commandOpts / matrix / dryRunMode / modelSource / opencodexModels / platforms，
+ * 任何 UI 改动（模式/平台/矩阵/视觉/dry-run）都会实时反映到预览。
+ */
+function buildSyncConfig(dryRun: boolean) {
+  const cfg = buildFullConfig(dryRun) as { mcp?: Record<string, unknown> }
+  const matrixCfg = buildMatrixConfig(matrix.value) as { mcp: { matrix?: Record<string, unknown> } }
+  const matrixObj = matrixCfg.mcp.matrix
+  if (matrixObj && Object.keys(matrixObj).length) {
+    cfg.mcp = { ...(cfg.mcp || {}), matrix: matrixObj }
+  }
+  return cfg
+}
+
+/** 全量同步（统一入口）：先落盘完整 sync.json（含矩阵勾选，CLI 自动分发矩阵/全量）再执行 */
+function execute(dryRun: boolean) {
+  executeWithArgs(buildArgs({ ...commandOpts.value, dryRun }), dryRun, buildSyncConfig(dryRun))
 }
 
 function onRunDone(exitCode: string) {
   runExitCode.value = Number(exitCode) || 0
   if (runExitCode.value === 0) {
     toast.success(dryRunMode.value ? '预览完成（dry-run，未写入文件）' : '同步完成')
+    // 导入完成 → 刷新矩阵（源 mcp.json 已更新）
+    if (customArgs.value?.[0] === '--import-mcp') reloadMatrix()
   } else {
     toast.error(`命令退出码 ${runExitCode.value}，请查看日志`)
   }
@@ -746,6 +838,8 @@ function onRunError(message: string) {
 // ---------- 执行前确认弹窗（文档 §10.3） ----------
 const confirmOpen = ref(false)
 const confirmWarnings = ref<string[]>([])
+/** 待执行的任务（确认后运行；config 存在时先落盘 sync.json） */
+const pendingRun = ref<{ args: string[]; dryRun: boolean; config?: unknown } | null>(null)
 
 function startSync() {
   const warnings: string[] = []
@@ -754,23 +848,48 @@ function startSync() {
     : platforms.value.filter((p) => selectedPlatforms.value.includes(p.id))
   const hasOpenCode = targets.some((p) => p.id === 'opencode')
   const hasClaude = targets.some((p) => p.id === 'claudecode')
+  // 检测矩阵是否有勾选（有 → CLI 按矩阵同步，仅 MCP）
+  const matrixCfg = buildMatrixConfig(matrix.value) as { mcp?: { matrix?: Record<string, unknown> } }
+  const hasMatrix = !!matrixCfg.mcp?.matrix && Object.keys(matrixCfg.mcp.matrix).length > 0
+  if (hasMatrix) {
+    warnings.push(
+      '检测到矩阵勾选：本次将按矩阵批量同步 MCP（--config 含 mcp.matrix）——开启（未配置的自动添加）、关闭（OpenCode/Codex 写 enabled:false，Claude/Penguin 移除条目）。',
+    )
+  }
   if (mode.value !== 'mcp' && hasOpenCode)
     warnings.push('OpenCode：模型同步将清空重写 provider 配置，手动配置的其他 provider 会被清除。')
   if (targets.length) warnings.push('目标平台配置文件将被覆盖，执行时自动备份为 .bak-{时间戳}。')
   if (mode.value !== 'models' && hasClaude)
     warnings.push('Claude Code：enabled:false 的服务器将从配置中删除（而非禁用）。')
+  const config = buildSyncConfig(false)
+  pendingRun.value = {
+    args: ['--config', SYNC_CONFIG_PATH],
+    dryRun: false,
+    config,
+  }
   if (warnings.length) {
     confirmWarnings.value = warnings
     confirmOpen.value = true
   } else {
-    execute(false)
+    const { args, dryRun, config } = pendingRun.value
+    pendingRun.value = null
+    executeWithArgs(args, dryRun, config)
   }
 }
 
-/** 确认弹窗「确认，开始同步」：关弹窗并执行 */
+/** 导入各平台 MCP 配置到源 mcp.json（--import-mcp），完成后自动刷新矩阵 */
+function startImportMcp() {
+  if (runStatus.value === 'running') return
+  executeWithArgs(IMPORT_MCP_ARGS, false)
+}
+
+/** 确认弹窗「确认，开始同步」：关弹窗并执行待执行任务 */
 function confirmAndExecute() {
   confirmOpen.value = false
-  execute(false)
+  if (!pendingRun.value) return
+  const { args, dryRun, config } = pendingRun.value
+  pendingRun.value = null
+  executeWithArgs(args, dryRun, config)
 }
 
 // ---------- 帮助 ----------
@@ -818,41 +937,32 @@ async function handleUpdateMetadata() {
 }
 
 // ---------- 初始化 ----------
-onMounted(() => {
-  initMatrix()
-  fetchModelSource().then((source) => (modelSource.value = source))
-  reloadOpenCodexModels()
-  // 从后端读取 mcp.json（真实数据，失败回落内置示例）
-  fetchMcpServers().then((servers) => {
-    allServers.value = servers
-    disabledServers.value = new Set(servers.filter((s) => !s.enabled).map((s) => s.name))
-    initMatrix()
-  })
-  // 从后端拉取平台能力（--list-platforms --json），失败保持内置默认。
-  const colorOf = Object.fromEntries(PLATFORMS.map((p) => [p.id, p.color]))
-  fetch('/api/unifyai/platforms')
-    .then((res) => (res.ok ? res.json() : null))
-    .then((data: { platforms?: Array<Record<string, unknown>> } | null) => {
-      if (!data?.platforms?.length) return
-      const known = new Set<string>(PLATFORMS.map((p) => p.id))
-      platforms.value = data.platforms
-        .filter((p) => known.has(String(p.id)))
-        .map((p) => ({
-          id: String(p.id) as PlatformId,
-          name: String(p.name),
-          color: colorOf[String(p.id)] || '#888888',
-          modelSync: p.modelStatus === 'supported' || p.supportsModels === true,
-          mcpSync:
-            p.mcpStatus === 'supported'
-              ? true
-              : p.mcpStatus === 'not_implemented'
-                ? 'unimplemented'
-                : false,
-          configPath: String(p.configPath),
-          format: String(p.configFormat || '').toUpperCase(),
-        }))
-    })
-    .catch(() => {})
+onMounted(async () => {
+  // 一次拉全（--list all → platforms + models + mcp 矩阵 + metadata 缓存状态）
+  const all = await fetchAllConfig()
+  applyPlatforms(all.platforms)
+  applyMatrix(all.mcp)
+  if (all.models?.models?.length) opencodexModels.value = all.models
+  if (all.metadata?.modelCount > 0) {
+    modelSource.value = {
+      ...modelSource.value,
+      kind: 'openrouter',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      modelCount: all.metadata.modelCount,
+      cachedAt: all.metadata.cachedAt || '',
+    }
+  }
+  // 兜底：--list all 无数据（CLI 不可用）时用独立接口再试，保证页面有内容
+  if (!all.mcp?.platforms?.length) {
+    fetchModelSource().then((source) => (modelSource.value = source))
+    reloadOpenCodexModels()
+    fetch('/api/unifyai/platforms')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: { platforms?: BackendPlatform[] } | null) => {
+        if (data?.platforms?.length) applyPlatforms(data.platforms)
+      })
+      .catch(() => {})
+  }
 })
 </script>
 
@@ -872,13 +982,13 @@ onMounted(() => {
       </template>
     </PageHeader>
 
-    <!-- ② 目标平台（头部含同步内容 + 全部平台） -->
+    <!-- ① 同步内容与目标平台（头部含同步内容 + 全部平台） -->
     <Card class="rounded-md">
       <CardHeader
         class="flex flex-col gap-3 space-y-0 lg:flex-row lg:items-center lg:justify-between"
       >
         <div class="space-y-0.5">
-          <CardTitle class="text-base">② 目标平台</CardTitle>
+          <CardTitle class="text-base">① 同步内容与目标平台</CardTitle>
           <CardDescription
             >勾选要同步的平台；不支持所选能力的平台将置灰（执行时跳过并提示）。</CardDescription
           >
@@ -895,6 +1005,12 @@ onMounted(() => {
             <Switch id="all-platforms" v-model="allPlatforms" />
             <Label for="all-platforms" class="cursor-pointer whitespace-nowrap text-sm font-medium"
               >全部平台（--all）</Label
+            >
+          </div>
+          <div class="flex items-center gap-2">
+            <Switch id="enable-vision" v-model="enableVision" />
+            <Label for="enable-vision" class="cursor-pointer whitespace-nowrap text-sm font-medium"
+              >强制视觉（--enable-vision）</Label
             >
           </div>
         </div>
@@ -917,17 +1033,24 @@ onMounted(() => {
       </CardContent>
     </Card>
 
-    <!-- ③ MCP 同步过滤（排除矩阵 + 白名单，并列展示） -->
+    <!-- ② MCP 同步矩阵（勾选=平台开启 + 白名单） -->
     <Card v-if="mode !== 'models'" class="rounded-md">
       <CardHeader class="flex flex-row items-center justify-between space-y-0 pb-2">
         <div class="space-y-0.5">
-          <CardTitle class="text-base">③ MCP 同步过滤</CardTitle>
+          <CardTitle class="text-base">② MCP 同步矩阵</CardTitle>
           <CardDescription
-            >三个过滤维度：排除矩阵（全局/按平台）、平台白名单，优先级：白名单 →
-            排除。</CardDescription
+            >行 = 服务器（跨平台去重），列 = 平台，勾选 = 该平台开启。改动后到「③ 执行」点「按矩阵同步」落地到各平台。</CardDescription
           >
         </div>
         <div class="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            :disabled="runStatus === 'running'"
+            @click="startImportMcp"
+          >
+            <RiImportLine size="16" />导入各平台配置到源
+          </Button>
           <Button variant="outline" size="sm" :disabled="savingMcp" @click="openAddDialog">
             <RiAddLine size="16" />添加 MCP 工具
           </Button>
@@ -938,7 +1061,6 @@ onMounted(() => {
       </CardHeader>
       <CardContent class="space-y-6">
         <section>
-          <h4 class="mb-3 text-sm font-medium">排除矩阵</h4>
           <ExcludeMatrix
             :servers="allServers"
             :disabled="disabledServers"
@@ -948,75 +1070,27 @@ onMounted(() => {
             @edit="openEditServer"
           />
         </section>
-        <Separator />
-        <section class="space-y-3">
-          <div class="flex items-start justify-between gap-3">
-            <div class="min-w-0">
-              <h4 class="text-sm font-medium">仅以下平台执行 MCP 同步（--mcp-platforms）</h4>
-              <p class="mt-0.5 text-xs leading-5 text-muted-foreground">
-                未列出的平台将完全跳过 MCP 同步（⊘ 白名单外）。关闭开关 = 所有平台同步 MCP。
-              </p>
-            </div>
-            <Switch v-model="whitelistChecked" />
-          </div>
-          <div v-if="whitelistEnabled" class="flex flex-wrap gap-2 rounded-md border p-3">
-            <button
-              v-for="platform in platforms"
-              :key="platform.id"
-              type="button"
-              class="inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-sm transition-colors"
-              :class="
-                whitelist.includes(platform.id)
-                  ? 'border-primary bg-primary/10 text-primary'
-                  : 'border-border text-muted-foreground hover:border-primary/50'
-              "
-              :aria-pressed="whitelist.includes(platform.id)"
-              @click="toggleWhitelistPlatform(platform.id)"
-            >
-              <RiCheckLine v-if="whitelist.includes(platform.id)" size="14" />
-              {{ platform.name }}
-              <Badge
-                v-if="platform.mcpSync === 'unimplemented'"
-                variant="outline"
-                class="px-1 text-[10px]"
-                >未实现</Badge
-              >
-            </button>
-          </div>
-          <p
-            v-if="whitelistEnabled && !whitelist.length"
-            class="flex items-center gap-1.5 text-xs text-amber-600"
-          >
-            <RiInformationLine size="13" />
-            白名单为空：所有平台（含已选目标）的 MCP 同步都会被跳过。
-          </p>
-          <p
-            v-else-if="!whitelistEnabled"
-            class="flex items-center gap-1 text-sm text-muted-foreground"
-          >
-            <RiCheckLine size="14" class="text-primary" />
-            未限定：全部平台同步 MCP。
-          </p>
-        </section>
       </CardContent>
     </Card>
 
-    <!-- ④ 数据预览 -->
+    <!-- 数据预览（非操作步骤，纯展示） -->
     <CommandPreview
       :command="command"
+      :config-data="configPreview"
       :model-source="modelSource"
       :opencodex-models="opencodexModels"
       :enable-vision="enableVision"
       :on-toggle-vision="handleToggleVision"
+      :show-vision="false"
       :mcp-source-path="mcpSourcePath"
-      :mcp-enabled="enabledServers.length"
+      :mcp-enabled="allServers.length"
       :mcp-total="allServers.length"
     />
 
-    <!-- ⑤ 高级选项 + 操作区 -->
+    <!-- ③ 执行（高级选项 + 操作区） -->
     <Card class="rounded-md">
       <CardHeader>
-        <CardTitle class="text-base">⑤ 执行</CardTitle>
+        <CardTitle class="text-base">③ 执行</CardTitle>
         <CardDescription
           >预览（dry-run）只展示不写文件；开始同步前会弹确认，备份后写入各平台配置。</CardDescription
         >
@@ -1355,7 +1429,7 @@ onMounted(() => {
             <Textarea
               v-model="editJsonDraft"
               rows="14"
-              class="min-h-[45vh] w-full resize-y font-mono text-xs"
+              class="max-h-[60vh] w-full resize-none overflow-y-auto font-mono text-xs"
               spellcheck="false"
             />
           </TabsContent>
@@ -1388,7 +1462,7 @@ onMounted(() => {
           <Textarea
             v-model="jsonFileDraft"
             rows="18"
-            class="min-h-[55vh] w-full resize-y font-mono text-xs"
+            class="max-h-[60vh] w-full resize-none overflow-y-auto font-mono text-xs"
             spellcheck="false"
           />
         </div>
@@ -1427,7 +1501,7 @@ onMounted(() => {
 
     <!-- 帮助弹窗 -->
     <Dialog v-model:open="helpOpen">
-      <DialogContent class="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-2xl!">
+      <DialogContent class="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-4xl!">
         <DialogHeader>
           <DialogTitle>平台能力矩阵</DialogTitle>
           <DialogDescription>UnifyAI 同步到各平台的模型 / MCP 支持情况。</DialogDescription>

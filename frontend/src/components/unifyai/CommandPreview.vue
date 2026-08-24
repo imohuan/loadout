@@ -11,6 +11,7 @@ import {
   RiServerLine,
   RiBracesLine,
 } from '@remixicon/vue'
+import AxJsonViewer from '@/components/ui/AxJsonViewer.vue'
 import type {
   ModelSourceKind,
   ModelSourceStatus,
@@ -22,14 +23,18 @@ import { groupOpenCodexModels } from '@/lib/unifyai'
 const props = defineProps<{
   /** 实时拼装的 CLI 命令 */
   command: string
+  /** 同步配置对象（sync.json 内容，用 AxJsonViewer 可折叠展示） */
+  configData?: unknown
   /** 模型来源状态（文档 §5.2） */
   modelSource: ModelSourceStatus
   /** OpenCodex 代理模型列表（--list-models） */
   opencodexModels: OpenCodexModelsResult
-  /** 强制视觉开关（--enable-vision） */
+  /** 强制视觉开关（--enable-vision），仅在显示时必传（默认显示，顶部已独立放置时传 false 隐藏） */
   enableVision: boolean
   /** 切换强制视觉后重新拉取模型列表 */
   onToggleVision: (v: boolean) => void
+  /** 是否在本卡片内显示强制视觉开关（false = 移到外部独立位置） */
+  showVision?: boolean
   /** MCP 配置文件路径 */
   mcpSourcePath: string
   /** MCP 服务器启用数 / 总数 */
@@ -151,7 +156,7 @@ const opencodexExpanded = ref(false)
               <Badge v-if="opencodexModels.hasApiKey" variant="outline" class="font-normal">
                 Key {{ opencodexModels.apiKeyPreview }}
               </Badge>
-              <label class="ml-auto flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
+              <label v-if="showVision !== false" class="ml-auto flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
                 <span>强制视觉</span>
                 <Switch :model-value="enableVision" @update:model-value="onToggleVision" />
               </label>
@@ -212,6 +217,14 @@ const opencodexExpanded = ref(false)
         >
           {{ command }}
         </code>
+        <template v-if="configData !== undefined">
+          <p class="mt-2 flex items-center gap-1 text-xs font-medium text-muted-foreground">
+            <RiBracesLine size="13" />同步配置（sync.json 内容，执行前写入，实时更新）
+          </p>
+          <div class="max-h-64 overflow-y-auto rounded-md border bg-background p-3">
+            <AxJsonViewer :data="configData" :expand-level="2" :wrap-enabled="false" />
+          </div>
+        </template>
         <p class="mt-2 flex items-center gap-1 text-xs text-muted-foreground">
           <RiServerLine size="13" />
           复制到终端执行即可，等价于下方所有 UI 选项。

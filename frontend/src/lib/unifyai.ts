@@ -496,15 +496,86 @@ export function importKindBadgeClass(kind: McpImportKind): string {
   }
 }
 
+/** --list all --json 的 metadata 部分（OpenRouter 元数据缓存状态）。 */
+export interface McpMetadataStatus {
+  path: string
+  modelCount: number
+  cachedAt: string | null
+  degraded?: string
+}
+
+/** 后端 --list platforms / --list all 的原始平台结构（unifyai CLI 输出，含 modelStatus/mcpStatus）。 */
+export interface BackendPlatform {
+  id: string
+  name: string
+  supportsModels?: boolean
+  modelStatus?: string
+  supportsMcp?: boolean
+  mcpStatus?: string
+  configPath?: string
+  configFormat?: string
+}
+
+/** --list all --json 完整输出（前端初始化一次拉全全部配置）。 */
+export interface AllConfigResult {
+  platforms: BackendPlatform[]
+  models: OpenCodexModelsResult
+  mcp: McpMatrixResult
+  metadata: McpMetadataStatus
+}
+
+/**
+ * 一次获取全部配置（后端调 unifyai --list all --json）：
+ * 平台能力 + 模型列表 + MCP 矩阵 + 元数据缓存状态。
+ * 失败回落内置默认，保证页面可用。
+ */
+export async function fetchAllConfig(): Promise<AllConfigResult> {
+  try {
+    const res = await fetch('/api/unifyai/all')
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const data = (await res.json()) as AllConfigResult
+    return {
+      platforms: data.platforms ?? [],
+      models: data.models ?? INITIAL_OPENCODEX_MODELS,
+      mcp: data.mcp ?? { source: null, platforms: [] },
+      metadata: data.metadata ?? { path: '', modelCount: 0, cachedAt: null },
+    }
+  } catch (err) {
+    console.warn('[unifyai] 获取全部配置失败，使用内置默认', err)
+    return {
+      platforms: [],
+      models: INITIAL_OPENCODEX_MODELS,
+      mcp: { source: null, platforms: [] },
+      metadata: { path: '', modelCount: 0, cachedAt: null, degraded: '后端接口不可用' },
+    }
+  }
+}
+
+/** 同步配置文件路径（后端 ~/.unifyai/sync.json，命令预览与执行共用）。 */
+export const SYNC_CONFIG_PATH = '~/.unifyai/sync.json'
+
+/**
+ * 把前端当前同步配置写入 ~/.unifyai/sync.json（后端 PUT），返回实际路径。
+ * 执行同步前必须调用：sync.json 是 --config 引用的唯一配置来源。
+ */
+export async function saveSyncConfig(config: unknown): Promise<string> {
+  const res = await fetch('/api/unifyai/sync-config', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: typeof config === 'string' ? config : JSON.stringify(config),
+  })
+  if (!res.ok) throw new Error(`保存同步配置失败：HTTP ${res.status}`)
+  const data = (await res.json()) as { path?: string }
+  return data.path || SYNC_CONFIG_PATH
+}
+
 /**
  * 构建 CLI 参数数组（纯前端逻辑，无需后端）。命令预览与真实执行共用。
  *
- * 注意：每个 option 必须拆成「名 + 值」两个独立 argv 项，不能用一个含空格的
- * 字符串（如 `--platforms opencode,codex`）。CLI 用 commander，期望 `--platforms <list>`
- * 是两个 token；Go `exec.Command` 不会按空格再分词，含空格的 token 会被 commander
- * 当成未知 option 名。命令预览 buildCommand 用 join(' ') 拼，UI 看起来仍是合法命令。
+ * 统一走 --config：UI 状态先由 saveSyncConfig 落盘到 sync.json，执行/预览一律
+ * `--config <path>`（一个配置文件承载全部同步配置，替代旧的多个 flag 与内联 JSON）。
  */
-export function buildArgs(opts: {
+export function buildArgs(_opts: {
   mode: SyncMode
   all: boolean
   platforms: PlatformId[]
@@ -516,41 +587,81 @@ export function buildArgs(opts: {
   verbose: boolean
   /**
    * 多模态视觉开关（--enable-vision）。由前端「强制视觉」Switch 显式传入：
-   * true → 追加 --enable-vision；false / 未传 → 不追加。
+   * true → 配置 enableVision；false / 未传 → 不设置。
    */
   enableVision?: boolean
 }): string[] {
-  const args: string[] = []
-  if (opts.mode === 'models') args.push('--models-only')
-  if (opts.mode === 'mcp') args.push('--mcp-only')
-  if (opts.all) {
-    args.push('--all')
-  } else {
-    args.push('--platforms', opts.platforms.join(','))
-  }
-  if (opts.mcpPlatforms?.length) {
-    args.push('--mcp-platforms', opts.mcpPlatforms.join(','))
-  }
-  for (const name of opts.globalExcludes) {
-    args.push('--mcp-exclude', name)
-  }
-  // 同平台的多个服务器合并到同一参数（逗号分隔），等价于多次指定同一平台
-  for (const [platform, names] of Object.entries(opts.perPlatformExcludes)) {
-    if (names.length) args.push('--mcp-exclude-for', `${platform}=${names.join(',')}`)
-  }
-  if (opts.dryRun) args.push('--dry-run')
-  if (opts.source !== DEFAULT_SOURCE) {
-    args.push('--source', opts.source)
-  }
-  if (opts.verbose) args.push('--verbose')
-  // 视觉能力开关（--enable-vision）：只由「强制视觉」Switch 决定，命令预览与实际执行共用。
-  if (opts.enableVision) args.push('--enable-vision')
-  return args
+  return ['--config', SYNC_CONFIG_PATH]
 }
 
-/** 命令预览文本：npx unifyai@latest + 参数（与后端 resolveCmd 执行方式一致） */
-export function buildCommand(opts: Parameters<typeof buildArgs>[0]): string {
-  return ['npx', 'unifyai@latest', ...buildArgs(opts)].join(' ')
+/** 把 UI 选项映射为同步配置对象（saveSyncConfig 落盘的内容）。
+ * 包含模式/平台/MCP/视觉/源 + **模型源元数据**（url/port/hasApiKey/modelCount + 模型/平台列表），
+ * 让 sync.json 自描述，便于审计与复现。CLI 仅消费 mode/platforms/mcp/dryRun/enableVision/source/force。
+ */
+export function buildConfigObject(opts: Parameters<typeof buildArgs>[0] & {
+  /** 模型来源状态（拼装到 sync.json 的 modelSource 字段，仅元数据，CLI 不消费） */
+  modelSource?: McpMetadataStatus
+  /** OpenCodex 代理模型列表（仅 summary：provider + count，CLI 不消费） */
+  opencodexModels?: OpenCodexModelsResult
+  /** 后端平台列表（自描述，CLI 不消费；区别于 opts.platforms 同步目标平台 id 列表） */
+  backendPlatforms?: BackendPlatform[]
+}): Record<string, unknown> {
+  const cfg: Record<string, unknown> = {
+    mode: opts.mode,
+    all: opts.all,
+    platforms: opts.platforms,
+    dryRun: opts.dryRun,
+  }
+  if (opts.enableVision) cfg.enableVision = true
+  cfg.source = opts.source
+  if (opts.mcpPlatforms?.length) cfg.mcp = { platforms: opts.mcpPlatforms }
+  else cfg.mcp = {}
+  if (opts.globalExcludes.length) (cfg.mcp as Record<string, unknown>).exclude = opts.globalExcludes
+  const excludeFor: Record<string, string[]> = {}
+  for (const [platform, names] of Object.entries(opts.perPlatformExcludes)) {
+    if (names.length) excludeFor[platform] = names
+  }
+  if (Object.keys(excludeFor).length) (cfg.mcp as Record<string, unknown>).excludeFor = excludeFor
+
+  // 模型源元数据（CLI 不消费，仅自描述）：源 url / 端口 / 是否有 api key / 缓存模型数
+  if (opts.modelSource && (opts.modelSource.path || opts.modelSource.modelCount > 0 || opts.modelSource.cachedAt)) {
+    cfg.modelSource = {
+      kind: opts.modelSource.path ? 'openrouter' : 'none',
+      cachePath: opts.modelSource.path,
+      modelCount: opts.modelSource.modelCount,
+      cachedAt: opts.modelSource.cachedAt,
+    }
+  }
+
+  // 后端平台列表（仅 summary：id + 能力状态，CLI 不消费）
+  if (opts.backendPlatforms?.length) {
+    cfg.backendPlatforms = opts.backendPlatforms.map((p) => ({
+      id: p.id,
+      name: p.name,
+      modelStatus: p.modelStatus,
+      mcpStatus: p.mcpStatus,
+    }))
+  }
+
+  // OpenCodex 代理模型列表（仅 provider + count，CLI 不消费）
+  if (opts.opencodexModels?.models?.length) {
+    const summary: Record<string, number> = {}
+    for (const m of opts.opencodexModels.models) {
+      summary[m.provider] = (summary[m.provider] || 0) + 1
+    }
+    cfg.opencodexModels = {
+      total: opts.opencodexModels.count ?? opts.opencodexModels.models.length,
+      orMatched: opts.opencodexModels.orMatchedCount,
+      byProvider: summary,
+    }
+  }
+
+  return cfg
+}
+
+/** 命令预览文本：npx unifyai@latest --config <path>（与后端 resolveCmd 执行方式一致） */
+export function buildCommand(_opts: Parameters<typeof buildArgs>[0]): string {
+  return ['npx', 'unifyai@latest', '--config', SYNC_CONFIG_PATH].join(' ')
 }
 
 export const DEFAULT_SOURCE = '~/.opencodex/config.json'
@@ -569,4 +680,77 @@ export async function runSync(): Promise<void> {
  */
 export async function updateMetadata(): Promise<void> {
   console.warn(NOT_IMPLEMENTED)
+}
+
+// ============================================================================
+// MCP 同步矩阵（--list-mcp --json 数据层）
+// ============================================================================
+
+/** --list-mcp --json 中单个服务器条目（config 为平台/mcp.json 原始配置）。 */
+export interface McpMatrixServerItem {
+  name: string
+  enabled: boolean
+  config?: Record<string, unknown>
+}
+
+/** --list-mcp --json 的 source 字段（源 mcp.json 全集）。 */
+export interface McpMatrixSource {
+  path: string
+  servers: McpMatrixServerItem[]
+}
+
+/** --list-mcp --json 中单个平台的状态。 */
+export interface McpMatrixPlatform {
+  platform: string
+  name: string
+  configPath: string
+  /** false = 该平台 MCP 不可读（Reasonix），矩阵列禁用 */
+  readable: boolean
+  servers: McpMatrixServerItem[]
+}
+
+/** --list-mcp --json 完整输出。 */
+export interface McpMatrixResult {
+  source: McpMatrixSource | null
+  platforms: McpMatrixPlatform[]
+}
+
+/** 矩阵单元格三态：true=开启 / false=关闭 / undefined=该平台未配置（点击=添加）。 */
+export type McpMatrixCell = boolean | undefined
+
+/**
+ * 获取 MCP 矩阵数据（后端调 unifyai --list-mcp --json）。
+ * 失败返回空结构（前端回落内置默认），保证页面可用。
+ */
+export async function fetchMcpMatrix(): Promise<McpMatrixResult> {
+  try {
+    const res = await fetch('/api/unifyai/mcp-matrix')
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    return (await res.json()) as McpMatrixResult
+  } catch (err) {
+    console.warn('[unifyai] 获取 MCP 矩阵失败', err)
+    return { source: null, platforms: [] }
+  }
+}
+
+/** --import-mcp：合并各平台 MCP 配置到源 mcp.json。 */
+export const IMPORT_MCP_ARGS = ['--import-mcp']
+
+/** 把 UI 矩阵转置为同步配置对象的 mcp.matrix 结构（saveSyncConfig 落盘用）。 */
+export function buildMatrixConfig(
+  matrix: Record<string, Record<PlatformId, McpMatrixCell>>,
+): Record<string, unknown> {
+  const transposed: Record<string, Record<string, boolean>> = {}
+  for (const [name, row] of Object.entries(matrix)) {
+    for (const [pid, enabled] of Object.entries(row)) {
+      if (enabled === undefined) continue
+      if (!transposed[pid]) transposed[pid] = {}
+      transposed[pid][name] = enabled
+    }
+  }
+  const clean: Record<string, Record<string, boolean>> = {}
+  for (const [pid, entries] of Object.entries(transposed)) {
+    if (Object.keys(entries).length > 0) clean[pid] = entries
+  }
+  return { mcp: { matrix: clean } }
 }

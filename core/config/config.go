@@ -197,7 +197,6 @@ var SmartGroupHeader = "X-Loadout-Group" // env: LOADOUT_SMART_GROUP_HEADER
 // SkillInstallMode 技能安装方式："git"（git clone，可靠落盘到 ~/.loadout/skills）
 // 或 "npx"（npx skills CLI 下载后搬运）。
 var SkillInstallMode = "git" // env: LOADOUT_SKILL_INSTALL_MODE
-
 // SkillBodyMaxChars SKILL.md 通过 get 返回时的截断上限（字符）。
 var SkillBodyMaxChars = 20000 // env: LOADOUT_SKILL_BODY_MAX_CHARS
 
@@ -215,6 +214,14 @@ var SkillWatchDebounce = 1 * time.Second // env: LOADOUT_SKILL_WATCH_DEBOUNCE
 
 // SkillWatchPollInterval 定时全量扫描的间隔。
 var SkillWatchPollInterval = 5 * time.Minute // env: LOADOUT_SKILL_WATCH_POLL_INTERVAL
+
+// ============ unifyai ============
+
+// UnifyaiCmd unifyai CLI 的可执行命令（完整命令行，按空格分词，双引号可包路径）。
+// 空 = 默认 `npx -y unifyai@latest`（npx 自动安装）。
+// 本地开发/测试可指到源码：`node D:/Code/Git/unifyai/src/cli.mjs`。
+// env: LOADOUT_UNIFYAI_CMD
+var UnifyaiCmd string
 
 // ============ 视觉描述缓存 ============
 
@@ -280,6 +287,8 @@ func Load() {
 	SkillWatchPolling = boolEnv("LOADOUT_SKILL_WATCH_POLLING", false)
 	SkillWatchDebounce = durEnv("LOADOUT_SKILL_WATCH_DEBOUNCE", 1*time.Second)
 	SkillWatchPollInterval = durEnv("LOADOUT_SKILL_WATCH_POLL_INTERVAL", 5*time.Minute)
+
+	UnifyaiCmd = strEnv("LOADOUT_UNIFYAI_CMD", "")
 
 	VisionCacheEnabled = boolEnv("LOADOUT_VISION_CACHE_ENABLED", true)
 	VisionCacheTTLHours = intEnv("LOADOUT_VISION_CACHE_TTL_HOURS", 24*7)

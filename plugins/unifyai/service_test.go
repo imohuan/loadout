@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"loadout/core/config"
 )
 
 // TestPlatformInfoFallback 验证 CLI 不可用时回落内置默认平台（页面仍可用）。
@@ -194,5 +196,48 @@ func TestSaveMcpServersSingleSwitchField(t *testing.T) {
 	}
 	if ms["b"].(map[string]any)["disabled"] != false {
 		t.Errorf("b.disabled = %v, want false", ms["b"].(map[string]any)["disabled"])
+	}
+}
+
+// TestSplitCommandLine 验证 LOADOUT_UNIFYAI_CMD 的命令行分词（空格 + 双引号路径）。
+func TestSplitCommandLine(t *testing.T) {
+	cases := []struct {
+		in   string
+		want []string
+	}{
+		{`node D:/Code/Git/unifyai/src/cli.mjs`, []string{"node", "D:/Code/Git/unifyai/src/cli.mjs"}},
+		{`node "C:/Program Files/node/node.exe" --flag`, []string{"node", "C:/Program Files/node/node.exe", "--flag"}},
+		{`npx -y unifyai@latest`, []string{"npx", "-y", "unifyai@latest"}},
+		{``, nil},
+	}
+	for _, c := range cases {
+		got := splitCommandLine(c.in)
+		if len(got) != len(c.want) {
+			t.Errorf("splitCommandLine(%q) = %v, want %v", c.in, got, c.want)
+			continue
+		}
+		for i := range got {
+			if got[i] != c.want[i] {
+				t.Errorf("splitCommandLine(%q)[%d] = %q, want %q", c.in, i, got[i], c.want[i])
+			}
+		}
+	}
+}
+
+// TestResolveCmdConfigured 验证配置了 LOADOUT_UNIFYAI_CMD 时优先使用配置命令。
+func TestResolveCmdConfigured(t *testing.T) {
+	old := config.UnifyaiCmd
+	config.UnifyaiCmd = `node D:/Code/Git/unifyai/src/cli.mjs`
+	defer func() { config.UnifyaiCmd = old }()
+
+	cmd, base, err := resolveCmd()
+	if err != nil {
+		t.Fatalf("resolveCmd 不应报错: %v", err)
+	}
+	if cmd != "node" {
+		t.Errorf("cmd = %q, want node", cmd)
+	}
+	if strings.Join(base, " ") != "D:/Code/Git/unifyai/src/cli.mjs" {
+		t.Errorf("base = %v, want [D:/Code/Git/unifyai/src/cli.mjs]", base)
 	}
 }

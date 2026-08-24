@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"loadout/core/cmdutil"
+	"loadout/core/config"
 )
 
 // OpenRouterMeta 对应 openrouter-models.json 中单个模型的元数据条目
@@ -178,6 +179,34 @@ type ListPlatformsResult struct {
 	Platforms []Platform `json:"platforms"`
 }
 
+// McpMatrixServer 对应 --list-mcp --json 中单个服务器的条目（name/enabled/config 原始配置）。
+type McpMatrixServer struct {
+	Name    string          `json:"name"`
+	Enabled bool            `json:"enabled"`
+	Config  json.RawMessage `json:"config,omitempty"`
+}
+
+// McpSourceState 对应 --list-mcp --json 的 source 字段（源 mcp.json）。
+type McpSourceState struct {
+	Path    string            `json:"path"`
+	Servers []McpMatrixServer `json:"servers"`
+}
+
+// McpPlatformState 对应 --list-mcp --json 中单个平台的状态（可读性 + 服务器开关列表）。
+type McpPlatformState struct {
+	Platform   string            `json:"platform"`
+	Name       string            `json:"name"`
+	ConfigPath string            `json:"configPath"`
+	Readable   bool              `json:"readable"`
+	Servers    []McpMatrixServer `json:"servers"`
+}
+
+// McpMatrixResult 对应 --list-mcp --json 的完整输出（源 + 各平台），供前端渲染同步矩阵。
+type McpMatrixResult struct {
+	Source    *McpSourceState    `json:"source"`
+	Platforms []McpPlatformState `json:"platforms"`
+}
+
 // Service 是 UnifyAI CLI 桥接服务。
 type Service struct {
 	lg     *slog.Logger
@@ -245,6 +274,100 @@ func (s *Service) PlatformInfo() (ListPlatformsResult, error) {
 	return res, nil
 }
 
+// AllConfigResult 对应 `unifyai --list all --json` 的完整输出（前端一次获取全部配置）。
+// Models / Metadata 结构复杂且随 CLI 演进，用 RawMessage 透传，前端直接消费。
+type AllConfigResult struct {
+	Platforms []Platform      `json:"platforms"`
+	Models    json.RawMessage `json:"models"`
+	Mcp       McpMatrixResult `json:"mcp"`
+	Metadata  json.RawMessage `json:"metadata"`
+}
+
+// ListAll 解析 `unifyai --list all --json`，返回平台 + 模型 + MCP 矩阵 + 元数据缓存状态，
+// 前端初始化一次拉全（替代分别调 platforms / opencodex-models / mcp-matrix）。
+// CLI 不可用时返回空结构（前端回落内置默认），不报错。
+func (s *Service) ListAll() (AllConfigResult, error) {
+	var empty AllConfigResult
+	cmd, base, err := resolveCmd()
+	if err != nil {
+		s.lg.Warn("unifyai: --list all 获取失败（未找到 npx）", "err", err)
+		return empty, nil
+	}
+	args := append(append([]string{}, base...), "--list", "all", "--json")
+	proc := exec.Command(cmd, args...)
+	cmdutil.HideWindow(proc)
+	proc.Env = envWithBinDir(cmd)
+	out, err := proc.Output()
+	if err != nil {
+		s.lg.Warn("unifyai: --list all 执行失败", "err", err)
+		return empty, nil
+	}
+	var res AllConfigResult
+	if err := json.Unmarshal(out, &res); err != nil {
+		s.lg.Warn("unifyai: 解析 --list all JSON 失败", "err", err)
+		return empty, nil
+	}
+	return res, nil
+}
+
+// syncConfigPath 返回同步配置文件路径（前端把当前 UI 状态落盘后以 --config 引用）。
+func syncConfigPath() string {
+	return filepath.Join(osConfigHome(), "sync.json")
+}
+
+// osConfigHome 返回 unifyai 配置目录（~/.unifyai），与 CLI 的 resolveSourceMcp 一致。
+func osConfigHome() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ".unifyai"
+	}
+	return filepath.Join(home, ".unifyai")
+}
+
+// SaveSyncConfig 把同步配置 JSON 写入 ~/.unifyai/sync.json（前端保存当前 UI 状态用）。
+func (s *Service) SaveSyncConfig(cfg []byte) (string, error) {
+	p := syncConfigPath()
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(p, cfg, 0o644); err != nil {
+		return "", err
+	}
+	return p, nil
+}
+
+// SyncConfigPath 返回同步配置文件路径（前端命令预览展示用）。
+func (s *Service) SyncConfigPath() string {
+	return syncConfigPath()
+}
+
+// ListMcpMatrix 解析 `unifyai --list-mcp --json`，返回源 mcp.json + 各平台 MCP 开关状态，
+// 供前端「MCP 同步矩阵」渲染（行=去重服务器，列=平台，勾选=该平台开启）。
+// CLI 不可用 / 执行失败时返回空结果（前端回落内置默认），不报错。
+func (s *Service) ListMcpMatrix() (McpMatrixResult, error) {
+	var empty McpMatrixResult
+	cmd, base, err := resolveCmd()
+	if err != nil {
+		s.lg.Warn("unifyai: --list-mcp 获取失败（未找到 npx）", "err", err)
+		return empty, nil
+	}
+	args := append(append([]string{}, base...), "--list-mcp", "--json")
+	proc := exec.Command(cmd, args...)
+	cmdutil.HideWindow(proc) // 桌面 exe 下不弹黑色终端框
+	proc.Env = envWithBinDir(cmd)
+	out, err := proc.Output()
+	if err != nil {
+		s.lg.Warn("unifyai: --list-mcp 执行失败", "err", err)
+		return empty, nil
+	}
+	var res McpMatrixResult
+	if err := json.Unmarshal(out, &res); err != nil {
+		s.lg.Warn("unifyai: 解析 --list-mcp JSON 失败", "err", err)
+		return empty, nil
+	}
+	return res, nil
+}
+
 // Run 执行一次 unifyai 指令（args 为 CLI 参数，如 ["--all", "--dry-run"]），
 // 实时把 stdout/stderr 逐行回传给 onLog。返回进程退出错误（nil=成功）。
 func (s *Service) Run(args []string, onLog func(string)) error {
@@ -263,11 +386,23 @@ func (s *Service) Run(args []string, onLog func(string)) error {
 	return nil
 }
 
-// resolveCmd 返回 unifyai 执行入口：统一走 `npx -y unifyai@latest`。
+// resolveCmd 返回 unifyai 执行入口（cmd + 固定前缀参数）。
+// 优先级：
+//  1. LOADOUT_UNIFYAI_CMD（config.UnifyaiCmd）配置的命令行，按 shell 风格分词
+//     （双引号可包含空格的路径），例如 `node "D:/Code/Git/unifyai/src/cli.mjs"`；
+//  2. 默认统一走 `npx -y unifyai@latest`。
+//
 // npx 会自动拉取/复用 unifyai 包，无需本地仓库或全局安装，只要机器有 Node.js 环境。
 // 注意：`-y`（跳过 npx 的 "Ok to proceed?" 安装确认）必须放在包名【前面】，
 // 放在包名后会作为 unifyai 的参数传入，导致 `error: unknown option '-y'`。
 func resolveCmd() (string, []string, error) {
+	if cfg := config.UnifyaiCmd; cfg != "" {
+		parts := splitCommandLine(cfg)
+		if len(parts) == 0 {
+			return "", nil, fmt.Errorf("LOADOUT_UNIFYAI_CMD 无法解析: %q", cfg)
+		}
+		return parts[0], parts[1:], nil
+	}
 	npx, err := exec.LookPath("npx")
 	if err != nil {
 		// PATH 中找不到 npx（后台服务/systemd 启动时环境不完整），
@@ -280,6 +415,30 @@ func resolveCmd() (string, []string, error) {
 		return "", nil, fmt.Errorf("未找到 npx：请先安装 Node.js（unifyai 通过 npx 自动运行，无需额外安装）")
 	}
 	return npx, []string{"-y", "unifyai@latest"}, nil
+}
+
+// splitCommandLine 按空白分词，支持双引号包裹的路径/含空格参数（如 "C:/Program Files/..."）。
+func splitCommandLine(s string) []string {
+	var parts []string
+	var cur strings.Builder
+	inQuote := false
+	for _, r := range s {
+		switch {
+		case r == '"':
+			inQuote = !inQuote
+		case (r == ' ' || r == '\t') && !inQuote:
+			if cur.Len() > 0 {
+				parts = append(parts, cur.String())
+				cur.Reset()
+			}
+		default:
+			cur.WriteRune(r)
+		}
+	}
+	if cur.Len() > 0 {
+		parts = append(parts, cur.String())
+	}
+	return parts
 }
 
 // npxCandidates 按常见安装位置枚举 npx 完整路径（含 Windows 与 Linux）。
