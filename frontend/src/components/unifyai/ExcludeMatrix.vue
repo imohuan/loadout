@@ -124,104 +124,58 @@ const excludedCount = computed(() => {
           </TableRow>
         </TableHeader>
         <TableBody>
-          <TableRow
-            v-for="server in visibleServers"
-            :key="server.name"
-            :class="isDisabled(server.name) ? 'opacity-50' : ''"
-          >
+          <TableRow v-for="server in visibleServers" :key="server.name"
+            :class="isDisabled(server.name) ? 'opacity-50' : ''">
             <TableCell>
               <div class="flex min-w-0 items-center gap-2">
-                <Badge
-                  v-if="isServerGloballyExcluded(server.name)"
-                  variant="destructive"
-                  class="shrink-0 font-normal"
-                  >全局排除</Badge
-                >
-                <Badge
-                  v-else-if="isDisabled(server.name)"
-                  variant="outline"
-                  class="shrink-0 font-normal"
-                  >已禁用</Badge
-                >
-                <span
-                  class="truncate font-mono text-xs"
-                  :class="
-                    isServerGloballyExcluded(server.name) || isDisabled(server.name)
-                      ? 'text-muted-foreground'
-                      : ''
-                  "
-                  >{{ server.name }}</span
-                >
+                <Badge v-if="isServerGloballyExcluded(server.name)" variant="destructive" class="shrink-0 font-normal">
+                  全局排除</Badge>
+                <Badge v-else-if="isDisabled(server.name)" variant="outline" class="shrink-0 font-normal">已禁用</Badge>
+                <span class="truncate font-mono text-xs" :class="isServerGloballyExcluded(server.name) || isDisabled(server.name)
+                  ? 'text-muted-foreground'
+                  : ''
+                  ">{{ server.name }}</span>
               </div>
             </TableCell>
             <TableCell v-for="platform in columns" :key="platform.id" class="text-center">
-              <button
-                type="button"
+              <button type="button"
                 class="inline-grid size-6 place-items-center rounded-sm border transition-colors disabled:cursor-not-allowed disabled:opacity-60"
-                :class="
-                  isDisabled(server.name)
-                    ? 'cursor-not-allowed border-border/50 bg-muted/30 text-muted-foreground/40'
-                    : isCellExcluded(server.name, platform.id)
-                      ? 'border-destructive/50 bg-destructive/10 text-destructive'
-                      : 'border-border text-muted-foreground hover:border-primary/50 hover:text-primary'
-                "
-                :disabled="isDisabled(server.name)"
-                :aria-label="
-                  isDisabled(server.name)
+                :class="isDisabled(server.name)
+                  ? 'cursor-not-allowed border-border/50 bg-muted/30 text-muted-foreground/40'
+                  : isCellExcluded(server.name, platform.id)
+                    ? 'border-destructive/50 bg-destructive/10 text-destructive'
+                    : 'border-border text-muted-foreground hover:border-primary/50 hover:text-primary'
+                  " :disabled="isDisabled(server.name)" :aria-label="isDisabled(server.name)
                     ? `${server.name} 已禁用，无法调整排除`
                     : isCellExcluded(server.name, platform.id)
                       ? `恢复 ${server.name} 在 ${platform.name} 的同步`
                       : `排除 ${server.name} 在 ${platform.name} 的同步`
-                "
-                :aria-pressed="!isDisabled(server.name) && isCellExcluded(server.name, platform.id)"
-                @click="toggleCell(server.name, platform.id)"
-              >
-                <RiCloseLine
-                  v-if="!isDisabled(server.name) && isCellExcluded(server.name, platform.id)"
-                  size="14"
-                />
+                    " :aria-pressed="!isDisabled(server.name) && isCellExcluded(server.name, platform.id)"
+                @click="toggleCell(server.name, platform.id)">
+                <RiCloseLine v-if="!isDisabled(server.name) && isCellExcluded(server.name, platform.id)" size="14" />
                 <RiCheckLine v-else size="14" />
               </button>
             </TableCell>
             <TableCell class="text-right">
               <div class="flex justify-end gap-1">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  class="h-7 px-2 text-xs"
-                  :disabled="isDisabled(server.name)"
-                  @click="setRow(server.name, true)"
-                >
+                <Button variant="ghost" size="sm" class="h-8 px-2 text-xs" :disabled="isDisabled(server.name)"
+                  @click="setRow(server.name, true)">
                   排除全部
                 </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  class="h-7 px-2 text-xs"
+                <Button variant="ghost" size="sm" class="h-8 px-2 text-xs"
                   :disabled="isDisabled(server.name) || !isServerGloballyExcluded(server.name)"
-                  @click="setRow(server.name, false)"
-                >
+                  @click="setRow(server.name, false)">
                   恢复全部
                 </Button>
                 <TooltipProvider>
                   <Tooltip>
-                    <TooltipTrigger as-child
-                      ><Button
-                        variant="ghost"
-                        size="icon"
-                        class="size-7"
-                        :aria-label="
-                          isDisabled(server.name) ? `启用 ${server.name}` : `禁用 ${server.name}`
-                        "
-                        @click="toggleServerEnabled(server.name)"
-                      >
-                        <RiToggleFill
-                          v-if="isDisabled(server.name)"
-                          size="14"
-                          class="text-emerald-600"
-                        />
-                        <RiToggleLine v-else size="14" class="text-muted-foreground" /> </Button
-                    ></TooltipTrigger>
+                    <TooltipTrigger as-child>
+                      <Button variant="ghost" size="icon" class="size-8" :aria-label="isDisabled(server.name) ? `启用 ${server.name}` : `禁用 ${server.name}`
+                        " @click="toggleServerEnabled(server.name)">
+                        <RiToggleFill v-if="isDisabled(server.name)"  class="size-5 text-emerald-600" />
+                        <RiToggleLine v-else class="size-5 text-muted-foreground" />
+                      </Button>
+                    </TooltipTrigger>
                     <TooltipContent>
                       {{ isDisabled(server.name) ? '启用' : '禁用' }}
                     </TooltipContent>
@@ -229,31 +183,21 @@ const excludedCount = computed(() => {
                 </TooltipProvider>
                 <TooltipProvider>
                   <Tooltip>
-                    <TooltipTrigger as-child
-                      ><Button
-                        variant="ghost"
-                        size="icon"
-                        class="size-7 text-muted-foreground hover:text-destructive"
-                        :aria-label="`删除 ${server.name}`"
-                        @click="emit('remove', server.name)"
-                      >
-                        <RiDeleteBinLine size="14" /> </Button
-                    ></TooltipTrigger>
+                    <TooltipTrigger as-child><Button variant="ghost" size="icon"
+                        class="size-8 text-muted-foreground hover:text-destructive" :aria-label="`删除 ${server.name}`"
+                        @click="emit('remove', server.name)">
+                        <RiDeleteBinLine size="14" />
+                      </Button></TooltipTrigger>
                     <TooltipContent>删除</TooltipContent>
                   </Tooltip>
                 </TooltipProvider>
                 <TooltipProvider>
                   <Tooltip>
-                    <TooltipTrigger as-child
-                      ><Button
-                        variant="ghost"
-                        size="icon"
-                        class="size-7 text-muted-foreground hover:text-foreground"
-                        :aria-label="`编辑 ${server.name}`"
-                        @click="emit('edit', server)"
-                      >
-                        <RiEditLine size="14" /> </Button
-                    ></TooltipTrigger>
+                    <TooltipTrigger as-child><Button variant="ghost" size="icon"
+                        class="size-8 text-muted-foreground hover:text-foreground" :aria-label="`编辑 ${server.name}`"
+                        @click="emit('edit', server)">
+                        <RiEditLine size="14" />
+                      </Button></TooltipTrigger>
                     <TooltipContent>编辑</TooltipContent>
                   </Tooltip>
                 </TooltipProvider>
@@ -262,10 +206,8 @@ const excludedCount = computed(() => {
           </TableRow>
         </TableBody>
       </Table>
-      <div
-        v-if="!visibleServers.length"
-        class="flex min-h-32 flex-col items-center justify-center gap-1 border-t p-6 text-center"
-      >
+      <div v-if="!visibleServers.length"
+        class="flex min-h-32 flex-col items-center justify-center gap-1 border-t p-6 text-center">
         <RiFilterOffLine size="20" class="text-muted-foreground" />
         <p class="text-sm text-muted-foreground">
           {{ showExcludedOnly ? '当前没有全局排除的服务器。' : '没有可同步的 MCP 服务器。' }}

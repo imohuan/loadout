@@ -16,6 +16,8 @@ import {
   RiLoader4Line,
   RiRefreshLine,
   RiTestTubeLine,
+  RiToggleFill,
+  RiToggleLine,
 } from '@remixicon/vue'
 import PageHeader from '@/components/PageHeader.vue'
 import EmptyState from '@/components/EmptyState.vue'
@@ -428,7 +430,12 @@ async function copyConfig(endpoint: {
                                 ><Button
                                   variant="ghost"
                                   size="icon"
-                                  aria-label="切换状态"
+                                  class="size-8"
+                                  :aria-label="
+                                    server.enabled === false
+                                      ? `启用 ${server.name}`
+                                      : `禁用 ${server.name}`
+                                  "
                                   :disabled="mcp.isPending(`server:${server.id}:toggle`)"
                                   @click="mcp.toggleServer(server)"
                                 >
@@ -436,9 +443,17 @@ async function copyConfig(endpoint: {
                                     v-if="mcp.isPending(`server:${server.id}:toggle`)"
                                     class="animate-spin"
                                     size="16"
-                                  /><RiRefreshLine v-else size="16" /> </Button
+                                  /><RiToggleFill
+                                    v-else-if="server.enabled !== false"
+                                    class="size-5 text-emerald-600"
+                                  /><RiToggleLine
+                                    v-else
+                                    class="size-5 text-muted-foreground"
+                                  /> </Button
                               ></TooltipTrigger>
-                              <TooltipContent>切换状态</TooltipContent>
+                              <TooltipContent>{{
+                                server.enabled === false ? '启用' : '禁用'
+                              }}</TooltipContent>
                             </Tooltip>
                             <Tooltip>
                               <TooltipTrigger as-child
