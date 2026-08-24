@@ -7,6 +7,7 @@ import { RiArrowDownSLine, RiArrowRightSLine, RiRefreshLine } from '@remixicon/v
 import { toast } from 'vue-sonner'
 import DataPagination from '@/components/DataPagination.vue'
 import LoadingBlock from '@/components/LoadingBlock.vue'
+import SplitPane from '@/components/SplitPane.vue'
 import { getMcpInvocations } from '@/lib/api'
 import type { McpInvocation } from '@/lib/types'
 
@@ -14,6 +15,8 @@ const loading = ref(false)
 const items = ref<McpInvocation[]>([])
 const total = ref(0)
 const expanded = ref<Set<number>>(new Set())
+// 请求序号：快速切筛选/翻页时只采纳最后一次请求的结果，防止旧响应覆盖新数据。
+let reqSeq = 0
 
 const filters = reactive<{
   kind: string
@@ -24,6 +27,7 @@ const filters = reactive<{
 }>({ kind: '', tool: '', auth: '', page: 1, pageSize: 20 })
 
 async function load() {
+  const seq = ++reqSeq
   loading.value = true
   try {
     const page = await getMcpInvocations({
@@ -33,12 +37,14 @@ async function load() {
       tool: filters.tool || undefined,
       auth: filters.auth || undefined,
     })
+    if (seq !== reqSeq) return // 已有更新的请求，丢弃本次结果
     items.value = page.items
     total.value = page.total
   } catch (e) {
+    if (seq !== reqSeq) return
     toast.error('加载工具调用日志失败', { description: (e as Error).message })
   } finally {
-    loading.value = false
+    if (seq === reqSeq) loading.value = false
   }
 }
 
@@ -46,6 +52,15 @@ function applyFilter() {
   filters.page = 1
   expanded.value.clear()
   load()
+}
+// Vue 模板内联表达式只允许单表达式，筛选赋值 + 重载要抽成函数（不能用分号多语句）。
+function onKindChange(v: string) {
+  filters.kind = v === 'all' ? '' : v
+  applyFilter()
+}
+function onAuthChange(v: string) {
+  filters.auth = v === 'all' ? '' : v
+  applyFilter()
 }
 function toggleRow(id: number) {
   const next = new Set(expanded.value)
@@ -61,7 +76,11 @@ const KIND_CLASS: Record<string, string> = {
   group: 'border-violet-500/20 bg-violet-500/15 text-violet-700 dark:text-violet-300',
   $smart: 'border-amber-500/20 bg-amber-500/15 text-amber-700 dark:text-amber-300',
 }
-const AUTH_LABEL: Record<string, string> = { session: 'session', 'mcp-key': 'mcp-key', public: 'public' }
+const AUTH_LABEL: Record<string, string> = {
+  session: 'session',
+  'mcp-key': 'mcp-key',
+  public: 'public',
+}
 const RESULT_LABEL: Record<string, string> = {
   success: '成功',
   error: '失败',
@@ -116,10 +135,7 @@ onMounted(load)
            用 "all" 占位并在 update 时映射回空串表示不过滤。 -->
       <Select
         :model-value="filters.kind"
-        @update:model-value="
-          filters.kind = $event === 'all' ? '' : $event;
-          applyFilter()
-        "
+        @update:model-value="onKindChange"
       >
         <SelectTrigger class="h-9 w-[130px]">
           <SelectValue placeholder="类型" />
@@ -136,7 +152,7 @@ onMounted(load)
       <Select
         :model-value="filters.auth"
         @update:model-value="
-          filters.auth = $event === 'all' ? '' : $event;
+          filters.auth = $event === 'all' ? '' : $event
           applyFilter()
         "
       >
@@ -206,7 +222,9 @@ onMounted(load)
                   <RiArrowRightSLine v-else size="16" class="text-muted-foreground" />
                 </TableCell>
                 <TableCell class="py-2">
-                  <span class="whitespace-nowrap text-xs tabular-nums">{{ fmtTime(row.started_at) }}</span>
+                  <span class="whitespace-nowrap text-xs tabular-nums">{{
+                    fmtTime(row.started_at)
+                  }}</span>
                 </TableCell>
                 <TableCell class="py-2">
                   <Badge variant="outline" :class="kindClass(row.aggregate_kind)">{{
@@ -230,7 +248,9 @@ onMounted(load)
                   <span class="text-xs text-muted-foreground">{{ authLabel(row.auth_kind) }}</span>
                 </TableCell>
                 <TableCell class="py-2 text-right">
-                  <span class="text-xs tabular-nums text-muted-foreground">{{ row.duration_ms }} ms</span>
+                  <span class="text-xs tabular-nums text-muted-foreground"
+                    >{{ row.duration_ms }} ms</span
+                  >
                 </TableCell>
                 <TableCell class="py-2">
                   <Badge variant="outline" :class="resultClass(row.result)">{{
@@ -241,27 +261,29 @@ onMounted(load)
               <!-- 展开行：输入/输出 JSON -->
               <TableRow v-if="expanded.has(row.id)" class="bg-muted/30">
                 <TableCell class="py-2" :colspan="8">
-                  <div class="grid gap-3 md:grid-cols-2">
-                    <div class="min-w-0">
-                      <div class="mb-1 text-xs font-medium text-muted-foreground">输入</div>
-                      <pre
-                        class="max-h-64 overflow-auto rounded-md border bg-background p-2 text-xs whitespace-pre-wrap break-all"
-                        >{{ fmtJSON(row.input_json) || '—' }}</pre
-                      >
-                    </div>
-                    <div class="min-w-0">
-                      <div class="mb-1 text-xs font-medium text-muted-foreground">输出</div>
-                      <pre
-                        class="max-h-64 overflow-auto rounded-md border bg-background p-2 text-xs whitespace-pre-wrap break-all"
-                        >{{ fmtJSON(row.output_json) || '—' }}</pre
-                      >
-                    </div>
-                  </div>
+                  <SplitPane :min-left="200" :min-right="200" :initial="0.5">
+                    <template #left>
+                      <div class="flex h-full flex-col pr-1">
+                        <div class="mb-1 text-xs font-medium text-muted-foreground">输入</div>
+                        <pre
+                          class="m-0 max-h-64 flex-1 overflow-auto rounded-md border bg-background p-2 text-xs whitespace-pre-wrap break-all"
+                          >{{ fmtJSON(row.input_json) || '—' }}</pre>
+                      </div>
+                    </template>
+                    <template #right>
+                      <div class="flex h-full flex-col pl-1">
+                        <div class="mb-1 text-xs font-medium text-muted-foreground">输出</div>
+                        <pre
+                          class="m-0 max-h-64 flex-1 overflow-auto rounded-md border bg-background p-2 text-xs whitespace-pre-wrap break-all"
+                          >{{ fmtJSON(row.output_json) || '—' }}</pre>
+                      </div>
+                    </template>
+                  </SplitPane>
                   <div v-if="row.error_message" class="mt-2">
                     <div class="mb-1 text-xs font-medium text-red-600 dark:text-red-400">错误</div>
-                    <pre class="rounded-md border border-red-500/20 bg-red-500/5 p-2 text-xs whitespace-pre-wrap break-all text-red-700 dark:text-red-300">{{
-                      row.error_message
-                    }}</pre>
+                    <pre
+                      class="rounded-md border border-red-500/20 bg-red-500/5 p-2 text-xs whitespace-pre-wrap break-all text-red-700 dark:text-red-300"
+                      >{{ row.error_message }}</pre>
                   </div>
                 </TableCell>
               </TableRow>

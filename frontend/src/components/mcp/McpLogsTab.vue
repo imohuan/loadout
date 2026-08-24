@@ -533,7 +533,7 @@ onMounted(loadServers)
         <template v-if="detailLine?.msgJson">
           <div class="flex items-center justify-between">
             <span class="text-xs text-muted-foreground">格式化 JSON</span>
-            <Switch :model-value="showFormatted" @update:model-value="(v) => (showFormatted = v)" />
+            <Switch :model-value="showFormatted" @update:model-value="(v: boolean) => (showFormatted = v)" />
           </div>
           <pre
             v-if="showFormatted"

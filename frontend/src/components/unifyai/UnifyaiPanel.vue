@@ -30,7 +30,6 @@ import {
   PLATFORMS,
   SYNC_CONFIG_PATH,
   type BackendPlatform,
-  type McpMetadataStatus,
   buildArgs,
   buildCommand,
   buildConfigObject,
@@ -747,7 +746,7 @@ const commandOpts = computed(() => ({
 const command = computed(() => buildCommand(commandOpts.value))
 
 /** sync.json 配置内容预览：始终显示完整配置（全量 + 矩阵合并），实时反映所有 UI 改动 */
-const configPreview = computed(() => buildSyncConfig(dryRunMode.value))
+const configPreview = computed(() => buildSyncConfig())
 
 // ---------- 执行（真实 unifyai CLI，经后端 SSE 流式日志） ----------
 const runTrigger = ref(0)
@@ -784,40 +783,27 @@ async function executeWithArgs(args: string[], dryRun = false, config?: unknown)
   runTrigger.value++ // 触发 StreamLogPanel 连接 SSE（后端自动启动任务）
 }
 
-/** 构造完整 sync.json 配置（带模型源/平台/模型元数据，CLI 仅消费 mode/platforms/mcp/dryRun/source/enableVision/force） */
-function buildFullConfig(dryRun: boolean) {
-  const modelSourceSummary: McpMetadataStatus = {
-    path: modelSource.value.kind === 'openrouter' ? '~/.unifyai/cache/openrouter-models.json' : '',
-    modelCount: modelSource.value.modelCount,
-    cachedAt: modelSource.value.cachedAt || null,
-  }
-  return buildConfigObject({
-    ...commandOpts.value,
-    dryRun,
-    modelSource: modelSourceSummary,
-    opencodexModels: opencodexModels.value,
-    backendPlatforms: platforms.value as unknown as BackendPlatform[],
-  })
+/** 构造完整 sync.json 配置（仅 CLI 执行所需字段：mode/platforms/mcp/enableVision/source） */
+function buildFullConfig() {
+  return buildConfigObject({ ...commandOpts.value, dryRun: false })
 }
 
 /**
- * 完整 sync.json（预览与矩阵执行共用）：全量配置 + 当前矩阵（有勾选时合并进 mcp.matrix）。
- * computed 依赖 commandOpts / matrix / dryRunMode / modelSource / opencodexModels / platforms，
- * 任何 UI 改动（模式/平台/矩阵/视觉/dry-run）都会实时反映到预览。
+ * 完整 sync.json（预览与执行共用）：全量配置 + 当前矩阵（有勾选时合并进 mcp.matrix）。
+ * computed 依赖 commandOpts / matrix，任何 UI 改动（模式/平台/矩阵/视觉）都会实时反映到预览。
  */
-function buildSyncConfig(dryRun: boolean) {
-  const cfg = buildFullConfig(dryRun) as { mcp?: Record<string, unknown> }
-  const matrixCfg = buildMatrixConfig(matrix.value) as { mcp: { matrix?: Record<string, unknown> } }
-  const matrixObj = matrixCfg.mcp.matrix
-  if (matrixObj && Object.keys(matrixObj).length) {
-    cfg.mcp = { ...(cfg.mcp || {}), matrix: matrixObj }
-  }
+function buildSyncConfig() {
+  const cfg = buildFullConfig() as { mcp?: Record<string, unknown> }
+  const matrixObj = (buildMatrixConfig(matrix.value) as { mcp: { matrix?: Record<string, unknown> } }).mcp.matrix
+  // 矩阵无条件写入（空对象也写）：确保 CLI 走矩阵模式而不是全量同步——
+  // 用户全部删除时矩阵为空，此时仍要触发 forceMcp 清空目标平台
+  cfg.mcp = { ...(cfg.mcp || {}), matrix: matrixObj || {} }
   return cfg
 }
 
 /** 全量同步（统一入口）：先落盘完整 sync.json（含矩阵勾选，CLI 自动分发矩阵/全量）再执行 */
 function execute(dryRun: boolean) {
-  executeWithArgs(buildArgs({ ...commandOpts.value, dryRun }), dryRun, buildSyncConfig(dryRun))
+  executeWithArgs(buildArgs({ ...commandOpts.value, dryRun }), dryRun, buildSyncConfig())
 }
 
 function onRunDone(exitCode: string) {
@@ -843,25 +829,14 @@ const pendingRun = ref<{ args: string[]; dryRun: boolean; config?: unknown } | n
 
 function startSync() {
   const warnings: string[] = []
-  const targets = allPlatforms.value
-    ? platforms.value
-    : platforms.value.filter((p) => selectedPlatforms.value.includes(p.id))
-  const hasOpenCode = targets.some((p) => p.id === 'opencode')
-  const hasClaude = targets.some((p) => p.id === 'claudecode')
-  // 检测矩阵是否有勾选（有 → CLI 按矩阵同步，仅 MCP）
-  const matrixCfg = buildMatrixConfig(matrix.value) as { mcp?: { matrix?: Record<string, unknown> } }
-  const hasMatrix = !!matrixCfg.mcp?.matrix && Object.keys(matrixCfg.mcp.matrix).length > 0
-  if (hasMatrix) {
+  // UI 恒开 forceMcp（sync.json 写死 forceMcp: true）：目标平台未在矩阵中的 MCP 将被删除（重置语义）。
+  // 仅模型模式（mode=models）不动 MCP，无需该警告。
+  if (mode.value !== 'models') {
     warnings.push(
-      '检测到矩阵勾选：本次将按矩阵批量同步 MCP（--config 含 mcp.matrix）——开启（未配置的自动添加）、关闭（OpenCode/Codex 写 enabled:false，Claude/Penguin 移除条目）。',
+      'MCP 将按矩阵重置（forceMcp 开启）：目标平台存在但矩阵未勾选/未配置的服务器会被删除，勾选=开启、右键=关闭、未勾选=删除。',
     )
   }
-  if (mode.value !== 'mcp' && hasOpenCode)
-    warnings.push('OpenCode：模型同步将清空重写 provider 配置，手动配置的其他 provider 会被清除。')
-  if (targets.length) warnings.push('目标平台配置文件将被覆盖，执行时自动备份为 .bak-{时间戳}。')
-  if (mode.value !== 'models' && hasClaude)
-    warnings.push('Claude Code：enabled:false 的服务器将从配置中删除（而非禁用）。')
-  const config = buildSyncConfig(false)
+  const config = buildSyncConfig()
   pendingRun.value = {
     args: ['--config', SYNC_CONFIG_PATH],
     dryRun: false,

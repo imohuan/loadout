@@ -6,7 +6,8 @@
 //
 // 同步模型（与 UI-DESIGN-SPEC.md §1 一致）：
 //   - 模型：全量覆盖写平台配置（源：OpenCodex 代理 / Provider API）
-//   - MCP ：增量合并（源：./mcp.json 或 ~/.unifyai/mcp.json），同名覆盖保留未同步项
+//   - MCP ：矩阵驱动（源：./mcp.json 或 ~/.unifyai/mcp.json）——勾选=开启/添加、未勾选不碰、
+//           forceMcp 开启时（UI 默认 true）目标平台未在矩阵中的服务器将被删除（重置语义）
 // ============================================================================
 
 // ---- 平台能力矩阵（对应文档 §2，代码内 ADAPTERS 常量的 UI 镜像） ----
@@ -591,29 +592,27 @@ export function buildArgs(_opts: {
    */
   enableVision?: boolean
 }): string[] {
-  return ['--config', SYNC_CONFIG_PATH]
+  const args = ['--config', SYNC_CONFIG_PATH]
+  // dryRun 不进 sync.json，作为 CLI flag 传入（--config 与 --dry-run 可叠加）
+  if (_opts.dryRun) args.push('--dry-run')
+  return args
 }
 
 /** 把 UI 选项映射为同步配置对象（saveSyncConfig 落盘的内容）。
- * 包含模式/平台/MCP/视觉/源 + **模型源元数据**（url/port/hasApiKey/modelCount + 模型/平台列表），
- * 让 sync.json 自描述，便于审计与复现。CLI 仅消费 mode/platforms/mcp/dryRun/enableVision/source/force。
+ * 包含模式/平台/MCP/视觉/源，CLI 仅消费 mode/platforms/mcp/enableVision/source/forceMcp。
  */
-export function buildConfigObject(opts: Parameters<typeof buildArgs>[0] & {
-  /** 模型来源状态（拼装到 sync.json 的 modelSource 字段，仅元数据，CLI 不消费） */
-  modelSource?: McpMetadataStatus
-  /** OpenCodex 代理模型列表（仅 summary：provider + count，CLI 不消费） */
-  opencodexModels?: OpenCodexModelsResult
-  /** 后端平台列表（自描述，CLI 不消费；区别于 opts.platforms 同步目标平台 id 列表） */
-  backendPlatforms?: BackendPlatform[]
-}): Record<string, unknown> {
+export function buildConfigObject(opts: Parameters<typeof buildArgs>[0]): Record<string, unknown> {
   const cfg: Record<string, unknown> = {
     mode: opts.mode,
-    all: opts.all,
-    platforms: opts.platforms,
-    dryRun: opts.dryRun,
+    // all 与 platforms 二选一：all=true 时只写 all，不写 platforms（CLI 以 all 为准）
+    ...(opts.all ? { all: true } : { platforms: opts.platforms }),
   }
+  // dryRun 不写入 sync.json，由 CLI --dry-run flag 传入
   if (opts.enableVision) cfg.enableVision = true
   cfg.source = opts.source
+  // 强制重置 MCP：默认开启（目标平台现有但不在同步列表的服务器全部禁用/移除），
+  // UI 不提供开关，想关闭需手动改 sync.json 的 forceMcp: false
+  cfg.forceMcp = true
   if (opts.mcpPlatforms?.length) cfg.mcp = { platforms: opts.mcpPlatforms }
   else cfg.mcp = {}
   if (opts.globalExcludes.length) (cfg.mcp as Record<string, unknown>).exclude = opts.globalExcludes
@@ -622,39 +621,6 @@ export function buildConfigObject(opts: Parameters<typeof buildArgs>[0] & {
     if (names.length) excludeFor[platform] = names
   }
   if (Object.keys(excludeFor).length) (cfg.mcp as Record<string, unknown>).excludeFor = excludeFor
-
-  // 模型源元数据（CLI 不消费，仅自描述）：源 url / 端口 / 是否有 api key / 缓存模型数
-  if (opts.modelSource && (opts.modelSource.path || opts.modelSource.modelCount > 0 || opts.modelSource.cachedAt)) {
-    cfg.modelSource = {
-      kind: opts.modelSource.path ? 'openrouter' : 'none',
-      cachePath: opts.modelSource.path,
-      modelCount: opts.modelSource.modelCount,
-      cachedAt: opts.modelSource.cachedAt,
-    }
-  }
-
-  // 后端平台列表（仅 summary：id + 能力状态，CLI 不消费）
-  if (opts.backendPlatforms?.length) {
-    cfg.backendPlatforms = opts.backendPlatforms.map((p) => ({
-      id: p.id,
-      name: p.name,
-      modelStatus: p.modelStatus,
-      mcpStatus: p.mcpStatus,
-    }))
-  }
-
-  // OpenCodex 代理模型列表（仅 provider + count，CLI 不消费）
-  if (opts.opencodexModels?.models?.length) {
-    const summary: Record<string, number> = {}
-    for (const m of opts.opencodexModels.models) {
-      summary[m.provider] = (summary[m.provider] || 0) + 1
-    }
-    cfg.opencodexModels = {
-      total: opts.opencodexModels.count ?? opts.opencodexModels.models.length,
-      orMatched: opts.opencodexModels.orMatchedCount,
-      byProvider: summary,
-    }
-  }
 
   return cfg
 }
@@ -715,8 +681,14 @@ export interface McpMatrixResult {
   platforms: McpMatrixPlatform[]
 }
 
-/** 矩阵单元格三态：true=开启 / false=关闭 / undefined=该平台未配置（点击=添加）。 */
-export type McpMatrixCell = boolean | undefined
+/**
+ * 矩阵单元格四态：
+ * - true = 开启（写 enabled:true）
+ * - false = 关闭（OpenCode/Codex 写 enabled:false，Claude/Penguin 移除）
+ * - 'remove' = 删除条目（所有平台直接删配置）
+ * - undefined = 该平台未配置（点击=添加）
+ */
+export type McpMatrixCell = boolean | 'remove' | undefined
 
 /**
  * 获取 MCP 矩阵数据（后端调 unifyai --list-mcp --json）。
@@ -740,15 +712,15 @@ export const IMPORT_MCP_ARGS = ['--import-mcp']
 export function buildMatrixConfig(
   matrix: Record<string, Record<PlatformId, McpMatrixCell>>,
 ): Record<string, unknown> {
-  const transposed: Record<string, Record<string, boolean>> = {}
+  const transposed: Record<string, Record<string, boolean | 'remove'>> = {}
   for (const [name, row] of Object.entries(matrix)) {
-    for (const [pid, enabled] of Object.entries(row)) {
-      if (enabled === undefined) continue
+    for (const [pid, cell] of Object.entries(row)) {
+      if (cell === undefined) continue
       if (!transposed[pid]) transposed[pid] = {}
-      transposed[pid][name] = enabled
+      transposed[pid][name] = cell
     }
   }
-  const clean: Record<string, Record<string, boolean>> = {}
+  const clean: Record<string, Record<string, boolean | 'remove'>> = {}
   for (const [pid, entries] of Object.entries(transposed)) {
     if (Object.keys(entries).length > 0) clean[pid] = entries
   }

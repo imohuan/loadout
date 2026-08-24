@@ -222,7 +222,7 @@ const opencodexExpanded = ref(false)
             <RiBracesLine size="13" />同步配置（sync.json 内容，执行前写入，实时更新）
           </p>
           <div class="max-h-64 overflow-y-auto rounded-md border bg-background p-3">
-            <AxJsonViewer :data="configData" :expand-level="2" :wrap-enabled="false" />
+            <AxJsonViewer :data="configData" :expand-level="3" :default-expand-all="true" :wrap-enabled="false" />
           </div>
         </template>
         <p class="mt-2 flex items-center gap-1 text-xs text-muted-foreground">

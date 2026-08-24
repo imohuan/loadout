@@ -246,7 +246,8 @@ func (s *Service) parseAggregate(endpoint string) (kind, target string) {
 }
 
 // Stats 返回过去 days 天的 trend + 双 top 排行。top<=0 时默认 5。
-func (s *Service) Stats(ctx context.Context, days, top int) (*McpStats, error) {	if top <= 0 {
+func (s *Service) Stats(ctx context.Context, days, top int) (*McpStats, error) {
+	if top <= 0 {
 		top = 5
 	}
 	cutoff := time.Now().UTC().AddDate(0, 0, -days).Format(time.RFC3339Nano)
