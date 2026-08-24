@@ -134,6 +134,8 @@ func (s *Service) Routes() []plugin.RouteSpec {
 		{Method: http.MethodGet, Pattern: "GET /api/mcp-tools", Auth: plugin.AuthSession, Handler: s.session(s.handleMCPToolsList)},
 		{Method: http.MethodGet, Pattern: "GET /api/mcp-tools/schema", Auth: plugin.AuthSession, Handler: s.session(s.handleMCPToolSchema)},
 		{Method: http.MethodPost, Pattern: "POST /api/mcp-tools/call", Auth: plugin.AuthSession, Handler: s.session(s.handleMCPToolCall)},
+		// 工具调用日志（mcp_invocations 明细）：分页 + kind/tool/server/auth/from/to 过滤
+		{Method: http.MethodGet, Pattern: "GET /api/mcp-invocations", Auth: plugin.AuthSession, Handler: s.session(s.handleMCPInvocationsList)},
 
 		// 工具状态
 		{Method: http.MethodGet, Pattern: "GET /api/tools-state", Auth: plugin.AuthSession, Handler: s.session(s.handleToolsStateGet)},
@@ -1586,7 +1588,8 @@ func (s *Service) handleMCPToolCall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// 复用生产路由：连接池连接 + 索引路由 + 完整帧日志 + 埋点，与网关调用完全一致。
-	ctx, cancel := context.WithTimeout(r.Context(), mcpConnectTimeout)
+	// 认证方式标记为 session（管理后台测试调用），供工具调用日志记录 auth_kind。
+	ctx, cancel := context.WithTimeout(plugin.WithAuthKind(r.Context(), plugin.AuthSession), mcpConnectTimeout)
 	defer cancel()
 	result, err := s.hub.InvokeTool(ctx, req.ServerID, req.ToolName, req.Arguments)
 	if err != nil {
@@ -1594,6 +1597,54 @@ func (s *Service) handleMCPToolCall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+// handleMCPInvocationsList 分页查询 mcp_invocations 工具调用日志。
+// GET /api/mcp-invocations?kind=&tool=&server=&auth=&from=&to=&page=&page_size=
+// 响应 {items: [...], total: N}。
+func (s *Service) handleMCPInvocationsList(w http.ResponseWriter, r *http.Request) {
+	if s.hub == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"items": []any{}, "total": 0})
+		return
+	}
+	q := r.URL.Query()
+	page, err := parsePositiveInt(q.Get("page"), 1)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "page 必须是正整数")
+		return
+	}
+	size, err := parsePositiveInt(q.Get("page_size"), 20)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "page_size 必须是正整数")
+		return
+	}
+	pageInfo, err := s.hub.ListInvocations(r.Context(), mcphub.InvocationQuery{
+		Kind:   q.Get("kind"),
+		Tool:   q.Get("tool"),
+		Server: q.Get("server"),
+		Auth:   q.Get("auth"),
+		From:   q.Get("from"),
+		To:     q.Get("to"),
+		Page:   page,
+		Size:   size,
+	})
+	if err != nil {
+		s.writeServerError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": pageInfo.Items, "total": pageInfo.Total})
+}
+
+// parsePositiveInt 解析正整数 query 参数；缺省/空返回 def，非法返回错误。
+func parsePositiveInt(s string, def int) (int, error) {
+	if strings.TrimSpace(s) == "" {
+		return def, nil
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil || n < 1 {
+		return 0, fmt.Errorf("invalid positive int: %q", s)
+	}
+	return n, nil
 }
 
 // ===== 工具状态 =====

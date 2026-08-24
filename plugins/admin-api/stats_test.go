@@ -26,7 +26,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// mcpInvocationsSchema 与 mcp-hub 包内建表 SQL 保持一致（测试装置用）。
+// mcpInvocationsSchema 与 mcp-hub 包内建表 SQL 保持一致（测试装置用；含 v2 三列）。
 const mcpInvocationsSchema = `CREATE TABLE IF NOT EXISTS mcp_invocations (
   id                INTEGER PRIMARY KEY AUTOINCREMENT,
   started_at        TEXT    NOT NULL,
@@ -38,7 +38,10 @@ const mcpInvocationsSchema = `CREATE TABLE IF NOT EXISTS mcp_invocations (
   result            TEXT    NOT NULL,
   http_status       INTEGER,
   duration_ms       INTEGER NOT NULL,
-  error_message     TEXT
+  error_message     TEXT,
+  input_json        TEXT,
+  output_json       TEXT,
+  auth_kind         TEXT
 );`
 
 // newStatsTestServer 装配带真实 mcp-hub 与 route-log 的完整管理后台服务：

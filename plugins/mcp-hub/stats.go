@@ -98,22 +98,23 @@ func ensureColumns(db *sql.DB) error {
 }
 
 // InvocationRecord 是一次 MCP 工具调用的记录,由 RecordInvocation 写入 mcp_invocations。
+// json tag 用于 ListInvocations 的 API 序列化（snake_case 契约）。
 type InvocationRecord struct {
-	ID              int    // 自增主键（查询回读用；写入时忽略）
-	StartedAt       string
-	FinishedAt      *string
-	AggregateKind   string // 'single' / 'group' / '$smart'
-	AggregateTarget *string
-	ToolName        string
-	ServerName      string
-	Result          string // 'success' / 'error' / 'not_found' / 'timeout' / 'denied'
-	HTTPStatus      int
-	DurationMS      int
-	ErrorMessage    string
+	ID              int     `json:"id"`               // 自增主键（查询回读用；写入时忽略）
+	StartedAt       string  `json:"started_at"`       //
+	FinishedAt      *string `json:"finished_at"`      //
+	AggregateKind   string  `json:"aggregate_kind"`   // 'single' / 'group' / '$smart'
+	AggregateTarget *string `json:"aggregate_target"` //
+	ToolName        string  `json:"tool_name"`        //
+	ServerName      string  `json:"server_name"`      //
+	Result          string  `json:"result"`           // 'success' / 'error' / 'not_found' / 'timeout' / 'denied'
+	HTTPStatus      int     `json:"http_status"`      //
+	DurationMS      int     `json:"duration_ms"`      //
+	ErrorMessage    string  `json:"error_message"`    //
 	// v2 新增：工具调用入参/出参 JSON 与认证方式（老数据为 NULL）。
-	InputJSON  string // 调用参数 JSON（marshalJSON(args)）
-	OutputJSON string // 结果 Content JSON（marshalJSON(res.Content)），失败调用为空
-	AuthKind   string // 'session' / 'mcp-key' / 'public'
+	InputJSON  string `json:"input_json"`  // 调用参数 JSON（marshalJSON(args)）
+	OutputJSON string `json:"output_json"` // 结果 Content JSON（marshalJSON(res.Content)），失败调用为空
+	AuthKind   string `json:"auth_kind"`   // 'session' / 'mcp-key' / 'public'
 }
 
 // RecordInvocation 同步插入一行。调用者应放 goroutine 里跑并 recover + log,

@@ -14,6 +14,7 @@ import (
 
 	"loadout/core/auth"
 	"loadout/core/db"
+	"loadout/core/plugin"
 	"loadout/core/store"
 	"loadout/plugins/types"
 )
@@ -316,7 +317,8 @@ func (m *Manager) MCPKeyMiddleware(next http.Handler) http.Handler {
 			}
 		}
 		if rec == nil {
-			next.ServeHTTP(w, r)
+			// 该端点未开启认证 → public；注入 ctx 供 mcp-hub 工具调用埋点读取。
+			next.ServeHTTP(w, r.WithContext(plugin.WithAuthKind(r.Context(), plugin.AuthPublic)))
 			return
 		}
 
@@ -329,7 +331,8 @@ func (m *Manager) MCPKeyMiddleware(next http.Handler) http.Handler {
 			writeAuthError(w, "无效的 MCP key")
 			return
 		}
-		next.ServeHTTP(w, r)
+		// MCP key 校验通过 → mcp-key；注入 ctx 供 mcp-hub 工具调用埋点读取。
+		next.ServeHTTP(w, r.WithContext(plugin.WithAuthKind(r.Context(), plugin.AuthMCPHeader)))
 	})
 }
 
