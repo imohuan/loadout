@@ -103,6 +103,8 @@ watch(containerW, (w) => {
 })
 
 // ---- 拖拽逻辑 ----
+// pointerdown 绑定在 divider 上（拿初始坐标），move/up/cancel 动态挂到 window，
+// 保证鼠标拖出 divider 区域后仍实时跟随、抬起任意位置都能结束拖拽。
 function onPointerDown(e: PointerEvent) {
   // 仅主键（左键）触发
   if (e.button !== 0 && e.pointerType === 'mouse') return
@@ -114,7 +116,9 @@ function onPointerDown(e: PointerEvent) {
   // divider 左边缘 = curContainerLeft + leftPx（塌缩左时为 0，塌缩右时为 W）
   grabOffset = e.clientX - (curContainerLeft + leftPx.value)
   dragging.value = true
-  el.setPointerCapture?.(e.pointerId)
+  window.addEventListener('pointermove', onPointerMove)
+  window.addEventListener('pointerup', onPointerUp)
+  window.addEventListener('pointercancel', onPointerCancel)
   document.body.style.cursor = 'col-resize'
   document.body.style.userSelect = 'none'
   e.preventDefault()
@@ -141,20 +145,21 @@ function onPointerMove(e: PointerEvent) {
   ratio.value = clamped / w
 }
 
-function endDrag(e: PointerEvent) {
+function endDrag() {
   if (!dragging.value) return
   dragging.value = false
-  const el = rootRef.value
-  el?.releasePointerCapture?.(e.pointerId)
+  window.removeEventListener('pointermove', onPointerMove)
+  window.removeEventListener('pointerup', onPointerUp)
+  window.removeEventListener('pointercancel', onPointerCancel)
   document.body.style.cursor = ''
   document.body.style.userSelect = ''
 }
 
-function onPointerUp(e: PointerEvent) {
-  endDrag(e)
+function onPointerUp() {
+  endDrag()
 }
-function onPointerCancel(e: PointerEvent) {
-  endDrag(e)
+function onPointerCancel() {
+  endDrag()
 }
 </script>
 
@@ -170,9 +175,6 @@ function onPointerCancel(e: PointerEvent) {
       class="SplitPane__divider group relative z-20 flex w-2.5 shrink-0 cursor-col-resize touch-none select-none items-center justify-center"
       :class="dragging ? '' : 'hover:[&_div]:bg-primary/60'"
       @pointerdown="onPointerDown"
-      @pointermove="onPointerMove"
-      @pointerup="onPointerUp"
-      @pointercancel="onPointerCancel"
       @dblclick="
         () => {
           collapsed = null
