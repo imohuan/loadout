@@ -261,6 +261,16 @@ func TestMaskSecretAndSegmentHelpers(t *testing.T) {
 	if got := segmentSeq("20260824-144325-3.log"); got != 3 {
 		t.Fatalf("segmentSeq -3 = %d，期望 3", got)
 	}
+	// 固定名 main.log / main-N.log
+	if got := segmentSeq("main.log"); got != 1 {
+		t.Fatalf("segmentSeq(main.log) = %d，期望 1", got)
+	}
+	if got := segmentSeq("main-2.log"); got != 2 {
+		t.Fatalf("segmentSeq(main-2.log) = %d，期望 2", got)
+	}
+	if got := firstTSFromSegment("main.log"); got != "" {
+		t.Fatalf("firstTSFromSegment(main.log) = %q，期望空串", got)
+	}
 	if got := firstTSFromSegment("20260824-144325.log"); got != "2026-08-24 14:43:25" {
 		t.Fatalf("firstTSFromSegment = %q", got)
 	}

@@ -20,8 +20,9 @@ const defaultLogMaxSize = 32 * 1024 * 1024
 // maxLogLineBytes 单行硬上限（保险丝；正常行远小于此，防极端超长 JSON 打爆文件）。
 const maxLogLineBytes = 4 * 1024 * 1024
 
-// segmentNameRe 合法段文件名：<YYYYMMDD-HHMMSS>.log 或 <...>-N.log（N 为段号捕获组）。
-var segmentNameRe = regexp.MustCompile(`^[0-9]{8}-[0-9]{6}(?:-([0-9]+))?\.log$`)
+// segmentNameRe 合法段文件名：main.log / main-N.log（固定名），
+// 或兼容旧格式 <YYYYMMDD-HHMMSS>.log / <...>-N.log（N 为段号捕获组）。
+var segmentNameRe = regexp.MustCompile(`^(?:main|[0-9]{8}-[0-9]{6})(?:-([0-9]+))?\.log$`)
 
 // LogFileInfo 一个段文件的信息（API 与 UI 展示用）。
 type LogFileInfo struct {
@@ -268,7 +269,9 @@ func (m *LogManager) Read(serverName, segment string, offset, limit int64) ([]by
 // ---------------------------------------------------------------------------
 
 // ensureOpen 打开（或续开）当前活跃段。幂等：已打开则空操作。
-// 首次打开时扫描目录找最新段（base 冻结，续写旧段），无则新建（base = 首写时间）。
+// 文件名固定为 main.log（滚动 main-2.log…），不再按时间戳命名：
+// 每次「重新连接」由上层（mcp-hub LogHook 的 connect 事件）先 RemoveServerLogs 清空，
+// 本方法只负责打开/续开当前最大 seq 段。
 func (s *ServerLog) ensureOpen() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -279,25 +282,22 @@ func (s *ServerLog) ensureOpen() {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return
 	}
+	if s.base == "" {
+		s.base = filepath.Join(dir, "main")
+	}
+	// 扫描找最大 seq（滚动后 Close→Ensure 续写最新段；清空后无文件则 seq=1）。
 	entries, err := os.ReadDir(dir)
 	if err == nil {
-		bestSeq, bestName := 1, ""
+		bestSeq := 1
 		for _, e := range entries {
 			if e.IsDir() || !segmentNameRe.MatchString(e.Name()) {
 				continue
 			}
 			if seq := segmentSeq(e.Name()); seq > bestSeq {
 				bestSeq = seq
-				bestName = e.Name()
 			}
 		}
-		if bestName != "" {
-			s.seq = bestSeq
-			s.base = filepath.Join(dir, strings.TrimSuffix(bestName, ".log"))
-		}
-	}
-	if s.base == "" {
-		s.base = filepath.Join(dir, time.Now().Format("20060102-150405"))
+		s.seq = bestSeq
 	}
 	s.openCurrentLocked()
 }
@@ -426,7 +426,8 @@ func maskMap(m map[string]string) map[string]string {
 }
 
 
-// segmentSeq 解析段序号：`20260824-144325.log` → 1；`...-2.log` → 2。
+// segmentSeq 解析段序号：`main.log` → 1；`main-2.log` → 2；
+// 旧格式 `20260824-144325.log` → 1；`...-2.log` → 2。
 // 注意时间戳中间也有 `-`，必须用正则区分「-N 段号」与「时间戳部分」。
 func segmentSeq(name string) int {
 	m := segmentNameRe.FindStringSubmatch(name)
@@ -440,6 +441,7 @@ func segmentSeq(name string) int {
 }
 
 // firstTSFromSegment 从段文件名时间戳解析显示时间（本地时区）。
+// 固定名 main.log 无时间戳，返回空串（UI 只用 last_ts 展示）。
 func firstTSFromSegment(name string) string {
 	m := segmentNameRe.FindStringSubmatch(name)
 	if m == nil {
@@ -448,6 +450,9 @@ func firstTSFromSegment(name string) string {
 	tsPart := strings.TrimSuffix(name, ".log")
 	if m[1] != "" {
 		tsPart = strings.TrimSuffix(tsPart, "-"+m[1])
+	}
+	if tsPart == "main" {
+		return ""
 	}
 	t, err := time.ParseInLocation("20060102-150405", tsPart, time.Local)
 	if err != nil {

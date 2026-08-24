@@ -666,6 +666,12 @@ func (s *Service) getUpstream(srv types.MCPServer) *mcpkit.Upstream {
 		URL:       srv.URL,
 		Headers:   srv.Headers,
 		LogHook: func(kind string, fields ...any) {
+			// connect = 新的连接会话开始：先清空该 server 旧日志（含全部滚动段），
+			// 从空的 main.log 重新记录——"重启/重连后日志自动清空"。
+			// 复用连接的后续调用（tools/call 等）不发 connect，不会误清历史。
+			if kind == "connect" {
+				s.logMgr.RemoveServerLogs(srv.Name)
+			}
 			// Ensure 幂等（首次建目录/文件，后续直接返回）：Write 不负责建日志，
 			// 事件回调里先确保 ServerLog 存在再写。
 			s.logMgr.Ensure(srv.ID, srv.Name)
