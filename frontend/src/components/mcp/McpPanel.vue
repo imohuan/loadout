@@ -23,6 +23,7 @@ import PageHeader from '@/components/PageHeader.vue'
 import EmptyState from '@/components/EmptyState.vue'
 import LoadingBlock from '@/components/LoadingBlock.vue'
 import McpLogsTab from '@/components/mcp/McpLogsTab.vue'
+import McpInvocationsTab from '@/components/mcp/McpInvocationsTab.vue'
 import { useMcpManagement, isServerActive } from '@/composables/useMcpManagement'
 import { useManagementApi } from '@/composables/useManagementApi'
 import { useAsyncTask } from '@/composables/useAsyncTask'
@@ -324,7 +325,8 @@ async function copyConfig(endpoint: {
         <TabsTrigger value="upstream">上游 MCP</TabsTrigger>
         <TabsTrigger value="groups">分组 MCP</TabsTrigger>
         <TabsTrigger value="endpoints">连接端点配置</TabsTrigger>
-        <TabsTrigger value="logs">日志</TabsTrigger>
+        <TabsTrigger value="invocations">工具调用</TabsTrigger>
+        <TabsTrigger value="logs">原始日志</TabsTrigger>
       </TabsList>
       <TabsContent value="upstream" class="space-y-4">
         <Card class="rounded-md">
@@ -783,6 +785,9 @@ async function copyConfig(endpoint: {
       <TabsContent value="logs" class="space-y-4">
         <McpLogsTab />
       </TabsContent>
+      <TabsContent value="invocations" class="space-y-4">
+        <McpInvocationsTab />
+      </TabsContent>
     </Tabs>
     <Dialog v-model:open="serverDialog">
       <DialogContent class="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-2xl!">
@@ -1004,13 +1009,24 @@ async function copyConfig(endpoint: {
         <div v-if="toolLoading" class="flex-1 py-8 text-center text-sm text-muted-foreground">
           正在读取输入配置...
         </div>
-        <div v-else class="min-h-0 flex-1 space-y-4 overflow-y-auto">
+        <div v-else class="relative flex min-h-0 flex-1 flex-col">
           <div
-            v-if="toolError"
-            class="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive"
+            class="flex-1 space-y-4 overflow-y-auto overflow-x-visible px-1
+                   [scrollbar-width:thin] [scrollbar-color:theme(colors.zinc.400)_transparent]
+                   [&::-webkit-scrollbar]:w-1.5
+                   [&::-webkit-scrollbar-track]:bg-transparent
+                   [&::-webkit-scrollbar-thumb]:rounded-full
+                   [&::-webkit-scrollbar-thumb]:bg-zinc-300/80
+                   hover:[&::-webkit-scrollbar-thumb]:bg-zinc-400/80
+                   dark:[&::-webkit-scrollbar-thumb]:bg-zinc-600/80
+                   dark:hover:[&::-webkit-scrollbar-thumb]:bg-zinc-500/80"
           >
-            {{ toolError }}
-          </div>
+            <div
+              v-if="toolError"
+              class="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive"
+            >
+              {{ toolError }}
+            </div>
           <div v-if="schemaProperties().length" class="space-y-4">
             <div v-for="[name, schema] in schemaProperties()" :key="name" class="space-y-1.5">
               <Label
@@ -1075,6 +1091,11 @@ async function copyConfig(endpoint: {
               JSON.stringify(toolResult, null, 2)
             }}</pre>
           </div>
+          </div>
+          <!-- 底部白色蒙版，提示内容可向下滚动 -->
+          <div
+            class="pointer-events-none absolute inset-x-0 bottom-0 h-8 bg-gradient-to-t from-background to-transparent"
+          />
         </div>
         <DialogFooter
           ><Button :disabled="toolExecuting || toolLoading || !!toolError" @click="executeTool">

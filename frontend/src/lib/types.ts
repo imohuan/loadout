@@ -257,6 +257,28 @@ export interface McpStats {
   rank_tools: McpToolRank[]
 }
 
+// ---- MCP 工具调用日志（mcp_invocations 明细） ----
+export interface McpInvocation {
+  id: number
+  started_at: string
+  finished_at: string | null
+  aggregate_kind: 'single' | 'group' | '$smart' | ''
+  aggregate_target: string | null
+  tool_name: string
+  server_name: string
+  result: 'success' | 'error' | 'not_found' | 'timeout' | 'denied' | ''
+  http_status: number | null
+  duration_ms: number
+  error_message: string
+  input_json: string
+  output_json: string
+  auth_kind: 'session' | 'mcp-key' | 'public' | ''
+}
+export interface McpInvocationPage {
+  items: McpInvocation[]
+  total: number
+}
+
 // ---- 模型使用情况 ----
 export interface ModelSummary {
   requests: number

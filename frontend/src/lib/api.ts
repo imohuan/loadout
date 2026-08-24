@@ -1,5 +1,5 @@
 import { emitter } from './emitter'
-import type { McpStats, ModelStats } from './types'
+import type { McpInvocationPage, McpStats, ModelStats } from './types'
 
 const jsonHeaders = { 'Content-Type': 'application/json' }
 
@@ -42,6 +42,26 @@ export const getMcpStats = (opts: { days?: number; top?: number } = {}) => {
   if (tz) params.set('tz', tz)
   const qs = params.toString()
   return api<McpStats>(`/api/stats/mcp${qs ? '?' + qs : ''}`)
+}
+
+// getMcpInvocations 分页查询工具调用日志（mcp_invocations 明细）。
+export const getMcpInvocations = (opts: {
+  page?: number
+  pageSize?: number
+  kind?: string
+  tool?: string
+  server?: string
+  auth?: string
+} = {}) => {
+  const params = new URLSearchParams()
+  if (opts.page) params.set('page', String(opts.page))
+  if (opts.pageSize) params.set('page_size', String(opts.pageSize))
+  if (opts.kind) params.set('kind', opts.kind)
+  if (opts.tool) params.set('tool', opts.tool)
+  if (opts.server) params.set('server', opts.server)
+  if (opts.auth) params.set('auth', opts.auth)
+  const qs = params.toString()
+  return api<McpInvocationPage>(`/api/mcp-invocations${qs ? '?' + qs : ''}`)
 }
 
 export const getModelStats = (opts: { days?: number } = {}) => {
