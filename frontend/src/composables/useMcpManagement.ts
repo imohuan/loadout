@@ -17,9 +17,14 @@ export interface McpServer {
   env?: Record<string, string>
   enabled?: boolean
   // 进程运行状态（后端 /api/mcp-servers 返回）：running / stopped / failed。
-  status?: string
+  status?: 'running' | 'stopped' | 'failed'
   // 失败原因（status=failed 时）。
   error?: string
+}
+// "实际激活态" = 配置启用 且 进程没挂。status=failed 时即便 enabled=true，
+// 开关也要呈现关闭态，与状态列的「失败」Badge 保持一致；且点击=重试启动而非禁用。
+export function isServerActive(server: McpServer): boolean {
+  return server.enabled !== false && server.status !== 'failed'
 }
 export interface McpToolGroup {
   id: string
@@ -255,7 +260,9 @@ export function useMcpManagement() {
     )
   }
   async function toggleServer(server: McpServer) {
-    const nextEnabled = server.enabled === false
+    // 目标状态 = 取反"实际激活态"，而非翻转 enabled 配置位。
+    // failed 时 isServerActive=false → 目标 enabled=true → 点击=重试启动（不是禁用）。
+    const nextEnabled = !isServerActive(server)
     await run(
       `server:${server.id}:toggle`,
       async () => {
@@ -274,7 +281,7 @@ export function useMcpManagement() {
             return
           }
         }
-        toast.success(nextEnabled ? '已启用' : '已停用')
+        toast.success(nextEnabled ? '已启动' : '已停止')
       },
       '',
     )

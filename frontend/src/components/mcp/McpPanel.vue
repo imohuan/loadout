@@ -22,7 +22,7 @@ import {
 import PageHeader from '@/components/PageHeader.vue'
 import EmptyState from '@/components/EmptyState.vue'
 import LoadingBlock from '@/components/LoadingBlock.vue'
-import { useMcpManagement } from '@/composables/useMcpManagement'
+import { useMcpManagement, isServerActive } from '@/composables/useMcpManagement'
 import { useManagementApi } from '@/composables/useManagementApi'
 import { useAsyncTask } from '@/composables/useAsyncTask'
 const mcp = reactive(useMcpManagement())
@@ -432,9 +432,9 @@ async function copyConfig(endpoint: {
                                   size="icon"
                                   class="size-8"
                                   :aria-label="
-                                    server.enabled === false
-                                      ? `启用 ${server.name}`
-                                      : `禁用 ${server.name}`
+                                    isServerActive(server)
+                                      ? `禁用 ${server.name}`
+                                      : `启用 ${server.name}`
                                   "
                                   :disabled="mcp.isPending(`server:${server.id}:toggle`)"
                                   @click="mcp.toggleServer(server)"
@@ -444,7 +444,7 @@ async function copyConfig(endpoint: {
                                     class="animate-spin"
                                     size="16"
                                   /><RiToggleFill
-                                    v-else-if="server.enabled !== false"
+                                    v-else-if="isServerActive(server)"
                                     class="size-5 text-emerald-600"
                                   /><RiToggleLine
                                     v-else
@@ -452,7 +452,7 @@ async function copyConfig(endpoint: {
                                   /> </Button
                               ></TooltipTrigger>
                               <TooltipContent>{{
-                                server.enabled === false ? '启用' : '禁用'
+                                isServerActive(server) ? '禁用' : '启用'
                               }}</TooltipContent>
                             </Tooltip>
                             <Tooltip>
