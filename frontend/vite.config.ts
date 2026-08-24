@@ -8,10 +8,6 @@ const targetUrl = 'http://127.0.0.1:3000'
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [vue(), tailwindcss()],
-  // dev 模式预构建 subpath import（Vite ESM 解析需显式 include）
-  optimizeDeps: {
-    include: ['highlight.js/lib/common', 'dompurify'],
-  },
   build: {
     outDir: 'dist',
     emptyOutDir: true,

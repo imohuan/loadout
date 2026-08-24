@@ -8,8 +8,6 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RiArrowUpLine, RiLoader4Line } from '@remixicon/vue'
 import { toast } from 'vue-sonner'
-import hljs from 'highlight.js/lib/common'
-import DOMPurify from 'dompurify'
 import { api } from '@/lib/api'
 
 interface LogFileInfo {
@@ -33,12 +31,11 @@ interface LogReadResp {
   content: string
 }
 
-// 日志行（解析后）：时间戳 + [KIND] + 正文；msg 字段的 JSON 单独高亮。
+// 日志行（解析后）：时间戳 + [KIND] + 正文（正文原样纯文本，不解析 JSON）。
 interface LogLine {
   ts: string
   kind: string
   body: string
-  msgHtml: string | null // msg JSON 高亮后的 HTML（已 sanitize）
 }
 
 // [KIND] 染色映射（Tailwind token，与 Badge tint 风格一致）。
@@ -52,43 +49,14 @@ const KIND_CLASS: Record<string, string> = {
   STDERR: 'text-orange-600 dark:text-orange-400',
 }
 
-// goUnquote 把 Go strconv.Quote 转义的字符串还原（\" \\ \n \t \r \uXXXX）。
-// 日志行里 msg="..." 是 Go Quote 后的文本，需反转义才能 JSON.parse。
-function goUnquote(s: string): string {
-  return s
-    .replace(/\\u[0-9a-fA-F]{4}/g, (u) => String.fromCharCode(parseInt(u.slice(2), 16)))
-    .replace(/\\(["\\/bfnrt])/g, (_m, c: string) =>
-      c === 'b' ? '\b' : c === 'f' ? '\f' : c === 'n' ? '\n' : c === 'r' ? '\r' : c === 't' ? '\t' : c,
-    )
-}
-
-// highlightJson 高亮 JSON 文本（单行 + hljs json 语言 + DOMPurify 防 XSS）。
-// 不做层级缩进（JSON.stringify 不带 indent）——保持 inline 单行，让日志像普通文本一样
-// 在容器宽度内自然换行（浏览器 word-break），第二行起对齐到时间戳位置。
-function highlightJson(raw: string): string {
-  try {
-    const obj = JSON.parse(goUnquote(raw))
-    return DOMPurify.sanitize(hljs.highlight(JSON.stringify(obj), { language: 'json' }).value)
-  } catch {
-    return ''
-  }
-}
-
-// parseLogLine 解析一行：`2026-08-24T18:23:55.749+08:00 [KIND] msg="..."`。
+// parseLogLine 用正则拆一行：`2026-08-24T18:35:25.645+08:00 [FRAME_IN] msg="..."`。
+// 只提取时间戳与 [KIND] 用于染色，正文原样保留（纯文本，不解析 JSON）。
 function parseLogLine(line: string): LogLine {
   const m = line.match(/^(\S+) \[([^\]]+)\] (.*)$/)
   if (!m) {
-    return { ts: '', kind: '', body: line, msgHtml: null }
+    return { ts: '', kind: '', body: line }
   }
-  const [, ts, kind, rest] = m
-  const mm = rest.match(/ msg="((?:[^"\\]|\\.)*)"/)
-  if (mm) {
-    const html = highlightJson(mm[1])
-    if (html) {
-      return { ts, kind, body: rest, msgHtml: html }
-    }
-  }
-  return { ts, kind, body: rest, msgHtml: null }
+  return { ts: m[1], kind: m[2], body: m[3] }
 }
 
 const lines = computed<LogLine[]>(() => {
@@ -370,7 +338,7 @@ onMounted(loadServers)
         加载中…
       </div>
 
-      <!-- 日志正文（highlight.js 高亮） -->
+      <!-- 日志正文：一行一个 block div，时间戳/[KIND] 包 span 染色，正文原样纯文本 -->
       <div v-else>
         <div
           v-if="content"
@@ -380,20 +348,12 @@ onMounted(loadServers)
           <div
             v-for="(line, i) in lines"
             :key="i"
-            class="flex gap-2 px-3 py-0.5 hover:bg-muted/40"
+            class="log-line whitespace-pre-wrap break-all px-3 py-0.5 hover:bg-muted/40"
           >
-            <span class="shrink-0 text-muted-foreground/50 tabular-nums">{{ line.ts }}</span>
-            <span
-              v-if="line.kind"
-              class="shrink-0 font-semibold"
-              :class="KIND_CLASS[line.kind] || 'text-muted-foreground'"
+            <span class="text-muted-foreground/50 tabular-nums">{{ line.ts }}</span>
+            <span v-if="line.kind" class="font-semibold px-2" :class="KIND_CLASS[line.kind] || 'text-muted-foreground'"
               >[{{ line.kind }}]</span
-            >
-            <span v-if="line.msgHtml" class="min-w-0 flex-1">
-              <span class="text-muted-foreground">msg=</span
-              ><code v-html="line.msgHtml" class="log-json"></code>
-            </span>
-            <span v-else class="min-w-0 flex-1 whitespace-pre-wrap break-all">{{ line.body }}</span>
+            >{{ line.body }}
           </div>
         </div>
         <div
@@ -407,48 +367,4 @@ onMounted(loadServers)
   </Card>
 </template>
 
-<style scoped>
-/* highlight.js github-dark 配色（复用 StreamMarkdownBlock 同款色板；:deep 让 v-html 里的 hljs span 生效） */
-.log-lines :deep(.hljs) {
-  color: #c9d1d9;
-}
-.log-lines :deep(.hljs-comment),
-.log-lines :deep(.hljs-quote) {
-  color: #8b949e;
-  font-style: italic;
-}
-.log-lines :deep(.hljs-keyword),
-.log-lines :deep(.hljs-selector-tag),
-.log-lines :deep(.hljs-section),
-.log-lines :deep(.hljs-title),
-.log-lines :deep(.hljs-name) {
-  color: #ff7b72;
-}
-.log-lines :deep(.hljs-string),
-.log-lines :deep(.hljs-attr),
-.log-lines :deep(.hljs-property) {
-  color: #a5d6ff;
-}
-.log-lines :deep(.hljs-number),
-.log-lines :deep(.hljs-literal),
-.log-lines :deep(.hljs-symbol),
-.log-lines :deep(.hljs-bullet) {
-  color: #79c0ff;
-}
-.log-lines :deep(.hljs-built_in),
-.log-lines :deep(.hljs-type) {
-  color: #ffa657;
-}
-.log-lines :deep(.hljs-meta) {
-  color: #8b949e;
-}
 
-/* 高亮 JSON 块：inline 渲染（与 msg= 同行；浏览器按 word-break 自然换行，
-   第二行起对齐到时间戳位置——不缩进成层级块） */
-.log-json {
-  display: inline;
-  word-break: break-all;
-  font-family: inherit;
-  margin: 0;
-}
-</style>
