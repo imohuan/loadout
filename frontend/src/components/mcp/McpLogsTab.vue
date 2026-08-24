@@ -62,12 +62,13 @@ function goUnquote(s: string): string {
     )
 }
 
-// highlightJson 美化并高亮 JSON 文本（hljs json 语言 + DOMPurify 防 XSS）。
+// highlightJson 高亮 JSON 文本（单行 + hljs json 语言 + DOMPurify 防 XSS）。
+// 不做层级缩进（JSON.stringify 不带 indent）——保持 inline 单行，让日志像普通文本一样
+// 在容器宽度内自然换行（浏览器 word-break），第二行起对齐到时间戳位置。
 function highlightJson(raw: string): string {
   try {
     const obj = JSON.parse(goUnquote(raw))
-    const pretty = JSON.stringify(obj, null, 2)
-    return DOMPurify.sanitize(hljs.highlight(pretty, { language: 'json' }).value)
+    return DOMPurify.sanitize(hljs.highlight(JSON.stringify(obj), { language: 'json' }).value)
   } catch {
     return ''
   }
@@ -442,12 +443,11 @@ onMounted(loadServers)
   color: #8b949e;
 }
 
-/* 高亮 JSON 块：inline-block 保留与 msg= 同行；white-space: pre 保留换行 + 缩进 */
+/* 高亮 JSON 块：inline 渲染（与 msg= 同行；浏览器按 word-break 自然换行，
+   第二行起对齐到时间戳位置——不缩进成层级块） */
 .log-json {
-  display: inline-block;
-  white-space: pre;
-  vertical-align: top;
-  padding-left: 0.25rem;
+  display: inline;
+  word-break: break-all;
   font-family: inherit;
   margin: 0;
 }
