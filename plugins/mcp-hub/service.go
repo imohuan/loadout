@@ -19,6 +19,7 @@ import (
 	"loadout/core/config"
 	"loadout/core/db"
 	"loadout/core/mcpkit"
+	"loadout/core/plugin"
 	"loadout/core/store"
 	"loadout/plugins/types"
 )
@@ -370,7 +371,7 @@ func (s *Service) Invoke(ctx context.Context, endpoint string, args map[string]a
 	tools, err := s.ToolView(endpoint)
 	if err != nil {
 		// 视图解析失败同样埋点（tool 名尽力取 args 里的原始值）。
-		s.recordInvocation(time.Now().UTC().Format(time.RFC3339Nano), time.Now(), endpoint, err, strArg(args, "tool"), "")
+		s.recordInvocation(time.Now().UTC().Format(time.RFC3339Nano), time.Now(), endpoint, err, strArg(args, "tool"), "", safeJSON(args), "", authKindFrom(ctx))
 		return "", err
 	}
 	return s.invokeWith(ctx, tools, args, endpoint)
@@ -387,11 +388,11 @@ func (s *Service) invokeWith(ctx context.Context, tools []ToolEntry, args map[st
 	matched := findByNameOrRaw(tools, name)
 	if len(matched) == 0 {
 		// 工具不可见：没有 callEntry 调用，这里补记一次失败埋点。
-		s.recordInvocation(time.Now().UTC().Format(time.RFC3339Nano), time.Now(), endpoint, fmt.Errorf("mcphub: 工具 %q 在当前端点不可见", name), name, "")
+		s.recordInvocation(time.Now().UTC().Format(time.RFC3339Nano), time.Now(), endpoint, fmt.Errorf("mcphub: 工具 %q 在当前端点不可见", name), name, "", safeJSON(args), "", authKindFrom(ctx))
 		return "", fmt.Errorf("mcphub: 工具 %q 在当前端点不可见", name)
 	}
 	if len(matched) > 1 {
-		s.recordInvocation(time.Now().UTC().Format(time.RFC3339Nano), time.Now(), endpoint, fmt.Errorf("mcphub: 工具 %q 存在 %d 个同名（跨来源）", name, len(matched)), name, "")
+		s.recordInvocation(time.Now().UTC().Format(time.RFC3339Nano), time.Now(), endpoint, fmt.Errorf("mcphub: 工具 %q 存在 %d 个同名（跨来源）", name, len(matched)), name, "", safeJSON(args), "", authKindFrom(ctx))
 		return "", fmt.Errorf("mcphub: 工具 %q 存在 %d 个同名（跨来源），请用带来源前缀的索引名（如 %q）", name, len(matched), matched[0].Name)
 	}
 	t := matched[0]
@@ -422,7 +423,12 @@ func (s *Service) callEntry(ctx context.Context, t ToolEntry, args map[string]an
 	startTime := time.Now()
 	res, err := s.callEntryInner(ctx, t, args)
 	// 成功失败都埋点（内部异步，失败仅日志，绝不影响业务返回）。
-	s.recordInvocation(startAt, startTime, endpoint, err, t.Name, t.Source)
+	// output 仅在成功时序列化（失败 res 为 nil）；input 与认证快照始终落库。
+	outputJSON := ""
+	if err == nil && res != nil {
+		outputJSON = safeJSON(res.Content)
+	}
+	s.recordInvocation(startAt, startTime, endpoint, err, t.Name, t.Source, safeJSON(args), outputJSON, authKindFrom(ctx))
 	if err != nil {
 		return nil, err
 	}
@@ -1181,6 +1187,20 @@ func marshalJSON(v any) (string, error) {
 		return "", fmt.Errorf("mcphub: 序列化结果失败: %w", err)
 	}
 	return string(data), nil
+}
+
+// safeJSON 序列化失败时返回空串，供埋点使用（埋点绝不阻塞业务）。
+func safeJSON(v any) string {
+	s, err := marshalJSON(v)
+	if err != nil {
+		return ""
+	}
+	return s
+}
+
+// authKindFrom 读 request ctx 中的认证方式快照；未注入返回 "public"。
+func authKindFrom(ctx context.Context) string {
+	return string(plugin.AuthKindFrom(ctx))
 }
 
 // statusTool 是 status 扁平/分类查询返回的工具条目（不含 schema，仅名称+描述）。

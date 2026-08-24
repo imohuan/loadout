@@ -35,6 +35,72 @@ func TestStatsTableExists(t *testing.T) {
 	}
 }
 
+// TestMigrateIdempotent 回归：migrate 连续调用两次（模拟老库升级 + 重复启动）
+// 不得因 ALTER TABLE ADD COLUMN 重复执行而报错；v2 三列必须存在。
+func TestMigrateIdempotent(t *testing.T) {
+	s := newTestService(t)
+	// 第二次 migrate：ensureColumns 应全部跳过（列已存在）。
+	if err := migrate(s.db); err != nil {
+		t.Fatalf("migrate second run: %v", err)
+	}
+	rows, err := s.db.Query(`PRAGMA table_info(mcp_invocations)`)
+	if err != nil {
+		t.Fatalf("pragma: %v", err)
+	}
+	defer rows.Close()
+	cols := map[string]bool{}
+	for rows.Next() {
+		var (
+			cid, notnull, pk int
+			name, typ        string
+			dflt             sql.NullString
+		)
+		// PRAGMA 列序：cid,name,type,notnull,dflt_value,pk
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			t.Fatalf("scan pragma: %v", err)
+		}
+		cols[name] = true
+	}
+	for _, col := range []string{"input_json", "output_json", "auth_kind"} {
+		if !cols[col] {
+			t.Fatalf("column %s missing after migrate", col)
+		}
+	}
+}
+
+// TestRecordV2Fields 验证 v2 三列（input/output/auth）完整写入并可回读。
+func TestRecordV2Fields(t *testing.T) {
+	s := newTestService(t)
+	ctx := context.Background()
+	rec := InvocationRecord{
+		StartedAt:     time.Now().UTC().Format(time.RFC3339Nano),
+		AggregateKind: "single",
+		ToolName:      "read_file",
+		ServerName:    "fs",
+		Result:        "success",
+		DurationMS:    42,
+		InputJSON:     `{"path":"/tmp/x"}`,
+		OutputJSON:    `[{"type":"text","text":"ok"}]`,
+		AuthKind:      "mcp-key",
+	}
+	if err := s.RecordInvocation(ctx, rec); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	var (
+		input, output, auth string
+	)
+	if err := s.db.QueryRow(
+		`SELECT COALESCE(input_json,''), COALESCE(output_json,''), COALESCE(auth_kind,'')
+		 FROM mcp_invocations WHERE tool_name='read_file'`,
+	).Scan(&input, &output, &auth); err != nil {
+		t.Fatalf("select v2 fields: %v", err)
+	}
+	if input != rec.InputJSON || output != rec.OutputJSON || auth != rec.AuthKind {
+		t.Fatalf("v2 fields mismatch: got (%q,%q,%q) want (%q,%q,%q)",
+			input, output, auth, rec.InputJSON, rec.OutputJSON, rec.AuthKind)
+	}
+}
+
 func TestStatsEmpty(t *testing.T) {
 	s := newTestService(t)
 	got, err := s.Stats(context.Background(), 30, 5)

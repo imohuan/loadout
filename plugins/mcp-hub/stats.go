@@ -50,10 +50,51 @@ CREATE INDEX IF NOT EXISTS idx_mcp_tool      ON mcp_invocations(tool_name, start
 CREATE INDEX IF NOT EXISTS idx_mcp_aggregate ON mcp_invocations(aggregate_target, started_at);
 `
 
-// migrate 在 *sql.DB 上幂等地建表 + 索引。失败应阻断插件启动。
+// migrate 在 *sql.DB 上幂等地建表 + 索引 + 补列。失败应阻断插件启动。
 func migrate(db *sql.DB) error {
-	_, err := db.Exec(mcpSchema)
-	return err
+	if _, err := db.Exec(mcpSchema); err != nil {
+		return err
+	}
+	return ensureColumns(db)
+}
+
+// ensureColumns 幂等地为 mcp_invocations 补齐 v2 新增列（老库已有数据，不能重建表）。
+// 每列先 PRAGMA table_info 查是否存在，缺失才 ALTER TABLE ADD COLUMN。
+func ensureColumns(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(mcp_invocations)`)
+	if err != nil {
+		return fmt.Errorf("mcp-hub: 读取表结构失败: %w", err)
+	}
+	have := map[string]bool{}
+	for rows.Next() {
+		var (
+			cid       int
+			name, typ string
+			notnull   int
+			dflt      sql.NullString
+			pk        int
+		)
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			rows.Close()
+			return fmt.Errorf("mcp-hub: 解析表结构失败: %w", err)
+		}
+		have[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("mcp-hub: 遍历表结构失败: %w", err)
+	}
+	rows.Close()
+
+	for _, col := range []string{"input_json", "output_json", "auth_kind"} {
+		if have[col] {
+			continue
+		}
+		if _, err := db.Exec(`ALTER TABLE mcp_invocations ADD COLUMN ` + col + ` TEXT`); err != nil {
+			return fmt.Errorf("mcp-hub: 添加列 %s 失败: %w", col, err)
+		}
+	}
+	return nil
 }
 
 // InvocationRecord 是一次 MCP 工具调用的记录,由 RecordInvocation 写入 mcp_invocations。
@@ -68,6 +109,10 @@ type InvocationRecord struct {
 	HTTPStatus      int
 	DurationMS      int
 	ErrorMessage    string
+	// v2 新增：工具调用入参/出参 JSON 与认证方式（老数据为 NULL）。
+	InputJSON  string // 调用参数 JSON（marshalJSON(args)）
+	OutputJSON string // 结果 Content JSON（marshalJSON(res.Content)），失败调用为空
+	AuthKind   string // 'session' / 'mcp-key' / 'public'
 }
 
 // RecordInvocation 同步插入一行。调用者应放 goroutine 里跑并 recover + log,
@@ -82,11 +127,14 @@ func (s *Service) RecordInvocation(ctx context.Context, r InvocationRecord) erro
 	}
 	_, err := s.db.ExecContext(ctx, `INSERT INTO mcp_invocations
 		(started_at, finished_at, aggregate_kind, aggregate_target, tool_name,
-		 server_name, result, http_status, duration_ms, error_message)
-		VALUES (?, ?, ?, NULLIF(?, ''), ?, NULLIF(?, ''), ?, NULLIF(?, 0), ?, NULLIF(?, ''))`,
+		 server_name, result, http_status, duration_ms, error_message,
+		 input_json, output_json, auth_kind)
+		VALUES (?, ?, ?, NULLIF(?, ''), ?, NULLIF(?, ''), ?, NULLIF(?, 0), ?, NULLIF(?, ''),
+		        NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''))`,
 		r.StartedAt, r.FinishedAt, r.AggregateKind,
 		targetString(r.AggregateTarget),
 		r.ToolName, r.ServerName, r.Result, r.HTTPStatus, r.DurationMS, r.ErrorMessage,
+		r.InputJSON, r.OutputJSON, r.AuthKind,
 	)
 	if err != nil {
 		return fmt.Errorf("mcp-hub: insert invocation: %w", err)
@@ -103,7 +151,8 @@ func targetString(p *string) string {
 
 // recordInvocation 异步把一次 invoke 调用写入 mcp_invocations：goroutine + recover，
 // 失败只记日志，绝不阻塞或改变业务请求路径。
-func (s *Service) recordInvocation(startAt string, startTime time.Time, endpoint string, err error, toolName, serverName string) {
+// inputJSON/outputJSON/authKind 由调用点显式传入（authKind 是认证快照，goroutine 内不依赖 ctx）。
+func (s *Service) recordInvocation(startAt string, startTime time.Time, endpoint string, err error, toolName, serverName, inputJSON, outputJSON, authKind string) {
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
@@ -136,6 +185,9 @@ func (s *Service) recordInvocation(startAt string, startTime time.Time, endpoint
 			HTTPStatus:      httpStatus,
 			DurationMS:      int(time.Since(startTime).Milliseconds()),
 			ErrorMessage:    errMsg,
+			InputJSON:       inputJSON,
+			OutputJSON:      outputJSON,
+			AuthKind:        authKind,
 		}); err != nil {
 			s.warn("mcphub: 记录调用统计失败", "err", err)
 		}
