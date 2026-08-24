@@ -269,6 +269,21 @@ export interface McpInvocation {
 
 ---
 
+## 实施记录（2026-08-24 已完成）
+
+- 全部 6 步已实施并提交（commit 0fb7615 / 69b7cf9 / 9e7b8d8 / 382a895 / 5706e71 / 92ceed8）。
+- **端到端验证结果（真实环境，服务 :3000）**：
+  - `GET /api/mcp-invocations` 无会话 401 / 有会话 200 / `page=abc` 400。
+  - admin 测试调用（`POST /api/mcp-tools/call`）→ 落库 `auth_kind=session`，`input_json`/`output_json` 完整。
+  - `/mcp/codegraph` 直接调用（无 MCP key）→ `auth_kind=public`，`aggregate_kind=single`。
+  - 失败调用（工具不存在）→ `result=error` + `error_message` + `input_json`，`output_json` 空。
+  - 老数据（v2 列之前写入）→ 三列 NULL，兼容正常。
+  - `/api/stats/mcp` 回归正常（trend/rank_aggregates/rank_tools 照常聚合）。
+- **实施中发现并修复（计划外）**：`InvokeTool`（admin 测试调用入口）的 4 个失败分支（server 不存在/未启用/ToolView 失败/工具不可见）原本不落库——补埋点（commit 92ceed8）。
+- 前端已验证：`vue-tsc -b --force` + `vite build`（`NODE_OPTIONS="--use-system-ca"` 绕 safe-delete）通过；MCP 管理页 5 个 Tab（上游 MCP/分组 MCP/连接端点配置/**工具调用**/原始日志）chunk 正常加载。
+
+---
+
 ## 风险与对策
 
 | 风险 | 等级 | 对策 |
