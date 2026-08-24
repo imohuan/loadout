@@ -99,6 +99,7 @@ func ensureColumns(db *sql.DB) error {
 
 // InvocationRecord 是一次 MCP 工具调用的记录,由 RecordInvocation 写入 mcp_invocations。
 type InvocationRecord struct {
+	ID              int    // 自增主键（查询回读用；写入时忽略）
 	StartedAt       string
 	FinishedAt      *string
 	AggregateKind   string // 'single' / 'group' / '$smart'
@@ -244,8 +245,7 @@ func (s *Service) parseAggregate(endpoint string) (kind, target string) {
 }
 
 // Stats 返回过去 days 天的 trend + 双 top 排行。top<=0 时默认 5。
-func (s *Service) Stats(ctx context.Context, days, top int) (*McpStats, error) {
-	if top <= 0 {
+func (s *Service) Stats(ctx context.Context, days, top int) (*McpStats, error) {	if top <= 0 {
 		top = 5
 	}
 	cutoff := time.Now().UTC().AddDate(0, 0, -days).Format(time.RFC3339Nano)
@@ -349,4 +349,130 @@ func (s *Service) Stats(ctx context.Context, days, top int) (*McpStats, error) {
 	rows.Close()
 
 	return out, nil
+}
+
+// InvocationQuery 是工具调用明细列表的过滤条件。空字段表示不过滤。
+type InvocationQuery struct {
+	Kind   string // aggregate_kind 精确：single / group / $smart；空 = 全部
+	Tool   string // tool_name LIKE %tool%
+	Server string // server_name 精确
+	Auth   string // auth_kind 精确：session / mcp-key / public
+	From   string // started_at >= From（RFC3339，含）
+	To     string // started_at <= To（RFC3339，含）
+	Page   int    // >=1
+	Size   int    // 默认 20，上限 100
+}
+
+// InvocationPage 是一次查询的分页结果。
+type InvocationPage struct {
+	Items []InvocationRecord `json:"items"`
+	Total int                `json:"total"`
+}
+
+// ListInvocations 分页查询 mcp_invocations，按 started_at DESC, id DESC 稳定排序。
+// 只做精确/LIKE 匹配，不涉及 join——明细展示用，无性能热点（受 idx_mcp_started 覆盖）。
+func (s *Service) ListInvocations(ctx context.Context, q InvocationQuery) (*InvocationPage, error) {
+	if s.db == nil {
+		return &InvocationPage{Items: []InvocationRecord{}}, nil
+	}
+	if q.Page < 1 {
+		q.Page = 1
+	}
+	if q.Size <= 0 {
+		q.Size = 20
+	}
+	if q.Size > 100 {
+		q.Size = 100
+	}
+
+	where := []string{}
+	args := []any{}
+	if q.Kind != "" {
+		where = append(where, "aggregate_kind = ?")
+		args = append(args, q.Kind)
+	}
+	if q.Tool != "" {
+		where = append(where, "tool_name LIKE ? ESCAPE '\\'")
+		args = append(args, "%"+escapeLike(q.Tool)+"%")
+	}
+	if q.Server != "" {
+		where = append(where, "server_name = ?")
+		args = append(args, q.Server)
+	}
+	if q.Auth != "" {
+		where = append(where, "auth_kind = ?")
+		args = append(args, q.Auth)
+	}
+	if q.From != "" {
+		where = append(where, "started_at >= ?")
+		args = append(args, q.From)
+	}
+	if q.To != "" {
+		where = append(where, "started_at <= ?")
+		args = append(args, q.To)
+	}
+	whereSQL := ""
+	if len(where) > 0 {
+		whereSQL = " WHERE " + strings.Join(where, " AND ")
+	}
+
+	var total int
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mcp_invocations"+whereSQL, args...).Scan(&total); err != nil {
+		return nil, fmt.Errorf("mcp-hub: count invocations: %w", err)
+	}
+
+	offset := (q.Page - 1) * q.Size
+	query := `SELECT id, started_at, finished_at, aggregate_kind, aggregate_target, tool_name,
+	                server_name, result, http_status, duration_ms, error_message,
+	                input_json, output_json, auth_kind
+	         FROM mcp_invocations` + whereSQL +
+		` ORDER BY started_at DESC, id DESC LIMIT ? OFFSET ?`
+	rows, err := s.db.QueryContext(ctx, query, append(args, q.Size, offset)...)
+	if err != nil {
+		return nil, fmt.Errorf("mcp-hub: list invocations: %w", err)
+	}
+	defer rows.Close()
+
+	items := make([]InvocationRecord, 0, q.Size)
+	for rows.Next() {
+		var (
+			r            InvocationRecord
+			target, srv  sql.NullString
+			httpStatus   sql.NullInt64
+			errMsg       sql.NullString
+			inJSON, out  sql.NullString
+			auth         sql.NullString
+			finished     sql.NullString
+		)
+		if err := rows.Scan(&r.ID, &r.StartedAt, &finished, &r.AggregateKind, &target, &r.ToolName,
+			&srv, &r.Result, &httpStatus, &r.DurationMS, &errMsg,
+			&inJSON, &out, &auth); err != nil {
+			return nil, fmt.Errorf("mcp-hub: scan invocation: %w", err)
+		}
+		if finished.Valid {
+			r.FinishedAt = &finished.String
+		}
+		if target.Valid {
+			r.AggregateTarget = &target.String
+		}
+		r.ServerName = srv.String
+		r.HTTPStatus = int(httpStatus.Int64)
+		r.ErrorMessage = errMsg.String
+		r.InputJSON = inJSON.String
+		r.OutputJSON = out.String
+		r.AuthKind = auth.String
+		items = append(items, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("mcp-hub: iterate invocations: %w", err)
+	}
+	return &InvocationPage{Items: items, Total: total}, nil
+}
+
+// escapeLike 转义 LIKE 通配符 % _，配合 ESCAPE '\' 使用，避免用户输入被当通配符。
+func escapeLike(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `%`, `\%`)
+	s = strings.ReplaceAll(s, `_`, `\_`)
+	return s
 }

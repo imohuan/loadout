@@ -101,6 +101,128 @@ func TestRecordV2Fields(t *testing.T) {
 	}
 }
 
+// seedInvocations 插入 6 条不同 kind/auth/server 的记录，供 ListInvocations 过滤测试。
+func seedInvocations(t *testing.T, s *Service) {
+	t.Helper()
+	ctx := context.Background()
+	base := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	for i, d := range []struct {
+		kind, target, tool, server, auth, result string
+	}{
+		{"single", "DEMO", "read_file", "fs", "mcp-key", "success"},
+		{"single", "DEMO", "read_file", "fs", "mcp-key", "success"},
+		{"group", "search", "web_search", "exa", "session", "success"},
+		{"$smart", "", "ws_exa", "exa", "public", "success"},
+		{"single", "DEMO", "exec", "shell", "mcp-key", "error"},
+		{"group", "search", "web_search", "exa", "session", "not_found"},
+	} {
+		target := d.target
+		var targetPtr *string
+		if d.kind != "$smart" {
+			targetPtr = &target
+		} else {
+			empty := ""
+			targetPtr = &empty
+		}
+		started := base.Add(time.Duration(i) * time.Minute).Format(time.RFC3339Nano)
+		if err := s.RecordInvocation(ctx, InvocationRecord{
+			StartedAt:       started,
+			AggregateKind:   d.kind,
+			AggregateTarget: targetPtr,
+			ToolName:        d.tool,
+			ServerName:      d.server,
+			Result:          d.result,
+			DurationMS:      100 + i,
+			InputJSON:       `{"i":` + string(rune('0'+i)) + `}`,
+			AuthKind:        d.auth,
+		}); err != nil {
+			t.Fatalf("seed record %d: %v", i, err)
+		}
+	}
+}
+
+func TestListInvocationsPagination(t *testing.T) {
+	s := newTestService(t)
+	seedInvocations(t, s)
+	ctx := context.Background()
+
+	// 无过滤，page=1 size=2：返回 2 条，total=6，按时间倒序（最新在前）。
+	page, err := s.ListInvocations(ctx, InvocationQuery{Page: 1, Size: 2})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if page.Total != 6 {
+		t.Fatalf("total expected 6, got %d", page.Total)
+	}
+	if len(page.Items) != 2 {
+		t.Fatalf("items expected 2, got %d", len(page.Items))
+	}
+	// 最新一条是 i=5 的 group/web_search/not_found。
+	if page.Items[0].ToolName != "web_search" || page.Items[0].Result != "not_found" {
+		t.Fatalf("first item expected web_search/not_found, got %+v", page.Items[0])
+	}
+
+	// 第二页：i=3,2 两条。
+	page2, err := s.ListInvocations(ctx, InvocationQuery{Page: 2, Size: 2})
+	if err != nil {
+		t.Fatalf("list page2: %v", err)
+	}
+	if len(page2.Items) != 2 || page2.Total != 6 {
+		t.Fatalf("page2 expected 2 items/total 6, got %d/%d", len(page2.Items), page2.Total)
+	}
+	if page2.Items[0].ToolName != "ws_exa" {
+		t.Fatalf("page2 first expected ws_exa, got %+v", page2.Items[0])
+	}
+}
+
+func TestListInvocationsFilters(t *testing.T) {
+	s := newTestService(t)
+	seedInvocations(t, s)
+	ctx := context.Background()
+
+	cases := []struct {
+		name string
+		q    InvocationQuery
+		want int
+	}{
+		{"kind=single", InvocationQuery{Kind: "single"}, 3},
+		{"kind=$smart", InvocationQuery{Kind: "$smart"}, 1},
+		{"kind=group", InvocationQuery{Kind: "group"}, 2},
+		{"auth=mcp-key", InvocationQuery{Auth: "mcp-key"}, 3},
+		{"auth=session", InvocationQuery{Auth: "session"}, 2},
+		{"auth=public", InvocationQuery{Auth: "public"}, 1},
+		{"tool LIKE", InvocationQuery{Tool: "web"}, 2},
+		{"tool LIKE full", InvocationQuery{Tool: "web_search"}, 2},
+		{"server=fs", InvocationQuery{Server: "fs"}, 2},
+		{"kind+auth", InvocationQuery{Kind: "single", Auth: "mcp-key"}, 3},
+		{"kind+auth none", InvocationQuery{Kind: "group", Auth: "mcp-key"}, 0},
+	}
+	for _, c := range cases {
+		page, err := s.ListInvocations(ctx, c.q)
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if page.Total != c.want {
+			t.Fatalf("%s: total expected %d, got %d", c.name, c.want, page.Total)
+		}
+	}
+}
+
+// TestListInvocationsLikeEscape 回归：LIKE 通配符注入被转义，% _ 按字面匹配。
+func TestListInvocationsLikeEscape(t *testing.T) {
+	s := newTestService(t)
+	seedInvocations(t, s)
+	ctx := context.Background()
+	// "%" 字面量匹配不到任何 tool_name（转义后按字面匹配），而非匹配全部。
+	page, err := s.ListInvocations(ctx, InvocationQuery{Tool: "%"})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if page.Total != 0 {
+		t.Fatalf("literal %% expected 0 matches, got %d", page.Total)
+	}
+}
+
 func TestStatsEmpty(t *testing.T) {
 	s := newTestService(t)
 	got, err := s.Stats(context.Background(), 30, 5)
