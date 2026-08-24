@@ -2,7 +2,7 @@
 import { computed, reactive, ref, watch } from 'vue'
 import { RiCloseLine, RiRefreshLine, RiSearchLine } from '@remixicon/vue'
 import type { Channel } from '@/lib/types'
-import { useChannels, type ChannelInput } from '@/composables/useChannels'
+import { useChannels, normalizeBaseURL, type ChannelInput } from '@/composables/useChannels'
 
 const service = useChannels()
 const props = defineProps<{
@@ -64,7 +64,10 @@ function resetForm() {
 watch(
   () => open.value,
   (isOpen) => {
-    if (isOpen) resetForm()
+    if (isOpen) {
+      resetForm()
+      loadSiblings()
+    }
   },
   { immediate: true },
 )
@@ -159,6 +162,60 @@ async function fetchModels() {
     fetchingModels.value = false
   }
 }
+
+// ===== 从同渠道其他 Key 导入模型（用于探测失败的渠道，参考同组兄弟 Key 的已知模型）=====
+// 拉取全量渠道；按当前 base_url normalize 过滤；编辑模式排除自己，添加模式不过滤（新 Key 无 id）。
+const allChannels = ref<Channel[]>([])
+async function loadSiblings() {
+  try {
+    const list = await service.list()
+    allChannels.value = list || []
+  } catch {
+    // 列表拉取失败不影响主流程；siblingChannels 退化为空数组，右侧 Select 自动隐藏。
+    allChannels.value = []
+  }
+}
+const currentBaseUrl = computed(() =>
+  normalizeBaseURL(props.lockBaseUrl || props.channel?.base_url || form.base_url || ''),
+)
+const siblingChannels = computed<Channel[]>(() => {
+  const target = currentBaseUrl.value
+  if (!target) return []
+  const selfId = props.channel?.id
+  return (allChannels.value || []).filter(
+    (c) => normalizeBaseURL(c.base_url) === target && (!selfId || c.id !== selfId),
+  )
+})
+// Select 受控的"瞬时选择值"：选中即触发合并，然后把 ref 重置为 '' 让 Select 回到 placeholder。
+// 不写入 model，避免 trigger 长期显示某个 Key 名干扰添加流程。
+const importKey = ref<string>('')
+function importSiblingModels(id: string) {
+  if (!id) return
+  const sibling = (allChannels.value || []).find((c) => c.id === id)
+  if (!sibling) return
+  const candidateSet = new Set(form.model_candidates)
+  const selectedSet = new Set(form.models)
+  let addedSelected = 0
+  for (const m of sibling.models || []) {
+    // 未在候选池则补入；用户明确要求「导入即全选」，所以候选 + 已选同步追加。
+    if (!candidateSet.has(m)) {
+      candidateSet.add(m)
+      form.model_candidates.push(m)
+    }
+    if (!selectedSet.has(m)) {
+      selectedSet.add(m)
+      form.models.push(m)
+      addedSelected++
+    }
+  }
+  importKey.value = ''
+  if (addedSelected === 0) {
+    probeError.value = `「${sibling.name}」的模型已全部选中`
+  } else {
+    probeError.value = ''
+  }
+}
+
 function submit() {
   emit('save', {
     ...form,
@@ -237,14 +294,61 @@ function submit() {
         <div class="space-y-2 md:col-span-2">
           <Label>模型列表</Label>
           <Popover v-model:open="modelOpen">
-            <PopoverTrigger as-child>
-              <Button type="button" variant="outline" class="w-full justify-between font-normal">
-                <span v-if="form.models.length" class="text-muted-foreground"
-                  >已选 {{ form.models.length }} 个模型</span
-                ><span v-else class="text-muted-foreground">选择模型（可搜索 / 自定义）</span
-                ><RiSearchLine class="size-4 shrink-0 opacity-50" />
-              </Button>
-            </PopoverTrigger>
+            <div class="flex items-stretch gap-2">
+              <PopoverTrigger as-child class="flex-1">
+                <Button type="button" variant="outline" class="w-full justify-between font-normal">
+                  <span v-if="form.models.length" class="text-muted-foreground"
+                    >已选 {{ form.models.length }} 个模型</span
+                  ><span v-else class="text-muted-foreground">选择模型（可搜索 / 自定义）</span
+                  ><RiSearchLine class="size-4 shrink-0 opacity-50" />
+                </Button>
+              </PopoverTrigger>
+              <Select
+                v-if="siblingChannels.length"
+                :model-value="importKey"
+                @update:model-value="importSiblingModels"
+              >
+                <SelectTrigger class="w-[180px] shrink-0" aria-label="从其他 Key 导入模型">
+                  <SelectValue placeholder="从其他 Key 导入" />
+                </SelectTrigger>
+                <SelectContent position="popper" side="bottom" align="end" :side-offset="4">
+                  <SelectGroup>
+                    <SelectItem
+                      v-for="s in siblingChannels"
+                      :key="s.id"
+                      :value="s.id"
+                    >
+                      <TooltipProvider :delay-duration="150" :skip-delay-duration="100">
+                        <Tooltip>
+                          <TooltipTrigger as-child>
+                            <span class="flex w-full items-center justify-between gap-2">
+                              <span class="truncate">{{ s.name }}</span>
+                              <span class="shrink-0 text-xs text-muted-foreground"
+                                >{{ s.models?.length ?? 0 }} 个</span
+                              >
+                            </span>
+                          </TooltipTrigger>
+                          <TooltipContent
+                            side="right"
+                            class="max-w-xs whitespace-normal"
+                            :side-offset="6"
+                          >
+                            <div class="text-xs text-muted-foreground">
+                              {{
+                                (s.models || []).length
+                                  ? (s.models || []).slice(0, 30).join('、') +
+                                    ((s.models || []).length > 30 ? '…' : '')
+                                  : '尚未配置模型'
+                              }}
+                            </div>
+                          </TooltipContent>
+                        </Tooltip>
+                      </TooltipProvider>
+                    </SelectItem>
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+            </div>
             <PopoverContent class="w-[var(--reka-popper-anchor-width)] p-2" align="start">
               <div class="space-y-2">
                 <div class="flex items-center gap-2">

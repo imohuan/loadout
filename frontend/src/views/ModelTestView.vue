@@ -4,8 +4,10 @@ import {
   RiAddLine,
   RiArrowDownSLine,
   RiAttachment2,
+  RiCameraLensLine,
   RiCloseLine,
   RiDeleteBinLine,
+  RiFlashlightLine,
   RiImageAddLine,
   RiPlayLine,
   RiRefreshLine,
@@ -277,6 +279,42 @@ function clearDraft() {
   draft.value = ''
   fetchError.value = ''
   clearAttachments()
+}
+
+// 快速测试入口：复用「用户输入」卡现有 draft/attachments，只把内容填进输入区，
+// 不自动发送（发送由用户点「发送」按钮触发）。不修改左侧 Messages 列表、不新增发送路径。
+// quickFetching 只保护「识图」的异步拉图段；「你好」为同步写入，不置位。
+const quickFetching = ref(false)
+
+async function loadRemoteImage(url: string): Promise<File> {
+  const response = await fetch(url, { mode: 'cors' })
+  if (!response.ok) throw new Error(`图片拉取失败 (${response.status})`)
+  const blob = await response.blob()
+  const ext = blob.type.split('/')[1]?.split(';')[0] || 'jpg'
+  return new File([blob], `quick-test-${Date.now()}.${ext}`, { type: blob.type })
+}
+
+function quickHello() {
+  if (streaming.value || quickFetching.value) return
+  draft.value = '你好'
+}
+
+async function quickVision() {
+  if (streaming.value || quickFetching.value) return
+  quickFetching.value = true
+  fetchError.value = ''
+  try {
+    // 固定 seed + 时间戳扰动，避开浏览器缓存命中同一张图。
+    const file = await loadRemoteImage(
+      `https://picsum.photos/seed/loadout-quicktest-${Date.now()}/512/512`,
+    )
+    addFiles([file])
+    draft.value = '请识别这张图片，简要描述其内容'
+  } catch (error) {
+    fetchError.value = error instanceof Error ? error.message : '快速测试（识图）准备失败'
+  } finally {
+    quickFetching.value = false
+  }
 }
 
 function openImagePreview(attachment: Attachment) {
@@ -899,9 +937,31 @@ onBeforeUnmount(() => {
                 </div>
               </div>
               <div class="flex flex-wrap items-center justify-between gap-3">
-                <Button type="button" variant="outline" size="sm" @click="openFilePicker">
-                  <RiImageAddLine size="16" />添加图片或资源
-                </Button>
+                <div class="flex flex-wrap items-center gap-2">
+                  <Button type="button" variant="outline" size="sm" @click="openFilePicker">
+                    <RiImageAddLine size="16" />添加图片或资源
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    :disabled="streaming || quickFetching"
+                    aria-label="快速测试：发送你好"
+                    @click="quickHello"
+                  >
+                    <RiFlashlightLine size="16" />快速：你好
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    :disabled="streaming || quickFetching"
+                    aria-label="快速测试：发送图片识别请求"
+                    @click="quickVision"
+                  >
+                    <RiCameraLensLine size="16" />快速：识图
+                  </Button>
+                </div>
                 <div class="flex items-center gap-2">
                   <Button v-if="streaming" type="button" variant="outline" @click="stop">
                     <RiStopLine size="16" />停止

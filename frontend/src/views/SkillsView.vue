@@ -399,10 +399,10 @@ async function restoreAllBackups() {
     <PageHeader title="Skills" description="安装、移除技能，并保存可快速切换的技能预设。">
       <template #actions
         ><Button variant="outline" :disabled="loading || anyRefreshing" @click="refresh">
-          <RiRefreshLine :class="anyRefreshing ? 'animate-spin' : ''" size="16" />刷新
+          <RiRefreshLine :class="anyRefreshing ? 'animate-spin' : ''" size="7" />刷新
         </Button>
         <Button variant="outline" :disabled="syncing" @click="syncSkills">
-          <RiUploadLine :class="syncing ? 'animate-spin' : ''" size="16" />{{
+          <RiLoaderLine v-if="syncing" class="animate-spin" size="22" /><RiUploadLine v-else size="16" />{{
             syncing ? '同步中…' : '主动同步'
           }}
         </Button>

@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
-import { useRoute } from 'vue-router'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { useRequestLogs } from '@/composables/useRequestLogs'
 import type { RequestLogDetail } from '@/lib/types'
 import { formatDate, formatDuration } from '@/lib/format'
@@ -22,6 +22,7 @@ type ResponseSnapshot = {
 }
 
 const route = useRoute()
+const router = useRouter()
 const { detail } = useRequestLogs()
 
 const log = ref<RequestLogDetail | null>(null)
@@ -51,7 +52,19 @@ const streamView = computed<{
   }
 })
 
+// ESC 快速返回上一页：有浏览历史时回退到真正的前一页；
+// 直接输 URL 打开（无历史）时兜底跳回转发日志列表。
+function handleKeydown(e: KeyboardEvent) {
+  if (e.key !== 'Escape') return
+  if (window.history.state?.back) {
+    router.back()
+  } else {
+    router.push('/route-logs')
+  }
+}
+
 onMounted(async () => {
+  window.addEventListener('keydown', handleKeydown)
   try {
     log.value = await detail(route.params.id as string)
   } catch (e) {
@@ -59,6 +72,10 @@ onMounted(async () => {
   } finally {
     loading.value = false
   }
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', handleKeydown)
 })
 
 // result 徽标配色与 RouteLogTable 保持一致（emerald=成功 / red=失败 / amber=中断 / blue=运行中）

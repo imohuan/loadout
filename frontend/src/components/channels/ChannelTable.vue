@@ -224,6 +224,18 @@ function groupTitle(group: ChannelGroup) {
                           <Button
                             variant="ghost"
                             size="icon"
+                            aria-label="添加 Key"
+                            @click="emit('addKey', group.baseUrl)"
+                            ><RiAddLine size="16"
+                          /></Button>
+                        </TooltipTrigger>
+                        <TooltipContent>添加 Key</TooltipContent>
+                      </Tooltip>
+                      <Tooltip>
+                        <TooltipTrigger as-child>
+                          <Button
+                            variant="ghost"
+                            size="icon"
                             aria-label="删除整组"
                             :disabled="busy(groupKey(group.baseUrl, 'remove'))"
                             @click="emit('removeGroup', group.baseUrl)"
@@ -251,15 +263,8 @@ function groupTitle(group: ChannelGroup) {
                             每个 Key 是一个独立账号：独立模型目录、独立健康状态、独立开关。
                           </div>
                         </div>
-                        <div class="flex shrink-0 items-center gap-2">
+                        <div class="shrink-0">
                           <Badge variant="outline">{{ group.keys.length }} 个 Key</Badge>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            @click="emit('addKey', group.baseUrl)"
-                          >
-                            <RiAddLine size="16" />添加 Key
-                          </Button>
                         </div>
                       </div>
                       <div
