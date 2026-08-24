@@ -4,13 +4,13 @@ import {
   RiAddLine,
   RiArrowDownSLine,
   RiAttachment2,
-  RiCameraLensLine,
+  RiBookmark2Line,
   RiCloseLine,
   RiDeleteBinLine,
-  RiFlashlightLine,
   RiImageAddLine,
   RiPlayLine,
   RiRefreshLine,
+  RiSave3Line,
   RiStopLine,
 } from '@remixicon/vue'
 import { useChannels, groupChannelsByBaseURL } from '@/composables/useChannels'
@@ -21,6 +21,13 @@ import { useModelTest } from '@/composables/useModelTest'
 import { useRouteLogs } from '@/composables/useRouteLogs'
 import type { RouteLog } from '@/lib/types'
 import { loadTestRouteLogs, saveTestRouteLog, clearTestRouteLogs } from '@/lib/routeLogCache'
+import {
+  listTemplates,
+  removeTemplate,
+  saveTemplate,
+  type TemplateAttachment,
+  type TestTemplate,
+} from '@/lib/templateStore'
 import PageHeader from '@/components/PageHeader.vue'
 import RouteLogTable from '@/components/route-logs/RouteLogTable.vue'
 import ChannelGroupPicker, { type ChannelSelection } from '@/components/ChannelGroupPicker.vue'
@@ -123,7 +130,10 @@ async function loadSkKeys() {
     skKeys.value = []
   }
 }
-onMounted(loadSkKeys)
+onMounted(() => {
+  loadSkKeys()
+  reloadTemplates()
+})
 // 选中「Loadout 自带 API」下某个 SK key：base_url 由后端按请求 Host 自动补全（前端不传），
 // SK key 由预设下拉直接选定，触发按钮显示该 key 名称，不再要独立的 API Key 输入框。
 function chooseBuiltinKey(hash: string) {
@@ -279,42 +289,6 @@ function clearDraft() {
   draft.value = ''
   fetchError.value = ''
   clearAttachments()
-}
-
-// 快速测试入口：复用「用户输入」卡现有 draft/attachments，只把内容填进输入区，
-// 不自动发送（发送由用户点「发送」按钮触发）。不修改左侧 Messages 列表、不新增发送路径。
-// quickFetching 只保护「识图」的异步拉图段；「你好」为同步写入，不置位。
-const quickFetching = ref(false)
-
-async function loadRemoteImage(url: string): Promise<File> {
-  const response = await fetch(url, { mode: 'cors' })
-  if (!response.ok) throw new Error(`图片拉取失败 (${response.status})`)
-  const blob = await response.blob()
-  const ext = blob.type.split('/')[1]?.split(';')[0] || 'jpg'
-  return new File([blob], `quick-test-${Date.now()}.${ext}`, { type: blob.type })
-}
-
-function quickHello() {
-  if (streaming.value || quickFetching.value) return
-  draft.value = '你好'
-}
-
-async function quickVision() {
-  if (streaming.value || quickFetching.value) return
-  quickFetching.value = true
-  fetchError.value = ''
-  try {
-    // 固定 seed + 时间戳扰动，避开浏览器缓存命中同一张图。
-    const file = await loadRemoteImage(
-      `https://picsum.photos/seed/loadout-quicktest-${Date.now()}/512/512`,
-    )
-    addFiles([file])
-    draft.value = '请识别这张图片，简要描述其内容'
-  } catch (error) {
-    fetchError.value = error instanceof Error ? error.message : '快速测试（识图）准备失败'
-  } finally {
-    quickFetching.value = false
-  }
 }
 
 function openImagePreview(attachment: Attachment) {
@@ -632,6 +606,80 @@ function stop() {
   abortController.value?.abort()
 }
 
+// ---- 快速模板：IndexedDB 本地存储，保存当前输入（文本 + 附件 Blob），一键回填 ----
+const templates = ref<TestTemplate[]>([])
+const templatePopoverOpen = ref(false)
+const saveTemplateOpen = ref(false)
+const templateName = ref('')
+const savingTemplate = ref(false)
+
+async function reloadTemplates() {
+  templates.value = await listTemplates().catch(() => [])
+}
+
+// blob URL → Blob：模板保存时把附件预览（objectURL）还原成 Blob 落 IndexedDB。
+function blobUrlToBlob(url: string): Promise<Blob> {
+  return fetch(url).then((response) => response.blob())
+}
+
+async function saveAsTemplate() {
+  const name = templateName.value.trim()
+  if (!name) return
+  // 防重：Enter 连按两次会触发两次保存（Dialog 模态下空模板不可达，但双击可达）。
+  if (savingTemplate.value) return
+  savingTemplate.value = true
+  try {
+    const templateAttachments: TemplateAttachment[] = []
+    for (const attachment of attachments.value) {
+      if (attachment.preview) {
+        try {
+          const blob = await blobUrlToBlob(attachment.preview)
+          templateAttachments.push({ name: attachment.name, kind: attachment.kind, blob })
+        } catch (error) {
+          // 附件 Blob 还原失败（罕见）：跳过该附件，不阻塞模板保存，但提醒用户。
+          console.warn(`[template] 附件还原失败，已跳过：${attachment.name}`, error)
+        }
+      }
+    }
+    const template: TestTemplate = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      name,
+      text: draft.value,
+      attachments: templateAttachments,
+      savedAt: Date.now(),
+    }
+    await saveTemplate(template)
+    await reloadTemplates()
+    saveTemplateOpen.value = false
+    templateName.value = ''
+  } catch (error) {
+    // IndexedDB 写入失败（如图片过大触发 QuotaExceededError）：保持 dialog 打开并提示。
+    fetchError.value = `模板保存失败：${error instanceof Error ? error.message : '未知错误'}`
+  } finally {
+    savingTemplate.value = false
+  }
+}
+
+// 点击模板：清空当前输入区，回填文本 + 附件（Blob 还原成 File 走 addFiles 生成预览）。
+function applyTemplate(template: TestTemplate) {
+  clearAttachments()
+  draft.value = template.text
+  for (const attachment of template.attachments) {
+    const file = new File([attachment.blob], attachment.name, { type: attachment.blob.type })
+    addFiles([file])
+  }
+  templatePopoverOpen.value = false
+}
+
+async function deleteTemplateItem(id: string) {
+  try {
+    await removeTemplate(id)
+    await reloadTemplates()
+  } catch (error) {
+    console.warn(`[template] 删除模板失败：${id}`, error)
+  }
+}
+
 onBeforeUnmount(() => {
   abortController.value?.abort()
   clearAttachments()
@@ -941,26 +989,45 @@ onBeforeUnmount(() => {
                   <Button type="button" variant="outline" size="sm" @click="openFilePicker">
                     <RiImageAddLine size="16" />添加图片或资源
                   </Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    :disabled="streaming || quickFetching"
-                    aria-label="快速测试：发送你好"
-                    @click="quickHello"
-                  >
-                    <RiFlashlightLine size="16" />快速：你好
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    :disabled="streaming || quickFetching"
-                    aria-label="快速测试：发送图片识别请求"
-                    @click="quickVision"
-                  >
-                    <RiCameraLensLine size="16" />快速：识图
-                  </Button>
+                  <Popover v-model:open="templatePopoverOpen">
+                    <PopoverTrigger as-child>
+                      <Button type="button" variant="outline" size="sm">
+                        <RiBookmark2Line size="16" />模板
+                      </Button>
+                    </PopoverTrigger>
+                    <PopoverContent class="w-72 p-2" align="start" :side-offset="6">
+                      <div class="flex flex-col gap-1">
+                        <p
+                          v-if="!templates.length"
+                          class="px-2 py-3 text-center text-xs text-muted-foreground"
+                        >
+                          暂无模板。点右侧「保存为模板」保存当前输入。
+                        </p>
+                        <div
+                          v-for="template in templates"
+                          :key="template.id"
+                          role="button"
+                          tabindex="0"
+                          class="group flex cursor-pointer items-center justify-between gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                          @click="applyTemplate(template)"
+                          @keydown.enter.prevent="applyTemplate(template)"
+                          @keydown.space.prevent="applyTemplate(template)"
+                        >
+                          <span class="min-w-0 truncate">{{ template.name }}</span>
+                          <Button
+                            type="button"
+                            size="icon"
+                            variant="ghost"
+                            class="size-6 shrink-0 opacity-0 transition-opacity focus-visible:opacity-100 group-hover:opacity-100"
+                            aria-label="删除模板"
+                            @click.stop="deleteTemplateItem(template.id)"
+                          >
+                            <RiCloseLine size="14" />
+                          </Button>
+                        </div>
+                      </div>
+                    </PopoverContent>
+                  </Popover>
                 </div>
                 <div class="flex items-center gap-2">
                   <Button v-if="streaming" type="button" variant="outline" @click="stop">
@@ -980,6 +1047,14 @@ onBeforeUnmount(() => {
                     @click="send"
                   >
                     <RiPlayLine size="16" />发送
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    :disabled="!draft.trim() && !attachments.length"
+                    @click="saveTemplateOpen = true"
+                  >
+                    <RiSave3Line size="16" />保存为模板
                   </Button>
                 </div>
               </div>
@@ -1044,6 +1119,31 @@ onBeforeUnmount(() => {
           :alt="previewAttachment.name"
           class="max-h-[calc(100dvh-6rem)] w-full object-contain"
         />
+      </DialogContent>
+    </Dialog>
+
+    <Dialog v-model:open="saveTemplateOpen" @update:open="!$event && (templateName = '')">
+      <DialogContent class="sm:max-w-sm">
+        <DialogHeader>
+          <DialogTitle class="text-base">保存为模板</DialogTitle>
+          <DialogDescription>将当前文本与附件保存为模板，之后可一键回填。</DialogDescription>
+        </DialogHeader>
+        <Input
+          v-model="templateName"
+          placeholder="模板名称"
+          autocomplete="off"
+          @keydown.enter="saveAsTemplate"
+        />
+        <DialogFooter>
+          <Button type="button" variant="outline" @click="saveTemplateOpen = false">取消</Button>
+          <Button
+            type="button"
+            :disabled="!templateName.trim() || savingTemplate"
+            @click="saveAsTemplate"
+          >
+            保存
+          </Button>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   </div>
