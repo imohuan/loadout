@@ -151,10 +151,7 @@ onMounted(load)
       </Select>
       <Select
         :model-value="filters.auth"
-        @update:model-value="
-          filters.auth = $event === 'all' ? '' : $event
-          applyFilter()
-        "
+        @update:model-value="onAuthChange"
       >
         <SelectTrigger class="h-9 w-[130px]">
           <SelectValue placeholder="认证" />
