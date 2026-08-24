@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -127,6 +128,9 @@ func (s *Service) Routes() []plugin.RouteSpec {
 		{Method: http.MethodPut, Pattern: "PUT /api/mcp-servers/{id}", Auth: plugin.AuthSession, Handler: s.session(s.handleMCPServerUpdate)},
 		{Method: http.MethodDelete, Pattern: "DELETE /api/mcp-servers", Auth: plugin.AuthSession, Handler: s.session(s.handleMCPServerDelete)},
 		{Method: http.MethodPost, Pattern: "POST /api/mcp-servers/test", Auth: plugin.AuthSession, Handler: s.session(s.handleMCPServerTest)},
+		{Method: http.MethodGet, Pattern: "GET /api/mcp-servers/logs", Auth: plugin.AuthSession, Handler: s.session(s.handleMCPLogsList)},
+		{Method: http.MethodGet, Pattern: "GET /api/mcp-servers/{name}/log/files", Auth: plugin.AuthSession, Handler: s.session(s.handleMCPLogFiles)},
+		{Method: http.MethodGet, Pattern: "GET /api/mcp-servers/{name}/log", Auth: plugin.AuthSession, Handler: s.session(s.handleMCPLogRead)},
 		{Method: http.MethodGet, Pattern: "GET /api/mcp-tools", Auth: plugin.AuthSession, Handler: s.session(s.handleMCPToolsList)},
 		{Method: http.MethodGet, Pattern: "GET /api/mcp-tools/schema", Auth: plugin.AuthSession, Handler: s.session(s.handleMCPToolSchema)},
 		{Method: http.MethodPost, Pattern: "POST /api/mcp-tools/call", Auth: plugin.AuthSession, Handler: s.session(s.handleMCPToolCall)},
@@ -173,6 +177,9 @@ func (s *Service) Routes() []plugin.RouteSpec {
 		{Method: http.MethodGet, Pattern: "GET /api/unifyai/stream", Auth: plugin.AuthSession, Handler: s.session(s.handleUnifyaiStream)},
 		{Method: http.MethodGet, Pattern: "GET /api/unifyai/mcp-servers", Auth: plugin.AuthSession, Handler: s.session(s.handleUnifyaiMcpServersList)},
 		{Method: http.MethodPut, Pattern: "PUT /api/unifyai/mcp-servers", Auth: plugin.AuthSession, Handler: s.session(s.handleUnifyaiMcpServersSave)},
+		{Method: http.MethodGet, Pattern: "GET /api/unifyai/mcp-matrix", Auth: plugin.AuthSession, Handler: s.session(s.handleUnifyaiMcpMatrix)},
+		{Method: http.MethodGet, Pattern: "GET /api/unifyai/all", Auth: plugin.AuthSession, Handler: s.session(s.handleUnifyaiAll)},
+		{Method: http.MethodPut, Pattern: "PUT /api/unifyai/sync-config", Auth: plugin.AuthSession, Handler: s.session(s.handleUnifyaiSyncConfigSave)},
 
 		// 聚合模型
 		{Method: http.MethodGet, Pattern: "GET /api/aggregates", Auth: plugin.AuthSession, Handler: s.session(s.handleAggregatesList)},
@@ -1182,6 +1189,90 @@ func (s *Service) handleMCPServersList(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
+// handleMCPLogsList 返回全部有日志文件的 MCP server（含段列表），供前端「日志」tab 下拉。
+func (s *Service) handleMCPLogsList(w http.ResponseWriter, r *http.Request) {
+	if s.hub == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"items": []any{}})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": s.hub.ListLogs()})
+}
+
+// handleMCPLogFiles 返回指定 server 的段文件列表（「加载更早」回溯用）。
+func (s *Service) handleMCPLogFiles(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if !validLogServerName(name) {
+		writeError(w, http.StatusBadRequest, "非法 server 名")
+		return
+	}
+	if s.hub == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"items": []any{}})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": s.hub.ListLogFiles(name)})
+}
+
+// handleMCPLogRead 增量读指定段文件：?file=<段名，默认最新段>&offset=N&limit=M。
+// 响应 {name, file, offset, size, eof, content}。
+func (s *Service) handleMCPLogRead(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if !validLogServerName(name) {
+		writeError(w, http.StatusBadRequest, "非法 server 名")
+		return
+	}
+	if s.hub == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"name": name, "file": "", "offset": 0, "size": 0, "eof": true, "content": ""})
+		return
+	}
+	segment := r.URL.Query().Get("file")
+	offset, _ := strconv.ParseInt(r.URL.Query().Get("offset"), 10, 64)
+	limit, _ := strconv.ParseInt(r.URL.Query().Get("limit"), 10, 64)
+	if limit <= 0 {
+		limit = 64 * 1024
+	}
+	if limit > 1024*1024 {
+		limit = 1024 * 1024
+	}
+	if segment != "" && !mcpLogSegmentRe.MatchString(segment) {
+		writeError(w, http.StatusBadRequest, "非法段文件名")
+		return
+	}
+	files := s.hub.ListLogFiles(name)
+	if segment == "" {
+		// 默认最新段（段号最大者）。
+		if len(files) == 0 {
+			writeJSON(w, http.StatusOK, map[string]any{"name": name, "file": "", "offset": 0, "size": 0, "eof": true, "content": ""})
+			return
+		}
+		segment = files[len(files)-1].Name
+	}
+	data, size, eof, err := s.hub.ReadLog(name, segment, offset, limit)
+	if err != nil {
+		// 段不存在（被删/未创建）→ 空响应不报错，前端按空处理。
+		if os.IsNotExist(err) {
+			writeJSON(w, http.StatusOK, map[string]any{"name": name, "file": segment, "offset": offset, "size": 0, "eof": true, "content": ""})
+			return
+		}
+		s.writeServerError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"name": name, "file": segment, "offset": offset,
+		"size": size, "eof": eof, "content": string(data),
+	})
+}
+
+// mcpLogSegmentRe 合法段文件名（与 mcp-hub 内部校验一致）：main.log / main-N.log / 旧 <YYYYMMDD-HHMMSS>.log / 旧 <...>-N.log。
+var mcpLogSegmentRe = regexp.MustCompile(`^(?:main|[0-9]{8}-[0-9]{6})(?:-([0-9]+))?\.log$`)
+
+// validLogServerName 校验日志 server 名：单段名（无路径分隔符），且非 "." / ".." / 空。
+func validLogServerName(name string) bool {
+	if name == "" || name == "." || name == ".." {
+		return false
+	}
+	return filepath.Base(name) == name
+}
+
 // handleMCPServerCreate 新建一个上游 MCP 服务器（自动生成 id）。
 func (s *Service) handleMCPServerCreate(w http.ResponseWriter, r *http.Request) {
 	var req types.MCPServer
@@ -1275,9 +1366,11 @@ func (s *Service) handleMCPServerDelete(w http.ResponseWriter, r *http.Request) 
 	}
 	out := items[:0]
 	found := false
+	deletedName := ""
 	for _, it := range items {
 		if it.ID == req.ID {
 			found = true
+			deletedName = it.Name
 			continue
 		}
 		out = append(out, it)
@@ -1295,6 +1388,10 @@ func (s *Service) handleMCPServerDelete(w http.ResponseWriter, r *http.Request) 
 	if err := s.writeMCPServers(r.Context(), out); err != nil {
 		s.writeServerError(w, err)
 		return
+	}
+	// 联动清理该 server 的整个日志目录（会话日志随配置一起清除）。
+	if s.hub != nil && deletedName != "" {
+		s.hub.RemoveServerLogs(deletedName)
 	}
 	s.invalidateHub()
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -1354,16 +1451,17 @@ type mcpToolBrief struct {
 	Description string `json:"description"`
 }
 
-// mcpConnectTimeout 连接测试与工具枚举的超时上限（远小于 UpstreamTimeout）。
+// mcpConnectTimeout 连接测试（handleMCPServerTest 临时连接）的超时上限。
 const mcpConnectTimeout = 20 * time.Second
 
 // handleMCPServerTest 按请求体里的完整配置测试上游连通性并列出工具（无需先保存）。
+// 注意：配置可能未保存，无法走 hub 索引——仍用临时连接（仅此一个入口保留）。
 func (s *Service) handleMCPServerTest(w http.ResponseWriter, r *http.Request) {
 	var req types.MCPServer
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	tools, err := s.listUpstreamTools(r, req)
+	tools, err := s.testConnectionTools(r, req)
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": err.Error()})
 		return
@@ -1371,7 +1469,29 @@ func (s *Service) handleMCPServerTest(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "tools": tools})
 }
 
-// handleMCPToolsList 聚合列出所有 enabled 上游 MCP 的工具（供分组挑选）。逐个连接，单个失败不中断整体。
+// testConnectionTools 用给定配置建临时连接枚举工具（仅 handleMCPServerTest 用：
+// 配置未入库、无索引可查，只能直连）。
+func (s *Service) testConnectionTools(r *http.Request, srv types.MCPServer) ([]mcpToolBrief, error) {
+	up := mcpkit.NewUpstream(mcpkit.UpstreamConfig{
+		Name: srv.Name, Transport: srv.Transport, Command: srv.Command, Args: srv.Args,
+		Env: srv.Env, URL: srv.URL, Headers: srv.Headers,
+	})
+	defer up.Close()
+	ctx, cancel := context.WithTimeout(r.Context(), mcpConnectTimeout)
+	defer cancel()
+	infos, err := up.ListTools(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]mcpToolBrief, 0, len(infos))
+	for _, info := range infos {
+		out = append(out, mcpToolBrief{Name: info.Name, Description: info.Description})
+	}
+	return out, nil
+}
+
+// handleMCPToolsList 聚合列出所有 enabled 上游 MCP 的工具（供分组挑选）。
+// 直接从 hub 索引拿（不逐台建连）：索引在 BuildIndex 时已容错跳过故障上游。
 func (s *Service) handleMCPToolsList(w http.ResponseWriter, r *http.Request) {
 	servers, err := s.readMCPServers(r.Context())
 	if err != nil {
@@ -1392,43 +1512,25 @@ func (s *Service) handleMCPToolsList(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		entry := serverTools{ID: srv.ID, Name: srv.Name, Transport: srv.Transport, URL: srv.URL}
-		tools, err := s.listUpstreamTools(r, srv)
-		if err != nil {
-			entry.Error = err.Error()
-			entry.Tools = []mcpToolBrief{}
+		if s.hub == nil {
+			// 降级：hub 未装配（部署/单测环境）时临时连接枚举，保持可用。
+			tools, err := s.testConnectionTools(r, srv)
+			if err != nil {
+				entry.Error = err.Error()
+				entry.Tools = []mcpToolBrief{}
+			} else {
+				entry.Tools = tools
+			}
 		} else {
-			entry.Tools = tools
+			infos := s.hub.TestTools(srv.ID)
+			entry.Tools = make([]mcpToolBrief, 0, len(infos))
+			for _, info := range infos {
+				entry.Tools = append(entry.Tools, mcpToolBrief{Name: info.Name, Description: info.Description})
+			}
 		}
 		out = append(out, entry)
 	}
 	writeJSON(w, http.StatusOK, out)
-}
-
-// listUpstreamTools 用给定配置建连并枚举工具；超时或失败返回错误。
-func (s *Service) listUpstreamTools(r *http.Request, srv types.MCPServer) ([]mcpToolBrief, error) {
-	up := mcpkit.NewUpstream(mcpkit.UpstreamConfig{
-		Name:      srv.Name,
-		Transport: srv.Transport,
-		Command:   srv.Command,
-		Args:      srv.Args,
-		Env:       srv.Env,
-		URL:       srv.URL,
-		Headers:   srv.Headers,
-	})
-	defer up.Close()
-
-	ctx, cancel := context.WithTimeout(r.Context(), mcpConnectTimeout)
-	defer cancel()
-
-	infos, err := up.ListTools(ctx)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]mcpToolBrief, 0, len(infos))
-	for _, info := range infos {
-		out = append(out, mcpToolBrief{Name: info.Name, Description: info.Description})
-	}
-	return out, nil
 }
 
 func (s *Service) findMCPServer(id string) (types.MCPServer, error) {
@@ -1444,13 +1546,6 @@ func (s *Service) findMCPServer(id string) (types.MCPServer, error) {
 	return types.MCPServer{}, fmt.Errorf("MCP 服务器不存在")
 }
 
-func newMCPUpstream(server types.MCPServer) *mcpkit.Upstream {
-	return mcpkit.NewUpstream(mcpkit.UpstreamConfig{
-		Name: server.Name, Transport: server.Transport, Command: server.Command, Args: server.Args,
-		Env: server.Env, URL: server.URL, Headers: server.Headers,
-	})
-}
-
 func (s *Service) handleMCPToolSchema(w http.ResponseWriter, r *http.Request) {
 	serverID := strings.TrimSpace(r.URL.Query().Get("server_id"))
 	toolName := strings.TrimSpace(r.URL.Query().Get("tool_name"))
@@ -1458,27 +1553,19 @@ func (s *Service) handleMCPToolSchema(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "缺少 server_id 或 tool_name")
 		return
 	}
-	server, err := s.findMCPServer(serverID)
-	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+	if s.hub == nil {
+		writeError(w, http.StatusNotFound, "mcp-hub 未就绪")
 		return
 	}
-	up := newMCPUpstream(server)
-	defer up.Close()
-	ctx, cancel := context.WithTimeout(r.Context(), mcpConnectTimeout)
-	defer cancel()
-	tools, err := up.ListTools(ctx)
-	if err != nil {
-		s.writeServerError(w, err)
-		return
-	}
-	for _, tool := range tools {
-		if tool.Name == toolName {
-			writeJSON(w, http.StatusOK, map[string]any{"name": tool.Name, "description": tool.Description, "inputSchema": tool.InputSchema})
+	for _, info := range s.hub.TestTools(serverID) {
+		if info.Name == toolName {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"name": info.Name, "description": info.Description, "inputSchema": info.InputSchema,
+			})
 			return
 		}
 	}
-	writeError(w, http.StatusNotFound, "工具不存在")
+	writeError(w, http.StatusNotFound, "工具不存在或服务器未启用")
 }
 
 func (s *Service) handleMCPToolCall(w http.ResponseWriter, r *http.Request) {
@@ -1494,16 +1581,14 @@ func (s *Service) handleMCPToolCall(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "缺少 server_id 或 tool_name")
 		return
 	}
-	server, err := s.findMCPServer(req.ServerID)
-	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+	if s.hub == nil {
+		writeError(w, http.StatusNotFound, "mcp-hub 未就绪")
 		return
 	}
-	up := newMCPUpstream(server)
-	defer up.Close()
+	// 复用生产路由：连接池连接 + 索引路由 + 完整帧日志 + 埋点，与网关调用完全一致。
 	ctx, cancel := context.WithTimeout(r.Context(), mcpConnectTimeout)
 	defer cancel()
-	result, err := up.CallTool(ctx, req.ToolName, req.Arguments)
+	result, err := s.hub.InvokeTool(ctx, req.ServerID, req.ToolName, req.Arguments)
 	if err != nil {
 		s.writeServerError(w, err)
 		return
@@ -2094,6 +2179,44 @@ func (s *Service) handleUnifyaiMcpServersSave(w http.ResponseWriter, r *http.Req
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// handleUnifyaiMcpMatrix 返回源 mcp.json + 各平台 MCP 开关状态
+// （调 unifyai --list-mcp --json，供前端渲染「MCP 同步矩阵」）。
+func (s *Service) handleUnifyaiMcpMatrix(w http.ResponseWriter, r *http.Request) {
+	res, err := s.unify.ListMcpMatrix()
+	if err != nil {
+		s.writeServerError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+// handleUnifyaiAll 返回全部配置（调 unifyai --list all --json）：
+// 平台能力 + 模型列表 + MCP 矩阵 + 元数据缓存状态，前端初始化一次拉全。
+func (s *Service) handleUnifyaiAll(w http.ResponseWriter, r *http.Request) {
+	res, err := s.unify.ListAll()
+	if err != nil {
+		s.writeServerError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+// handleUnifyaiSyncConfigSave 把前端当前同步配置原样写入 ~/.unifyai/sync.json，
+// 返回配置文件路径（前端随后以 --config <path> 执行）。
+func (s *Service) handleUnifyaiSyncConfigSave(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		s.writeServerError(w, err)
+		return
+	}
+	path, err := s.unify.SaveSyncConfig(body)
+	if err != nil {
+		s.writeServerError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "path": path})
 }
 
 // handleSkillRestoreAll 对所有目标（通用 + 各平台）执行恢复，返回成功恢复的目标列表。
