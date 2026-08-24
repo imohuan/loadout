@@ -66,6 +66,8 @@ type Service struct {
 	mu sync.Mutex
 	// upstreams 上游连接池：server id → 懒连接的上游客户端。
 	upstreams map[string]*mcpkit.Upstream
+	// logMgr MCP 会话日志管理器（~/.loadout/logs/mcp/…）。
+	logMgr *LogManager
 	// tools 索引缓存：全部工具（含技能，按 name 排序）。
 	tools []ToolEntry
 	// version index_version 计数器（每次成功重建 +1）。
@@ -78,6 +80,12 @@ func NewService(st *store.Store, lg *slog.Logger, database *sql.DB) *Service {
 	if database != nil {
 		repo, _ = db.NewRepository(database)
 	}
+	// config.LogsDir 未初始化（如单测环境未调 config.Load）时 root 为空，
+	// LogManager.Write 会静默跳过——避免日志写进意外目录。
+	var logsRoot string
+	if config.LogsDir != "" {
+		logsRoot = filepath.Join(config.LogsDir, "mcp")
+	}
 	return &Service{
 		st:        st,
 		lg:        lg,
@@ -85,6 +93,7 @@ func NewService(st *store.Store, lg *slog.Logger, database *sql.DB) *Service {
 		repo:      repo,
 		repoDir:   config.SkillsDir,
 		upstreams: map[string]*mcpkit.Upstream{},
+		logMgr:    NewLogManager(logsRoot),
 	}
 }
 
@@ -421,6 +430,8 @@ func (s *Service) callEntry(ctx context.Context, t ToolEntry, args map[string]an
 }
 
 // callEntryInner 是 callEntry 的实际执行体（无埋点副作用）。
+// 帧日志不再在此记录：完整 JSON-RPC 帧流（initialize/tools/list/tools/call + server push）
+// 统一由 mcpkit 的 LoggingTransport 包装提供（三种 transport 一致），避免双重记录。
 func (s *Service) callEntryInner(ctx context.Context, t ToolEntry, args map[string]any) (*mcpkit.ToolResult, error) {
 	if t.IsSkill {
 		return &mcpkit.ToolResult{
@@ -639,6 +650,7 @@ func (s *Service) readGroups() ([]types.Group, error) {
 }
 
 // getUpstream 按配置取（或创建）上游连接，写入连接池（并发安全）。
+// 注意：本方法全程持 s.mu；LogHook 回调（logMgr.Write）不得反向调用 hub 方法（死锁）。
 func (s *Service) getUpstream(srv types.MCPServer) *mcpkit.Upstream {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -653,9 +665,37 @@ func (s *Service) getUpstream(srv types.MCPServer) *mcpkit.Upstream {
 		Env:       srv.Env,
 		URL:       srv.URL,
 		Headers:   srv.Headers,
+		LogHook: func(kind string, fields ...any) {
+			// Ensure 幂等（首次建目录/文件，后续直接返回）：Write 不负责建日志，
+			// 事件回调里先确保 ServerLog 存在再写。
+			s.logMgr.Ensure(srv.ID, srv.Name)
+			s.logMgr.Write(srv.ID, kind, s.enrichHookFields(srv, kind, fields...)...)
+		},
 	})
 	s.upstreams[srv.ID] = u
 	return u
+}
+
+// enrichHookFields 给 connect 事件补全连接信息字段（transport/cmd/args/env/url/headers，
+// 敏感值掩码）；其余事件原样透传。mcpkit 只发基础事件，server 全量配置在此拼接。
+func (s *Service) enrichHookFields(srv types.MCPServer, kind string, fields ...any) []any {
+	if kind != "connect" {
+		return fields
+	}
+	out := []any{"transport", srv.Transport}
+	switch srv.Transport {
+	case "stdio":
+		out = append(out, "cmd", srv.Command, "args", srv.Args)
+		if len(srv.Env) > 0 {
+			out = append(out, "env", maskMap(srv.Env))
+		}
+	case "http", "sse":
+		out = append(out, "url", srv.URL)
+		if len(srv.Headers) > 0 {
+			out = append(out, "headers", maskMap(srv.Headers))
+		}
+	}
+	return append(out, fields...)
 }
 
 // getUpstreamByID 从连接池取指定 server id 的上游（不存在返回 nil）。
@@ -774,7 +814,7 @@ func (s *Service) ServerError(id string) string {
 	return up.LastError()
 }
 
-// Close 实现 io.Closer：退出时杀掉所有已拉起的上游子进程。
+// Close 实现 io.Closer：退出时杀掉所有已拉起的上游子进程，关闭全部日志句柄。
 // core/plugin 的 Assembly.Unload 会检测 io.Closer 并自动调用。
 func (s *Service) Close() error {
 	s.mu.Lock()
@@ -788,6 +828,9 @@ func (s *Service) Close() error {
 		if err := up.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
+	}
+	if s.logMgr != nil {
+		s.logMgr.CloseAll()
 	}
 	return firstErr
 }
@@ -1180,4 +1223,104 @@ type invokeContent struct {
 type invokeResp struct {
 	Content []invokeContent `json:"content"`
 	IsError bool            `json:"isError"`
+}
+
+// ---------------------------------------------------------------------------
+// 会话日志 API（admin-api 端点转发到这里）
+// ---------------------------------------------------------------------------
+
+// ListLogs 返回全部有日志文件的 server（含段列表与 transport）。供前端下拉。
+func (s *Service) ListLogs() []LogServerInfo {
+	out := []LogServerInfo{}
+	if s.logMgr == nil {
+		return out
+	}
+	names := s.logMgr.ListServers()
+	servers, _ := s.readServers()
+	byName := make(map[string]string, len(servers))
+	for _, srv := range servers {
+		byName[srv.Name] = srv.Transport
+	}
+	for _, name := range names {
+		out = append(out, LogServerInfo{
+			Name:      name,
+			Transport: byName[name],
+			Files:     s.logMgr.ListFiles(name),
+		})
+	}
+	return out
+}
+
+// ListLogFiles 返回指定 server 的段文件列表（「加载更早」回溯用）。
+func (s *Service) ListLogFiles(name string) []LogFileInfo {
+	if s.logMgr == nil {
+		return nil
+	}
+	return s.logMgr.ListFiles(name)
+}
+
+// ReadLog 增量读指定段文件：返回 (数据, 段总字节, eof, err)。
+// name/segment 的合法性由 LogManager.Read 校验（单段名 + 段名正则）。
+func (s *Service) ReadLog(name, segment string, offset, limit int64) ([]byte, int64, bool, error) {
+	if s.logMgr == nil {
+		return nil, 0, false, nil
+	}
+	return s.logMgr.Read(name, segment, offset, limit)
+}
+
+// RemoveServerLogs 按 server 名删除其整个日志目录（server 删除联动）。
+func (s *Service) RemoveServerLogs(name string) {
+	if s.logMgr == nil {
+		return
+	}
+	s.logMgr.RemoveServerLogs(name)
+}
+
+// InvokeTool 按 server id + 工具名直接调用上游（「测试工具」复用生产路径）：
+// 走连接池（复用常驻连接）、ToolView 路由、callEntry 埋点与日志——与网关调用完全一致。
+// server 未启用 / 工具不可见时返回明确错误。
+func (s *Service) InvokeTool(ctx context.Context, serverID, toolName string, args map[string]any) (*mcpkit.ToolResult, error) {
+	srv, err := s.findServer(serverID)
+	if err != nil {
+		return nil, err
+	}
+	if !srv.Enabled {
+		return nil, fmt.Errorf("mcphub: MCP 服务器 %q 未启用，无法测试调用", srv.Name)
+	}
+	endpoint := "/mcp/" + srv.Name
+	tools, err := s.ToolView(endpoint)
+	if err != nil {
+		return nil, err
+	}
+	var entry *ToolEntry
+	for i := range tools {
+		if tools[i].RawName == toolName || tools[i].Name == toolName {
+			entry = &tools[i]
+			break
+		}
+	}
+	if entry == nil {
+		return nil, fmt.Errorf("mcphub: 工具 %q 在服务器 %q 不可见", toolName, srv.Name)
+	}
+	return s.callEntry(ctx, *entry, args, endpoint)
+}
+
+// TestTools 从索引返回指定 server 的全部工具（含描述与完整 schema），不建连。
+// 「测试工具」的工具列表/Schema 从此索引拿，与生产一致且零额外连接。
+func (s *Service) TestTools(serverID string) []mcpkit.ToolInfo {
+	tools, err := s.ensureTools()
+	if err != nil {
+		return nil
+	}
+	out := []mcpkit.ToolInfo{}
+	for _, t := range tools {
+		if t.ServerID == serverID {
+			out = append(out, mcpkit.ToolInfo{
+				Name:        t.Name,
+				Description: t.Description,
+				InputSchema: t.InputSchema,
+			})
+		}
+	}
+	return out
 }

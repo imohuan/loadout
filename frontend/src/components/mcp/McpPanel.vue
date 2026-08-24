@@ -22,6 +22,7 @@ import {
 import PageHeader from '@/components/PageHeader.vue'
 import EmptyState from '@/components/EmptyState.vue'
 import LoadingBlock from '@/components/LoadingBlock.vue'
+import McpLogsTab from '@/components/mcp/McpLogsTab.vue'
 import { useMcpManagement, isServerActive } from '@/composables/useMcpManagement'
 import { useManagementApi } from '@/composables/useManagementApi'
 import { useAsyncTask } from '@/composables/useAsyncTask'
@@ -323,6 +324,7 @@ async function copyConfig(endpoint: {
         <TabsTrigger value="upstream">上游 MCP</TabsTrigger>
         <TabsTrigger value="groups">分组 MCP</TabsTrigger>
         <TabsTrigger value="endpoints">连接端点配置</TabsTrigger>
+        <TabsTrigger value="logs">日志</TabsTrigger>
       </TabsList>
       <TabsContent value="upstream" class="space-y-4">
         <Card class="rounded-md">
@@ -777,6 +779,9 @@ async function copyConfig(endpoint: {
             </Table>
           </CardContent>
         </Card>
+      </TabsContent>
+      <TabsContent value="logs" class="space-y-4">
+        <McpLogsTab />
       </TabsContent>
     </Tabs>
     <Dialog v-model:open="serverDialog">

@@ -73,6 +73,10 @@ type InvocationRecord struct {
 // RecordInvocation 同步插入一行。调用者应放 goroutine 里跑并 recover + log,
 // 避免阻塞业务请求。
 func (s *Service) RecordInvocation(ctx context.Context, r InvocationRecord) error {
+	if s.db == nil {
+		// 单测等无 db 环境：静默跳过，不 panic。
+		return nil
+	}
 	if r.StartedAt == "" {
 		r.StartedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	}

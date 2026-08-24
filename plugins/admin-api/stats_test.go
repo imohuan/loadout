@@ -80,11 +80,18 @@ func newStatsTestServer(t *testing.T) (*httptest.Server, *mcphub.Service, *sql.D
 
 	hub := mcphub.NewService(st, slog.Default(), sqlDB)
 	routeLogSvc := routelog.NewService(sqlDB, slog.Default())
+	// 注入真实 routing 仓储：admin-api 写 SQLite，mcp-hub 从同一仓储读，两边数据源一致。
+	routing, err := db.NewRepository(sqlDB)
+	if err != nil {
+		t.Fatalf("db.NewRepository: %v", err)
+	}
 	svc := NewService(st, slog.Default(), authSvc, keys, skillSvc, hub, unifyai.NewService(slog.Default()))
-	svc.SetRoutingServices(sqlDB, nil, nil, routeLogSvc)
+	svc.SetRoutingServices(sqlDB, routing, nil, routeLogSvc)
 
 	ts := httptest.NewServer(svc.Handler())
 	t.Cleanup(ts.Close)
+	// 关 hub 释放日志写句柄（Windows 下 t.TempDir cleanup 会因占用失败）。
+	t.Cleanup(func() { _ = hub.Close() })
 	return ts, hub, sqlDB, string(pw)
 }
 

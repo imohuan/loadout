@@ -7,12 +7,15 @@
 package mcpkit
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -65,6 +68,11 @@ type UpstreamConfig struct {
 	URL string
 	// Headers http / sse：附加请求头。
 	Headers map[string]string
+	// LogHook 会话事件回调（kind ∈ connect/connect_ok/connect_fail/disconnect/stderr）。
+	// mcp-hub 注入 ServerLog 写入器；nil 表示不采集（现有调用方零影响）。
+	// 注意：回调在 Upstream 内部路径触发，实现必须轻量且**不得反向调用本 Upstream 的任何方法**
+	//（回调可能持有 u.mu 期间被调用，反向调用会死锁）。
+	LogHook func(kind string, fields ...any)
 }
 
 // Upstream 一个上游 MCP 连接（懒连接，首次 ListTools/CallTool 时才建连）。
@@ -76,6 +84,12 @@ type Upstream struct {
 	cmd *exec.Cmd
 	// lastErr 最近一次建连失败的错误（供 UI 展示失败原因）。
 	lastErr error
+	// stderrPr / stderrPw stdio stderr 捕获管道（os.Pipe 方案 B，见 buildTransport）。
+	// 仅当配置了 LogHook 且 transport=stdio 时非 nil。
+	stderrPr *os.File
+	stderrPw *os.File
+	// disconnected 防重标记：disconnect 事件（close / process_exit）只发一次。
+	disconnected bool
 }
 
 // NewUpstream 根据配置创建一个懒连接的上游 MCP 客户端。
@@ -159,6 +173,10 @@ func (u *Upstream) Close() error {
 		u.session = nil
 		u.cmd = nil
 		u.lastErr = nil
+		if !u.disconnected {
+			u.disconnected = true
+			u.hook("disconnect", "reason", "closed")
+		}
 		return err
 	}
 	if u.cmd != nil && u.cmd.Process != nil {
@@ -169,7 +187,89 @@ func (u *Upstream) Close() error {
 	return nil
 }
 
+// hook 触发日志回调（LogHook 为 nil 时为空操作）。调用方需保证不持本 Upstream 的锁
+// 反向调用（回调实现不得调用 Upstream 方法，见 UpstreamConfig.LogHook 注释）。
+func (u *Upstream) hook(kind string, fields ...any) {
+	if u.cfg.LogHook != nil {
+		u.cfg.LogHook(kind, fields...)
+	}
+}
+
+// maxFrameBytes 单条 JSON-RPC 帧落日志的最大字节数（超长截断，防止大结果打爆日志行）。
+const maxFrameBytes = 1024 * 1024
+
+// frameLogWriter 把官方 LoggingTransport 输出的帧日志行（"read: {...}\n" / "write: {...}\n"）
+// 转成 LogHook 事件：read=server→client（frame_in，UI 侧为 FRAME←）、
+// write=client→server（frame_out，FRAME→）。io.Writer 的 Write 可能跨行/断行，内部按 \n 缓冲切行。
+type frameLogWriter struct {
+	u       *Upstream
+	pending []byte
+}
+
+func newFrameLogWriter(u *Upstream) *frameLogWriter {
+	return &frameLogWriter{u: u}
+}
+
+func (w *frameLogWriter) Write(p []byte) (int, error) {
+	w.pending = append(w.pending, p...)
+	for {
+		i := bytes.IndexByte(w.pending, '\n')
+		if i < 0 {
+			break
+		}
+		line := string(w.pending[:i])
+		w.pending = w.pending[i+1:]
+		w.emit(line)
+	}
+	return len(p), nil
+}
+
+func (w *frameLogWriter) emit(line string) {
+	switch {
+	case strings.HasPrefix(line, "read: "):
+		w.u.hook("frame_in", "msg", trimFrameMsg(line[len("read: "):]))
+	case strings.HasPrefix(line, "write: "):
+		w.u.hook("frame_out", "msg", trimFrameMsg(line[len("write: "):]))
+	default:
+		// read error / 其他诊断行：原样进 frame_in，保证不丢错误信息。
+		w.u.hook("frame_in", "msg", trimFrameMsg(line))
+	}
+}
+
+// trimFrameMsg 单条帧消息截断到 maxFrameBytes，超长加 truncated 标记。
+func trimFrameMsg(msg string) string {
+	if len(msg) <= maxFrameBytes {
+		return msg
+	}
+	return msg[:maxFrameBytes] + fmt.Sprintf(` ..."(truncated %d bytes)`, len(msg)-maxFrameBytes)
+}
+
+// readStderr 从自建管道读 stdio 子进程的 stderr：按行触发 stderr 事件；
+// EOF（进程退出）时若会话已建立且未发过 disconnect，补发 disconnect(process_exit)。
+// reader goroutine 不持 u.mu 调 hook（避免与 Close/ensureSession 死锁），
+// 仅在判断 EOF 时短暂加锁读 disconnected/session 状态。
+func (u *Upstream) readStderr(pr *os.File) {
+	defer pr.Close()
+	scanner := bufio.NewScanner(pr)
+	// MCP server 可能打长行（堆栈/日志）；给足缓冲（默认行 64KB、上限 1MB，超长行截断丢弃）。
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		u.hook("stderr", "line", scanner.Text())
+	}
+	// EOF：进程已退出（或写端全关）。若会话曾建立且未被 Close 标过，补发 process_exit。
+	u.mu.Lock()
+	hadSession := u.session != nil
+	already := u.disconnected
+	u.disconnected = true
+	u.mu.Unlock()
+	if hadSession && !already {
+		u.hook("disconnect", "reason", "process_exit")
+	}
+}
+
 // ensureSession 返回当前会话；若尚未建连，则按配置建立连接（并发安全）。
+// 全程持 u.mu；LogHook 回调（hook）可能在此期间被调用，故 hook 实现不得反向调用
+// Upstream 方法（见 UpstreamConfig.LogHook 注释）。
 func (u *Upstream) ensureSession(ctx context.Context) (*mcp.ClientSession, error) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
@@ -182,11 +282,24 @@ func (u *Upstream) ensureSession(ctx context.Context) (*mcp.ClientSession, error
 		u.lastErr = err
 		return nil, err
 	}
+	// 配置了 LogHook 时包一层官方 LoggingTransport：帧级记录全部双向 JSON-RPC
+	// 通信（initialize/tools/list/tools/call + server push notifications）。
+	// 三种 transport（stdio/http/sse）统一 wrap，stdout 协议帧与 stderr 分开记录。
+	if u.cfg.LogHook != nil {
+		transport = &mcp.LoggingTransport{Transport: transport, Writer: newFrameLogWriter(u)}
+	}
+	u.hook("connect")
 	client := mcp.NewClient(&mcp.Implementation{
 		Name:    upstreamClientName(u.cfg.Name),
 		Version: implementationVersion,
 	}, nil)
 	session, err := client.Connect(ctx, transport, nil)
+	// 释放父进程持有的 stderr 管道写端（子进程已 Start 继承写端）：
+	// 不关则 reader 永远等不到 EOF；失败分支同样要关（子进程可能没起来）。
+	if u.stderrPw != nil {
+		_ = u.stderrPw.Close()
+		u.stderrPw = nil
+	}
 	if err != nil {
 		// 建连失败时回收已启动的子进程，避免泄漏一个孤儿 MCP server。
 		if u.cmd != nil && u.cmd.Process != nil {
@@ -194,10 +307,16 @@ func (u *Upstream) ensureSession(ctx context.Context) (*mcp.ClientSession, error
 		}
 		u.cmd = nil
 		u.lastErr = err
+		u.hook("connect_fail", "err", err.Error())
 		return nil, err
+	}
+	pid := 0
+	if u.cmd != nil && u.cmd.Process != nil {
+		pid = u.cmd.Process.Pid
 	}
 	u.lastErr = nil
 	u.session = session
+	u.hook("connect_ok", "pid", pid)
 	return session, nil
 }
 
@@ -210,6 +329,9 @@ func upstreamClientName(name string) string {
 }
 
 // buildTransport 根据配置构造对应的 MCP 传输实现（记录 stdio 子进程引用供 Alive 判断）。
+// stdio + LogHook 时按方案 B 自建 os.Pipe 捕获 stderr（SDK 的 CommandTransport 只
+// StdoutPipe/StdinPipe + cmd.Start，从不碰 cmd.Stderr；自建管道不归 SDK 管理，
+// 无 StderrPipe 在进程退出瞬间的尾部丢失竞态）。
 func (u *Upstream) buildTransport() (mcp.Transport, error) {
 	switch u.cfg.Transport {
 	case "stdio":
@@ -218,6 +340,16 @@ func (u *Upstream) buildTransport() (mcp.Transport, error) {
 		cmdutil.HideWindow(cmd)
 		if len(u.cfg.Env) > 0 {
 			cmd.Env = append(os.Environ(), mapToEnv(u.cfg.Env)...)
+		}
+		if u.cfg.LogHook != nil {
+			pr, pw, err := os.Pipe()
+			if err != nil {
+				return nil, fmt.Errorf("mcpkit: create stderr pipe: %w", err)
+			}
+			cmd.Stderr = pw
+			u.stderrPr = pr
+			u.stderrPw = pw
+			go u.readStderr(pr)
 		}
 		u.cmd = cmd
 		return &mcp.CommandTransport{Command: cmd}, nil
