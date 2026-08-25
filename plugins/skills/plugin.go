@@ -51,11 +51,17 @@ func (p *skillPlugin) Apply(ctx plugin.Context) error {
 	if config.SkillWatchRecursive || config.SkillWatchPolling {
 		w := NewWatcher(svc, config.SkillWatchRecursive, config.SkillWatchPolling,
 			config.SkillWatchDebounce, config.SkillWatchPollInterval)
-		if err := w.Start(); err != nil {
-			lg.Warn("skills: 监听启动失败，自动同步不可用", "err", err)
-		} else {
-			ctx.Effect(w.Stop)
-		}
+		// 停止清理同步注册（Stop 幂等，即使监听器尚未初始化也能安全调用），
+		// 避免依赖后台 goroutine 的时序。
+		ctx.Effect(w.Stop)
+		// 监听器初始化完全后台化：装配路径不等它，失败由 RunBackground 记日志、
+		// 服务照样秒级上线。
+		plugin.RunBackground("skills-watcher", func() error {
+			if err := w.Start(); err != nil {
+				return err
+			}
+			return nil
+		})
 	}
 	return nil
 }

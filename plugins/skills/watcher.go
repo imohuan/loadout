@@ -84,6 +84,8 @@ func NewWatcher(svc *Service, recursive, polling bool, debounce, pollInterval ti
 		pollInterval: pollInterval,
 		watched:      map[string]bool{},
 		pending:      map[string]*time.Timer{},
+		stop:         make(chan struct{}),
+		done:         make(chan struct{}),
 	}
 }
 
@@ -94,9 +96,6 @@ func NewWatcher(svc *Service, recursive, polling bool, debounce, pollInterval ti
 // 只等待一个短暂的「就绪窗口」——窗口内没就绪就放行，绝不拖住服务装配。
 // 监听未就绪时的技能变化由「立即全量同步」和「定时轮询」兜底。
 func (w *Watcher) Start() error {
-	w.stop = make(chan struct{})
-	w.done = make(chan struct{})
-
 	if w.recursive {
 		ready := make(chan bool, 1)
 		go func() {
@@ -151,7 +150,8 @@ func (w *Watcher) initListen() (ok bool) {
 	return true
 }
 
-// Stop 停止监听并等待管道退出（幂等）。
+// Stop 停止监听并等待管道退出（幂等）。stop/done 在构造时创建，
+// 因此即使 Start 尚未执行（后台启动中即被卸载）也能安全调用。
 func (w *Watcher) Stop() {
 	w.stopOnce.Do(func() {
 		close(w.stop)
