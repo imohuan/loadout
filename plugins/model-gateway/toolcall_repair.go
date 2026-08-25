@@ -371,3 +371,87 @@ func removeID(ids []string, id string) []string {
 	}
 	return ids
 }
+
+// sanitizeImageParts 把 OpenAI 分段 content 里残留的 image_url 段降级为文本占位。
+//
+// 背景：agent 客户端（如本机 harness）把含图片的对话历史回传给网关时，若该模型/渠道
+// 不走视觉识别链路（vision 插件未命中或纯文本模型），image_url 段会原样透传给上游。
+// 纯文本上游（如方舟 DeepSeek）不支持 image_url，直接返回 400 `model_param_invalid`
+// （"the request parameters were rejected by the model provider"）。
+//
+// 策略：仅替换 type=image_url 的段为 {type:"text", text:"[图片]"}，其它段原样保留；
+// 已是文本的段（vision 插件已处理过的）不受影响。无 image_url 时零改动。
+// 返回 (新 body, 是否修改)。
+func sanitizeImageParts(body []byte) ([]byte, bool) {
+	content := body
+	if bytes.HasPrefix(content, []byte("\xEF\xBB\xBF")) {
+		content = content[3:]
+	}
+	trimmed := bytes.TrimLeft(content, " \t\r\n")
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return body, false
+	}
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal(trimmed, &root); err != nil {
+		return body, false
+	}
+	messagesRaw, ok := root["messages"]
+	if !ok {
+		return body, false
+	}
+	var messages []map[string]json.RawMessage
+	if err := json.Unmarshal(messagesRaw, &messages); err != nil {
+		return body, false
+	}
+	changed := false
+	for i := range messages {
+		contentRaw, ok := messages[i]["content"]
+		if !ok {
+			continue
+		}
+		// 只处理数组形态的 content（分段式）；字符串/空直接跳过。
+		s := string(bytes.TrimSpace(contentRaw))
+		if len(s) == 0 || s[0] != '[' {
+			continue
+		}
+		var parts []map[string]json.RawMessage
+		if err := json.Unmarshal(contentRaw, &parts); err != nil {
+			continue
+		}
+		var fixed []map[string]json.RawMessage
+		partChanged := false
+		for _, seg := range parts {
+			var typ string
+			_ = json.Unmarshal(seg["type"], &typ)
+			if typ == "image_url" {
+				// 降级为文本占位：纯文本模型无法理解图片，占位避免上游 400。
+				fixed = append(fixed, map[string]json.RawMessage{"type": json.RawMessage(`"text"`), "text": json.RawMessage(`"[图片]"`)})
+				partChanged = true
+				continue
+			}
+			fixed = append(fixed, seg)
+		}
+		if partChanged {
+			mergedJSON, err := json.Marshal(fixed)
+			if err != nil {
+				continue
+			}
+			messages[i]["content"] = mergedJSON
+			changed = true
+		}
+	}
+	if !changed {
+		return body, false
+	}
+	messagesJSON, err := json.Marshal(messages)
+	if err != nil {
+		return body, false
+	}
+	root["messages"] = messagesJSON
+	out, err := json.Marshal(root)
+	if err != nil {
+		return body, false
+	}
+	return out, true
+}
+

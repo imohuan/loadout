@@ -164,6 +164,13 @@ func (s *Service) proxyHandle(w http.ResponseWriter, r *http.Request, version st
 			s.lg.Debug("model-gateway: 转发前补全了不完整的工具调用序列",
 				"request_id", pipe.RequestID, "model", pipe.Request.Model)
 		}
+		// 残留 image_url 降级：纯文本上游（如方舟 DeepSeek）不支持 image_url，
+		// 否则返回 400 `model_param_invalid`。仅处理 vision 未处理的历史旧图残留。
+		if fixed, ok := sanitizeImageParts(pipe.Request.Body); ok {
+			pipe.Request.Body = fixed
+			s.lg.Debug("model-gateway: 转发前将 image_url 段降级为文本占位",
+				"request_id", pipe.RequestID, "model", pipe.Request.Model)
+		}
 	}
 
 	// 转发（proxyForward 负责写出最终响应：成功透传或最终失败原样透传上游错误）。

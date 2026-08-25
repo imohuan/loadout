@@ -298,3 +298,53 @@ func TestRepairToolCallSequence_MissingResultThenUser(t *testing.T) {
 		}
 	}
 }
+
+func TestSanitizeImageParts(t *testing.T) {
+	// content 数组含 image_url 段 → 降级为文本占位；text 段保留。
+	body := []byte(`{"model":"m","messages":[
+		{"role":"user","content":[{"type":"text","text":"看图"},{"type":"image_url","image_url":{"url":"[image: image/png, 86518B]"}}]}
+	]}`)
+	out, changed := sanitizeImageParts(body)
+	if !changed {
+		t.Fatalf("expected change, got unchanged")
+	}
+	var root map[string]json.RawMessage
+	_ = json.Unmarshal(out, &root)
+	var msgs []map[string]any
+	_ = json.Unmarshal(root["messages"], &msgs)
+	parts := msgs[0]["content"].([]any)
+	if len(parts) != 2 {
+		t.Fatalf("parts = %v, want 2", parts)
+	}
+	seg1 := parts[1].(map[string]any)
+	if seg1["type"] != "text" {
+		t.Fatalf("image_url segment not downgraded: %v", parts)
+	}
+	if seg1["text"] != "[图片]" {
+		t.Fatalf("placeholder text = %v, want [图片]", seg1["text"])
+	}
+	if parts[0].(map[string]any)["text"] != "看图" {
+		t.Fatalf("text segment modified: %v", parts)
+	}
+}
+
+func TestSanitizeImageParts_NoImage(t *testing.T) {
+	// 无 image_url → 零改动。
+	body := []byte(`{"model":"m","messages":[
+		{"role":"user","content":[{"type":"text","text":"hello"}]},
+		{"role":"assistant","content":"hi"}
+	]}`)
+	out, changed := sanitizeImageParts(body)
+	if changed {
+		t.Fatalf("expected no change, got %s", out)
+	}
+}
+
+func TestSanitizeImageParts_StringContent(t *testing.T) {
+	// 字符串 content（非数组）不处理。
+	body := []byte(`{"model":"m","messages":[{"role":"user","content":"[image: image/png, 86518B]"}]}`)
+	out, changed := sanitizeImageParts(body)
+	if changed {
+		t.Fatalf("expected no change for string content, got %s", out)
+	}
+}
