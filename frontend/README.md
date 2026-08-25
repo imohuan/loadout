@@ -111,6 +111,7 @@ createApp(App).use(ShadcnVue, { css: ':root { --primary: oklch(0.6 0.2 250); }' 
 ## 图标：@remixicon/vue
 
 图标从 `@remixicon/vue` 导入，命名导出为 `Ri` 前缀 + 图标名（`Line` 描边 / `Fill` 实心两种风格）：
+图标使用 tailwindcss size-* 不要使用 属性
 
 ```vue
 <script setup lang="ts">

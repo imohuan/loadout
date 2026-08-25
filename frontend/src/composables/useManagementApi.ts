@@ -67,6 +67,7 @@ export function useManagementApi() {
     skills,
     presets,
     skillStatus,
+    updateStatus,
     syncSkills,
     checkSkillUpdates,
     restoreBackup,

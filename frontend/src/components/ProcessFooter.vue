@@ -97,10 +97,10 @@ const historyCount = computed(() => history.value.length)
           :title="`历史记录（${historyCount}）`" :disabled="historyCount === 0"
           :class="{ 'cursor-not-allowed opacity-40': historyCount === 0 }" @click="historyOpen = true">
           <RiHistoryLine size="15" />
-          <span v-if="historyCount"
+          <!-- <span v-if="historyCount"
             class="absolute -right-0.5 -top-0.5 flex min-w-3.5 items-center justify-center rounded-full bg-primary px-0.5 text-[9px] leading-4 text-primary-foreground">
             {{ historyCount > 99 ? '99+' : historyCount }}
-          </span>
+          </span> -->
         </button>
       </div>
     </div>
@@ -124,45 +124,48 @@ const historyCount = computed(() => history.value.length)
 
     <!-- 历史记录 Dialog -->
     <Dialog v-model:open="historyOpen">
-      <DialogContent class="max-w-3xl!">
+      <DialogContent class="max-w-5xl!">
         <DialogHeader>
           <DialogTitle>历史进程</DialogTitle>
           <DialogDescription v-if="historyCount === 0">暂无历史记录。</DialogDescription>
         </DialogHeader>
-        <div v-if="historyCount" class="max-h-[70vh] overflow-y-auto pr-1">
+        <div v-if="historyCount" class="h-[70vh] flex items-start overflow-y-auto pr-1">
           <Accordion type="multiple" class="w-full">
-            <AccordionItem v-for="p in history" :key="p.id" :value="p.id"
-              class="mb-2 rounded-md border border-border last:mb-0">
+            <AccordionItem v-for="p in history" :key="p.id" :value="p.id" class="mb-2 rounded-md last:mb-0">
               <AccordionTrigger>
-                <span class="inline-flex items-center">
-                  <RiArrowRightSLine
-                    class="mr-2 size-4 shrink-0 text-muted-foreground transition-transform duration-200 group-aria-expanded/accordion-trigger:rotate-90" />
-                  <span class="inline-flex items-center gap-2">
-                    <span class="size-2 shrink-0 rounded-full" :class="statusDot(p.status)" />
-                    {{ p.name }}
+                <div class="w-full flex justify-between items-center">
+                  <span class="inline-flex items-center">
+                    <RiArrowRightSLine
+                      class="mr-2 size-4 shrink-0 text-muted-foreground transition-transform duration-200 group-aria-expanded/accordion-trigger:rotate-90" />
+                    <span class="inline-flex items-center gap-2">
+                      <span class="size-2 shrink-0 rounded-full" :class="statusDot(p.status)" />
+                      {{ p.name }}
+                    </span>
+                    <span class="ml-2 text-xs font-normal"
+                      :class="p.status === 'error' ? 'text-red-500' : 'text-muted-foreground'">
+                      {{ statusLabel(p.status) }}
+                    </span>
+                    <span class="ml-2 text-xs font-normal tabular-nums text-muted-foreground">
+                      {{ fmtDuration(p) }}
+                    </span>
                   </span>
-                  <span class="ml-2 text-xs font-normal" :class="p.status === 'error' ? 'text-red-500' : 'text-muted-foreground'">
-                    {{ statusLabel(p.status) }}
-                  </span>
-                  <span class="ml-2 text-xs font-normal tabular-nums text-muted-foreground">
-                    {{ fmtDuration(p) }}
-                  </span>
-                </span>
+                  <div class="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+                    <Badge variant="secondary" class="tabular-nums">{{ fmtStartAt(p) }}</Badge>
+                    <Badge variant="secondary" class="tabular-nums">内存 {{ fmtMem(p.memBytes) }}</Badge>
+                    <Badge variant="secondary" class="tabular-nums">PID {{ p.pid || '—' }}</Badge>
+                    <Badge v-if="p.exitCode !== undefined" variant="secondary" class="tabular-nums">退出码 {{ p.exitCode }}</Badge>
+                  </div>
+                </div>
                 <template #icon><span class="hidden" /></template>
               </AccordionTrigger>
               <AccordionContent>
-                <div class="mt-2 space-y-1 text-xs text-muted-foreground">
-                  <div class="flex flex-wrap gap-x-4 gap-y-0.5">
-                    <span class="truncate">{{ fmtStartAt(p) }}</span>
-                    <span class="shrink-0">内存 {{ fmtMem(p.memBytes) }}</span>
-                    <span class="shrink-0">PID {{ p.pid || '—' }}</span>
-                    <span v-if="p.exitCode !== undefined" class="shrink-0">退出码 {{ p.exitCode }}</span>
-                  </div>
-                  <div v-if="p.cmd" class="truncate font-mono" :title="p.cmd">{{ p.cmd }}</div>
+                <div class="space-y-1 text-xs text-muted-foreground">
+                  <Badge v-if="p.cmd" variant="outline" class="block w-fit truncate font-mono text-[11px]" :title="p.cmd">
+                    {{ p.cmd }}
+                  </Badge>
                   <div v-if="p.log.length"
                     class="mt-1 max-h-60 overflow-y-auto rounded border border-border bg-muted/30 p-2 font-mono text-[11px] leading-relaxed text-muted-foreground">
-                    <div v-for="(line, i) in p.log" :key="i"
-                      class="whitespace-pre-wrap break-all"
+                    <div v-for="(line, i) in p.log" :key="i" class="whitespace-pre-wrap break-all"
                       v-html="ansiToHtml(line)" />
                   </div>
                 </div>

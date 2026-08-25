@@ -130,47 +130,51 @@ onMounted(load)
 <template>
   <div class="space-y-4">
     <!-- 筛选工具栏 -->
-    <div class="flex flex-wrap items-center gap-2">
+    <div class="flex flex-wrap items-end gap-4">
       <!-- 注意：SelectItem value 不能为空串（shadcn-vue 保留空串作"清除选择"语义，会抛错），
            用 "all" 占位并在 update 时映射回空串表示不过滤。 -->
-      <Select
-        :model-value="filters.kind"
-        @update:model-value="onKindChange"
-      >
-        <SelectTrigger class="h-9 w-[130px]">
-          <SelectValue placeholder="类型" />
-        </SelectTrigger>
-        <SelectContent>
-          <SelectGroup>
-            <SelectItem value="all">全部</SelectItem>
-            <SelectItem value="single">单 MCP</SelectItem>
-            <SelectItem value="group">分组</SelectItem>
-            <SelectItem value="$smart">聚合</SelectItem>
-          </SelectGroup>
-        </SelectContent>
-      </Select>
-      <Select
-        :model-value="filters.auth"
-        @update:model-value="onAuthChange"
-      >
-        <SelectTrigger class="h-9 w-[130px]">
-          <SelectValue placeholder="认证" />
-        </SelectTrigger>
-        <SelectContent>
-          <SelectGroup>
-            <SelectItem value="all">全部</SelectItem>
-            <SelectItem value="session">session</SelectItem>
-            <SelectItem value="mcp-key">mcp-key</SelectItem>
-            <SelectItem value="public">public</SelectItem>
-          </SelectGroup>
-        </SelectContent>
-      </Select>
-      <Input
-        v-model="filters.tool"
-        class="h-9 w-[200px]"
-        placeholder="工具名关键字…"
-        @keydown.enter="applyFilter"
-      />
+      <div class="min-w-24 space-y-1">
+        <Label for="log-kind">类型</Label>
+        <Select :model-value="filters.kind" @update:model-value="onKindChange">
+          <SelectTrigger id="log-kind" class="w-full">
+            <SelectValue placeholder="全部类型" />
+          </SelectTrigger>
+          <SelectContent position="popper" side="bottom" align="start" :side-offset="2">
+            <SelectGroup>
+              <SelectItem value="all">全部</SelectItem>
+              <SelectItem value="single">单 MCP</SelectItem>
+              <SelectItem value="group">分组</SelectItem>
+              <SelectItem value="$smart">聚合</SelectItem>
+            </SelectGroup>
+          </SelectContent>
+        </Select>
+      </div>
+      <div class="min-w-24 space-y-1">
+        <Label for="log-auth">认证</Label>
+        <Select :model-value="filters.auth" @update:model-value="onAuthChange">
+          <SelectTrigger id="log-auth" class="w-full">
+            <SelectValue placeholder="全部认证" />
+          </SelectTrigger>
+          <SelectContent position="popper" side="bottom" align="start" :side-offset="2">
+            <SelectGroup>
+              <SelectItem value="all">全部</SelectItem>
+              <SelectItem value="session">session</SelectItem>
+              <SelectItem value="mcp-key">mcp-key</SelectItem>
+              <SelectItem value="public">public</SelectItem>
+            </SelectGroup>
+          </SelectContent>
+        </Select>
+      </div>
+      <div class="min-w-48 space-y-1">
+        <Label for="log-tool">工具名</Label>
+        <Input
+          id="log-tool"
+          v-model="filters.tool"
+          class="h-9 w-full"
+          placeholder="工具名关键字…"
+          @keydown.enter="applyFilter"
+        />
+      </div>
       <Button variant="outline" class="h-9" :disabled="loading" @click="applyFilter">
         <RiRefreshLine size="16" :class="loading ? 'animate-spin' : ''" />刷新
       </Button>
