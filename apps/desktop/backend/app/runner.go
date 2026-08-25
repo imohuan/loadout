@@ -75,11 +75,11 @@ func Run(assets embed.FS) {
 		// 全局快捷键：Ctrl+R 触发 webview 刷新（等价于浏览器 F5）。
 		// wails KeyBindings 走 accelerator 解析（大小写不敏感），同一份配置在
 		// macOS 上会被自动换为 Cmd+R，在 Linux 上保持 Ctrl+R。
-		KeyBindings: map[string]func(window application.Window){
+		KeyBindings: withDebugKeyBindings(map[string]func(window application.Window){
 			"Ctrl+R": func(w application.Window) {
 				w.Reload()
 			},
-		},
+		}), // 所有版本共享 Ctrl+R；debug 版追加 Ctrl+Shift+I 打开 DevTools
 	})
 	// 点窗口关闭按钮（X）→ 拦截关闭事件，隐藏到系统托盘，进程保持驻留。
 	// Wails v3 事件流程：WM_CLOSE 触发 WindowClosing → 先执行 RegisterHook 注册的
@@ -98,8 +98,8 @@ func Run(assets embed.FS) {
 
 	win.Show()
 
-	// 开发阶段自动打开 DevTools，生产构建时建议注释掉
-	win.OpenDevTools()
+	// debug 版：自动打开 DevTools 供调试；release 版为空操作。
+	debugOpenDevTools(win)
 
 	// Wails v3 窗口图标：application.Options.Icon 在 v3 alpha 上不完全生效，
 	// 且 Wails 内部 setIcon 只设 ICON_BIG（不设 ICON_SMALL），而注册窗口类时

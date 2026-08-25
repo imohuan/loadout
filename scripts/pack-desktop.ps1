@@ -1,5 +1,17 @@
 ﻿# Loadout Desktop 打包脚本
 # 使用根 frontend/（主控制台）作为前端源码；产物复制到 apps/desktop/frontend/dist 由 go:embed 内嵌
+#
+# 用法：
+#   ./scripts/pack-desktop.ps1            # 只打 release 版（生产）
+#   ./scripts/pack-desktop.ps1 -Debug     # 打 debug 版（自动开 DevTools + Ctrl+Shift+I）
+#   ./scripts/pack-desktop.ps1 -All       # 两版都打（release + debug）
+#   ./scripts/pack-desktop.ps1 -SkipBuild # 跳过前端构建与复制，仅编译 exe（改后端后快速重打）
+
+param(
+    [switch]$Debug,
+    [switch]$All,
+    [switch]$SkipBuild
+)
 
 $ErrorActionPreference = "Stop"
 # WorkBuddy 环境会注入 safe-delete 钩子（node require + PS Remove-Item 包装），
@@ -24,28 +36,32 @@ if ($LASTEXITCODE -ne 0) {
 Pop-Location
 Write-Host "  OK   依赖已更新`n" -ForegroundColor Green
 
-# [2/5] 构建前端（根 frontend/）
-Write-Host "[2/5] 构建前端 (frontend/)..." -ForegroundColor Yellow
-Push-Location "$rootDir\frontend"
-npm run build 2>&1 | Out-Null
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "  FAIL 前端构建失败" -ForegroundColor Red
+if (-not $SkipBuild) {
+    # [2/5] 构建前端（根 frontend/）
+    Write-Host "[2/5] 构建前端 (frontend/)..." -ForegroundColor Yellow
+    Push-Location "$rootDir\frontend"
+    npm run build 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "  FAIL 前端构建失败" -ForegroundColor Red
+        Pop-Location
+        exit 1
+    }
     Pop-Location
-    exit 1
-}
-Pop-Location
-Write-Host "  OK   前端已构建到 frontend/dist/`n" -ForegroundColor Green
+    Write-Host "  OK   前端已构建到 frontend/dist/`n" -ForegroundColor Green
 
-# [3/5] 复制产物到 desktop/frontend/dist（go:embed 落点，/MIR 镜像覆盖）
-Write-Host "[3/5] 复制产物到 desktop..." -ForegroundColor Yellow
-$targetDir = "$rootDir\apps\desktop\frontend\dist"
-robocopy "$rootDir\frontend\dist" $targetDir /MIR /NFL /NDL /NJH /NJS /NP | Out-Null
-if ($LASTEXITCODE -ge 8) {
-    Write-Host "  FAIL robocopy 复制失败 (exit $LASTEXITCODE)" -ForegroundColor Red
-    Pop-Location
-    exit 1
+    # [3/5] 复制产物到 desktop/frontend/dist（go:embed 落点，/MIR 镜像覆盖）
+    Write-Host "[3/5] 复制产物到 desktop..." -ForegroundColor Yellow
+    $targetDir = "$rootDir\apps\desktop\frontend\dist"
+    robocopy "$rootDir\frontend\dist" $targetDir /MIR /NFL /NDL /NJH /NJS /NP | Out-Null
+    if ($LASTEXITCODE -ge 8) {
+        Write-Host "  FAIL robocopy 复制失败 (exit $LASTEXITCODE)" -ForegroundColor Red
+        Pop-Location
+        exit 1
+    }
+    Write-Host "  OK   已镜像到 apps/desktop/frontend/dist/`n" -ForegroundColor Green
+} else {
+    Write-Host "[2-3/5] 跳过前端构建与复制（-SkipBuild）`n" -ForegroundColor Yellow
 }
-Write-Host "  OK   已镜像到 apps/desktop/frontend/dist/`n" -ForegroundColor Green
 
 # [4/5] 生成图标资源
 Write-Host "[4/5] 生成图标资源..." -ForegroundColor Yellow
@@ -61,23 +77,45 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 # [5/5] 构建 exe（内嵌 Loadout Server）
-Write-Host "[5/5] 构建 exe..." -ForegroundColor Yellow
+# 决定要打哪些版本：-All 打两版；-Debug 只打 debug 版；默认只打 release 版。
 $env:CGO_ENABLED = "0"
-go build -tags production -ldflags "-w -s -H windowsgui" -o dist/loadout-desktop.exe .
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "  FAIL 构建失败" -ForegroundColor Red
-    Pop-Location
-    exit 1
+$jobs = @()
+if ($All) { $jobs = @("release", "debug") }
+elseif ($Debug) { $jobs = @("debug") }
+else { $jobs = @("release") }
+
+foreach ($variant in $jobs) {
+    $tag = "production"
+    $out  = "dist/loadout-desktop.exe"
+    $label = "release"
+    if ($variant -eq "debug") {
+        $tag = "debug"
+        $out = "dist/loadout-desktop-debug.exe"
+        $label = "debug"
+    }
+    Write-Host "[5/5] 构建 exe ($label)..." -ForegroundColor Yellow
+    go build -tags $tag -ldflags "-w -s -H windowsgui" -o $out .
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "  FAIL 构建失败 ($label)" -ForegroundColor Red
+        Pop-Location
+        exit 1
+    }
+    $exe = Get-Item $out -ErrorAction Stop
+    $size = [math]::Round($exe.Length / 1MB, 1)
+    Write-Host "  OK   $out ($size MB)" -ForegroundColor Green
 }
 
-$exe = Get-Item dist/loadout-desktop.exe -ErrorAction Stop
-$size = [math]::Round($exe.Length / 1MB, 1)
 $elapsed = [math]::Round(((Get-Date) - $start).TotalSeconds, 1)
-Write-Host "  OK   dist/loadout-desktop.exe ($size MB)  ($elapsed s)" -ForegroundColor Green
+Write-Host "  OK   总耗时 $elapsed s`n" -ForegroundColor Green
 
 Pop-Location
 
 Write-Host "`n============================================" -ForegroundColor Cyan
-Write-Host "  打包完成!  apps/desktop/dist/loadout-desktop.exe" -ForegroundColor Green
+foreach ($variant in $jobs) {
+    $file = if ($variant -eq "debug") { "loadout-desktop-debug.exe" } else { "loadout-desktop.exe" }
+    $hint = if ($variant -eq "debug") { "（启动自动开 DevTools，Ctrl+Shift+I 也可切换）" } else { "" }
+    Write-Host "  $file  $hint" -ForegroundColor Green
+}
+Write-Host "  位于 apps/desktop/dist/" -ForegroundColor Green
 Write-Host "  Loadout Server 已内嵌，无需额外启动" -ForegroundColor Green
 Write-Host "============================================`n" -ForegroundColor Cyan
