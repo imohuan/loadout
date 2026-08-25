@@ -960,9 +960,9 @@ onMounted(async () => {
     </PageHeader>
 
     <LoadingBlock v-if="initialLoading" />
-
-    <!-- ① 同步内容与目标平台（头部含同步内容 + 全部平台） -->
-    <Card v-else class="rounded-md">
+    <template v-else>
+      <!-- ① 同步内容与目标平台（头部含同步内容 + 全部平台） -->
+      <Card class="rounded-md">
       <CardHeader
         class="flex flex-col gap-3 space-y-0 lg:flex-row lg:items-center lg:justify-between"
       >
@@ -1147,6 +1147,7 @@ onMounted(async () => {
         </div>
       </template>
     </StreamLogPanel>
+    </template>
 
     <!-- 添加 / 导入 MCP 工具弹窗 -->
     <Dialog v-model:open="addDialogOpen">
