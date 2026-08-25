@@ -42,24 +42,28 @@ if ($Choice) {
     Write-Host "  [3] 两个版本都打" -ForegroundColor White
     Write-Host ""
 
-    $choice = $null
-    while ($null -eq $choice) {
+    # 注意：不能用 $choice 作局部变量——param 里已有 [string]$Choice，
+    # PowerShell 变量不区分大小写，二者是同一个变量；把 $null 赋给 [string]
+    # 类型变量会被强转回空串 ""，导致 while 条件 $null -eq "" 为 False，
+    # 循环一次都不执行、菜单静默 fallthrough 到默认版本。这里改用独立变量名。
+    $selChoice = $null
+    while ($null -eq $selChoice) {
         $sel = Read-Host "请输入数字 1/2/3 选择（q 退出）"
         switch ($sel.Trim()) {
-            "1" { $choice = "release" }
-            "2" { $choice = "debug" }
-            "3" { $choice = "both" }
+            "1" { $selChoice = "release" }
+            "2" { $selChoice = "debug" }
+            "3" { $selChoice = "both" }
             "q" { Write-Host "已取消打包。`n" -ForegroundColor Red; exit 0 }
             default { Write-Host "  无效输入：'$sel'，请重新输入" -ForegroundColor Red }
         }
     }
 
-    # $choice 必须由用户显式选定，绝不允许静默 fallthrough 到默认版本。
-    if ($null -eq $choice) {
+    # $selChoice 必须由用户显式选定，绝不允许静默 fallthrough 到默认版本。
+    if ($null -eq $selChoice) {
         Write-Host "未收到有效选择，已取消打包。" -ForegroundColor Red
         exit 1
     }
-    $jobs = switch ($choice) {
+    $jobs = switch ($selChoice) {
         "release" { @("release") }
         "debug"   { @("debug") }
         default   { @("release", "debug") }
