@@ -160,6 +160,78 @@ function filteredPackages(item: { config: { channel_id: string }; packages?: Vol
   return list.filter((p) => matchPackage(p, kw))
 }
 
+// ===== 资源包视图切换：表格 / 卡片（按 channel_id 隔离） =====
+type PkgViewMode = 'table' | 'card'
+const pkgView = ref<Record<string, PkgViewMode>>({})
+function getPkgView(channelId: string): PkgViewMode {
+  return pkgView.value[channelId] || 'table'
+}
+function setPkgView(channelId: string, v: string) {
+  if (v === 'table' || v === 'card') pkgView.value[channelId] = v
+}
+
+// ===== 卡片视图：按 model 聚合资源包（口径同后台 syncModelStatesByAggregate） =====
+interface AggregatedPackage {
+  key: string // 聚合锚点：model，退回 configuration_code / configuration_name
+  name: string // 展示名
+  unit: string
+  initialTotal: number // SUM(initial_total)
+  localRemaining: number // SUM(local_remaining)
+  usedAmount: number // SUM(used_amount)；本地口径下=initialTotal-localRemaining
+  totalAmount: number // SUM(total_amount)
+  exhausted: boolean // 是否已耗尽
+  percentage: number // 0~100 本地口径
+}
+function aggregatePackages(
+  item: { config: { channel_id: string }; packages?: VolcQuotaPackage[] },
+): AggregatedPackage[] {
+  const list = filteredPackages(item)
+  const map = new Map<string, AggregatedPackage>()
+  for (const p of list) {
+    const key = p.model || p.configuration_code || pkgName(p)
+    const name = p.configuration_name || p.model || pkgName(p)
+    let agg = map.get(key)
+    if (!agg) {
+      agg = {
+        key,
+        name,
+        unit: p.unit,
+        initialTotal: 0,
+        localRemaining: 0,
+        usedAmount: 0,
+        totalAmount: 0,
+        exhausted: false,
+        percentage: 0,
+      }
+      map.set(key, agg)
+    }
+    agg.initialTotal += p.initial_total
+    agg.localRemaining += p.local_remaining
+    agg.usedAmount += p.used_amount
+    agg.totalAmount += p.total_amount
+    if (p.status === 'UsedUp' || (p.local_remaining <= 0 && p.initial_total > 0)) agg.exhausted = true
+  }
+  const out: AggregatedPackage[] = []
+  for (const agg of map.values()) {
+    // 本地口径百分比：有 initialTotal 用 localRemaining/initialTotal，否则退回 available/total。
+    if (agg.initialTotal > 0) {
+      agg.percentage = Math.max(0, Math.min(100, Math.round((agg.localRemaining / agg.initialTotal) * 100)))
+      agg.usedAmount = agg.initialTotal - agg.localRemaining
+    } else if (agg.totalAmount > 0) {
+      agg.percentage = Math.max(0, Math.min(100, Math.round((agg.localRemaining / agg.totalAmount) * 100)))
+    } else {
+      agg.percentage = 0
+    }
+    out.push(agg)
+  }
+  // 排序：未耗尽在前，剩余多的在前
+  out.sort((a, b) => {
+    if (a.exhausted !== b.exhausted) return a.exhausted ? 1 : -1
+    return b.localRemaining - a.localRemaining
+  })
+  return out
+}
+
 // ===== 刷新 =====
 // 刷新本地：只重查 SQLite 现有数据，刷新 UI（不碰远程 API）。
 async function refreshLocal() {
@@ -460,14 +532,26 @@ const displayName = (ch: Channel) => ch.channel_name || ch.name
                 <span class="text-xs font-medium text-muted-foreground">
                   资源包（{{ filteredPackages(item).length }} / {{ item.packages.length }}）
                 </span>
-                <Input
-                  :model-value="getPkgFilter(item.config.channel_id)"
-                  placeholder="过滤：模型名 / code / 关键字…"
-                  class="h-7 w-56 text-xs"
-                  @update:model-value="(v: string) => setPkgFilter(item.config.channel_id, v)"
-                />
+                <div class="flex items-center gap-2">
+                  <Tabs
+                    :model-value="getPkgView(item.config.channel_id)"
+                    class="[&_[data-slot=tabs-list]]:h-7 [&_[data-slot=tabs-trigger]]:px-2 [&_[data-slot=tabs-trigger]]:text-xs"
+                    @update:model-value="(v: string) => setPkgView(item.config.channel_id, v)"
+                  >
+                    <TabsList>
+                      <TabsTrigger value="table">表格</TabsTrigger>
+                      <TabsTrigger value="card">卡片</TabsTrigger>
+                    </TabsList>
+                  </Tabs>
+                  <Input
+                    :model-value="getPkgFilter(item.config.channel_id)"
+                    placeholder="过滤：模型名 / code / 关键字…"
+                    class="h-7 w-56 text-xs"
+                    @update:model-value="(v: string) => setPkgFilter(item.config.channel_id, v)"
+                  />
+                </div>
               </div>
-              <Table class="w-full text-xs">
+              <Table v-if="getPkgView(item.config.channel_id) === 'table'" class="w-full text-xs">
                 <TableHeader>
                   <TableRow class="bg-muted/30 hover:bg-muted/30">
                     <TableHead>资源包</TableHead>
@@ -541,6 +625,60 @@ const displayName = (ch: Channel) => ch.channel_name || ch.name
                   </TableRow>
                 </TableBody>
               </Table>
+
+              <!-- 卡片视图：按 model 聚合资源包，网格一行 4 个 -->
+              <div
+                v-else-if="getPkgView(item.config.channel_id) === 'card'"
+                class="grid grid-cols-1 gap-2 p-3 sm:grid-cols-2 lg:grid-cols-4"
+              >
+                <div
+                  v-for="a in aggregatePackages(item)"
+                  :key="a.key"
+                  class="flex flex-col gap-2 rounded-md border bg-background/60 p-3"
+                  :class="a.exhausted ? 'border-destructive/40 bg-destructive/5' : ''"
+                >
+                  <!-- 顶部：左侧模型名，右侧 token 积分（当前剩余/总） -->
+                  <div class="flex items-start justify-between gap-2">
+                    <div class="min-w-0">
+                      <div class="truncate text-sm font-medium" :title="a.name">{{ a.name }}</div>
+                      <div class="text-[10px] uppercase tracking-wide text-muted-foreground">
+                        {{ a.unit || 'token' }}
+                      </div>
+                    </div>
+                    <div class="shrink-0 text-right">
+                      <div
+                        class="text-sm font-semibold tabular-nums"
+                        :class="a.exhausted ? 'text-destructive' : ''"
+                      >
+                        {{ a.localRemaining.toLocaleString() }}
+                      </div>
+                      <div class="text-[10px] text-muted-foreground tabular-nums">
+                        / {{ a.initialTotal.toLocaleString() }}
+                      </div>
+                    </div>
+                  </div>
+                  <!-- 进度条 + 右侧百分比 -->
+                  <div class="flex items-center gap-2">
+                    <Progress
+                      :model-value="a.percentage"
+                      class="h-1.5 flex-1"
+                      :class="
+                        a.exhausted
+                          ? 'bg-destructive/20'
+                          : a.percentage < 20
+                            ? 'bg-amber-500/20'
+                            : ''
+                      "
+                    />
+                    <span
+                      class="w-9 shrink-0 text-right text-xs tabular-nums text-muted-foreground"
+                      :class="a.exhausted ? 'text-destructive' : ''"
+                    >
+                      {{ a.percentage }}%
+                    </span>
+                  </div>
+                </div>
+              </div>
               <div
                 v-if="filteredPackages(item).length === 0"
                 class="px-3 py-4 text-center text-xs text-muted-foreground"
