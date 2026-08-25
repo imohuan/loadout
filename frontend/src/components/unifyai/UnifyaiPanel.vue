@@ -973,7 +973,7 @@ onMounted(async () => {
       <CardContent>
         <div
           class="grid grid-cols-2 gap-2 md:grid-cols-3"
-          style="grid-template-columns: repeat(5, minmax(0, 1fr))"
+          style="grid-template-columns: repeat(6, minmax(0, 1fr))"
         >
           <PlatformCard
             v-for="platform in platforms"
