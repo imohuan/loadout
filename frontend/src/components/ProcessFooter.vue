@@ -132,25 +132,26 @@ const historyCount = computed(() => history.value.length)
         <div v-if="historyCount" class="max-h-[70vh] overflow-y-auto pr-1">
           <Accordion type="multiple" class="w-full">
             <AccordionItem v-for="p in history" :key="p.id" :value="p.id"
-              class="rounded-md border border-border last:border-b">
-              <AccordionTrigger class="px-3 py-2 hover:no-underline">
-                <span class="flex min-w-0 flex-1 items-center gap-2">
+              class="mb-2 rounded-md border border-border last:mb-0">
+              <AccordionTrigger>
+                <span class="inline-flex items-center">
                   <RiArrowRightSLine
                     class="mr-2 size-4 shrink-0 text-muted-foreground transition-transform duration-200 group-aria-expanded/accordion-trigger:rotate-90" />
-                  <span class="size-2 shrink-0 rounded-full" :class="statusDot(p.status)" />
-                  <span class="min-w-0 truncate font-medium" :title="p.name">{{ p.name }}</span>
-                  <span class="shrink-0 text-xs"
-                    :class="p.status === 'error' ? 'text-red-500' : 'text-muted-foreground'">
+                  <span class="inline-flex items-center gap-2">
+                    <span class="size-2 shrink-0 rounded-full" :class="statusDot(p.status)" />
+                    {{ p.name }}
+                  </span>
+                  <span class="ml-2 text-xs font-normal" :class="p.status === 'error' ? 'text-red-500' : 'text-muted-foreground'">
                     {{ statusLabel(p.status) }}
                   </span>
-                  <span class="shrink-0 tabular-nums text-xs text-muted-foreground">
+                  <span class="ml-2 text-xs font-normal tabular-nums text-muted-foreground">
                     {{ fmtDuration(p) }}
                   </span>
                 </span>
                 <template #icon><span class="hidden" /></template>
               </AccordionTrigger>
-              <AccordionContent class="pb-0">
-                <div class="space-y-1 px-3 pb-3 text-xs text-muted-foreground">
+              <AccordionContent>
+                <div class="mt-2 space-y-1 rounded border border-border bg-muted/30 p-3 text-xs text-muted-foreground">
                   <div class="flex flex-wrap gap-x-4 gap-y-0.5">
                     <span class="truncate">{{ fmtStartAt(p) }}</span>
                     <span class="shrink-0">内存 {{ fmtMem(p.memBytes) }}</span>
