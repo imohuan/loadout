@@ -1,6 +1,7 @@
 package procreg
 
 import (
+	"os"
 	"runtime"
 	"strings"
 	"sync"
@@ -221,4 +222,26 @@ func itoa(n int) string {
 		n /= 10
 	}
 	return digits
+}
+
+// TestSampleMem 验证采样函数对当前进程不 panic，返回 ≥0。
+func TestSampleMem(t *testing.T) {
+	mem := sampleMem(os.Getpid())
+	if mem == ^uint64(0) { // 不会出现哨兵值
+		t.Fatalf("sampleMem 返回异常值 %d", mem)
+	}
+	// Windows 下同用户进程通常能读到工作集；非 Windows 返回 0（显示「—」）。
+	_ = mem
+}
+
+// TestSetMemAndSnapshot 验证 SetMem 更新内存并反映到快照。
+func TestSetMemAndSnapshot(t *testing.T) {
+	r := New()
+	h := r.RegisterExisting("m:1", "p", "t", nil)
+	defer r.Unregister("m:1", nil)
+	r.SetMem(h.ID(), 12345)
+	snap := r.Snapshot()
+	if len(snap) != 1 || snap[0].MemBytes != 12345 {
+		t.Fatalf("SetMem 未反映到快照: %+v", snap)
+	}
 }

@@ -125,6 +125,9 @@ func Kill(id string) error { return Get().Kill(id) }
 // Running 包级便捷函数：查询全局注册表中的运行中进程。
 func Running(id string) *Proc { return Get().Running(id) }
 
+// Unregister 包级便捷函数：把登记的外部进程移出运行中并加入历史。
+func Unregister(id string, runErr error) { Get().Unregister(id, runErr) }
+
 // runCommandFn 是 Registry.Run 的底层可替换 seam（测试可替换为 fake，
 // 避免真实执行命令、模拟命令的副作用与退出结果）。
 var runCommandFn = func(r *Registry, o Options) (*Handle, error) { return r.defaultRun(o) }

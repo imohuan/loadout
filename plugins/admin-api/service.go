@@ -171,6 +171,10 @@ func (s *Service) Routes() []plugin.RouteSpec {
 		{Method: http.MethodPost, Pattern: "POST /api/presets", Auth: plugin.AuthSession, Handler: s.session(s.handlePresetCreate)},
 		{Method: http.MethodDelete, Pattern: "DELETE /api/presets", Auth: plugin.AuthSession, Handler: s.session(s.handlePresetDelete)},
 		{Method: http.MethodPost, Pattern: "POST /api/presets/apply", Auth: plugin.AuthSession, Handler: s.session(s.handlePresetApply)},
+		
+		// 全局进程（统一命令执行器）
+		{Method: http.MethodGet, Pattern: "GET /api/processes/stream", Auth: plugin.AuthSession, Handler: s.session(s.handleProcessesStream)},
+		{Method: http.MethodPost, Pattern: "POST /api/processes/{id}/kill", Auth: plugin.AuthSession, Handler: s.session(s.handleProcessKill)},
 
 		// UnifyAI 配置同步
 		{Method: http.MethodGet, Pattern: "GET /api/unifyai/platforms", Auth: plugin.AuthSession, Handler: s.session(s.handleUnifyaiPlatforms)},
