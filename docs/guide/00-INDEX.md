@@ -41,6 +41,7 @@
 | [08-data-storage.md](./08-data-storage.md) | 运行时数据：JSON store + SQLite 双轨、~/.loadout 布局 |
 | [09-admin-api.md](./09-admin-api.md) | 管理后台 REST API 契约 |
 | [10-deployment.md](./10-deployment.md) | 构建、运行、Linux 一键部署、Windows 桌面、排错 |
+| [11-dev-notes.md](./11-dev-notes.md) | **代码开发注意事项 / 踩坑集**：wails.localhost 伪 host、SSE 跨 host 鉴权、代理 flush 等隐性约束 |
 | [appendix/00-evolution.md](./appendix/00-evolution.md) | 历史演进文档索引（旧 docs 已归档，以本 guide 为准） |
 
 ## 原 docs 去哪了

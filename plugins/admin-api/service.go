@@ -95,6 +95,11 @@ func (s *Service) Routes() []plugin.RouteSpec {
 		// 登出幂等：无论当前是否有会话都返回成功、清空 Cookie；避免 UI 在会话失效态调登出时 401。
 		{Method: http.MethodPost, Pattern: "POST /api/logout", Auth: plugin.AuthPublic, Handler: http.HandlerFunc(s.handleLogout)},
 
+		// SSE 专用短期 token：桌面壳内 SSE 直连 127.0.0.1:<port> 时不带 wails.localhost 的
+		// 登录 Cookie，故先用带 Cookie 的同源请求换一个短期 token，再以 ?sse_token=xxx 建立 SSE。
+		// 仅允许本机回环调用，防局域网他人盗用会话换 token。
+		{Method: http.MethodPost, Pattern: "POST /api/sse-token", Auth: plugin.AuthSession, Handler: http.HandlerFunc(s.handleSseToken)},
+
 		// 概览
 		{Method: http.MethodGet, Pattern: "GET /api/overview", Auth: plugin.AuthSession, Handler: s.session(s.handleOverview)},
 		{Method: http.MethodGet, Pattern: "GET /api/plugins", Auth: plugin.AuthSession, Handler: s.session(s.handlePlugins)},
@@ -381,6 +386,27 @@ func isLoopback(remoteAddr string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+// handleSseToken 签发短期 SSE token（5 分钟有效）。
+// 仅本机回环可调用，且调用方须已带登录 Cookie（AuthSession 已校验）。
+// 返回的 token 供 EventSource 以 ?sse_token=xxx 形式携带，绕过 SSE 无法自定义 Header 的限制。
+func (s *Service) handleSseToken(w http.ResponseWriter, r *http.Request) {
+	if !isLoopback(r.RemoteAddr) {
+		writeError(w, http.StatusForbidden, "仅允许本机调用")
+		return
+	}
+	claims := s.auth.ClaimsFromContext(r.Context())
+	if claims == nil {
+		writeError(w, http.StatusUnauthorized, "未登录")
+		return
+	}
+	token, err := auth.SignToken(s.st.SecretKey(), claims.Username, 5*time.Minute)
+	if err != nil {
+		s.writeServerError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"token": token, "expires_in": 300})
 }
 
 // handleLogout 清除会话 Cookie，完成登出（幂等：无会话也返回成功）。

@@ -85,14 +85,14 @@ func (s *Service) Login(username, password string) (token string, err error) {
 
 // SessionMiddleware 校验 HttpOnly Cookie（auth.SessionCookieName）里的 JWT。
 // 通过则把 *auth.Claims 存入 request context（key 为字符串 "claims"）；失败返回 401。
+//
+// 额外支持「查询参数 sse_token」回退校验：EventSource 无法携带自定义 Header，
+// 而桌面壳内 SSE 直连 127.0.0.1:<port> 时不会带上 wails.localhost 的登录 Cookie，
+// 因此前端先用带 Cookie 的 fetch 换取短期 sse_token，再以 ?sse_token=xxx 建立 SSE。
+// 两种方式任一一通过即放行，互不影响。
 func (s *Service) SessionMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		cookie, err := r.Cookie(auth.SessionCookieName)
-		if err != nil {
-			writeUnauthorized(w)
-			return
-		}
-		claims, err := auth.ParseToken(s.st.SecretKey(), cookie.Value)
+		claims, err := s.authenticate(r)
 		if err != nil {
 			writeUnauthorized(w)
 			return
@@ -100,6 +100,35 @@ func (s *Service) SessionMiddleware(next http.Handler) http.Handler {
 		ctx := context.WithValue(r.Context(), claimsContextKey, claims)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// authenticate 从 Cookie 或查询参数 sse_token 解析会话 JWT。
+// 两者都缺失/无效时返回错误。
+func (s *Service) authenticate(r *http.Request) (*auth.Claims, error) {
+	// 优先 Cookie（普通同源请求）。
+	if c, err := r.Cookie(auth.SessionCookieName); err == nil {
+		if claims, err := auth.ParseToken(s.st.SecretKey(), c.Value); err == nil {
+			return claims, nil
+		}
+	}
+	// 回退：SSE 等无法带 Cookie 的场景用查询参数 token。
+	if tok := r.URL.Query().Get("sse_token"); tok != "" {
+		if claims, err := auth.ParseToken(s.st.SecretKey(), tok); err == nil {
+			return claims, nil
+		}
+	}
+	return nil, errors.New("adminauth: 未认证")
+}
+
+// ClaimsFromContext 从 request context 取会话 Claims（由 SessionMiddleware 注入）。
+// 未注入时返回 nil。
+func (s *Service) ClaimsFromContext(ctx context.Context) *auth.Claims {
+	if v := ctx.Value(claimsContextKey); v != nil {
+		if c, ok := v.(*auth.Claims); ok {
+			return c
+		}
+	}
+	return nil
 }
 
 // ChangePassword 校验旧密码后改新密码；成功后删除 config.AdminPasswordFile（若存在）。

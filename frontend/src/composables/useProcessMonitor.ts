@@ -1,5 +1,6 @@
 import { computed, onBeforeUnmount, ref } from 'vue'
 import { request } from '@/lib/api'
+import { getLoadoutBase, getSseToken } from '@/lib/base'
 import type { ProcessEvent, ProcessInfo } from '@/lib/types'
 
 // useProcessMonitor 全局进程 SSE 客户端：连接 /api/processes/stream，
@@ -16,9 +17,16 @@ export function useProcessMonitor() {
     else processes.value.unshift(p)
   }
 
-  function start() {
+  async function start() {
     if (es) return
-    es = new EventSource('/api/processes/stream')
+    // SSE 必须直连真实 TCP 地址(http://127.0.0.1:<port>)，不能走 wails.localhost 伪 host：
+    // Wails 的 WebResourceRequested 拦截会缓冲响应体到完成才回传，而 SSE 永不结束，
+    // 导致 EventSource 一直 pending、进程面板显示 0 个进程。
+    // 直连时不带 wails.localhost 的登录 Cookie，故用同源换取的短期 sse_token 携带鉴权。
+    const base = await getLoadoutBase()
+    const token = await getSseToken()
+    const q = token ? '?sse_token=' + encodeURIComponent(token) : ''
+    es = new EventSource(base + '/api/processes/stream' + q)
     es.onopen = () => {
       connected.value = true
     }

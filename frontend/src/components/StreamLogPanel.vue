@@ -11,6 +11,7 @@
 // 约定 SSE data 载荷为 JSON { type: 'log'|'done'|'error', line?, data? }。
 import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
 import { ansiToHtml } from '@/lib/ansi'
+import { getLoadoutBase, getSseToken } from '@/lib/base'
 
 export type StreamStatus = 'idle' | 'running' | 'done' | 'error'
 
@@ -63,11 +64,24 @@ function stopStream() {
   stream = null
 }
 
-function openStream() {
+async function openStream() {
   stopStream()
   logLines.value = []
   emit('update:status', 'running')
-  const es = new EventSource(props.streamUrl)
+  // SSE 必须直连真实 TCP 地址(http://127.0.0.1:<port>)，不能走 wails.localhost 伪 host：
+  // Wails 的 WebResourceRequested 拦截会缓冲响应体到完成才回传，而 SSE 永不结束，
+  // 导致 EventSource 一直 pending、日志流收不到任何输出。相对路径(以 / 开头)在此
+  // 转换为真实 base；父组件若已传绝对地址则原样使用。
+  // 直连时不带 wails.localhost 的登录 Cookie，故用同源换取的短期 sse_token 携带鉴权。
+  let url = props.streamUrl
+  if (url.startsWith('/')) {
+    url = (await getLoadoutBase()) + url
+  }
+  const token = await getSseToken()
+  if (token) {
+    url += (url.includes('?') ? '&' : '?') + 'sse_token=' + encodeURIComponent(token)
+  }
+  const es = new EventSource(url)
   stream = es
   // 统一用 onmessage + JSON.type 分桶，不依赖 SSE event: 行（更稳健）。
   es.onmessage = (e: MessageEvent) => {
