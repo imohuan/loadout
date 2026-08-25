@@ -6,10 +6,13 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"loadout/core/procreg"
 )
 
 // init 子进程分支：本测试进程被当作 stdio 子进程重启时（os.Args[0] 作为 Command），
@@ -42,6 +45,22 @@ func init() {
 		os.Stderr.WriteString("first line\n")
 		os.Stderr.WriteString("tail-no-newline")
 		os.Exit(0)
+	case "longlive":
+		// 常驻 stdio MCP server：握手成功后永不退出，用于验证 Close 能真正终止子进程
+		// （模拟 Node/Python MCP server 忽略 stdin EOF 继续存活的情况）。
+		srv := NewServer("mcpkit-longlive", []ServerTool{{
+			Name:        "ping",
+			Description: "回显",
+			InputSchema: map[string]any{"type": "object"},
+			Handler: func(_ context.Context, _ map[string]any) (*ToolResult, error) {
+				return &ToolResult{Content: []ContentPart{{Type: "text", Text: "pong"}}}, nil
+			},
+		}})
+		if _, err := srv.Connect(context.Background(), &mcp.StdioTransport{}, nil); err != nil {
+			os.Stderr.WriteString("child connect error: " + err.Error() + "\n")
+			os.Exit(1)
+		}
+		select {} // 永不退出，直到被 Kill
 	}
 }
 
@@ -374,5 +393,58 @@ func TestUpstreamInvalidTransportReturnsError(t *testing.T) {
 	}
 	if _, err := upstream.CallTool(context.Background(), "x", nil); err == nil {
 		t.Fatal("非法 Transport 的 CallTool 应返回错误，实际返回 nil")
+	}
+}
+
+// TestUpstreamCloseKillsPersistentChild 验证 Close 会真正终止一个常驻（不响应 stdin EOF）
+// 的 stdio 子进程，而不是仅关闭会话留下孤儿进程（回归：曾只调 session.Close()，
+// 导致 Node/Python MCP server 忽略 stdin EOF 后残留孤儿进程，且 Alive 误报 false）。
+func TestUpstreamCloseKillsPersistentChild(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+	up := NewUpstream(UpstreamConfig{
+		Name:      "stdio-close",
+		Transport: "stdio",
+		Command:   exe,
+		Env:       map[string]string{"MCPKIT_STDIO_CHILD": "longlive"},
+	})
+	defer up.Close()
+
+	if err := up.Connect(context.Background()); err != nil {
+		t.Fatalf("stdio server Connect 应成功：%v", err)
+	}
+	proc := procreg.Running("mcp:stdio-close")
+	if proc == nil {
+		t.Fatal("Connect 后应已登记到 procreg")
+	}
+	if !up.Alive() {
+		t.Fatalf("Connect 后 Alive 应返回 true")
+	}
+	pid := proc.PID
+	if pid <= 0 {
+		t.Fatalf("登记的 PID 无效：%d", pid)
+	}
+
+	// 关闭会话（旧实现此处只关 stdin，常驻子进程不会退出，残留孤儿进程）。
+	// 注：进程可能未完成完整握手，session.Close() 返回非 nil err 属预期；
+	// 关键断言是下面进程确实被终止。
+	_ = up.Close()
+	if up.Alive() {
+		t.Fatalf("Close 后 Alive 应返回 false")
+	}
+	// procreg 应已移除运行中登记。
+	if p := procreg.Running("mcp:stdio-close"); p != nil {
+		t.Fatalf("Close 后 procreg 不应再有运行中登记，实际 PID=%d", p.PID)
+	}
+	// 关键断言：OS 层进程应已不存在（孤儿进程回归的核心）。
+	// Signal(0) 不发送信号，仅探测进程是否存在：不存在时返回错误。
+	proc2, err := os.FindProcess(pid)
+	if err == nil {
+		err = proc2.Signal(syscall.Signal(0))
+	}
+	if err == nil {
+		t.Fatalf("Close 后子进程(PID=%d)仍存活，孤儿进程未被终止", pid)
 	}
 }

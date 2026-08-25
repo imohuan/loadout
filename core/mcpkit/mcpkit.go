@@ -172,6 +172,18 @@ func (u *Upstream) Close() error {
 	if u.session != nil {
 		err := u.session.Close()
 		u.session = nil
+		// 关闭会话后显式终止 stdio 子进程并回收：
+		// go-sdk 的 session.Close() 只关 stdin 管道，并不保证杀死子进程——
+		// 很多 stdio MCP server（Node/Python）忽略 stdin EOF 继续存活，留下孤儿进程；
+		// 且不 Kill+Wait 会在已退出进程上留下未回收句柄，Alive()/ServerStatus 也
+		// 会因 cmd 被置 nil 而误判为 failed。故必须在此处 Kill+Wait 兜底。
+		// session.Close() 的 err（进程未完成握手时如 "exit status 2"）属预期，
+		// Kill 逻辑已执行，不因该 err 跳过终止。
+		if u.cmd != nil && u.cmd.Process != nil {
+			_ = u.cmd.Process.Kill()
+			// Wait 回收进程状态，避免留下僵尸；进程可能已退出，忽略 Wait 错误。
+			_ = u.cmd.Wait()
+		}
 		u.cmd = nil
 		u.lastErr = nil
 		procreg.Unregister(mcpProcID(u.cfg.Name), nil)
@@ -183,6 +195,7 @@ func (u *Upstream) Close() error {
 	}
 	if u.cmd != nil && u.cmd.Process != nil {
 		_ = u.cmd.Process.Kill()
+		_ = u.cmd.Wait()
 	}
 	u.cmd = nil
 	u.lastErr = nil
