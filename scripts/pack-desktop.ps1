@@ -44,8 +44,8 @@ if ($Choice) {
 
     $choice = $null
     while ($null -eq $choice) {
-        $input = Read-Host "请输入数字 1/2/3 选择（q 退出）"
-        switch ($input.Trim()) {
+        $sel = Read-Host "请输入数字 1/2/3 选择（q 退出）"
+        switch ($sel.Trim()) {
             "1" { $choice = "release" }
             "2" { $choice = "debug" }
             "3" { $choice = "both" }
