@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useRoute } from 'vue-router'
+import ProcessFooter from '@/components/ProcessFooter.vue'
 import {
   RiApps2Line,
   RiCpuLine,
@@ -83,6 +84,7 @@ function isActive(to: string) {
       </SidebarGroup>
     </SidebarContent>
     <SidebarFooter class="group-data-[collapsible=icon]:hidden">
+      <ProcessFooter />
       <p class="px-2 text-xs text-muted-foreground group-data-[collapsible=icon]:hidden">
         模型路由控制台
       </p>

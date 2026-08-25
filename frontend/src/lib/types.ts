@@ -412,3 +412,25 @@ export interface VolcQuotaRecentUsage {
   request_count: number
   last_request_at: string
 }
+
+// 全局进程（procreg 统一命令执行器）类型
+export type ProcStatus = 'running' | 'done' | 'error'
+
+export interface ProcessInfo {
+  id: string
+  name: string
+  kind: string
+  cmd: string
+  pid: number
+  status: ProcStatus
+  startedAt: string
+  endedAt?: string
+  exitCode?: number
+  memBytes: number
+  log: string[]
+}
+
+export interface ProcessEvent {
+  type: 'snapshot' | 'update'
+  data: ProcessInfo[]
+}
