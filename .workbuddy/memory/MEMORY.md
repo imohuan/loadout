@@ -19,7 +19,7 @@
 ## 依赖策略
 
 - 用户偏好「零依赖优先」，引入新依赖前**必须显式确认**（AskUserQuestion 列出三个选项）。
-- 已确认引入：`marked@^18.0.10`、`dompurify@^3.4.14`、`highlight.js@^11.12.0`（流式 markdown 可视化）。
+- 已确认引入：`marked@^18.0.10`、`dompurify@^3.4.14`、`highlight.js@^11.12.0`（流式 markdown 可视化）、`vue-draggable-plus@^0.6.1`（VolcQuotaCard 关注区拖拽重排；间接依赖 sortablejs）。
 - Token 估算拒绝引 `tiktoken-go`，走启发式（CJK 1 字/token、英文 4 字/token）。
 
 ## 已知陷阱
@@ -31,6 +31,10 @@
 - **Vite + Go embed 组合**：Vite build 必输出 `_plugin-vue_export-helper-*.js`（vue plugin 内部 vendor 拆分），Go `//go:embed dist` **默认过滤下划线开头的文件**，会让这个 chunk 默默丢失→ 浏览器报 404。**修复**：必须写 `//go:embed all:dist`。任何把 vite dist 嵌入 Go 的 embed.FS 都要用 `all:` 前缀。下次跑前端 build 后，记得 `go build` 一下才会重新 embed。
 - **`git fetch` 后 tracking ref 消失（`origin/master [gone]`）**：本环境对 `.git/refs/remotes/` 下 git 自身的写入（lock+rename）有系统级拦截——fetch 报成功、reflog 正常，但 `refs/remotes/origin/` 目录整体消失；`refs/heads/`/`refs/tags/`/`refs/notes/` 写入正常，唯独 `refs/remotes/`。非磁盘/非 git 版本/非 fscache/非 ACL 问题。**workaround**：fetch 一律用 `bash scripts/git-sync-remotes.sh`（fetch + `ls-remote` 重建 tracking ref），或 fetch 后手动 `printf '<sha>' > .git/refs/remotes/origin/master`。详见 2026-08-24 日志。
 - **⚠️ 升级版事故（2026-08-24 凌晨，整个 git 仓库数据被删）**：本环境拦截不只动 `refs/remotes/`——本次**整个 `.git/refs/`（含 heads）+ `.git/objects/pack/*.pack` + 部分 loose objects 一起消失**，`git status` 直接报 `not a git repository`。**远端是唯一可靠备份，本地 commit 务必当天 push**。完整恢复流程（锚定备份 commit → fetch 拉回 → 清坏索引 → 删脏 index → reset → expire reflog）见 2026-08-24 日志。**教训：每天结束前 push，别囤本地 commit。**
+- **vue-draggable-plus 三个坑**（装这个库时必踩）：
+  1. **`ghost-class` / `drag-class` / `chosenClass` 必须单 token**——库内部直接 `classList.add(value)`，传 `"opacity-40 border-dashed border-primary/40"` 这种带空格的串会抛 `InvalidCharacterError: Failed to execute 'add' on 'DOMTokenList'`，拖拽一启动就崩。**做法**：单类名直接传 Tailwind 单类（`ghost-class="opacity-0"` 隐藏占位、`drag-class="shadow-xl"` 加阴影）；要多类样式 → 自定义单类名（如 `volc-dragging`）+ 非 scoped `<style>` 块定义。
+  2. **sortable 克隆的 drag 元素不带 Vue scoped data-v 属性** → 组件内 `<style scoped>` 匹配不到。给 drag/chose/ghost 加视觉反馈必须用**非 scoped `<style>`**（或 `:global()`），类名取独特前缀避免全局污染。
+  3. **computed 只读不能直接 v-model**——VueDraggable 的 v-model 要可写数组。**做法**：加 `ref` 数组 `watch(computed, v => refArr = v, { immediate: true })` 跟随同步，VueDraggable 绑 ref；`@update:model-value` 回调里把新顺序写回源头（localStorage 等），别用 v-model 让库自己改 ref（数据流不清晰、computed 写不动）。
 
 ## Wails 桌面端
 

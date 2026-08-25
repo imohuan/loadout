@@ -357,13 +357,22 @@ function mergeAggregates(list: VolcQuotaAggregate[]): FocusCardItem | undefined 
   }
 }
 
-/** 关注区卡片：来自渠道勾选的全集（用户视角的「已选」），按 localStorage 顺序排 */
+/** 关注区卡片：来自渠道勾选的全集（用户视角的「已选」），按 localStorage 顺序排。
+ * 同一聚合短名可能被多个渠道模型命中（如 doubao-seed-2-0-lite-260215 与
+ * doubao-seed-2-0-lite-260428 都映射到 doubao-seed-2-0-lite），按命中到的 quota
+ * 短名去重，只保留一张卡片；未命中任何聚合的占位卡（__noAggregate）各自保留。 */
 const focusAggregates = computed<FocusCardItem[]>(() => {
   const orderMap = new Map(focusOrder.value.map((m, i) => [m, i]))
-  const items: FocusCardItem[] = focusModels.value.map((fm) => {
+  const items: FocusCardItem[] = []
+  const seenQuota = new Set<string>()
+  for (const fm of focusModels.value) {
     const matched = aggregates.value.filter((a) => matchQuotaModel(a.model, fm))
-    return mergeAggregates(matched) ?? makePlaceholder(fm)
-  })
+    // 去重键：命中的第一个聚合短名；未命中时退回 fm 自身（占位卡不被合并）
+    const cardKey = matched[0]?.model ?? fm
+    if (seenQuota.has(cardKey)) continue
+    seenQuota.add(cardKey)
+    items.push(mergeAggregates(matched) ?? makePlaceholder(fm))
+  }
   return items.sort((a, b) => {
     const ia = orderMap.has(a.model) ? (orderMap.get(a.model) as number) : Number.MAX_SAFE_INTEGER
     const ib = orderMap.has(b.model) ? (orderMap.get(b.model) as number) : Number.MAX_SAFE_INTEGER

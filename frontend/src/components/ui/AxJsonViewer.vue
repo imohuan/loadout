@@ -214,11 +214,10 @@ watch(
 </script>
 
 <template>
-  <div class="font-mono text-[12px] leading-[1.7] text-foreground text-left select-text"
-    :class="{
-      'whitespace-pre overflow-x-auto': !props.wrapEnabled && props.isRoot,
-      'whitespace-pre-wrap break-words [overflow-wrap:anywhere]': props.wrapEnabled,
-    }">
+  <div class="font-mono text-[12px] leading-[1.7] text-foreground text-left select-text" :class="{
+    'whitespace-pre overflow-x-auto': !props.wrapEnabled && props.isRoot,
+    'whitespace-pre-wrap break-words [overflow-wrap:anywhere]': props.wrapEnabled,
+  }">
     <!-- 简单值（非对象/数组） -->
     <div v-if="!isComplex" class="flex items-start gap-[2px] py-[1px]">
       <div class="w-[14px] shrink-0" />
@@ -236,11 +235,12 @@ watch(
     <div v-else class="flex flex-col items-start gap-[2px] py-[1px]">
       <!-- 头部行：箭头 + 键 + 开括号 -->
       <div class="flex items-start gap-[2px] cursor-pointer min-w-0" @click="handleToggle">
-        <div class="w-[14px] h-[14px] shrink-0 inline-flex items-center justify-center rounded-[4px] text-muted-foreground hover:bg-muted hover:text-foreground"
+        <div
+          class="w-[20px] h-[20px] shrink-0 inline-flex items-center justify-center rounded-[4px] text-muted-foreground "
           :class="{ invisible: isEmpty }">
-          <svg class="transition-transform duration-150" :class="{ 'rotate-90': isExpanded }" width="12" height="12"
-            viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
-            stroke-linejoin="round">
+          <svg class="w-[14px] h-[14px] transition-transform duration-150 hover:text-foreground" :class="{ 'rotate-90': isExpanded }"
+            width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+            stroke-linecap="round" stroke-linejoin="round">
             <path d="m9 18 6-6-6-6" />
           </svg>
         </div>
@@ -250,10 +250,10 @@ watch(
             <span class="text-muted-foreground">'</span>{{ nodeKey }}<span class="text-muted-foreground">'</span><span
               class="text-muted-foreground">:</span>
           </span>
-          <span class="text-muted-foreground">{{ openBracket }}</span>
+          <span class="text-muted-foreground px-2">{{ openBracket }}</span>
           <template v-if="!isExpanded && !isEmpty">
-            <span v-if="dataType === 'array'" class="text-muted-foreground italic">...</span>
-            <span v-else class="text-muted-foreground italic">{{ itemCount }} 项</span>
+            <span v-if="dataType === 'array'" class="text-muted-foreground italic pr-2">...</span>
+            <span v-else class="text-muted-foreground italic pr-2">{{ itemCount }} 项</span>
           </template>
           <span v-if="!isExpanded || isEmpty" class="text-muted-foreground">
             <span v-if="!isExpanded && dataType === 'array' && !isEmpty"> </span>{{ closeBracket
