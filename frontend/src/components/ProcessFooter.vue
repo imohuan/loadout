@@ -124,49 +124,48 @@ const historyCount = computed(() => history.value.length)
 
     <!-- 历史记录 Dialog -->
     <Dialog v-model:open="historyOpen">
-      <DialogContent class="sm:max-w-lg!">
+      <DialogContent class="max-w-3xl!">
         <DialogHeader>
           <DialogTitle>历史进程</DialogTitle>
           <DialogDescription v-if="historyCount === 0">暂无历史记录。</DialogDescription>
         </DialogHeader>
-        <div v-if="historyCount" class="max-h-[60vh] space-y-2 overflow-y-auto pr-1">
-          <div v-for="p in history" :key="p.id" class="rounded-md border border-border p-2 text-sm">
-            <div class="flex items-center gap-2">
-              <span class="size-2 shrink-0 rounded-full" :class="statusDot(p.status)" />
-              <span class="min-w-0 flex-1 truncate font-medium" :title="p.cmd">{{ p.name }}</span>
-              <span class="shrink-0 text-xs" :class="p.status === 'error' ? 'text-red-500' : 'text-muted-foreground'">
-                {{ statusLabel(p.status) }}
-              </span>
-              <span class="shrink-0 tabular-nums text-xs text-muted-foreground">
-                {{ fmtDuration(p) }}
-              </span>
-            </div>
-            <div class="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
-              <span class="truncate">{{ fmtStartAt(p) }}</span>
-              <span class="shrink-0">内存 {{ fmtMem(p.memBytes) }}</span>
-              <span class="shrink-0">PID {{ p.pid || '—' }}</span>
-              <span v-if="p.exitCode !== undefined" class="shrink-0">
-                退出码 {{ p.exitCode }}
-              </span>
-            </div>
-            <div v-if="p.cmd" class="mt-0.5 truncate font-mono text-xs text-muted-foreground" :title="p.cmd">
-              {{ p.cmd }}
-            </div>
-            <details v-if="p.log.length" class="mt-1.5">
-              <summary class="cursor-pointer text-xs text-muted-foreground hover:text-foreground">
-                执行日志（{{ p.log.length }} 行）
-              </summary>
-              <div
-                class="mt-1 max-h-40 overflow-y-auto rounded bg-muted/40 p-1.5 font-mono text-[11px] leading-tight text-muted-foreground">
-                <div
-                  v-for="(line, i) in p.log"
-                  :key="i"
-                  class="whitespace-pre-wrap break-all"
-                  v-html="ansiToHtml(line)"
-                />
-              </div>
-            </details>
-          </div>
+        <div v-if="historyCount" class="max-h-[70vh] overflow-y-auto pr-1">
+          <Accordion type="multiple" class="w-full">
+            <AccordionItem v-for="p in history" :key="p.id" :value="p.id"
+              class="rounded-md border border-border last:border-b">
+              <AccordionTrigger class="px-3 py-2 hover:no-underline">
+                <span class="flex min-w-0 flex-1 items-center gap-2">
+                  <span class="size-2 shrink-0 rounded-full" :class="statusDot(p.status)" />
+                  <span class="min-w-0 truncate font-medium" :title="p.name">{{ p.name }}</span>
+                  <span class="shrink-0 text-xs"
+                    :class="p.status === 'error' ? 'text-red-500' : 'text-muted-foreground'">
+                    {{ statusLabel(p.status) }}
+                  </span>
+                  <span class="shrink-0 tabular-nums text-xs text-muted-foreground">
+                    {{ fmtDuration(p) }}
+                  </span>
+                </span>
+                <template #icon><span class="hidden" /></template>
+              </AccordionTrigger>
+              <AccordionContent class="pb-0">
+                <div class="space-y-1 px-3 pb-3 text-xs text-muted-foreground">
+                  <div class="flex flex-wrap gap-x-4 gap-y-0.5">
+                    <span class="truncate">{{ fmtStartAt(p) }}</span>
+                    <span class="shrink-0">内存 {{ fmtMem(p.memBytes) }}</span>
+                    <span class="shrink-0">PID {{ p.pid || '—' }}</span>
+                    <span v-if="p.exitCode !== undefined" class="shrink-0">退出码 {{ p.exitCode }}</span>
+                  </div>
+                  <div v-if="p.cmd" class="truncate font-mono" :title="p.cmd">{{ p.cmd }}</div>
+                  <div v-if="p.log.length"
+                    class="mt-1 max-h-60 overflow-y-auto rounded bg-muted/40 p-2 font-mono text-[11px] leading-relaxed text-muted-foreground">
+                    <div v-for="(line, i) in p.log" :key="i"
+                      class="whitespace-pre-wrap break-all"
+                      v-html="ansiToHtml(line)" />
+                  </div>
+                </div>
+              </AccordionContent>
+            </AccordionItem>
+          </Accordion>
         </div>
       </DialogContent>
     </Dialog>
