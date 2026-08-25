@@ -59,6 +59,8 @@ const mode = computed<SyncMode>(() => modeTab.value)
 const { confirmDialog } = useConfirm()
 
 // ---------- 初始加载（进入页面拉取 --list all 前显示骨架屏） ----------
+/** 骨架屏最小展示时长（ms）：避免请求太快一闪而过看不见。 */
+const MIN_LOADING_MS = 600
 const initialLoading = ref(true)
 
 // ---------- 目标平台（数据来自后端 --list-platforms --json，失败回落内置） ----------
@@ -905,6 +907,8 @@ async function handleUpdateMetadata() {
 // ---------- 初始化 ----------
 onMounted(async () => {
   // 一次拉全（--list all → platforms + models + mcp 矩阵 + metadata 缓存状态）
+  // 骨架屏最小展示时长：all 接口可能很快返回，太短用户看不到加载效果。
+  const startedAt = performance.now()
   try {
   const all = await fetchAllConfig()
   applyPlatforms(all.platforms)
@@ -930,6 +934,9 @@ onMounted(async () => {
       })
       .catch(() => {})
   } finally {
+    const elapsed = performance.now() - startedAt
+    const rest = Math.max(0, MIN_LOADING_MS - elapsed)
+    if (rest > 0) await new Promise((r) => setTimeout(r, rest))
     initialLoading.value = false
   }
 })
