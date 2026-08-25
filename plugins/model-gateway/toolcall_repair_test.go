@@ -177,6 +177,104 @@ func TestRepairToolCallSequence_EndsWithToolResult(t *testing.T) {
 	}
 }
 
+func TestRepairToolCallSequence_ConsecutiveAssistant(t *testing.T) {
+	// 连续两条 assistant：前一条是普通回复，后一条带 tool_calls。上游（方舟）严格禁止
+	// 相邻 assistant，返回 400001 参数拒绝。应合并为一条（content 拼接、tool_calls 保留）。
+	body := []byte(`{"model":"m","messages":[
+		{"role":"user","content":"hi"},
+		{"role":"assistant","content":"first"},
+		{"role":"assistant","content":"","tool_calls":[{"id":"c1","type":"function","function":{"name":"f","arguments":"{}"}}]},
+		{"role":"tool","tool_call_id":"c1","content":"r1"}
+	]}`)
+	out, changed := repairToolCallSequence(body)
+	if !changed {
+		t.Fatalf("expected change")
+	}
+	want := []string{"user", "assistant", "tool"}
+	got := rolesOf(out)
+	if len(got) != len(want) {
+		t.Fatalf("roles = %v, want %v (out=%s)", got, want, out)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("roles[%d] = %q, want %q (out=%s)", i, got[i], want[i], out)
+		}
+	}
+	// 合并后的 assistant 应同时包含 content 和 tool_calls。
+	var root map[string]json.RawMessage
+	_ = json.Unmarshal(out, &root)
+	var msgs []map[string]any
+	_ = json.Unmarshal(root["messages"], &msgs)
+	asst := msgs[1]
+	if c, _ := asst["content"].(string); c != "first" {
+		t.Fatalf("merged assistant content = %q, want %q (out=%s)", c, "first", out)
+	}
+	tcs, _ := asst["tool_calls"].([]any)
+	if len(tcs) != 1 {
+		t.Fatalf("merged assistant tool_calls = %v, want 1 (out=%s)", tcs, out)
+	}
+}
+
+func TestRepairToolCallSequence_ConsecutiveAssistantArrayContent(t *testing.T) {
+	// 连续两条 assistant，且 content 是 OpenAI 分段数组形式：应能正确拼接并保留 tool_calls。
+	body := []byte(`{"model":"m","messages":[
+		{"role":"user","content":"hi"},
+		{"role":"assistant","content":[{"type":"text","text":"part-a"}]},
+		{"role":"assistant","content":[{"type":"text","text":"part-b"}],"tool_calls":[{"id":"c1","type":"function","function":{"name":"f","arguments":"{}"}}]},
+		{"role":"tool","tool_call_id":"c1","content":"r1"}
+	]}`)
+	out, changed := repairToolCallSequence(body)
+	if !changed {
+		t.Fatalf("expected change")
+	}
+	want := []string{"user", "assistant", "tool"}
+	got := rolesOf(out)
+	if len(got) != len(want) {
+		t.Fatalf("roles = %v, want %v (out=%s)", got, want, out)
+	}
+	var root map[string]json.RawMessage
+	_ = json.Unmarshal(out, &root)
+	var msgs []map[string]any
+	_ = json.Unmarshal(root["messages"], &msgs)
+	asst := msgs[1]
+	arr, _ := asst["content"].([]any)
+	if len(arr) != 2 {
+		t.Fatalf("merged assistant content = %v, want 2 segments (out=%s)", arr, out)
+	}
+}
+
+func TestRepairToolCallSequence_ConsecutiveAssistantToolCalls(t *testing.T) {
+	// 连续两条 assistant 各带 tool_calls：合并后应同时保留两条声明的 tool_call id。
+	body := []byte(`{"model":"m","messages":[
+		{"role":"assistant","content":"","tool_calls":[{"id":"c1","type":"function","function":{"name":"f","arguments":"{}"}}]},
+		{"role":"assistant","content":"","tool_calls":[{"id":"c2","type":"function","function":{"name":"f","arguments":"{}"}}]},
+		{"role":"tool","tool_call_id":"c1","content":"r1"},
+		{"role":"tool","tool_call_id":"c2","content":"r2"}
+	]}`)
+	out, changed := repairToolCallSequence(body)
+	if !changed {
+		t.Fatalf("expected change")
+	}
+	want := []string{"assistant", "tool", "tool"}
+	got := rolesOf(out)
+	if len(got) != len(want) {
+		t.Fatalf("roles = %v, want %v (out=%s)", got, want, out)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("roles[%d] = %q, want %q (out=%s)", i, got[i], want[i], out)
+		}
+	}
+	var root map[string]json.RawMessage
+	_ = json.Unmarshal(out, &root)
+	var msgs []map[string]any
+	_ = json.Unmarshal(root["messages"], &msgs)
+	tcs, _ := msgs[0]["tool_calls"].([]any)
+	if len(tcs) != 2 {
+		t.Fatalf("merged assistant tool_calls = %v, want 2 (out=%s)", tcs, out)
+	}
+}
+
 func TestRepairToolCallSequence_MissingResultThenUser(t *testing.T) {
 	// assistant 声明 tool_calls 后没有结果，直接接一条 user 新提问。
 	// 占位结果应补在 assistant 与 user 之间（而非末尾），保证顺序正确。
