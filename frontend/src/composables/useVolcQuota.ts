@@ -16,12 +16,12 @@ export function useVolcQuota() {
   /** 整体覆盖配置（PUT 原子事务）；secret_key 留空 = 保留既有密文 */
   const save = (configs: VolcQuotaConfig[]) =>
     request<void>('/api/volc-quota/config', 'PUT', { configs })
-  /** 手动刷新额度：channelId 缺省 = 全量刷新 */
-  const refresh = (channelId?: string) =>
+  /** 手动刷新额度：channelId 缺省 = 全量刷新；force=true 强制把本地余额拉回远程值 */
+  const refresh = (channelId?: string, force = false) =>
     request<VolcQuotaRefreshResult>(
       '/api/volc-quota/refresh',
       'POST',
-      channelId ? { channel_id: channelId } : {},
+      channelId ? { channel_id: channelId, force } : { force },
     )
   /** 查询某渠道 base_url 近 N 分钟的请求日志（刷新远程前的安全提示） */
   const recentUsage = (channelId: string, minutes = 10) =>

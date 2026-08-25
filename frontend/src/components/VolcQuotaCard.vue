@@ -470,6 +470,7 @@ const remoteDialogOpen = ref(false)
 const remoteChecking = ref(false)
 const remoteTarget = ref('') // 空 = 全量；否则 channel_id
 const remoteTargetName = ref('')
+const remoteForce = ref(false) // 强制刷新：把本地余额拉回远程值
 const recentUsage = ref<{
   has_recent: boolean
   request_count: number
@@ -478,6 +479,7 @@ const recentUsage = ref<{
 
 function openRemoteRefresh(channelId = '') {
   remoteTarget.value = channelId
+  remoteForce.value = false
   if (channelId) {
     const item = configs.value.find((c) => c.config.channel_id === channelId)
     remoteTargetName.value = item ? title(item) : channelId
@@ -510,7 +512,7 @@ async function confirmRemoteRefresh() {
   remoteDialogOpen.value = false
   refreshingAll.value = true
   try {
-    const result = await quota.refresh(remoteTarget.value || undefined)
+    const result = await quota.refresh(remoteTarget.value || undefined, remoteForce.value)
     applyRefreshResult(result.configs_checked, result.failed_channels, result.disabled_models)
     await loadStatus(false)
     await loadAggregates()
@@ -949,6 +951,13 @@ const displayName = (ch: Channel) => ch.channel_name || ch.name
         </DialogDescription>
       </DialogHeader>
       <div class="space-y-3">
+        <div class="flex items-center gap-2 rounded-md border p-3">
+          <Switch id="vq-force-refresh" v-model="remoteForce" />
+          <Label for="vq-force-refresh">强制刷新</Label>
+          <span class="text-xs text-muted-foreground">
+            将本地剩余额度强制覆盖为远程账单值（本地与远程不齐时用于校正）
+          </span>
+        </div>
         <div class="rounded-md border bg-muted/40 p-3 text-sm">
           <div v-if="remoteChecking" class="flex items-center gap-2 text-muted-foreground">
             <RiLoader4Line class="animate-spin" size="16" />

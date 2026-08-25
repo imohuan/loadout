@@ -130,7 +130,7 @@ func (s *Service) StartBackgroundRefresh(interval time.Duration, runNow bool) fu
 // safeRefresh 后台刷新统一入口：失败记 Warn（ticker 下周期自动重试），
 // 并发由 Refresh 入口的 refreshing 锁保证。
 func (s *Service) safeRefresh() {
-	if _, err := s.Refresh(context.Background(), ""); err != nil {
+	if _, err := s.Refresh(context.Background(), "", false); err != nil {
 		s.lg.Warn("volc-free-quota: 后台刷新失败", "err", err)
 	}
 }
@@ -855,11 +855,12 @@ func (s *Service) ListPackages(ctx context.Context, accountID string) ([]Package
 // ===== 手动 + 定时刷新 =====
 
 // Refresh 刷新额度：channelID 非空只刷该渠道；否则全量遍历所有 enabled 配置。
+// force 为 true 时强制刷新 local_remaining 到远程值（覆盖"只降不升"防回弹逻辑）。
 //
 // 关键：免费额度按火山账号（AK）对齐，因此刷新前先把 enabled 配置按 account_id 去重，
 // 每个账号只调一次火山接口（同账号多 Key 共享额度，重复查询浪费 QPS 且结果一致）。
 // 返回 RefreshResult 给前端展示：失败/禁用条数。
-func (s *Service) Refresh(ctx context.Context, channelID string) (RefreshResult, error) {
+func (s *Service) Refresh(ctx context.Context, channelID string, force bool) (RefreshResult, error) {
 	// in-flight 互斥（rev2 审计 D）：手动 HTTP 刷新与后台 ticker 并发时只放行一个，
 	// 避免 billing 双倍 QPS（接口上限 10，会 429）与 local_remaining 读-算-写互相覆盖。
 	s.bgMu.Lock()
@@ -908,7 +909,7 @@ func (s *Service) Refresh(ctx context.Context, channelID string) (RefreshResult,
 		}
 		accountSeen[cfg.AccountID] = true
 		result.ConfigsChecked++
-		disabled, rerr := s.refreshOne(ctx, cfg)
+		disabled, rerr := s.refreshOne(ctx, cfg, force)
 		if rerr != nil {
 			s.lg.Warn("volc-free-quota: 刷新失败", "account_id", cfg.AccountID, "channel_id", cfg.ChannelID, "err", rerr)
 			// 记录到 last_error 让 UI 看到；失败的账号不会触发自动 disable（避免歧义）。
@@ -935,10 +936,13 @@ func (s *Service) Refresh(ctx context.Context, channelID string) (RefreshResult,
 // refreshOne 刷新一个账号的额度（v17 起只写 volc_quota_packages 逐条明细，删除
 // 了 volc_quota_models 聚合表）。
 //
+// force 为 true 时，local_remaining 直接取远程 available_amount（覆盖防回弹），
+// 用于手动"强制刷新"把本地余额拉回远程权威值。
+//
 // 流程：解密 secret_key → 调 SDK → 过滤方舟免费资源包 → 逐条 UPSERT volc_quota_packages
 // → 检测 Available<=0 资源包对应的 API 模型，对该账号关联的所有渠道 Key 写
 // model_states（冷却到次日 0:00）。
-func (s *Service) refreshOne(ctx context.Context, cfg Config) ([]string, error) {
+func (s *Service) refreshOne(ctx context.Context, cfg Config, force bool) ([]string, error) {
 	cipher := ""
 	if err := s.db.QueryRow(`SELECT secret_key_cipher FROM volc_quota_config WHERE channel_id = ?`, cfg.ChannelID).Scan(&cipher); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -1022,7 +1026,12 @@ func (s *Service) refreshOne(ctx context.Context, cfg Config) ([]string, error) 
 		availAmt := parseAmount(p.AvailableAmount)
 		usedAmt := parseAmount(p.UsedAmount)
 		old := oldByInst[p.InstanceNo]
-		newLocal := computeLocalRemaining(old.init, old.local, old.synced, availAmt, now)
+		// force=true：local_remaining 直接取远程 available_amount，覆盖"只降不升"防回弹，
+		// 把本地余额强制拉回远程权威值（用户显式要求，风险自负）。
+		newLocal := availAmt
+		if !force {
+			newLocal = computeLocalRemaining(old.init, old.local, old.synced, availAmt, now)
+		}
 		if _, err := s.db.ExecContext(ctx, `
 			INSERT INTO volc_quota_packages(account_id, instance_no, product, product_name, configuration_code,
 			       configuration_name, model, total_amount, available_amount, used_amount, unit, status,
@@ -1662,18 +1671,22 @@ func (s *Service) HandleSaveConfigs(w http.ResponseWriter, r *http.Request) {
 }
 
 // HandleRefresh POST /api/volc-quota/refresh
-// 手动刷新额度：请求体 {"channel_id":"..."} 只刷该渠道；缺省/空则全量刷新。
+// 手动刷新额度：请求体 {"channel_id":"...", "force":true}。
+//   - channel_id 只刷该渠道；缺省/空则全量刷新。
+//   - force=true 强制把 local_remaining 拉回远程 available_amount（覆盖防回弹），
+//     前端"强制刷新"选项使用；缺省/非 true 保持原有只降不升语义。
 // 返回 RefreshResult（含本次禁用/失败明细），前端据此展示。
 // 任一条渠道刷新失败 → HTTP 4xx/5xx + 明确错误（不再静默 200），前端 toast 直接可见。
 func (s *Service) HandleRefresh(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		ChannelID string `json:"channel_id"`
+		Force     bool   `json:"force"`
 	}
 	// 空 body 也允许（全量刷新）。
 	if r.Body != nil {
 		_ = json.NewDecoder(r.Body).Decode(&req)
 	}
-	result, err := s.Refresh(r.Context(), req.ChannelID)
+	result, err := s.Refresh(r.Context(), req.ChannelID, req.Force)
 	if err != nil {
 		// 后台定时刷新占用中 → 409（可重试），避免 502 误导为上游故障。
 		if errors.Is(err, errRefreshInFlight) {

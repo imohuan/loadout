@@ -690,7 +690,7 @@ func TestRefreshOneSyncedAtPreserved(t *testing.T) {
 	}}
 	cfg := Config{ChannelID: "ch1", AccountID: aid, AccessKey: "AKxxx", Enabled: true, ForceBlock: true}
 	// 第一次刷新：首次写入。
-	if _, err := svc.refreshOne(context.Background(), cfg); err != nil {
+	if _, err := svc.refreshOne(context.Background(), cfg, false); err != nil {
 		t.Fatal(err)
 	}
 	var synced1 string
@@ -699,7 +699,7 @@ func TestRefreshOneSyncedAtPreserved(t *testing.T) {
 	}
 	// 第二次刷新（等 1.1s 保证时间戳不同）：synced_at 必须保留首次值。
 	time.Sleep(1100 * time.Millisecond)
-	if _, err := svc.refreshOne(context.Background(), cfg); err != nil {
+	if _, err := svc.refreshOne(context.Background(), cfg, false); err != nil {
 		t.Fatal(err)
 	}
 	var synced2 string
@@ -721,7 +721,7 @@ func TestRefreshOneSyncedAtPreserved(t *testing.T) {
 	}
 	// 扣减后再刷新：synced_at 保留扣减时间。
 	time.Sleep(1100 * time.Millisecond)
-	if _, err := svc.refreshOne(context.Background(), cfg); err != nil {
+	if _, err := svc.refreshOne(context.Background(), cfg, false); err != nil {
 		t.Fatal(err)
 	}
 	var synced4 string
@@ -748,6 +748,61 @@ func TestDecrementSkipsExpired(t *testing.T) {
 	}
 }
 
+// TestRefreshOneForce 强制刷新：force=true 时 local_remaining 直接取远程 available_amount，
+// 覆盖"只降不升"防回弹逻辑，把本地余额拉回远程权威值。
+func TestRefreshOneForce(t *testing.T) {
+	svc := newTestService(t)
+	aid := accountID("AKxxx")
+	svc.client = &fakeBillingClient{pkgs: []rawPackage{
+		{InstanceNo: "inst-1", Product: "ark_bd", ProductName: "豆包·Doubao-pro-32k",
+			ConfigurationCode: "Doubao_Pro_32k_data_collaboration", ConfigurationName: "pack",
+			TotalAmount: "2000000", AvailableAmount: "1900000", Unit: "Tokens", Status: "Effective"},
+	}}
+	cfg := Config{ChannelID: "ch1", AccountID: aid, AccessKey: "AKxxx", Enabled: true, ForceBlock: true}
+
+	// 非 force：billing 下降（200万→190万）→ 校准下调到 190万。
+	if _, err := svc.refreshOne(context.Background(), cfg, false); err != nil {
+		t.Fatal(err)
+	}
+	var rem int64
+	if err := svc.db.QueryRow(`SELECT local_remaining FROM volc_quota_packages WHERE instance_no='inst-1'`).Scan(&rem); err != nil {
+		t.Fatal(err)
+	}
+	if rem != 1900000 {
+		t.Fatalf("非 force 校准失败: local_remaining=%d, want 1900000", rem)
+	}
+
+	// 扣减本地到 100 万（模拟本地与远程出现差值）。
+	svc.decrementLocalRemaining(aid, "doubao-1-5-pro-32k-250115", 900000)
+
+	// force=false 刷新：billing available(190万) > 本地(100万) → 防回弹保持 100万。
+	svc.client = &fakeBillingClient{pkgs: []rawPackage{
+		{InstanceNo: "inst-1", Product: "ark_bd", ProductName: "豆包·Doubao-pro-32k",
+			ConfigurationCode: "Doubao_Pro_32k_data_collaboration", ConfigurationName: "pack",
+			TotalAmount: "2000000", AvailableAmount: "1900000", Unit: "Tokens", Status: "Effective"},
+	}}
+	if _, err := svc.refreshOne(context.Background(), cfg, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.db.QueryRow(`SELECT local_remaining FROM volc_quota_packages WHERE instance_no='inst-1'`).Scan(&rem); err != nil {
+		t.Fatal(err)
+	}
+	if rem != 1000000 {
+		t.Fatalf("防回弹应保持本地值: local_remaining=%d, want 1000000", rem)
+	}
+
+	// force=true 刷新：强制拉回远程 190万。
+	if _, err := svc.refreshOne(context.Background(), cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.db.QueryRow(`SELECT local_remaining FROM volc_quota_packages WHERE instance_no='inst-1'`).Scan(&rem); err != nil {
+		t.Fatal(err)
+	}
+	if rem != 1900000 {
+		t.Fatalf("force 应强制拉回远程值: local_remaining=%d, want 1900000", rem)
+	}
+}
+
 // TestRefreshInFlight 并发 Refresh：第二个返回"刷新进行中"（in-flight 锁）。
 func TestRefreshInFlight(t *testing.T) {
 	svc := newTestService(t)
@@ -757,12 +812,12 @@ func TestRefreshInFlight(t *testing.T) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		_, _ = svc.Refresh(context.Background(), "")
+		_, _ = svc.Refresh(context.Background(), "", false)
 	}()
 	time.Sleep(100 * time.Millisecond) // 确保第一个已进入并占锁
 	go func() {
 		defer wg.Done()
-		_, secondErr = svc.Refresh(context.Background(), "")
+		_, secondErr = svc.Refresh(context.Background(), "", false)
 	}()
 	wg.Wait()
 	if secondErr == nil || !strings.Contains(secondErr.Error(), "刷新进行中") {
