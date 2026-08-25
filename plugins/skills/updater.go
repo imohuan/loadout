@@ -15,11 +15,14 @@ type UpdateEvent struct {
 
 // UpdateRunner 管理单实例更新任务：同一时间只允许一个更新在跑，
 // 新订阅者加入当前任务流；任务结束广播 done/error 并关闭所有订阅。
+// 任务进行中保留已广播的 history，供中途加入的订阅者回放历史日志，
+// 让后连接也能看到从任务开始到当前的全部内容。
 type UpdateRunner struct {
 	svc     *Service
 	mu      sync.Mutex
 	running bool
 	subs    map[chan UpdateEvent]bool
+	history []UpdateEvent
 }
 
 func newUpdateRunner(svc *Service) *UpdateRunner {
@@ -36,6 +39,13 @@ func (r *UpdateRunner) Subscribe() (<-chan UpdateEvent, error) {
 		go r.run()
 	}
 	ch := make(chan UpdateEvent, 256)
+	// 回放本任务已产生的历史日志，让中途加入的订阅者不丢上下文。
+	for _, ev := range r.history {
+		select {
+		case ch <- ev:
+		default: // 缓冲满则丢弃历史，避免阻塞；实时日志不受影响
+		}
+	}
 	r.subs[ch] = true
 	return ch, nil
 }
@@ -50,6 +60,7 @@ func (r *UpdateRunner) broadcast(ev UpdateEvent) {
 		default:
 		}
 	}
+	r.history = append(r.history, ev)
 }
 
 // finish 推送终态事件并关闭所有订阅 channel、复位运行状态。
@@ -60,6 +71,7 @@ func (r *UpdateRunner) finish(ev UpdateEvent) {
 		close(ch)
 	}
 	r.subs = map[chan UpdateEvent]bool{}
+	r.history = nil
 	r.running = false
 	r.mu.Unlock()
 }
