@@ -377,6 +377,26 @@ export interface VolcQuotaStatusResponse {
   configs: VolcQuotaConfigDetails[]
 }
 
+// ---- 卡片视图：按 model 聚合（后台 /api/volc-quota/aggregate，v19） ----
+export interface VolcQuotaAggregate {
+  model: string
+  name?: string
+  unit?: string
+  initial_total: number // SUM(initial_total)
+  local_remaining: number // SUM(local_remaining)
+  used_amount: number // SUM(used_amount)；本地口径下 = initial_total - local_remaining
+  total_amount: number
+  percentage: number // 0~100 本地口径
+  exhausted: boolean
+}
+export interface VolcQuotaAggregateDetails {
+  config: VolcQuotaConfig
+  aggregates?: VolcQuotaAggregate[]
+}
+export interface VolcQuotaAggregateResponse {
+  configs: VolcQuotaAggregateDetails[]
+}
+
 export interface VolcQuotaRefreshResult {
   refreshed_at: string
   configs_checked: number

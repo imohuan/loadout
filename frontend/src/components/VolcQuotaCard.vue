@@ -12,6 +12,7 @@ import {
 } from '@remixicon/vue'
 import type {
   Channel,
+  VolcQuotaAggregate,
   VolcQuotaConfig,
   VolcQuotaConfigDetails,
   VolcQuotaPackage,
@@ -60,6 +61,7 @@ async function loadArkChannels() {
 onMounted(() => {
   loadStatus()
   loadArkChannels()
+  loadAggregates()
 })
 
 // ===== 折叠展开（参考 ChannelTable 的 expandedGroups 模式） =====
@@ -160,76 +162,28 @@ function filteredPackages(item: { config: { channel_id: string }; packages?: Vol
   return list.filter((p) => matchPackage(p, kw))
 }
 
-// ===== 资源包视图切换：表格 / 卡片（按 channel_id 隔离） =====
-type PkgViewMode = 'table' | 'card'
-const pkgView = ref<Record<string, PkgViewMode>>({})
-function getPkgView(channelId: string): PkgViewMode {
-  return pkgView.value[channelId] || 'table'
-}
-function setPkgView(channelId: string, v: string) {
-  if (v === 'table' || v === 'card') pkgView.value[channelId] = v
+// ===== 资源包视图切换：卡片（聚合概览，默认）/ 表格（明细） =====
+type PkgViewMode = 'card' | 'table'
+const pkgView = ref<PkgViewMode>('card')
+function setPkgView(v: string) {
+  if (v === 'card' || v === 'table') pkgView.value = v
 }
 
-// ===== 卡片视图：按 model 聚合资源包（口径同后台 syncModelStatesByAggregate） =====
-interface AggregatedPackage {
-  key: string // 聚合锚点：model，退回 configuration_code / configuration_name
-  name: string // 展示名
-  unit: string
-  initialTotal: number // SUM(initial_total)
-  localRemaining: number // SUM(local_remaining)
-  usedAmount: number // SUM(used_amount)；本地口径下=initialTotal-localRemaining
-  totalAmount: number // SUM(total_amount)
-  exhausted: boolean // 是否已耗尽
-  percentage: number // 0~100 本地口径
-}
-function aggregatePackages(
-  item: { config: { channel_id: string }; packages?: VolcQuotaPackage[] },
-): AggregatedPackage[] {
-  const list = filteredPackages(item)
-  const map = new Map<string, AggregatedPackage>()
-  for (const p of list) {
-    const key = p.model || p.configuration_code || pkgName(p)
-    const name = p.configuration_name || p.model || pkgName(p)
-    let agg = map.get(key)
-    if (!agg) {
-      agg = {
-        key,
-        name,
-        unit: p.unit,
-        initialTotal: 0,
-        localRemaining: 0,
-        usedAmount: 0,
-        totalAmount: 0,
-        exhausted: false,
-        percentage: 0,
-      }
-      map.set(key, agg)
-    }
-    agg.initialTotal += p.initial_total
-    agg.localRemaining += p.local_remaining
-    agg.usedAmount += p.used_amount
-    agg.totalAmount += p.total_amount
-    if (p.status === 'UsedUp' || (p.local_remaining <= 0 && p.initial_total > 0)) agg.exhausted = true
+// ===== 卡片视图数据：后台按 model 聚合接口（/api/volc-quota/aggregate，v19） =====
+const aggregates = ref<VolcQuotaAggregate[]>([])
+const aggregatesLoaded = ref(false)
+async function loadAggregates() {
+  try {
+    const data = await quota.aggregate()
+    // 多配置可能共享同一账号（聚合按 account 对齐），取第一份非空即可；
+    // 卡片只展示聚合数据，不区分具体 channel 行。
+    aggregates.value =
+      data.configs.find((c) => c.aggregates?.length)?.aggregates || data.configs[0]?.aggregates || []
+  } catch {
+    aggregates.value = []
+  } finally {
+    aggregatesLoaded.value = true
   }
-  const out: AggregatedPackage[] = []
-  for (const agg of map.values()) {
-    // 本地口径百分比：有 initialTotal 用 localRemaining/initialTotal，否则退回 available/total。
-    if (agg.initialTotal > 0) {
-      agg.percentage = Math.max(0, Math.min(100, Math.round((agg.localRemaining / agg.initialTotal) * 100)))
-      agg.usedAmount = agg.initialTotal - agg.localRemaining
-    } else if (agg.totalAmount > 0) {
-      agg.percentage = Math.max(0, Math.min(100, Math.round((agg.localRemaining / agg.totalAmount) * 100)))
-    } else {
-      agg.percentage = 0
-    }
-    out.push(agg)
-  }
-  // 排序：未耗尽在前，剩余多的在前
-  out.sort((a, b) => {
-    if (a.exhausted !== b.exhausted) return a.exhausted ? 1 : -1
-    return b.localRemaining - a.localRemaining
-  })
-  return out
 }
 
 // ===== 刷新 =====
@@ -238,6 +192,7 @@ async function refreshLocal() {
   refreshingAll.value = true
   try {
     await loadStatus(false)
+    await loadAggregates()
     toast.success('本地数据已刷新')
   } catch (e) {
     toast.error(e instanceof Error ? e.message : '刷新失败')
@@ -294,6 +249,7 @@ async function confirmRemoteRefresh() {
     const result = await quota.refresh(remoteTarget.value || undefined)
     applyRefreshResult(result.configs_checked, result.failed_channels, result.disabled_models)
     await loadStatus(false)
+    await loadAggregates()
   } catch (e) {
     toast.error(e instanceof Error ? e.message : '刷新失败')
   } finally {
@@ -396,6 +352,7 @@ async function submit() {
     dialogOpen.value = false
     toast.success(editing.value ? '配置已更新' : '配置已添加')
     await Promise.all([loadStatus(false), loadArkChannels()])
+    await loadAggregates()
   } catch (e) {
     toast.error(e instanceof Error ? e.message : '保存失败')
   } finally {
@@ -413,6 +370,7 @@ async function remove(channelId: string) {
     )
     toast.success('配置已删除')
     await loadStatus(false)
+    await loadAggregates()
   } catch (e) {
     toast.error(e instanceof Error ? e.message : '删除失败')
   }
@@ -437,6 +395,16 @@ const displayName = (ch: Channel) => ch.channel_name || ch.name
           共 {{ configs.length }} 个 Key 配置<span v-if="loaded">，额度每日自动恢复（8~11:30 不等）</span>
         </div>
         <div class="flex items-center gap-2">
+          <Tabs
+            :model-value="pkgView"
+            class="[&_[data-slot=tabs-list]]:h-8 [&_[data-slot=tabs-trigger]]:px-3 [&_[data-slot=tabs-trigger]]:text-xs"
+            @update:model-value="setPkgView"
+          >
+            <TabsList>
+              <TabsTrigger value="card">卡片</TabsTrigger>
+              <TabsTrigger value="table">表格</TabsTrigger>
+            </TabsList>
+          </Tabs>
           <Button variant="outline" size="sm" :disabled="refreshingAll" @click="refreshLocal">
             <RiRefreshLine size="16" />
             刷新本地
@@ -453,7 +421,68 @@ const displayName = (ch: Channel) => ch.channel_name || ch.name
         </div>
       </div>
 
-      <div v-if="configs.length" class="divide-y rounded-md border">
+      <!-- 卡片视图：所有资源包按 model 聚合，网格一行 4 个（默认） -->
+      <div v-if="pkgView === 'card'">
+        <div v-if="aggregates.length" class="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
+          <div
+            v-for="a in aggregates"
+            :key="a.model"
+            class="flex flex-col gap-1.5 rounded-md border p-3"
+            :class="a.exhausted ? 'border-destructive/40 bg-destructive/5' : ''"
+          >
+            <!-- 顶部：左侧模型名，右侧 token 积分（当前剩余/总） -->
+            <div class="flex items-start justify-between gap-2">
+              <div class="min-w-0">
+                <div class="truncate text-sm font-medium" :title="a.name || a.model">
+                  {{ a.name || a.model }}
+                </div>
+                <div class="text-[10px] uppercase tracking-wide text-muted-foreground">
+                  {{ a.unit || 'token' }}
+                </div>
+              </div>
+              <div class="shrink-0 text-right">
+                <div
+                  class="text-sm font-semibold tabular-nums"
+                  :class="a.exhausted ? 'text-destructive' : ''"
+                >
+                  {{ a.local_remaining.toLocaleString() }}
+                </div>
+                <div class="text-[10px] text-muted-foreground tabular-nums">
+                  / {{ a.initial_total.toLocaleString() }}
+                </div>
+              </div>
+            </div>
+            <!-- 进度条 + 右侧百分比 -->
+            <div class="flex items-center gap-2">
+              <Progress
+                :model-value="a.percentage"
+                class="h-1.5 flex-1"
+                :class="
+                  a.exhausted
+                    ? 'bg-destructive/20'
+                    : a.percentage < 20
+                      ? 'bg-amber-500/20'
+                      : ''
+                "
+              />
+              <span
+                class="w-9 shrink-0 text-right text-xs tabular-nums text-muted-foreground"
+                :class="a.exhausted ? 'text-destructive' : ''"
+              >
+                {{ a.percentage }}%
+              </span>
+            </div>
+          </div>
+        </div>
+        <EmptyState
+          v-else
+          :title="aggregatesLoaded ? '暂无额度数据' : '加载中…'"
+          description="点击右侧「刷新远程」获取最新额度（账单有延迟，后台每 15 分钟自动刷新）。"
+        />
+      </div>
+
+      <!-- 表格视图：每个 Key 的折叠明细 -->
+      <div v-else-if="pkgView === 'table' && configs.length" class="divide-y rounded-md border">
         <div v-for="item in configs" :key="item.config.channel_id">
           <!-- 折叠行 -->
           <div class="flex items-center gap-1 px-2 py-2">
@@ -532,26 +561,14 @@ const displayName = (ch: Channel) => ch.channel_name || ch.name
                 <span class="text-xs font-medium text-muted-foreground">
                   资源包（{{ filteredPackages(item).length }} / {{ item.packages.length }}）
                 </span>
-                <div class="flex items-center gap-2">
-                  <Tabs
-                    :model-value="getPkgView(item.config.channel_id)"
-                    class="[&_[data-slot=tabs-list]]:h-7 [&_[data-slot=tabs-trigger]]:px-2 [&_[data-slot=tabs-trigger]]:text-xs"
-                    @update:model-value="(v: string) => setPkgView(item.config.channel_id, v)"
-                  >
-                    <TabsList>
-                      <TabsTrigger value="table">表格</TabsTrigger>
-                      <TabsTrigger value="card">卡片</TabsTrigger>
-                    </TabsList>
-                  </Tabs>
-                  <Input
-                    :model-value="getPkgFilter(item.config.channel_id)"
-                    placeholder="过滤：模型名 / code / 关键字…"
-                    class="h-7 w-56 text-xs"
-                    @update:model-value="(v: string) => setPkgFilter(item.config.channel_id, v)"
-                  />
-                </div>
+                <Input
+                  :model-value="getPkgFilter(item.config.channel_id)"
+                  placeholder="过滤：模型名 / code / 关键字…"
+                  class="h-7 w-56 text-xs"
+                  @update:model-value="(v: string) => setPkgFilter(item.config.channel_id, v)"
+                />
               </div>
-              <Table v-if="getPkgView(item.config.channel_id) === 'table'" class="w-full text-xs">
+              <Table class="w-full text-xs">
                 <TableHeader>
                   <TableRow class="bg-muted/30 hover:bg-muted/30">
                     <TableHead>资源包</TableHead>
@@ -625,60 +642,6 @@ const displayName = (ch: Channel) => ch.channel_name || ch.name
                   </TableRow>
                 </TableBody>
               </Table>
-
-              <!-- 卡片视图：按 model 聚合资源包，网格一行 4 个 -->
-              <div
-                v-else-if="getPkgView(item.config.channel_id) === 'card'"
-                class="grid grid-cols-1 gap-2 p-3 sm:grid-cols-2 lg:grid-cols-4"
-              >
-                <div
-                  v-for="a in aggregatePackages(item)"
-                  :key="a.key"
-                  class="flex flex-col gap-2 rounded-md border bg-background/60 p-3"
-                  :class="a.exhausted ? 'border-destructive/40 bg-destructive/5' : ''"
-                >
-                  <!-- 顶部：左侧模型名，右侧 token 积分（当前剩余/总） -->
-                  <div class="flex items-start justify-between gap-2">
-                    <div class="min-w-0">
-                      <div class="truncate text-sm font-medium" :title="a.name">{{ a.name }}</div>
-                      <div class="text-[10px] uppercase tracking-wide text-muted-foreground">
-                        {{ a.unit || 'token' }}
-                      </div>
-                    </div>
-                    <div class="shrink-0 text-right">
-                      <div
-                        class="text-sm font-semibold tabular-nums"
-                        :class="a.exhausted ? 'text-destructive' : ''"
-                      >
-                        {{ a.localRemaining.toLocaleString() }}
-                      </div>
-                      <div class="text-[10px] text-muted-foreground tabular-nums">
-                        / {{ a.initialTotal.toLocaleString() }}
-                      </div>
-                    </div>
-                  </div>
-                  <!-- 进度条 + 右侧百分比 -->
-                  <div class="flex items-center gap-2">
-                    <Progress
-                      :model-value="a.percentage"
-                      class="h-1.5 flex-1"
-                      :class="
-                        a.exhausted
-                          ? 'bg-destructive/20'
-                          : a.percentage < 20
-                            ? 'bg-amber-500/20'
-                            : ''
-                      "
-                    />
-                    <span
-                      class="w-9 shrink-0 text-right text-xs tabular-nums text-muted-foreground"
-                      :class="a.exhausted ? 'text-destructive' : ''"
-                    >
-                      {{ a.percentage }}%
-                    </span>
-                  </div>
-                </div>
-              </div>
               <div
                 v-if="filteredPackages(item).length === 0"
                 class="px-3 py-4 text-center text-xs text-muted-foreground"

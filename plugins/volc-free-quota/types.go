@@ -78,6 +78,40 @@ type RecentUsageResponse struct {
 	LastRequestAt string `json:"last_request_at"` // 最后一条请求时间（RFC3339Nano，空表示无）
 }
 
+// PackageAggregate 按 model 聚合后的资源包（卡片视图用，v19）。
+//
+// 一个模型可能挂多个资源包（billing 按 InstanceNo 逐条返回），卡片视图需要按 model
+// 聚合展示"这个模型还剩多少额度"。聚合口径与扣减/拦截/禁用一致（参考
+// aggregateLocalRemaining）：只统计 active 包（initial_total > 0 且非过期/未到期）。
+//
+//   - LocalRemaining = SUM(local_remaining)（本地扣减后的剩余）
+//   - InitialTotal   = SUM(initial_total)（本地扣减基准的总额）
+//   - UsedAmount     = 本地口径 SUM(initial_total - local_remaining)
+//   - Percentage     = 本地口径 LocalRemaining / InitialTotal * 100（0~100）
+//   - Exhausted      = 聚合剩余 <= 0
+type PackageAggregate struct {
+	Model          string `json:"model"`
+	Name           string `json:"name,omitempty"` // 展示名：组内 configuration_name（取字典序最大非空）
+	Unit           string `json:"unit"`
+	InitialTotal   int64  `json:"initial_total"`
+	LocalRemaining int64  `json:"local_remaining"`
+	UsedAmount     int64  `json:"used_amount"`
+	TotalAmount    int64  `json:"total_amount"`
+	Percentage     int    `json:"percentage"`
+	Exhausted      bool   `json:"exhausted"`
+}
+
+// ConfigWithAggregates 一条配置 + 它关联的按 model 聚合后的资源包（卡片视图，v19）。
+type ConfigWithAggregates struct {
+	Config     Config             `json:"config"`
+	Aggregates []PackageAggregate `json:"aggregates,omitempty"`
+}
+
+// ListAggregateResponse GET /api/volc-quota/aggregate 返回体：所有配置 + 每配置下按 model 聚合的资源包。
+type ListAggregateResponse struct {
+	Configs []ConfigWithAggregates `json:"configs"`
+}
+
 // Package 一条资源包逐条明细（volc_quota_packages）。
 //
 // 保留 billing API 返回的每个资源包原始信息（ConfigurationName/Status/时间），

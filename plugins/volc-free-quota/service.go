@@ -566,6 +566,112 @@ func (s *Service) accountsForChannels(channelIDs []string) []string {
 	return out
 }
 
+// aggregatePackagesForAccount 按 model 聚合某账号的资源包（卡片视图数据源，v19）。
+//
+// 只统计 active 包（initial_total > 0 且非过期/未到期），口径与 aggregateLocalRemaining /
+// 扣减 / 拦截一致。本地口径 UsedAmount = SUM(initial_total - local_remaining)；
+// Percentage = LocalRemaining / InitialTotal * 100。
+func (s *Service) aggregatePackagesForAccount(accountID string) []PackageAggregate {
+	if accountID == "" {
+		return nil
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	rows, err := s.db.Query(`SELECT
+			model,
+			MAX(configuration_name) AS name,
+			MAX(unit) AS unit,
+			SUM(initial_total) AS initial_total,
+			SUM(local_remaining) AS local_remaining,
+			SUM(used_amount) AS used_amount,
+			SUM(total_amount) AS total_amount,
+			SUM(initial_total - local_remaining) AS used_local
+		FROM volc_quota_packages
+		WHERE account_id = ? AND initial_total > 0`+activePackageCond+`
+		GROUP BY model`, accountID, now)
+	if err != nil {
+		s.lg.Warn("volc-free-quota: 聚合资源包失败", "account_id", accountID, "err", err)
+		return nil
+	}
+	defer rows.Close()
+	var out []PackageAggregate
+	for rows.Next() {
+		var a PackageAggregate
+		var usedLocal int64
+		if err := rows.Scan(&a.Model, &a.Name, &a.Unit,
+			&a.InitialTotal, &a.LocalRemaining, &a.UsedAmount, &a.TotalAmount,
+			&usedLocal); err != nil {
+			continue
+		}
+		// 本地口径已用（initial_total - local_remaining）优先，billing used_amount 兜底。
+		if a.InitialTotal > 0 {
+			a.UsedAmount = usedLocal
+		}
+		a.Exhausted = a.InitialTotal > 0 && a.LocalRemaining <= 0
+		if a.InitialTotal > 0 {
+			pct := int((a.LocalRemaining * 100) / a.InitialTotal)
+			if pct > 100 {
+				pct = 100
+			}
+			if pct < 0 {
+				pct = 0
+			}
+			a.Percentage = pct
+		}
+		if a.Unit == "" {
+			a.Unit = "token"
+		}
+		out = append(out, a)
+	}
+	// 排序：未耗尽在前、剩余多的在前。
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Exhausted != out[j].Exhausted {
+			return !out[i].Exhausted
+		}
+		return out[i].LocalRemaining > out[j].LocalRemaining
+	})
+	return out
+}
+
+// ListAggregates 一次性返回所有配置 + 每配置下按 model 聚合的资源包（卡片视图，v19）。
+//
+// 与 ListStatus 同构：volc_quota_packages 按 account_id 归属，同一账号下多渠道 Key
+// 共享快照，前端按 channel 行展示，同账号各行回填同一份聚合结果。
+func (s *Service) ListAggregates(ctx context.Context) (ListAggregateResponse, error) {
+	configs, err := s.ListConfigs(ctx)
+	if err != nil {
+		return ListAggregateResponse{}, err
+	}
+	resp := ListAggregateResponse{Configs: make([]ConfigWithAggregates, 0, len(configs))}
+	cache := make(map[string][]PackageAggregate)
+	for _, cfg := range configs {
+		aid := cfg.AccountID
+		if aid == "" {
+			aid = accountID(cfg.AccessKey)
+		}
+		aggs, ok := cache[aid]
+		if !ok && aid != "" {
+			aggs = s.aggregatePackagesForAccount(aid)
+			cache[aid] = aggs
+		}
+		if aggs == nil {
+			aggs = []PackageAggregate{}
+		}
+		resp.Configs = append(resp.Configs, ConfigWithAggregates{Config: cfg, Aggregates: aggs})
+	}
+	return resp, nil
+}
+
+// HandleListAggregates GET /api/volc-quota/aggregate
+// 返回所有配置 + 每配置下按 model 聚合的资源包，卡片视图渲染用。
+func (s *Service) HandleListAggregates(w http.ResponseWriter, r *http.Request) {
+	resp, err := s.ListAggregates(r.Context())
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "查询聚合额度失败: "+err.Error())
+		return
+	}
+	s.writeJSON(w, http.StatusOK, resp)
+}
+
 // ===== 配置读写 =====
 
 // ListConfigs 返回所有配置（每条带渠道名 / key 名等展示字段，secret_key 永不出网）。

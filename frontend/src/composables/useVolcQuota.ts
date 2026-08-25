@@ -1,5 +1,6 @@
 import { api, request } from '@/lib/api'
 import type {
+  VolcQuotaAggregateResponse,
   VolcQuotaConfig,
   VolcQuotaRecentUsage,
   VolcQuotaRefreshResult,
@@ -10,6 +11,8 @@ import type {
 export function useVolcQuota() {
   /** 一次拉取全部配置 + 每条配置下的免费模型 + 使用记录 */
   const status = () => api<VolcQuotaStatusResponse>('/api/volc-quota/status')
+  /** 一次拉取全部配置 + 每条配置下按 model 聚合的资源包（卡片视图，v19） */
+  const aggregate = () => api<VolcQuotaAggregateResponse>('/api/volc-quota/aggregate')
   /** 整体覆盖配置（PUT 原子事务）；secret_key 留空 = 保留既有密文 */
   const save = (configs: VolcQuotaConfig[]) =>
     request<void>('/api/volc-quota/config', 'PUT', { configs })
@@ -25,5 +28,5 @@ export function useVolcQuota() {
     api<VolcQuotaRecentUsage>(
       `/api/volc-quota/recent-usage?channel_id=${encodeURIComponent(channelId)}&minutes=${minutes}`,
     )
-  return { status, save, refresh, recentUsage }
+  return { status, aggregate, save, refresh, recentUsage }
 }

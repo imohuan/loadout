@@ -74,6 +74,12 @@ func (p *volcQuota) Apply(ctx plugin.Context) error {
 		Handler: http.HandlerFunc(svc.HandleListStatus),
 	})
 	ctx.RegisterRoute(plugin.RouteSpec{
+		Method:  http.MethodGet,
+		Pattern: "GET /api/volc-quota/aggregate",
+		Auth:    plugin.AuthSession,
+		Handler: http.HandlerFunc(svc.HandleListAggregates),
+	})
+	ctx.RegisterRoute(plugin.RouteSpec{
 		Method:  http.MethodPut,
 		Pattern: "PUT /api/volc-quota/config",
 		Auth:    plugin.AuthSession,
