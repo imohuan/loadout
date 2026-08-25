@@ -31,6 +31,7 @@ import {
 import PageHeader from '@/components/PageHeader.vue'
 import RouteLogTable from '@/components/route-logs/RouteLogTable.vue'
 import ChannelGroupPicker, { type ChannelSelection } from '@/components/ChannelGroupPicker.vue'
+import { getLoadoutBase } from '@/lib/base'
 
 type MessageRole = 'system' | 'user' | 'assistant'
 type TestMessage = { id: number; role: MessageRole; content: string }
@@ -136,10 +137,10 @@ onMounted(() => {
 })
 // 选中「Loadout 自带 API」下某个 SK key：base_url 由后端按请求 Host 自动补全（前端不传），
 // SK key 由预设下拉直接选定，触发按钮显示该 key 名称，不再要独立的 API Key 输入框。
-function chooseBuiltinKey(hash: string) {
+async function chooseBuiltinKey(hash: string) {
   presetOpen.value = false
   config.channelId = BUILTIN_CHANNEL
-  config.baseUrl = location.origin + '/v1' // 相对路径：后端按请求 Host 自动补全；也可改完整 URL 测自定义域名
+  config.baseUrl = (await getLoadoutBase()) + '/v1' // 本地后端真实地址(127.0.0.1:<port>)，避免伪 host wails.localhost
   config.apiKey = ''
   config.skKeyHash = hash
   models.value = []

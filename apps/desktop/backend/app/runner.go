@@ -5,6 +5,7 @@ import (
 	"embed"
 	"runtime"
 
+	lconfig "loadout/core/config"
 	"loadout/core/servercore"
 	"proxyui/backend"
 	"proxyui/backend/server"
@@ -48,7 +49,7 @@ func Run(assets embed.FS) {
 					application.BundledAssetFileServer(assets),
 					assets,
 				),
-				"http://127.0.0.1:3000",
+				proxyTarget(),
 			),
 		},
 	})
@@ -118,4 +119,12 @@ func Run(assets embed.FS) {
 	servercore.TriggerShutdown()
 	// 清理：停止 Loadout Server
 	server.StopLoadoutServer()
+}
+
+// proxyTarget 返回内嵌 Loadout Server 的绝对地址。
+// 端口跟随 config.ServerAddr（--port / LOADOUT_SERVER_ADDR），默认 127.0.0.1:3000。
+// WebView 的 origin 是伪 host wails.localhost，后端真实监听在 127.0.0.1:<port>，
+// 因此代理目标必须是真实 TCP 地址。
+func proxyTarget() string {
+	return "http://127.0.0.1" + lconfig.ServerAddr
 }

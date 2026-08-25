@@ -27,6 +27,7 @@ import McpInvocationsTab from '@/components/mcp/McpInvocationsTab.vue'
 import { useMcpManagement, isServerActive } from '@/composables/useMcpManagement'
 import { useManagementApi } from '@/composables/useManagementApi'
 import { useAsyncTask } from '@/composables/useAsyncTask'
+import { getLoadoutBaseSync } from '@/lib/base'
 const mcp = reactive(useMcpManagement())
 const api = useManagementApi()
 const { run: runKey, isPending: isKeyPending } = useAsyncTask()
@@ -240,8 +241,8 @@ function openToolEdit(server: { name: string }, tool: { name: string; descriptio
 function setToolBoolean(name: string, value: boolean) {
   toolArgs[name] = value
 }
-function endpointUrl(path: string) {
-  return `${window.location.origin}${path}`
+function endpointUrl(path: string): string {
+  return `${getLoadoutBaseSync()}${path}`
 }
 async function createMcpKey(endpoint: string) {
   await runKey(
@@ -283,7 +284,7 @@ async function copyConfig(endpoint: {
   label: string
   transport: string
 }) {
-  const url = endpointUrl(endpoint.path)
+  const url = await endpointUrl(endpoint.path)
   const serverConfig: Record<string, any> = {}
   if (endpoint.transport === 'stdio') {
     // stdio endpoints are proxied as a local command by the host runtime.

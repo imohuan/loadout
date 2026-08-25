@@ -18,8 +18,10 @@ import (
 )
 
 // webURL 托盘「打开网页」指向的地址：桌面内嵌的 Loadout Web 版。
-// 后端服务默认监听 127.0.0.1:3000（LOADOUT_SERVER_ADDR 可改，暂未联动）。
-const webURL = "http://127.0.0.1:3000"
+// 端口跟随 config.ServerAddr（--port / LOADOUT_SERVER_ADDR），默认 127.0.0.1:3000。
+func webURL() string {
+	return "http://127.0.0.1" + lconfig.ServerAddr
+}
 
 // ssoTokenTTL SSO 短效 token 有效期：只作为浏览器换取会话 Cookie 的「入场券」，
 // 够 30 秒打开页面即可，过期即失效。
@@ -42,20 +44,20 @@ func ssoWebURL() string {
 	}
 	if username == "" {
 		// 软件中未登录 → 打开未登录的网页版
-		return webURL
+		return webURL()
 	}
 
 	st, err := store.New(lconfig.DataDir)
 	if err != nil {
 		log.Printf("打开网页: 读取配置失败，回退无 token 地址: %v", err)
-		return webURL
+		return webURL()
 	}
 	token, err := auth.SignToken(st.SecretKey(), username, ssoTokenTTL)
 	if err != nil {
 		log.Printf("打开网页: 签发免登录 token 失败，回退无 token 地址: %v", err)
-		return webURL
+		return webURL()
 	}
-	return webURL + "/?sso=" + token
+	return webURL() + "/?sso=" + token
 }
 
 // setupTray 创建系统托盘并绑定菜单与点击行为。

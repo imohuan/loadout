@@ -1,4 +1,5 @@
 // ============================================================================
+import { getLoadoutBase } from '@/lib/base'
 // UnifyAI 配置同步 —— 前端数据层
 //
 // 本文件只承载「类型定义 + 平台能力矩阵 + 界面初始数据」，以及供后台接入的
@@ -387,7 +388,7 @@ export interface McpImportSource {
  * 三类端点都能用同一个导入对话框选，落到 mcp.json 后由 UnifyAI 同步给下游工具。
  */
 export async function fetchManagedMcpServers(): Promise<McpImportSource[]> {
-  const origin = typeof window !== 'undefined' ? window.location.origin : ''
+  const origin = await getLoadoutBase()
   // 三个接口互不依赖 → 并行请求；任一失败不阻塞导入（catch 兜底 null → 空数组）。
   // Go 后端空表会返回 JSON `null`（useMcpManagement 用 `?? []` 防御同理），
   // 这里统一在 parseArray 里兜底，避免 .map/.reduce 在 null 上抛 TypeError。

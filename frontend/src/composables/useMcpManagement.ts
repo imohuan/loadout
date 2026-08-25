@@ -4,6 +4,7 @@ import type { ApiKey } from '@/lib/types'
 import { useAsyncTask } from './useAsyncTask'
 import { useConfirm } from './useConfirm'
 import { toast } from 'vue-sonner'
+import { getLoadoutBase } from '@/lib/base'
 
 export interface McpServer {
   id: string
@@ -338,7 +339,7 @@ export function useMcpManagement() {
     )
   }
   async function copy(path: string) {
-    await navigator.clipboard.writeText(location.origin + path)
+    await navigator.clipboard.writeText(await getLoadoutBase() + path)
   }
   onMounted(refresh)
   return {

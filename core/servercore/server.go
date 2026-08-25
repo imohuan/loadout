@@ -131,6 +131,15 @@ func assemble(lg *slog.Logger, st *store.Store) (*plugin.Assembly, http.Handler,
 	}, nil)
 	mux.Handle("/mcp/", keys.MCPKeyMiddleware(mcpHandler))
 
+	// 桌面壳前端「暴露给外部/MCP 客户端」的绝对地址基址。
+	// WebView 的 origin 是伪 host wails.localhost（仅壳内可解析），但后端真实监听在
+	// 127.0.0.1:<port>，外部客户端须用真实地址才能连上。前端启动时拉一次缓存。
+	// 纯 server 网页模式下前端可直接用 location.origin，无需此端点，但返回它也无妨。
+	mux.HandleFunc("/api/desktop-base", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"base_url":"http://127.0.0.1%s"}`, config.ServerAddr)
+	})
+
 	// 管理后台静态资源（其余路径，公开；数据走 /api/* 的 session 认证）。
 	// 用 SPA fallback 包装：Vue Router 为 history 模式时，刷新前端路由
 	//（如 /capability-routes）不落盘，直接回退 index.html 由前端接管。
