@@ -1,16 +1,14 @@
 ﻿# Loadout Desktop 打包脚本
 # 使用根 frontend/（主控制台）作为前端源码；产物复制到 apps/desktop/frontend/dist 由 go:embed 内嵌
 #
-# 用法：
-#   ./scripts/pack-desktop.ps1            # 默认两个版本都打（release + debug）
-#   ./scripts/pack-desktop.ps1 -Debug     # 只打 debug 版（自动开 DevTools + Ctrl+Shift+I）
-#   ./scripts/pack-desktop.ps1 -Release   # 只打 release 版
-#   ./scripts/pack-desktop.ps1 -SkipBuild # 跳过前端构建与复制，仅编译 exe（改后端后快速重打）
+# 交互式：运行后让你选择打哪个版本（release / debug / 两版都打）
+# 可选参数：
+#   -SkipBuild  # 跳过前端构建与复制，仅编译 exe（改后端后快速重打）
+#   -Choice "release|debug|both"  # 跳过交互直接打包（供自动化/CI 用）
 
 param(
-    [switch]$Debug,
-    [switch]$Release,
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    [string]$Choice
 )
 
 $ErrorActionPreference = "Stop"
@@ -23,6 +21,47 @@ $start = Get-Date
 Write-Host "`n============================================" -ForegroundColor Cyan
 Write-Host "  Loadout Desktop 打包" -ForegroundColor Cyan
 Write-Host "============================================`n" -ForegroundColor Cyan
+
+# 版本选择：-Choice 参数（自动化）优先，否则交互式菜单（手动）。
+if ($Choice) {
+    if ($Choice -notin @("release", "debug", "both")) {
+        Write-Host "无效的 -Choice 值：$Choice（可选 release/debug/both）" -ForegroundColor Red
+        exit 1
+    }
+    $jobs = switch ($Choice) {
+        "release" { @("release") }
+        "debug"   { @("debug") }
+        default   { @("release", "debug") }
+    }
+    $label = ($jobs | ForEach-Object { $_ }) -join " + "
+    Write-Host "  已选择（-Choice）：$label`n" -ForegroundColor Green
+} else {
+    Write-Host "请选择要打包的版本：" -ForegroundColor Yellow
+    Write-Host "  [1] release 版        （生产，无 DevTools）" -ForegroundColor White
+    Write-Host "  [2] debug 版          （自动开 DevTools，Ctrl+Shift+I 切换）" -ForegroundColor White
+    Write-Host "  [3] 两个版本都打" -ForegroundColor White
+    Write-Host ""
+
+    $choice = $null
+    while ($null -eq $choice) {
+        $input = Read-Host "请输入数字 1/2/3 选择（q 退出）"
+        switch ($input.Trim()) {
+            "1" { $choice = "release" }
+            "2" { $choice = "debug" }
+            "3" { $choice = "both" }
+            "q" { Write-Host "已取消打包。`n" -ForegroundColor Red; exit 0 }
+            default { Write-Host "  无效输入，请重新输入" -ForegroundColor Red }
+        }
+    }
+
+    $jobs = switch ($choice) {
+        "release" { @("release") }
+        "debug"   { @("debug") }
+        default   { @("release", "debug") }
+    }
+    $label = ($jobs | ForEach-Object { $_ }) -join " + "
+    Write-Host "  已选择：$label`n" -ForegroundColor Green
+}
 
 # [1/5] 更新 Desktop 依赖
 Write-Host "[1/5] 更新 Desktop 依赖..." -ForegroundColor Yellow
@@ -77,12 +116,8 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 # [5/5] 构建 exe（内嵌 Loadout Server）
-# 决定要打哪些版本：默认两版都打；-Debug 只打 debug；-Release 只打 release。
+# 版本由开头的交互式选择决定（$jobs 已在脚本开头赋值）。
 $env:CGO_ENABLED = "0"
-$jobs = @()
-if ($Debug) { $jobs = @("debug") }
-elseif ($Release) { $jobs = @("release") }
-else { $jobs = @("release", "debug") }
 
 foreach ($variant in $jobs) {
     $tag = "production"
