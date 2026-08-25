@@ -12,7 +12,7 @@
 
 // ---- 平台能力矩阵（对应文档 §2，代码内 ADAPTERS 常量的 UI 镜像） ----
 
-export type PlatformId = 'opencode' | 'codex' | 'claudecode' | 'reasonix' | 'penguin'
+export type PlatformId = 'opencode' | 'codex' | 'claudecode' | 'reasonix' | 'penguin' | 'workbuddy'
 
 /** MCP 同步支持度：true=支持；false=不支持；'unimplemented'=代码未实现（Reasonix） */
 export type McpSyncSupport = boolean | 'unimplemented'
@@ -77,6 +77,15 @@ export const PLATFORMS: Platform[] = [
     mcpSync: true,
     configPath: '~/.penguin/data/default_project/.project_config.toml',
     format: 'TOML / YAML',
+  },
+  {
+    id: 'workbuddy',
+    name: 'WorkBuddy',
+    color: '#06b6d4',
+    modelSync: true,
+    mcpSync: true,
+    configPath: '~/.workbuddy/models.json',
+    format: 'JSON',
   },
 ]
 

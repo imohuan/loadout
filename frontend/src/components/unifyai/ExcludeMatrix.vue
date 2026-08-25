@@ -9,11 +9,18 @@ import {
   RiToggleFill,
   RiToggleLine,
 } from '@remixicon/vue'
-import { PLATFORMS, type McpMatrixCell, type McpServerInfo, type PlatformId } from '@/lib/unifyai'
+import {
+  type McpMatrixCell,
+  type McpServerInfo,
+  type Platform,
+  type PlatformId,
+} from '@/lib/unifyai'
 
 const props = defineProps<{
   /** 源 mcp.json 全集（行 = 去重后的服务器） */
   servers: McpServerInfo[]
+  /** 目标平台列表（列 = 平台，来自后端 --list-platforms 动态数据，禁止硬编码） */
+  platforms: Platform[]
   /** 同步矩阵：serverName → platformId → 是否开启（undefined = 该平台未配置，点击=添加） */
   matrix: Record<string, Record<PlatformId, McpMatrixCell>>
   /** 已禁用的服务器名集合（整行半透明、单元格不可点，同步时跳过；写回 mcp.json 的 enabled） */
@@ -29,11 +36,11 @@ const emit = defineEmits<{
   edit: [server: McpServerInfo]
 }>()
 
-const columns = computed(() => PLATFORMS)
+const columns = computed(() => props.platforms)
 
 /** 该平台列是否可交互（MCP 未实现/不可读的平台整列禁用） */
 function platformLocked(platformId: PlatformId) {
-  const platform = PLATFORMS.find((p) => p.id === platformId)
+  const platform = props.platforms.find((p) => p.id === platformId)
   return platform ? platform.mcpSync !== true : true
 }
 
@@ -88,7 +95,7 @@ function setRow(name: string, enabled: boolean) {
   if (isDisabled(name)) return
   const next = cloneMatrix()
   next[name] = { ...next[name] }
-  for (const platform of PLATFORMS) {
+  for (const platform of props.platforms) {
     if (!platformLocked(platform.id)) next[name][platform.id] = enabled
   }
   emit('update:matrix', next)
@@ -99,7 +106,7 @@ function setRowRemove(name: string) {
   if (isDisabled(name)) return
   const next = cloneMatrix()
   next[name] = { ...next[name] }
-  for (const platform of PLATFORMS) {
+  for (const platform of props.platforms) {
     if (!platformLocked(platform.id)) next[name][platform.id] = undefined
   }
   emit('update:matrix', next)
@@ -110,7 +117,7 @@ const stats = computed(() => {
   let off = 0
   let unset = 0
   for (const row of Object.values(props.matrix)) {
-    for (const platform of PLATFORMS) {
+    for (const platform of props.platforms) {
       const v = row?.[platform.id]
       if (v === true) on++
       else if (v === false) off++
@@ -160,6 +167,9 @@ const stats = computed(() => {
                   {{ server.type === 'remote' ? 'remote' : 'local' }}
                 </Badge>
               </div>
+            </TableCell>
+            <TableCell v-if="columns.length === 0" class="py-8 text-center">
+              <span class="text-xs text-muted-foreground">暂无平台数据，待后端 --list-platforms 返回后渲染列</span>
             </TableCell>
             <TableCell v-for="platform in columns" :key="platform.id" class="text-center">
               <Tooltip v-if="!platformLocked(platform.id)">

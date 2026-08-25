@@ -423,13 +423,9 @@ async function importSelectedServers() {
   if (!added.length) return
   const next = { ...matrix.value }
   for (const name of added) {
-    next[name] = {
-      opencode: undefined,
-      codex: undefined,
-      claudecode: undefined,
-      reasonix: undefined,
-      penguin: undefined,
-    }
+    next[name] = Object.fromEntries(
+      platforms.value.map((p) => [p.id, undefined])
+    ) as Record<PlatformId, McpMatrixCell>
   }
   matrix.value = next
   try {
@@ -493,13 +489,9 @@ async function addManualServer() {
   allServers.value = [...allServers.value, srv]
   matrix.value = {
     ...matrix.value,
-    [name]: {
-      opencode: undefined,
-      codex: undefined,
-      claudecode: undefined,
-      reasonix: undefined,
-      penguin: undefined,
-    },
+    [name]: Object.fromEntries(
+      platforms.value.map((p) => [p.id, undefined])
+    ) as Record<PlatformId, McpMatrixCell>,
   }
   try {
     await persistMcpServers()
@@ -594,13 +586,9 @@ async function saveJsonFile() {
     // 重建 matrix：保留仍在列表中的服务器原有状态，新条目补 undefined 占位
     const nextMatrix: Record<string, Record<PlatformId, McpMatrixCell>> = {}
     for (const srv of servers) {
-      nextMatrix[srv.name] = matrix.value[srv.name] || {
-        opencode: undefined,
-        codex: undefined,
-        claudecode: undefined,
-        reasonix: undefined,
-        penguin: undefined,
-      }
+      nextMatrix[srv.name] = matrix.value[srv.name] || Object.fromEntries(
+        platforms.value.map((p) => [p.id, undefined])
+      ) as Record<PlatformId, McpMatrixCell>
     }
     matrix.value = nextMatrix
     // 重建 disabled：只保留仍在列表中的，再按 enabled 字段对齐
@@ -652,13 +640,9 @@ function applyMatrix(res: McpMatrixResult) {
   // 行=源全集；单元格=平台 enabled 状态（平台不可读 / 未配置 = undefined）
   const next: Record<string, Record<PlatformId, McpMatrixCell>> = {}
   for (const srv of allServers.value) {
-    const row: Record<PlatformId, McpMatrixCell> = {
-      opencode: undefined,
-      codex: undefined,
-      claudecode: undefined,
-      reasonix: undefined,
-      penguin: undefined,
-    }
+    const row: Record<PlatformId, McpMatrixCell> = Object.fromEntries(
+      platforms.value.map((p) => [p.id, undefined])
+    ) as Record<PlatformId, McpMatrixCell>
     for (const p of res.platforms) {
       if (!p.readable) continue
       const pid = p.platform as PlatformId
@@ -728,13 +712,9 @@ const commandOpts = computed(() => ({
   platforms: selectedPlatforms.value,
   mcpPlatforms: null,
   globalExcludes: [],
-  perPlatformExcludes: {
-    opencode: [],
-    codex: [],
-    claudecode: [],
-    reasonix: [],
-    penguin: [],
-  },
+  perPlatformExcludes: Object.fromEntries(
+    platforms.value.map((p) => [p.id, []])
+  ),
   dryRun: false,
   source: sourcePath.value,
   verbose: verbose.value,
@@ -945,7 +925,7 @@ onMounted(async () => {
   <div class="space-y-6">
     <PageHeader
       title="UnifyAI 配置同步"
-      description="把模型与 MCP 配置从 OpenCodex 源同步到 5 个 AI 开发平台的本地配置文件"
+      description="把模型与 MCP 配置从 OpenCodex 源同步到 6 个 AI 开发平台的本地配置文件"
     >
       <template #actions>
         <Button variant="outline" :disabled="metadataUpdating" @click="handleUpdateMetadata">
@@ -1038,6 +1018,7 @@ onMounted(async () => {
         <section>
           <ExcludeMatrix
             :servers="allServers"
+            :platforms="platforms"
             :disabled="disabledServers"
             v-model:matrix="matrix"
             @update:disabled="onDisabledChange"
