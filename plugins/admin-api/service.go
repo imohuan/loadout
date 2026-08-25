@@ -2104,7 +2104,7 @@ func (s *Service) handleSkillUpdateStream(w http.ResponseWriter, r *http.Request
 	}
 }
 
-// handleUnifyaiPlatforms 返回 unifyai 平台能力列表（--list-platforms --json）。
+// handleUnifyaiPlatforms 返回 unifyai 平台能力列表（--list platforms --json）。
 func (s *Service) handleUnifyaiPlatforms(w http.ResponseWriter, r *http.Request) {
 	res, err := s.unify.PlatformInfo()
 	if err != nil {
@@ -2121,7 +2121,7 @@ func (s *Service) handleUnifyaiModelSource(w http.ResponseWriter, r *http.Reques
 }
 
 // handleUnifyaiOpenCodexModels 返回 OpenCodex 代理的模型列表
-// （调 unifyai --list-models --json，实时请求 localhost 代理 /v1/models）。
+// （调 unifyai --list models --json，实时请求 localhost 代理 /v1/models）。
 // 支持 ?enableVision=1：强制所有模型标记为支持视觉。
 func (s *Service) handleUnifyaiOpenCodexModels(w http.ResponseWriter, r *http.Request) {
 	enableVision := r.URL.Query().Get("enableVision") == "1" ||
@@ -2233,7 +2233,7 @@ func (s *Service) handleUnifyaiMcpServersSave(w http.ResponseWriter, r *http.Req
 }
 
 // handleUnifyaiMcpMatrix 返回源 mcp.json + 各平台 MCP 开关状态
-// （调 unifyai --list-mcp --json，供前端渲染「MCP 同步矩阵」）。
+// （调 unifyai --list mcp --json，供前端渲染「MCP 同步矩阵」）。
 func (s *Service) handleUnifyaiMcpMatrix(w http.ResponseWriter, r *http.Request) {
 	res, err := s.unify.ListMcpMatrix()
 	if err != nil {

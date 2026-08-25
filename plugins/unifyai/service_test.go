@@ -12,17 +12,19 @@ import (
 )
 
 // TestPlatformInfoFallback 验证 CLI 不可用时回落内置默认平台（页面仍可用）。
+// 强制 config.UnifyaiCmd 指向必然失败的命令，确保走 CLI 执行失败→回落默认 6 平台分支，
+// 避免受本机真实 CLI 版本影响。
 func TestPlatformInfoFallback(t *testing.T) {
-	old := runCommandStream
-	defer func() { runCommandStream = old }()
-	// 模拟 CLI 执行失败（resolveCmd 找不到命令 → 回落默认）。
+	oldCmd := config.UnifyaiCmd
+	config.UnifyaiCmd = "nonexistent-command-that-will-fail"
+	defer func() { config.UnifyaiCmd = oldCmd }()
 	svc := NewService(slog.Default())
 	res, err := svc.PlatformInfo()
 	if err != nil {
 		t.Fatalf("PlatformInfo 不应返回错误（回落默认）: %v", err)
 	}
-	if len(res.Platforms) != 5 {
-		t.Fatalf("默认平台数 = %d, want 5", len(res.Platforms))
+	if len(res.Platforms) != 6 {
+		t.Fatalf("默认平台数 = %d, want 6（含 workbuddy）", len(res.Platforms))
 	}
 	byID := map[string]Platform{}
 	for _, p := range res.Platforms {
@@ -36,6 +38,9 @@ func TestPlatformInfoFallback(t *testing.T) {
 	}
 	if byID["opencode"].ConfigPath == "" {
 		t.Error("opencode.configPath 不应为空")
+	}
+	if byID["workbuddy"].ID == "" {
+		t.Error("默认平台列表应包含 workbuddy")
 	}
 }
 

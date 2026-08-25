@@ -1,7 +1,7 @@
 // Package unifyai 实现 UnifyAI 配置同步 CLI 的桥接服务：
 // 把 Loadout 管理后台的「UnifyAI 配置同步」页面连接到 unifyai CLI
 // （统一通过 `npx unifyai@latest -y` 运行，npx 自动安装，无需本地脚本），
-// 提供平台能力列表（--list-platforms --json）与指令执行（含实时日志流）。
+// 提供平台能力列表（--list platforms --json）与指令执行（含实时日志流）。
 package unifyai
 
 import (
@@ -100,7 +100,7 @@ func maskSecret(secret string) string {
 	return secret[:4] + "****" + secret[len(secret)-4:]
 }
 
-// OpenCodexModel 对应 unifyai --list-models --json 输出的单个模型。
+// OpenCodexModel 对应 unifyai --list models --json 输出的单个模型。
 type OpenCodexModel struct {
 	Provider          string `json:"provider"`
 	ModelID           string `json:"modelId"`
@@ -111,7 +111,7 @@ type OpenCodexModel struct {
 	SupportsThinking  bool   `json:"supportsThinking"`
 }
 
-// OpenCodexModelsResult 对应 unifyai --list-models --json 的完整输出。
+// OpenCodexModelsResult 对应 unifyai --list models --json 的完整输出。
 type OpenCodexModelsResult struct {
 	Source               string           `json:"source"`
 	ProxyURL             string           `json:"proxyUrl"`
@@ -130,7 +130,7 @@ type OpenCodexModelsResult struct {
 	Error                string           `json:"error,omitempty"`
 }
 
-// OpenCodexModels 获取 OpenCodex 代理的模型列表（--list-models --json）。
+// OpenCodexModels 获取 OpenCodex 代理的模型列表（--list models --json）。
 // enableVision=true 时追加 --enable-vision（强制所有模型标记为支持视觉）。
 // CLI 不可用/代理不可达时返回 Degraded=true + 原因（不报错），保证页面可用。
 func (s *Service) OpenCodexModels(enableVision bool) OpenCodexModelsResult {
@@ -138,7 +138,8 @@ func (s *Service) OpenCodexModels(enableVision bool) OpenCodexModelsResult {
 	if err != nil {
 		return OpenCodexModelsResult{Degraded: true, DegradedReason: err.Error()}
 	}
-	args := append(append([]string{}, base...), "--list-models", "--json")
+	// 新版 CLI 用 `--list models --json`（旧 `--list-models` 已移除），输出 {models: {...}}。
+	args := append(append([]string{}, base...), "--list", "models", "--json")
 	if enableVision {
 		args = append(args, "--enable-vision")
 	}
@@ -147,14 +148,17 @@ func (s *Service) OpenCodexModels(enableVision bool) OpenCodexModelsResult {
 	proc.Env = envWithBinDir(cmd)
 	out, err := proc.Output()
 	if err != nil {
-		s.lg.Warn("unifyai: --list-models 执行失败", "err", err)
+		s.lg.Warn("unifyai: --list models 执行失败", "err", err)
 		return OpenCodexModelsResult{Degraded: true, DegradedReason: err.Error()}
 	}
-	var res OpenCodexModelsResult
-	if err := json.Unmarshal(out, &res); err != nil {
-		s.lg.Warn("unifyai: 解析 --list-models JSON 失败", "err", err)
-		return OpenCodexModelsResult{Degraded: true, DegradedReason: "解析 --list-models 输出失败"}
+	var wrapped struct {
+		Models OpenCodexModelsResult `json:"models"`
 	}
+	if err := json.Unmarshal(out, &wrapped); err != nil {
+		s.lg.Warn("unifyai: 解析 --list models JSON 失败", "err", err)
+		return OpenCodexModelsResult{Degraded: true, DegradedReason: "解析 --list models 输出失败"}
+	}
+	res := wrapped.Models
 	if res.Error != "" {
 		res.Degraded = true
 		res.DegradedReason = res.Error
@@ -162,7 +166,7 @@ func (s *Service) OpenCodexModels(enableVision bool) OpenCodexModelsResult {
 	return res
 }
 
-// Platform 对应 `unifyai --list-platforms --json` 输出的单个平台（附录 B.1）。
+// Platform 对应 `unifyai --list platforms --json` 输出的单个平台（附录 B.1）。
 type Platform struct {
 	ID             string `json:"id"`
 	Name           string `json:"name"`
@@ -174,25 +178,25 @@ type Platform struct {
 	ConfigFormat   string `json:"configFormat"`
 }
 
-// ListPlatformsResult 对应 --list-platforms --json 的完整输出。
+// ListPlatformsResult 对应 --list platforms --json 的完整输出。
 type ListPlatformsResult struct {
 	Platforms []Platform `json:"platforms"`
 }
 
-// McpMatrixServer 对应 --list-mcp --json 中单个服务器的条目（name/enabled/config 原始配置）。
+// McpMatrixServer 对应 --list mcp --json 中单个服务器的条目（name/enabled/config 原始配置）。
 type McpMatrixServer struct {
 	Name    string          `json:"name"`
 	Enabled bool            `json:"enabled"`
 	Config  json.RawMessage `json:"config,omitempty"`
 }
 
-// McpSourceState 对应 --list-mcp --json 的 source 字段（源 mcp.json）。
+// McpSourceState 对应 --list mcp --json 的 source 字段（源 mcp.json）。
 type McpSourceState struct {
 	Path    string            `json:"path"`
 	Servers []McpMatrixServer `json:"servers"`
 }
 
-// McpPlatformState 对应 --list-mcp --json 中单个平台的状态（可读性 + 服务器开关列表）。
+// McpPlatformState 对应 --list mcp --json 中单个平台的状态（可读性 + 服务器开关列表）。
 type McpPlatformState struct {
 	Platform   string            `json:"platform"`
 	Name       string            `json:"name"`
@@ -201,7 +205,7 @@ type McpPlatformState struct {
 	Servers    []McpMatrixServer `json:"servers"`
 }
 
-// McpMatrixResult 对应 --list-mcp --json 的完整输出（源 + 各平台），供前端渲染同步矩阵。
+// McpMatrixResult 对应 --list mcp --json 的完整输出（源 + 各平台），供前端渲染同步矩阵。
 type McpMatrixResult struct {
 	Source    *McpSourceState    `json:"source"`
 	Platforms []McpPlatformState `json:"platforms"`
@@ -245,7 +249,7 @@ func (s *Service) Subscribe() (<-chan RunEvent, error) {
 	return s.runner.Subscribe()
 }
 
-// PlatformInfo 解析 `unifyai --list-platforms --json`，返回平台能力列表。
+// PlatformInfo 解析 `unifyai --list platforms --json`，返回平台能力列表。
 // CLI 不可用时回落到内置默认平台（与 UI 静态数据一致），保证页面可用。
 func (s *Service) PlatformInfo() (ListPlatformsResult, error) {
 	cmd, base, err := resolveCmd()
@@ -253,14 +257,14 @@ func (s *Service) PlatformInfo() (ListPlatformsResult, error) {
 		s.lg.Warn("unifyai: 获取平台列表回落到内置默认", "err", err)
 		return defaultPlatforms(), nil
 	}
-	args := append(append([]string{}, base...), "--list-platforms", "--json")
+	args := append(append([]string{}, base...), "--list", "platforms", "--json")
 	proc := exec.Command(cmd, args...)
 	cmdutil.HideWindow(proc) // 桌面 exe 下不弹黑色终端框
 	// 后台服务 PATH 可能不完整，把 npx 所在目录补到最前（含 node）。
 	proc.Env = envWithBinDir(cmd)
 	out, err := proc.Output()
 	if err != nil {
-		s.lg.Warn("unifyai: --list-platforms 失败，回落到内置默认", "err", err)
+		s.lg.Warn("unifyai: --list platforms 失败，回落到内置默认", "err", err)
 		return defaultPlatforms(), nil
 	}
 	var res ListPlatformsResult
@@ -341,31 +345,34 @@ func (s *Service) SyncConfigPath() string {
 	return syncConfigPath()
 }
 
-// ListMcpMatrix 解析 `unifyai --list-mcp --json`，返回源 mcp.json + 各平台 MCP 开关状态，
+// ListMcpMatrix 解析 `unifyai --list mcp --json`，返回源 mcp.json + 各平台 MCP 开关状态，
 // 供前端「MCP 同步矩阵」渲染（行=去重服务器，列=平台，勾选=该平台开启）。
 // CLI 不可用 / 执行失败时返回空结果（前端回落内置默认），不报错。
 func (s *Service) ListMcpMatrix() (McpMatrixResult, error) {
 	var empty McpMatrixResult
 	cmd, base, err := resolveCmd()
 	if err != nil {
-		s.lg.Warn("unifyai: --list-mcp 获取失败（未找到 npx）", "err", err)
+		s.lg.Warn("unifyai: --list mcp 获取失败（未找到 npx）", "err", err)
 		return empty, nil
 	}
-	args := append(append([]string{}, base...), "--list-mcp", "--json")
+	args := append(append([]string{}, base...), "--list", "mcp", "--json")
 	proc := exec.Command(cmd, args...)
 	cmdutil.HideWindow(proc) // 桌面 exe 下不弹黑色终端框
 	proc.Env = envWithBinDir(cmd)
 	out, err := proc.Output()
 	if err != nil {
-		s.lg.Warn("unifyai: --list-mcp 执行失败", "err", err)
+		s.lg.Warn("unifyai: --list mcp 执行失败", "err", err)
 		return empty, nil
 	}
-	var res McpMatrixResult
-	if err := json.Unmarshal(out, &res); err != nil {
-		s.lg.Warn("unifyai: 解析 --list-mcp JSON 失败", "err", err)
+	// 新版 CLI 输出 {mcp: {source, platforms}}，多包一层 mcp。
+	var wrapped struct {
+		Mcp McpMatrixResult `json:"mcp"`
+	}
+	if err := json.Unmarshal(out, &wrapped); err != nil {
+		s.lg.Warn("unifyai: 解析 --list mcp JSON 失败", "err", err)
 		return empty, nil
 	}
-	return res, nil
+	return wrapped.Mcp, nil
 }
 
 // Run 执行一次 unifyai 指令（args 为 CLI 参数，如 ["--all", "--dry-run"]），
@@ -540,6 +547,7 @@ func defaultPlatforms() ListPlatformsResult {
 		{ID: "claudecode", Name: "Claude Code", SupportsModels: false, ModelStatus: "not_supported", SupportsMcp: true, McpStatus: "supported", ConfigPath: "~/.claude.json", ConfigFormat: "json"},
 		{ID: "reasonix", Name: "Reasonix", SupportsModels: true, ModelStatus: "supported", SupportsMcp: true, McpStatus: "not_implemented", ConfigPath: "~/AppData/Roaming/reasonix/config.toml", ConfigFormat: "toml"},
 		{ID: "penguin", Name: "PenguinHarness", SupportsModels: true, ModelStatus: "supported", SupportsMcp: true, McpStatus: "supported", ConfigPath: "~/.penguin/data/default_project/.project_config.toml", ConfigFormat: "toml"},
+		{ID: "workbuddy", Name: "WorkBuddy", SupportsModels: true, ModelStatus: "supported", SupportsMcp: true, McpStatus: "supported", ConfigPath: "~/.workbuddy/models.json", ConfigFormat: "json"},
 	}}
 }
 
