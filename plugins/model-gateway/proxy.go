@@ -155,6 +155,17 @@ func (s *Service) proxyHandle(w http.ResponseWriter, r *http.Request, version st
 		pipe.Request.Query = rewriteModelQuery(pipe.Request.Query, modelFrom, pipe.Request.Model)
 	}
 
+	// 工具调用序列补全：chat/completions 的历史 messages 可能缺 assistant tool_calls 的
+	// 对应 tool 结果（或反之），上游会 400 `tool_call_sequence_broken`。转发前自动补全，
+	// 正常序列零改动。仅 chat/completions（OpenAI 工具调用协议）适用。
+	if pipe.Request != nil && pipe.Request.Path == "chat/completions" {
+		if fixed, ok := repairToolCallSequence(pipe.Request.Body); ok {
+			pipe.Request.Body = fixed
+			s.lg.Debug("model-gateway: 转发前补全了不完整的工具调用序列",
+				"request_id", pipe.RequestID, "model", pipe.Request.Model)
+		}
+	}
+
 	// 转发（proxyForward 负责写出最终响应：成功透传或最终失败原样透传上游错误）。
 	s.proxyForward(w, r, pipe, pipe.Request.Model, started)
 }
