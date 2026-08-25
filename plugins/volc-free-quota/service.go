@@ -578,7 +578,8 @@ func (s *Service) aggregatePackagesForAccount(accountID string) []PackageAggrega
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	rows, err := s.db.Query(`SELECT
 			model,
-			MAX(configuration_name) AS name,
+			-- 展示名 = 模型名（model）；仅当 model 为空时才退回组内资源包名兜底。
+			CASE WHEN model != '' THEN model ELSE MAX(configuration_name) END AS name,
 			MAX(unit) AS unit,
 			SUM(initial_total) AS initial_total,
 			SUM(local_remaining) AS local_remaining,

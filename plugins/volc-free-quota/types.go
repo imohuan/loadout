@@ -91,7 +91,7 @@ type RecentUsageResponse struct {
 //   - Exhausted      = 聚合剩余 <= 0
 type PackageAggregate struct {
 	Model          string `json:"model"`
-	Name           string `json:"name,omitempty"` // 展示名：组内 configuration_name（取字典序最大非空）
+	Name           string `json:"name,omitempty"` // 展示名 = 模型名（model）；model 为空时退回组内资源包名
 	Unit           string `json:"unit"`
 	InitialTotal   int64  `json:"initial_total"`
 	LocalRemaining int64  `json:"local_remaining"`
