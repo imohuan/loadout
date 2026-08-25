@@ -16,6 +16,7 @@ import {
   RiSettings3Line,
 } from '@remixicon/vue'
 import PageHeader from '@/components/PageHeader.vue'
+import LoadingBlock from '@/components/LoadingBlock.vue'
 import { useConfirm } from '@/composables/useConfirm'
 import PlatformCard from '@/components/unifyai/PlatformCard.vue'
 import ExcludeMatrix from '@/components/unifyai/ExcludeMatrix.vue'
@@ -56,6 +57,9 @@ import {
 const modeTab = ref<SyncMode>('all')
 const mode = computed<SyncMode>(() => modeTab.value)
 const { confirmDialog } = useConfirm()
+
+// ---------- 初始加载（进入页面拉取 --list all 前显示骨架屏） ----------
+const initialLoading = ref(true)
 
 // ---------- 目标平台（数据来自后端 --list-platforms --json，失败回落内置） ----------
 const platforms = ref<Platform[]>(PLATFORMS)
@@ -901,6 +905,7 @@ async function handleUpdateMetadata() {
 // ---------- 初始化 ----------
 onMounted(async () => {
   // 一次拉全（--list all → platforms + models + mcp 矩阵 + metadata 缓存状态）
+  try {
   const all = await fetchAllConfig()
   applyPlatforms(all.platforms)
   applyMatrix(all.mcp)
@@ -924,6 +929,8 @@ onMounted(async () => {
         if (data?.platforms?.length) applyPlatforms(data.platforms)
       })
       .catch(() => {})
+  } finally {
+    initialLoading.value = false
   }
 })
 </script>
@@ -944,8 +951,10 @@ onMounted(async () => {
       </template>
     </PageHeader>
 
+    <LoadingBlock v-if="initialLoading" />
+
     <!-- ① 同步内容与目标平台（头部含同步内容 + 全部平台） -->
-    <Card class="rounded-md">
+    <Card v-else class="rounded-md">
       <CardHeader
         class="flex flex-col gap-3 space-y-0 lg:flex-row lg:items-center lg:justify-between"
       >
