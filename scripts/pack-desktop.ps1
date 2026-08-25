@@ -2,14 +2,14 @@
 # 使用根 frontend/（主控制台）作为前端源码；产物复制到 apps/desktop/frontend/dist 由 go:embed 内嵌
 #
 # 用法：
-#   ./scripts/pack-desktop.ps1            # 只打 release 版（生产）
-#   ./scripts/pack-desktop.ps1 -Debug     # 打 debug 版（自动开 DevTools + Ctrl+Shift+I）
-#   ./scripts/pack-desktop.ps1 -All       # 两版都打（release + debug）
+#   ./scripts/pack-desktop.ps1            # 默认两个版本都打（release + debug）
+#   ./scripts/pack-desktop.ps1 -Debug     # 只打 debug 版（自动开 DevTools + Ctrl+Shift+I）
+#   ./scripts/pack-desktop.ps1 -Release   # 只打 release 版
 #   ./scripts/pack-desktop.ps1 -SkipBuild # 跳过前端构建与复制，仅编译 exe（改后端后快速重打）
 
 param(
     [switch]$Debug,
-    [switch]$All,
+    [switch]$Release,
     [switch]$SkipBuild
 )
 
@@ -77,12 +77,12 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 # [5/5] 构建 exe（内嵌 Loadout Server）
-# 决定要打哪些版本：-All 打两版；-Debug 只打 debug 版；默认只打 release 版。
+# 决定要打哪些版本：默认两版都打；-Debug 只打 debug；-Release 只打 release。
 $env:CGO_ENABLED = "0"
 $jobs = @()
-if ($All) { $jobs = @("release", "debug") }
-elseif ($Debug) { $jobs = @("debug") }
-else { $jobs = @("release") }
+if ($Debug) { $jobs = @("debug") }
+elseif ($Release) { $jobs = @("release") }
+else { $jobs = @("release", "debug") }
 
 foreach ($variant in $jobs) {
     $tag = "production"
