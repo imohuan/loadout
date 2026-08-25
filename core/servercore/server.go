@@ -133,11 +133,13 @@ func assemble(lg *slog.Logger, st *store.Store) (*plugin.Assembly, http.Handler,
 
 	// 启动自动恢复：拉起所有 enabled 的 stdio MCP 进程，使其常驻后台。
 	// 单个失败只记日志不阻断启动；失败状态由前端经 /api/mcp-servers 展示。
-	{
+	// 整个拉起过程完全后台化（不再占用装配路径），服务先监听、MCP 后绪。
+	plugin.RunBackground("mcp-hub-start", func() error {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
 		hub.StartEnabled(ctx)
-		cancel()
-	}
+		return nil
+	})
 
 	return asm, requestIDMiddleware(lg, corsMiddleware(mux)), nil
 }
