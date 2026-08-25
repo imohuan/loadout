@@ -479,15 +479,15 @@ func (s *Service) EndpointServerOrEmpty(endpoint string) *mcp.Server {
 // Invalidate 清空工具索引缓存并关闭上游连接，下次访问按最新配置重建。
 // 由 admin-api 在修改 MCP / 分组 / 工具开关配置后调用，保证端点视图实时生效。
 func (s *Service) Invalidate() {
+	// 只使工具索引缓存失效，下次访问按最新配置重建。
+	// 注意：这里【只】清工具索引缓存，【不清空/关闭上游进程池】——进程池的增删只由
+	// SetServerEnabled / dropUpstream 负责（它们按被修改的 server id 精准启停）。
+	// 曾在这里清空并 Close 整个池，导致修改任意一个 MCP 配置时所有 stdio 上游进程被
+	// 杀掉并从池中移除，在索引重建（惰性触发）前 ServerStatus 会把这些 server 误报为
+	// failed，前端点一个开关就出现其他行状态错乱。故上游连接必须保留，避免误杀。
 	s.mu.Lock()
 	s.tools = nil
-	ups := s.upstreams
-	s.upstreams = map[string]*mcpkit.Upstream{}
 	s.mu.Unlock()
-
-	for _, u := range ups {
-		_ = u.Close()
-	}
 }
 
 // exposedTools 把索引条目转成直接暴露的 MCP 工具（handler 转发到所属上游并埋点）。
