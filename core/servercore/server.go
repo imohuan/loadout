@@ -63,6 +63,13 @@ func assemble(lg *slog.Logger, st *store.Store) (*plugin.Assembly, http.Handler,
 		_ = database.Close()
 		return nil, nil, err
 	}
+	// 注入 procreg 历史持久化：进程历史落 SQLite，后端重启不丢、不再受内存上限限制。
+	if ph, err := db.NewProcessHistoryRepository(database); err != nil {
+		_ = database.Close()
+		return nil, nil, err
+	} else {
+		procreg.Get().SetHistoryStore(ph)
+	}
 	asm, err := plugin.Load(plugins.All(), plugin.Options{
 		Logger: lg,
 		Services: map[string]any{

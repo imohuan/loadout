@@ -81,16 +81,28 @@ func NewTestHandle(err error) *Handle {
 	return &Handle{procID: "test-handle", done: done}
 }
 
+// HistoryStore 进程历史持久化接口。注入后可让历史记录跨后端重启保留。
+// procreg 保持纯核心不直接依赖 db：servercore 装配时注入 SQLite 实现。
+type HistoryStore interface {
+	// Save 保存一条已结束的进程记录（幂等：按 id upsert）。
+	Save(proc Proc) error
+	// List 返回按结束时间新→旧排序的历史记录，最多 limit 条（limit<=0 表示不限）。
+	List(limit int) ([]Proc, error)
+}
+
 // procreg 全局注册表。
 type Registry struct {
 	mu      sync.Mutex
 	seq     int
 	running map[string]*Proc // 运行中的进程
-	history []*Proc          // 历史记录（新→旧排序，上限 historyLimit）
+	history []*Proc          // 历史记录（新→旧排序，上限 historyLimit，内存态兜底）
 	subs    map[chan Event]bool
 
+	historyStore HistoryStore // 可选持久化后端（注入后历史可跨重启保留）
+	storeLoaded  bool         // 本次会话是否已把内存历史回填进 store
+
 	maxLogLines int // 每进程日志行数上限
-	historyMax  int // 历史记录条数上限
+	historyMax  int // 内存历史记录条数上限
 }
 
 // 默认上限（防长输出/多进程撑爆内存）。
@@ -190,6 +202,23 @@ func New() *Registry {
 	}
 }
 
+// SetHistoryStore 注入历史持久化后端。进程结束记录会写入 store，Snapshot 会合并
+// store 中的完整历史（跨重启保留）。可传 nil 关闭持久化。只应在启动装配时调用一次。
+func (r *Registry) SetHistoryStore(s HistoryStore) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.historyStore = s
+	if s != nil {
+		// 把本次会话已有的内存历史回填进 store，避免注入后旧记录丢失。
+		r.storeLoaded = true
+		for i := len(r.history) - 1; i >= 0; i-- {
+			if err := s.Save(*r.history[i]); err != nil {
+				break
+			}
+		}
+	}
+}
+
 // Subscribe 订阅进程事件流。返回事件 channel；连接断开后调用 Unsubscribe。
 func (r *Registry) Subscribe() chan Event {
 	ch := make(chan Event, 64)
@@ -219,25 +248,61 @@ func (r *Registry) broadcast(ev Event) {
 }
 
 // Snapshot 返回当前全部进程（运行中 + 历史，新→旧排序）。供 SSE 连接时全量推送。
+// 注入了 HistoryStore 时，会先取 store 中完整历史（跨重启保留），再合并本次会话
+// 内存历史与当前运行中进程（按 id 去重，新→旧）。无 store 时只返回内存态历史。
 func (r *Registry) Snapshot() []Proc {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	out := make([]Proc, 0, len(r.running)+len(r.history))
-	// 先历史（新→旧），再运行中（开始时间新→旧）
-	for _, p := range r.history {
-		out = append(out, *p)
+	store := r.historyStore
+	r.mu.Unlock()
+
+	// 历史来源：store（若注入）优先，否则内存 history。
+	var hist []Proc
+	seen := map[string]bool{}
+	if store != nil {
+		if l, err := store.List(0); err == nil {
+			hist = l
+			for _, p := range hist {
+				seen[p.ID] = true
+			}
+		}
 	}
+
+	r.mu.Lock()
+	// 合并本次会话内存 history 中 store 未覆盖的（进程结束后瞬间、写 store 前的记录）。
+	for _, p := range r.history {
+		if !seen[p.ID] {
+			hist = append(hist, *p)
+			seen[p.ID] = true
+		}
+	}
+	// 当前运行中进程（开始时间新→旧）。
 	running := make([]*Proc, 0, len(r.running))
 	for _, p := range r.running {
 		running = append(running, p)
 	}
+	r.mu.Unlock()
 	sort.Slice(running, func(i, j int) bool {
 		return running[i].StartedAt.After(running[j].StartedAt)
 	})
+
+	// 合并历史 + 运行中，整体按「结束/开始时间」新→旧。
+	out := make([]Proc, 0, len(hist)+len(running))
+	out = append(out, hist...)
 	for _, p := range running {
 		out = append(out, *p)
 	}
+	sort.SliceStable(out, func(i, j int) bool {
+		return timeOf(out[i]).After(timeOf(out[j]))
+	})
 	return out
+}
+
+// timeOf 取进程的排序时间锚点：已结束用结束时间，否则用开始时间。
+func timeOf(p Proc) time.Time {
+	if !p.EndedAt.IsZero() {
+		return p.EndedAt
+	}
+	return p.StartedAt
 }
 
 // procByID 查找运行中的进程（加锁外调用方需保证持锁）。
@@ -384,8 +449,16 @@ func (r *Registry) Unregister(id string, runErr error) {
 		r.history = r.history[:r.historyMax]
 	}
 	copyProc := *p
+	store := r.historyStore
 	r.mu.Unlock()
 	r.broadcast(Event{Type: "update", Data: []Proc{copyProc}})
+	// 持久化到 store（失败不阻断进程结束流程，只丢弃该条写入）。
+	if store != nil {
+		if err := store.Save(copyProc); err != nil {
+			// 无 logger 可用，静默；仅开发期日志可见。写入失败不影响运行。
+			_ = err
+		}
+	}
 }
 
 // SetMem 更新运行中进程的内存采样值并广播（节流由调用方控制）。

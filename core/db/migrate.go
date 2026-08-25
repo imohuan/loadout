@@ -545,6 +545,29 @@ ALTER TABLE route_requests ADD COLUMN request_log_id TEXT;
 -- pipe.Metadata[__request_log_attempt_id]，model-gateway 写 attempt 行时落本列。
 -- 可空：未命中 request_log 能力路由的 attempt（含视觉子段）为 NULL。
 ALTER TABLE route_attempts ADD COLUMN request_log_id TEXT;
+`,	}, {
+		version: 26,
+		name:    "process-history",
+		sql: `
+-- procreg 统一命令执行器的历史记录持久化：进程结束后写本表，后端重启不丢。
+-- 之前历史仅存内存（上限 50 条且重启清空），导致 UI 进程历史只有几行。
+-- log_json：进程完整日志行（JSON 数组字符串），UI 展开历史时展示。
+CREATE TABLE process_history (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  proc_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT '',
+  cmd TEXT NOT NULL DEFAULT '',
+  pid INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'done',
+  started_at TEXT NOT NULL,
+  ended_at TEXT NOT NULL,
+  exit_code INTEGER,
+  mem_bytes INTEGER NOT NULL DEFAULT 0,
+  log_json TEXT NOT NULL DEFAULT '[]'
+);
+CREATE UNIQUE INDEX idx_process_history_proc_ended ON process_history(proc_id, ended_at);
+CREATE INDEX idx_process_history_ended_at ON process_history(ended_at DESC);
 `,
 	}}
 
