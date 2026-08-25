@@ -650,7 +650,7 @@ export async function runSync(): Promise<void> {
 }
 
 /**
- * 强制刷新 OpenRouter 模型元数据缓存（--update-metadata，文档 §5.4）。
+ * 强制刷新 OpenRouter 模型元数据缓存（--list metadata，非 JSON 模式即刷新；文档 §5.4）。
  * TODO(backend): 替换为真实刷新调用。
  */
 export async function updateMetadata(): Promise<void> {

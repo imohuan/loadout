@@ -24,7 +24,7 @@ import (
 )
 
 // OpenRouterMeta 对应 openrouter-models.json 中单个模型的元数据条目
-// （unifyai --update-metadata 从 https://openrouter.ai/api/v1/models 拉取后缓存）。
+// （unifyai --list metadata 从 https://openrouter.ai/api/v1/models 拉取后缓存）。
 type OpenRouterMeta struct {
 	ID        string `json:"id"`
 	Name      string `json:"name"`
@@ -46,7 +46,7 @@ type ModelSourceStatus struct {
 	Degraded       string `json:"degraded,omitempty"`
 }
 
-// openrouterBaseURL 是 unifyai --update-metadata 拉取模型数据的公开端点。
+// openrouterBaseURL 是 unifyai --list metadata 拉取模型数据的公开端点。
 const openrouterBaseURL = "https://openrouter.ai/api/v1"
 
 // metadataCachePath 返回 OpenRouter 元数据缓存文件路径（~/.unifyai/cache/openrouter-models.json），

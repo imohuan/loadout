@@ -853,17 +853,17 @@ function confirmAndExecute() {
 // ---------- 帮助 ----------
 const helpOpen = ref(false)
 
-// ---------- 元数据缓存刷新（真实调用 unifyai CLI：--update-metadata） ----------
+// ---------- 元数据缓存刷新（调用 unifyai CLI：--list metadata 触发刷新） ----------
 const metadataUpdating = ref(false)
 async function handleUpdateMetadata() {
   if (metadataUpdating.value) return
   metadataUpdating.value = true
   try {
-    // 通过后端桥接启动 unifyai --update-metadata（SSE 日志走 /api/unifyai/stream）。
+    // 通过后端桥接启动 unifyai --list metadata（非 JSON 模式即强制刷新缓存；SSE 日志走 /api/unifyai/stream）。
     const res = await fetch('/api/unifyai/run', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ args: ['--update-metadata'] }),
+      body: JSON.stringify({ args: ['--list', 'metadata'] }),
     })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const body = await res.json()
