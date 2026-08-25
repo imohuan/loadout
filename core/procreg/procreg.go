@@ -259,6 +259,21 @@ func (r *Registry) Kill(id string) error {
 	return killProcessTree(p.PID)
 }
 
+// Shutdown 终止所有运行中的子进程（退出软件时调用，避免留下孤儿进程）。
+func (r *Registry) Shutdown() {
+	r.mu.Lock()
+	ids := make([]string, 0, len(r.running))
+	for id := range r.running {
+		ids = append(ids, id)
+	}
+	r.mu.Unlock()
+	for _, id := range ids {
+		if p := r.Running(id); p != nil {
+			_ = killProcessTree(p.PID)
+		}
+	}
+}
+
 // Run 统一执行入口：异步启动命令并登记到进程表，立即返回 Handle。
 // 状态/日志/结束通过订阅广播推送。名称 Name 必填。
 func (r *Registry) Run(o Options) (*Handle, error) {

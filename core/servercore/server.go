@@ -8,12 +8,14 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"path"
 	"runtime/debug"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -23,6 +25,7 @@ import (
 	"loadout/core/db"
 	"loadout/core/logger"
 	"loadout/core/plugin"
+	"loadout/core/procreg"
 	"loadout/core/store"
 	"loadout/frontend"
 	"loadout/plugins"
@@ -298,6 +301,15 @@ func newRequestID() string {
 }
 
 // Run 启动服务器：装配 → 自检日志 → 监听 → 优雅退出。
+// 全局可编程退出通道：外部（如桌面版退出）调用 TriggerShutdown 触发 servercore 优雅退出。
+var (
+	shutdownOnce sync.Once
+	shutdownCh   = make(chan struct{})
+)
+
+// TriggerShutdown 触发 servercore 优雅退出（终止子进程、关闭 server）。幂等。
+func TriggerShutdown() { shutdownOnce.Do(func() { close(shutdownCh) }) }
+
 func Run() error {
 	lg := newLogger()
 	// 替换全局默认 logger，保证任何 slog.Default() 都落到日志文件而非 stderr。
@@ -323,9 +335,13 @@ func Run() error {
 	}
 
 	addr := listenAddr()
+	// 所有 HTTP 连接共享一个可取消的 context：Shutdown 时 cancel 它，
+	// 让 SSE 等长连接立即断开，避免 srv.Shutdown 一直等它们完成而卡住。
+	connCtx, connCancel := context.WithCancel(context.Background())
 	srv := &http.Server{
 		Addr:              addr,
 		Handler:           handler,
+		BaseContext:       func(net.Listener) context.Context { return connCtx },
 		ReadHeaderTimeout: config.HTTPReadTimeout,
 		WriteTimeout:      config.UpstreamTimeout,
 	}
@@ -334,16 +350,28 @@ func Run() error {
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.ListenAndServe() }()
 
+	// 可编程退出：除 os.Signal 外，外部（如桌面版退出）可触发优雅退出。
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	// 终止子进程 + 取消活跃连接，再优雅关闭 HTTP 服务器。
+	doShutdown := func(reason string) error {
+		// 1) 终止所有运行中的子进程（统一命令执行器），避免退出后残留孤儿进程。
+		procreg.Get().Shutdown()
+		// 2) 取消活跃连接 context，让 SSE 长连接立即断开，避免 srv.Shutdown 卡住。
+		connCancel()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return srv.Shutdown(ctx)
+	}
 	select {
 	case err := <-errCh:
 		return err
 	case sig := <-sigCh:
 		lg.Info("收到信号，退出", "signal", sig.String())
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		return srv.Shutdown(ctx)
+		return doShutdown(sig.String())
+	case <-shutdownCh:
+		lg.Info("收到退出请求")
+		return doShutdown("shutdown-requested")
 	}
 }
 

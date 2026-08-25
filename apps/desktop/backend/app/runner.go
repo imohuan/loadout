@@ -5,6 +5,7 @@ import (
 	"embed"
 	"runtime"
 
+	"loadout/core/servercore"
 	"proxyui/backend"
 	"proxyui/backend/server"
 	"proxyui/backend/singleton"
@@ -92,6 +93,9 @@ func Run(assets embed.FS) {
 	// 系统托盘：左键单击恢复窗口，右键菜单提供 打开 Loadout / 打开网页 / 退出
 	setupTray(app, win)
 
+	// 链接跳转守卫：应用内链接在窗口内打开，外部链接转系统默认浏览器
+	injectLinkGuardScript(win)
+
 	win.Show()
 
 	// 开发阶段自动打开 DevTools，生产构建时建议注释掉
@@ -108,6 +112,10 @@ func Run(assets embed.FS) {
 	// 阻塞直到窗口关闭
 	app.Run()
 
+	// 清理：触发 servercore 优雅退出（终止子进程、断开活跃连接、关闭 server）。
+	// Wails 桌面版退出不会向 servercore 的 Run() goroutine 发送信号，
+	// 必须显式调用 TriggerShutdown() 让其中的信号清理逻辑执行，否则子进程成为孤儿残留。
+	servercore.TriggerShutdown()
 	// 清理：停止 Loadout Server
 	server.StopLoadoutServer()
 }

@@ -245,3 +245,35 @@ func TestSetMemAndSnapshot(t *testing.T) {
 		t.Fatalf("SetMem 未反映到快照: %+v", snap)
 	}
 }
+
+// TestShutdownKillsRunning 验证 Shutdown 终止所有运行中的进程并移入历史。
+func TestShutdownKillsRunning(t *testing.T) {
+	r := New()
+	h, err := startLongProcFn(r, "关机进程")
+	if err != nil {
+		t.Fatalf("启动失败: %v", err)
+	}
+	// 等进程进入 running
+	time.Sleep(300 * time.Millisecond)
+	if r.Running(h.ID()) == nil {
+		t.Fatal("进程未进入 running")
+	}
+	r.Shutdown()
+	// Shutdown 后进程应被终止并从 running 移除（进历史）
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if r.Running(h.ID()) == nil {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatal("Shutdown 后进程未从 running 移除")
+}
+
+// startLongProcFn 在指定注册表上启动长命命令。
+func startLongProcFn(r *Registry, name string) (*Handle, error) {
+	if runtime.GOOS == "windows" {
+		return r.Run(Options{Name: name, Kind: "test", Cmd: "cmd", Args: []string{"/c", "ping -n 30 127.0.0.1 >nul"}})
+	}
+	return r.Run(Options{Name: name, Kind: "test", Cmd: "sleep", Args: []string{"30"}})
+}
