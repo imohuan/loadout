@@ -151,7 +151,7 @@ const historyCount = computed(() => history.value.length)
                 <template #icon><span class="hidden" /></template>
               </AccordionTrigger>
               <AccordionContent>
-                <div class="mt-2 space-y-1 rounded border border-border bg-muted/30 p-3 text-xs text-muted-foreground">
+                <div class="mt-2 space-y-1 text-xs text-muted-foreground">
                   <div class="flex flex-wrap gap-x-4 gap-y-0.5">
                     <span class="truncate">{{ fmtStartAt(p) }}</span>
                     <span class="shrink-0">内存 {{ fmtMem(p.memBytes) }}</span>
@@ -160,7 +160,7 @@ const historyCount = computed(() => history.value.length)
                   </div>
                   <div v-if="p.cmd" class="truncate font-mono" :title="p.cmd">{{ p.cmd }}</div>
                   <div v-if="p.log.length"
-                    class="mt-1 max-h-60 overflow-y-auto rounded bg-muted/40 p-2 font-mono text-[11px] leading-relaxed text-muted-foreground">
+                    class="mt-1 max-h-60 overflow-y-auto rounded border border-border bg-muted/30 p-2 font-mono text-[11px] leading-relaxed text-muted-foreground">
                     <div v-for="(line, i) in p.log" :key="i"
                       class="whitespace-pre-wrap break-all"
                       v-html="ansiToHtml(line)" />
