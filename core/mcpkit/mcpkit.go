@@ -21,6 +21,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"loadout/core/cmdutil"
+	"loadout/core/procreg"
 )
 
 // implementationVersion 是注册客户端/服务端实现时使用的默认版本号。
@@ -173,6 +174,7 @@ func (u *Upstream) Close() error {
 		u.session = nil
 		u.cmd = nil
 		u.lastErr = nil
+		procreg.Unregister(mcpProcID(u.cfg.Name), nil)
 		if !u.disconnected {
 			u.disconnected = true
 			u.hook("disconnect", "reason", "closed")
@@ -262,6 +264,8 @@ func (u *Upstream) readStderr(pr *os.File) {
 	already := u.disconnected
 	u.disconnected = true
 	u.mu.Unlock()
+	// 进程已退出：把进程从全局注册表移入历史（幂等，未登记则无操作）。
+	procreg.Unregister(mcpProcID(u.cfg.Name), nil)
 	if hadSession && !already {
 		u.hook("disconnect", "reason", "process_exit")
 	}
@@ -317,8 +321,15 @@ func (u *Upstream) ensureSession(ctx context.Context) (*mcp.ClientSession, error
 	u.lastErr = nil
 	u.session = session
 	u.hook("connect_ok", "pid", pid)
+	// stdio 子进程登记进全局进程注册表（procreg），可在管理后台查看/终止。
+	if pid > 0 {
+		procreg.RegisterExisting(mcpProcID(u.cfg.Name), "MCP: "+u.cfg.Name, "mcp", u.cmd)
+	}
 	return session, nil
 }
+
+// mcpProcID 返回 MCP 进程在 procreg 注册表中的稳定 ID。
+func mcpProcID(name string) string { return "mcp:" + name }
 
 // upstreamClientName 返回客户端标识名；空名称时回落到默认值。
 func upstreamClientName(name string) string {

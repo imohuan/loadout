@@ -1,14 +1,7 @@
 package unifyai
 
 import (
-	"bufio"
-	"io"
-	"os/exec"
-	"path/filepath"
-	"runtime"
 	"sync"
-
-	"loadout/core/cmdutil"
 )
 
 // RunEvent 任务的一次事件（SSE 推送载荷）。
@@ -84,40 +77,3 @@ func (r *RunRunner) run() {
 	r.finish(RunEvent{Type: "done", Data: "0"})
 }
 
-// runCommandStream 执行命令并逐行回调合并输出（stdout+stderr）。
-// 包级变量，测试可替换为 fake。
-var runCommandStream = func(name string, args []string, onLine func(string)) error {
-	cmd := exec.Command(name, args...)
-	cmdutil.HideWindow(cmd) // 桌面 exe 下不弹黑色终端框
-	// 后台服务 PATH 可能不完整（找不到 npx/node），
-	// 把命令所在目录补到 PATH 最前，保证 npx 能找到同目录的 node。
-	if runtime.GOOS != "windows" && filepath.IsAbs(name) {
-		cmd.Env = osEnvironWithPathPrefix(filepath.Dir(name))
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return err
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return err
-	}
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-
-	var wg sync.WaitGroup
-	pipe := func(rc io.Reader) {
-		defer wg.Done()
-		sc := bufio.NewScanner(rc)
-		sc.Buffer(make([]byte, 64*1024), 1024*1024)
-		for sc.Scan() {
-			onLine(sc.Text())
-		}
-	}
-	wg.Add(2)
-	go pipe(stdout)
-	go pipe(stderr)
-	wg.Wait()
-	return cmd.Wait()
-}

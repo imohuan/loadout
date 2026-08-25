@@ -2,7 +2,6 @@ package skills
 
 import (
 	"archive/zip"
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -15,7 +14,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -968,38 +966,6 @@ func (s *Service) syncLockFile() error {
 	return nil
 }
 
-// runCommandStream 执行命令并逐行回调合并输出（stdout+stderr）。
-// 包级变量，测试可替换为 fake。
-var runCommandStream = func(name string, args []string, onLine func(string)) error {
-	cmd := exec.Command(name, args...)
-	cmdutil.HideWindow(cmd) // 桌面 exe 下不弹黑色终端框
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return err
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return err
-	}
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-
-	var wg sync.WaitGroup
-	pipe := func(rc io.Reader) {
-		defer wg.Done()
-		sc := bufio.NewScanner(rc)
-		sc.Buffer(make([]byte, 64*1024), 1024*1024)
-		for sc.Scan() {
-			onLine(sc.Text())
-		}
-	}
-	wg.Add(2)
-	go pipe(stdout)
-	go pipe(stderr)
-	wg.Wait()
-	return cmd.Wait()
-}
 
 // UpdateSkills 检测并更新技能。完整流程（官方 check/update 同命令，检测即更新）：
 //  0. 快照：扫描 ~/.agents/skills 得到当前在用的技能列表（scanSkills，与列表接口同逻辑）；
