@@ -98,12 +98,14 @@ function openStream() {
   }
 }
 
-// 触发值变化 → 重新连接。
+// 触发值变化 → 重新连接。immediate 让组件挂载时就捕获已递增的 trigger（如父组件在同一次
+// 更新里先置 trigger 再让组件首挂载），避免首点只建 tab、二点才真正触发。
 watch(
   () => props.trigger,
   () => {
     if (props.trigger > 0) openStream()
   },
+  { immediate: true },
 )
 
 // 日志自动滚动到底部。
