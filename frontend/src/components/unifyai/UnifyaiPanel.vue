@@ -714,10 +714,10 @@ const commandOpts = computed(() => ({
   all: allPlatforms.value,
   platforms: selectedPlatforms.value,
   mcpPlatforms: null,
-  globalExcludes: [],
+  globalExcludes: [] as string[],
   perPlatformExcludes: Object.fromEntries(
-    platforms.value.map((p) => [p.id, []])
-  ),
+    platforms.value.map((p) => [p.id, [] as string[]])
+  ) as Record<PlatformId, string[]>,
   dryRun: false,
   source: sourcePath.value,
   verbose: verbose.value,
