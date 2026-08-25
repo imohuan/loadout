@@ -2,14 +2,27 @@
   <!-- 展示态 -->
   <div v-if="!isEditing" class="flex flex-col items-end group">
     <!-- 图片在气泡外部 -->
-    <div v-if="message.images?.length" class="flex justify-end mb-2 gap-2">
+    <div v-if="message.images?.length" class="flex flex-wrap justify-end mb-2 gap-2">
+      <!-- 真实图片缩略图 -->
       <div
-        v-for="(img, idx) in message.images"
-        :key="idx"
+        v-for="(img, idx) in realImages"
+        :key="'real-' + idx"
         class="w-20 h-16 bg-white border border-gray-200 rounded-lg overflow-hidden shadow-sm flex items-center justify-center cursor-pointer"
         @click="openPreview(idx)"
       >
         <img :src="toDisplayUrl(img.data || img.path)" class="w-full h-full object-cover opacity-90 hover:opacity-100 transition-opacity" alt="attachment" />
+      </div>
+      <!-- 图片占位符卡片：日志脱敏后只存 [image: ...] 占位文本，无原始图片，按卡片展示 -->
+      <div
+        v-for="(img, idx) in placeholderImages"
+        :key="'ph-' + idx"
+        class="inline-flex items-center gap-2 rounded-lg border border-dashed border-zinc-400/50 bg-zinc-500/10 px-3 py-2"
+        :title="'原图未保存：日志脱敏后仅保留占位符'"
+      >
+        <svg class="w-4 h-4 shrink-0 text-zinc-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+        </svg>
+        <span class="font-mono text-[11px] leading-none text-zinc-500 dark:text-zinc-400 whitespace-nowrap">{{ img.placeholder }}</span>
       </div>
     </div>
     <!-- 文字气泡 -->
@@ -123,11 +136,17 @@ const canSave = computed(
 
 const displayContent = computed(() => {
   let text = props.message.content || '';
-  if (props.message.images?.length) {
+  if (realImages.value.length) {
     text = text.replace(/\[Image\s*#?\d+\]/gi, '').trim();
   }
   return text;
 });
+
+/** 真实图片（http/data/blob 路径）→ 缩略图 + 预览 */
+const realImages = computed(() => (props.message.images || []).filter((img) => !img.placeholder));
+
+/** 占位符（后端脱敏的 [image: ...] 文本）→ 占位卡片，无原始图片不可预览 */
+const placeholderImages = computed(() => (props.message.images || []).filter((img) => !!img.placeholder));
 
 const formattedTime = computed(() => {
   const ts = props.message.timestamp;
@@ -169,7 +188,7 @@ function saveEdit() {
 }
 
 function openPreview(idx: number) {
-  viewerImages.value = (props.message.images || []).map((img) => toDisplayUrl(img.data || img.path));
+  viewerImages.value = realImages.value.map((img) => toDisplayUrl(img.data || img.path));
   viewerIndex.value = idx;
   viewerVisible.value = true;
 }

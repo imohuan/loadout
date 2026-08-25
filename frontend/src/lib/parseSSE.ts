@@ -369,6 +369,14 @@ function extractChatChunkFields(json: unknown): ParsedChunk['fields'] | null {
         })
       }
     }
+    // 过滤完全没有元数据（id/name/type/arguments 全无）的空 fragment：
+    // 某些实现在末尾 chunk 会 push delta.tool_calls: [{}] / delta.function_call: {} 这种心跳残留，
+    // 不去会被 ToolCallAggregator 当成一次有效工具调用，渲染成空 ToolCallCard。
+    // 只保留至少带 id/name/type/arguments 之一的真正片段。
+    if (toolCallsDelta?.length) {
+      toolCallsDelta = toolCallsDelta.filter((frag) => frag.id || frag.name || frag.type || frag.arguments)
+      if (!toolCallsDelta.length) toolCallsDelta = undefined
+    }
     if (typeof first.finish_reason === 'string') finishReason = first.finish_reason
   }
 

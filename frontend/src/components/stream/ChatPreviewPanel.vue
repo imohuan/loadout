@@ -41,7 +41,7 @@ const props = defineProps<{
 
 interface ExtractedContent {
   text: string
-  images: { path: string }[]
+  images: { path: string; placeholder?: string }[]
 }
 
 /** 从 OpenAI messages[i].content（字符串或多模态数组）提取纯文本 + 图片 */
@@ -51,7 +51,7 @@ function extractContent(content: unknown): ExtractedContent {
   }
   if (Array.isArray(content)) {
     let text = ''
-    const images: { path: string }[] = []
+    const images: { path: string; placeholder?: string }[] = []
     for (const part of content) {
       if (!part || typeof part !== 'object') continue
       const p = part as Record<string, unknown>
@@ -63,6 +63,10 @@ function extractContent(content: unknown): ExtractedContent {
         const url = (p.image_url as { url?: unknown } | undefined)?.url
         if (typeof url === 'string' && /^(https?:\/\/|data:image\/)/.test(url)) {
           images.push({ path: url })
+        } else if (typeof url === 'string' && /^\[image:\s/.test(url)) {
+          // 占位符（后端脱敏：日志只存 [image: ...]，没有原始图片字节）——
+          // 也进 images，带 placeholder 标记，UserMessage 渲染成占位卡片。
+          images.push({ path: url, placeholder: url })
         }
       }
     }

@@ -51,7 +51,7 @@ export interface NormalizedMessage {
 
   role?: 'user' | 'assistant' | 'system';
   content?: string;
-  images?: { path: string; data?: string }[];
+  images?: { path: string; data?: string; placeholder?: string }[];
 
   itemId?: string;
   itemType?: string;
