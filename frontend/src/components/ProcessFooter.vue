@@ -2,7 +2,7 @@
 // 侧边栏底部全局进程面板：实时显示 procreg 统一执行器托管的进程。
 // 运行中的进程可终止；历史记录通过标题右侧的图标按钮打开 Dialog 查看。
 import { computed, onMounted, ref } from 'vue'
-import { RiCloseLine, RiCpuLine, RiHistoryLine } from '@remixicon/vue'
+import { RiCloseLine, RiCpuLine, RiHistoryLine, RiArrowRightSLine } from '@remixicon/vue'
 import { toast } from 'vue-sonner'
 import { ansiToHtml } from '@/lib/ansi'
 import { useProcessMonitor } from '@/composables/useProcessMonitor'
@@ -135,6 +135,8 @@ const historyCount = computed(() => history.value.length)
               class="rounded-md border border-border last:border-b">
               <AccordionTrigger class="px-3 py-2 hover:no-underline">
                 <span class="flex min-w-0 flex-1 items-center gap-2">
+                  <RiArrowRightSLine
+                    class="mr-2 size-4 shrink-0 text-muted-foreground transition-transform duration-200 group-aria-expanded/accordion-trigger:rotate-90" />
                   <span class="size-2 shrink-0 rounded-full" :class="statusDot(p.status)" />
                   <span class="min-w-0 truncate font-medium" :title="p.name">{{ p.name }}</span>
                   <span class="shrink-0 text-xs"
