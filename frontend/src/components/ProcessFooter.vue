@@ -4,7 +4,9 @@
 import { computed, onMounted, ref } from 'vue'
 import { RiCloseLine, RiCpuLine, RiHistoryLine } from '@remixicon/vue'
 import { toast } from 'vue-sonner'
+import { ansiToHtml } from '@/lib/ansi'
 import { useProcessMonitor } from '@/composables/useProcessMonitor'
+import { useConfirm } from '@/composables/useConfirm'
 import type { ProcessInfo } from '@/lib/types'
 
 const {
@@ -15,6 +17,8 @@ const {
   start,
   kill,
 } = useProcessMonitor()
+
+const { confirmDialog } = useConfirm()
 
 const historyOpen = ref(false)
 
@@ -62,7 +66,12 @@ function fmtStartAt(p: ProcessInfo): string {
 }
 
 async function onKill(p: ProcessInfo) {
-  if (!window.confirm(`终止进程「${p.name}」？`)) return
+  const confirmed = await confirmDialog({
+    title: `终止进程「${p.name}」？`,
+    description: '该操作会终止进程及其子进程。',
+    confirmText: '终止',
+  })
+  if (!confirmed) return
   try {
     await kill(p.id)
     toast.success(`已请求终止「${p.name}」`)
@@ -79,51 +88,33 @@ const historyCount = computed(() => history.value.length)
     <div class="flex items-center justify-between px-2 py-1.5">
       <div class="flex items-center gap-1.5 text-xs text-muted-foreground">
         <RiCpuLine size="14" />
-        <span>进程</span>
-        <span v-if="running.length" class="rounded bg-primary/10 px-1 text-primary">
-          {{ running.length }} 运行中
-        </span>
+        <span> {{ running.length }} 个进程运行中 </span>
+        <span class="size-1.5 rounded-full" :class="connected ? 'bg-emerald-500' : 'bg-red-500'"
+          :title="connected ? '已连接' : '连接断开'" />
       </div>
       <div class="flex items-center gap-1">
-        <button
-          class="relative rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
-          :title="`历史记录（${historyCount}）`"
-          :disabled="historyCount === 0"
-          :class="{ 'cursor-not-allowed opacity-40': historyCount === 0 }"
-          @click="historyOpen = true"
-        >
+        <button class="relative rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+          :title="`历史记录（${historyCount}）`" :disabled="historyCount === 0"
+          :class="{ 'cursor-not-allowed opacity-40': historyCount === 0 }" @click="historyOpen = true">
           <RiHistoryLine size="15" />
-          <span
-            v-if="historyCount"
-            class="absolute -right-0.5 -top-0.5 flex min-w-3.5 items-center justify-center rounded-full bg-primary px-0.5 text-[9px] leading-4 text-primary-foreground"
-          >
+          <span v-if="historyCount"
+            class="absolute -right-0.5 -top-0.5 flex min-w-3.5 items-center justify-center rounded-full bg-primary px-0.5 text-[9px] leading-4 text-primary-foreground">
             {{ historyCount > 99 ? '99+' : historyCount }}
           </span>
         </button>
-        <span
-          class="size-1.5 rounded-full"
-          :class="connected ? 'bg-emerald-500' : 'bg-red-500'"
-          :title="connected ? '已连接' : '连接断开'"
-        />
       </div>
     </div>
 
     <template v-if="hasProcesses">
       <!-- 运行中进程 -->
       <div v-if="running.length" class="space-y-1 px-2 pb-1.5">
-        <div
-          v-for="p in running"
-          :key="p.id"
-          class="group flex items-center gap-1.5 rounded px-1 py-0.5 text-xs hover:bg-muted"
-        >
+        <div v-for="p in running" :key="p.id"
+          class="group flex items-center gap-1.5 rounded px-1 py-0.5 text-xs hover:bg-muted">
           <span class="size-1.5 shrink-0 rounded-full" :class="statusDot(p.status)" />
           <span class="min-w-0 flex-1 truncate" :title="p.cmd">{{ p.name }}</span>
           <span class="shrink-0 tabular-nums text-muted-foreground">{{ fmtMem(p.memBytes) }}</span>
-          <button
-            class="shrink-0 rounded p-0.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-            :title="`终止 ${p.name}`"
-            @click="onKill(p)"
-          >
+          <button class="shrink-0 rounded p-0.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+            :title="`终止 ${p.name}`" @click="onKill(p)">
             <RiCloseLine size="13" />
           </button>
         </div>
@@ -139,11 +130,7 @@ const historyCount = computed(() => history.value.length)
           <DialogDescription v-if="historyCount === 0">暂无历史记录。</DialogDescription>
         </DialogHeader>
         <div v-if="historyCount" class="max-h-[60vh] space-y-2 overflow-y-auto pr-1">
-          <div
-            v-for="p in history"
-            :key="p.id"
-            class="rounded-md border border-border p-2 text-sm"
-          >
+          <div v-for="p in history" :key="p.id" class="rounded-md border border-border p-2 text-sm">
             <div class="flex items-center gap-2">
               <span class="size-2 shrink-0 rounded-full" :class="statusDot(p.status)" />
               <span class="min-w-0 flex-1 truncate font-medium" :title="p.cmd">{{ p.name }}</span>
@@ -169,10 +156,14 @@ const historyCount = computed(() => history.value.length)
               <summary class="cursor-pointer text-xs text-muted-foreground hover:text-foreground">
                 执行日志（{{ p.log.length }} 行）
               </summary>
-              <div class="mt-1 max-h-40 overflow-y-auto rounded bg-muted/40 p-1.5 font-mono text-[11px] leading-tight text-muted-foreground">
-                <div v-for="(line, i) in p.log" :key="i" class="whitespace-pre-wrap break-all">
-                  {{ line }}
-                </div>
+              <div
+                class="mt-1 max-h-40 overflow-y-auto rounded bg-muted/40 p-1.5 font-mono text-[11px] leading-tight text-muted-foreground">
+                <div
+                  v-for="(line, i) in p.log"
+                  :key="i"
+                  class="whitespace-pre-wrap break-all"
+                  v-html="ansiToHtml(line)"
+                />
               </div>
             </details>
           </div>

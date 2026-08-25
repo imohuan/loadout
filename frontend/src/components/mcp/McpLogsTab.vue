@@ -9,6 +9,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RiArrowUpLine, RiLoader4Line } from '@remixicon/vue'
 import { toast } from 'vue-sonner'
 import { api } from '@/lib/api'
+import { ansiToHtml } from '@/lib/ansi'
 
 interface LogFileInfo {
   name: string
@@ -31,7 +32,7 @@ interface LogReadResp {
   content: string
 }
 
-// 日志行（解析后）：时间戳 + [KIND] + 正文（正文原样纯文本，不解析 JSON）。
+// 日志行（解析后）：时间戳 + [KIND] + 正文（正文经 ansiToHtml 解析 ANSI 颜色码）。
 interface LogLine {
   ts: string
   kind: string
@@ -357,7 +358,7 @@ onMounted(loadServers)
               class="px-2 font-semibold"
               :class="KIND_CLASS[line.kind] || 'text-muted-foreground'"
               >[{{ line.kind }}]</span
-            >{{ line.body }}
+            ><span v-html="ansiToHtml(line.body)" />
           </div>
         </div>
         <div
