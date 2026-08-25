@@ -64,7 +64,8 @@ type Watcher struct {
 	pending  map[string]*time.Timer // 技能名 → 防抖 timer
 	stopOnce sync.Once
 	stop     chan struct{}
-	done     chan struct{}
+	done     chan struct{} // initListen 退出信号（递归模式）
+	syncDone chan struct{} // 启动全量同步完成信号
 }
 
 // NewWatcher 创建监听器。recursive/polling 按 config 开关传入，可单独开启。
@@ -86,6 +87,7 @@ func NewWatcher(svc *Service, recursive, polling bool, debounce, pollInterval ti
 		pending:      map[string]*time.Timer{},
 		stop:         make(chan struct{}),
 		done:         make(chan struct{}),
+		syncDone:     make(chan struct{}),
 	}
 }
 
@@ -117,10 +119,20 @@ func (w *Watcher) Start() error {
 		w.lg.Info("skills: 定时全量扫描已启动", "dir", w.svc.targetDir, "interval", w.pollInterval)
 	}
 
-	// 启动即全量同步一次（同步执行，不依赖 fsnotify），补齐监听启动前的差异。
-	for _, name := range w.listTargetSkills() {
-		w.syncSkill(name)
-	}
+	// 启动即全量同步一次（独立 goroutine，完成信号 syncDone；可被 Stop 中断），
+	// 补齐监听启动前的差异。服务卸载时 Stop 会等待本次全量同步收尾，
+	// 避免退出/测试清理时仍在写技能库目录。
+	go func() {
+		defer close(w.syncDone)
+		for _, name := range w.listTargetSkills() {
+			select {
+			case <-w.stop:
+				return
+			default:
+			}
+			w.syncSkill(name)
+		}
+	}()
 	return nil
 }
 
@@ -160,6 +172,11 @@ func (w *Watcher) Stop() {
 		w.mu.Unlock()
 		if wt != nil {
 			_ = wt.Close()
+		}
+		// 先等启动全量同步收尾（避免仍在写技能库），再等事件管道退出。
+		select {
+		case <-w.syncDone:
+		case <-time.After(5 * time.Second):
 		}
 		select {
 		case <-w.done:
@@ -291,6 +308,11 @@ func (w *Watcher) scheduleSync(skill string) {
 		w.mu.Lock()
 		delete(w.pending, skill)
 		w.mu.Unlock()
+		select {
+		case <-w.stop:
+			return
+		default:
+		}
 		w.syncSkill(skill)
 	})
 	w.pending[skill] = t
