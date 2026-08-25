@@ -1,5 +1,6 @@
 # Loadout 构建脚本（Windows / PowerShell）
-# 用法：powershell -File scripts/build.ps1
+# 用途：将 Server 打包为独立 exe（bin/loadout.exe）
+# 用法：powershell -File scripts/build-server.ps1
 $ErrorActionPreference = "Stop"
 Set-Location (Split-Path $PSScriptRoot)
 

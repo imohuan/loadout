@@ -13,7 +13,7 @@ $rootDir = Split-Path $PSScriptRoot -Parent
 function Build-Server {
     Write-Host "`n==> 构建 Loadout Server" -ForegroundColor Cyan
     Push-Location "$rootDir\apps\server"
-    go build -o ..\..\bin\loadout.exe .
+    go build -buildvcs=false -o ..\..\bin\loadout.exe .
     if ($LASTEXITCODE -ne 0) {
         Pop-Location
         throw "Server 构建失败"
