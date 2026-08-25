@@ -50,10 +50,15 @@ if ($Choice) {
             "2" { $choice = "debug" }
             "3" { $choice = "both" }
             "q" { Write-Host "已取消打包。`n" -ForegroundColor Red; exit 0 }
-            default { Write-Host "  无效输入，请重新输入" -ForegroundColor Red }
+            default { Write-Host "  无效输入：'$sel'，请重新输入" -ForegroundColor Red }
         }
     }
 
+    # $choice 必须由用户显式选定，绝不允许静默 fallthrough 到默认版本。
+    if ($null -eq $choice) {
+        Write-Host "未收到有效选择，已取消打包。" -ForegroundColor Red
+        exit 1
+    }
     $jobs = switch ($choice) {
         "release" { @("release") }
         "debug"   { @("debug") }
