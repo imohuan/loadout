@@ -26,7 +26,14 @@ func NewProxyHandler(staticHandler http.Handler, loadoutAddr string) *ProxyHandl
 	}
 
 	proxy := httputil.NewSingleHostReverseProxy(target)
-	
+
+	// SSE/流式响应必须立刻 flush，否则前端 EventSource 会一直挂在 pending 状态、
+	// 红点（连接断开）一直亮着，整个进程面板显示 0 个进程等异常。
+	// FlushInterval = 0（默认）会在响应体写完才 flush，但 SSE 的 body 永远不结束——
+	// 数据全部被 buffer 住，前端永远收不到 snapshot。设为 -1 让 proxy 在每次 Write
+	// 后立即将数据 flush 到 webview 侧。
+	proxy.FlushInterval = -1
+
 	// 自定义错误处理
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
 		log.Printf("[Proxy Error] %s %s: %v", r.Method, r.URL.Path, err)
