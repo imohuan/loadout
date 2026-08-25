@@ -81,7 +81,7 @@ async function onKill(p: ProcessInfo) {
 }
 
 // 历史条目过滤 + 展开唯一键。
-// - 过滤掉既无命令又无日志的空壳记录（展开后是空白，无展示价值）。
+// - 过滤掉没有日志的空壳记录（无日志的卡片展开后无内容，直接不显示）。
 // - 后端旧数据可能存在重复 id（跨重启复用 proc-N），Accordion 用 id 作展开值
 //   会因 value 相同导致同名条目同步展开，故用 id+endedAt 组合成唯一键。
 function historyKey(p: ProcessInfo): string {
@@ -89,7 +89,7 @@ function historyKey(p: ProcessInfo): string {
 }
 
 const historyItems = computed(() =>
-  history.value.filter((p) => p.cmd || (p.log && p.log.length)),
+  history.value.filter((p) => p.log && p.log.length),
 )
 
 // 角标/空态提示用过滤后的条目数，保证与列表一致。
