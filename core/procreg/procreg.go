@@ -10,6 +10,8 @@ package procreg
 
 import (
 	"bufio"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -93,7 +95,6 @@ type HistoryStore interface {
 // procreg 全局注册表。
 type Registry struct {
 	mu      sync.Mutex
-	seq     int
 	running map[string]*Proc // 运行中的进程
 	history []*Proc          // 历史记录（新→旧排序，上限 historyLimit，内存态兜底）
 	subs    map[chan Event]bool
@@ -475,11 +476,23 @@ func (r *Registry) SetMem(id string, mem uint64) {
 	r.broadcast(Event{Type: "update", Data: []Proc{copyProc}})
 }
 
+// newProcID 生成全局唯一的进程 ID。不再复用「proc-N」递增计数，
+// 因为该计数在每次进程启动时单调递增、但后端重启后会从 1 重新计数，
+// 导致历史表中出现相同 ID 的多条记录（前端 Accordion 用 ID 作展开值会冲突）。
+// 这里用纳秒时间戳 + 随机后缀，保证进程内与跨重启都唯一。
+func newProcID() string {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err == nil {
+		return "proc-" + strconv.FormatInt(time.Now().UnixNano(), 36) + "-" + hex.EncodeToString(b[:])
+	}
+	// 兜底：随机源不可用时退化为纯时间戳（并发同纳秒几乎不可能）。
+	return "proc-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+}
+
 // add 登记一个新启动的进程并广播。
 func (r *Registry) add(o Options, pid int) *Proc {
 	r.mu.Lock()
-	r.seq++
-	id := "proc-" + strconv.Itoa(r.seq)
+	id := newProcID()
 	proc := &Proc{
 		ID:        id,
 		Name:      o.Name,

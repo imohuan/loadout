@@ -80,7 +80,20 @@ async function onKill(p: ProcessInfo) {
   }
 }
 
-const historyCount = computed(() => history.value.length)
+// 历史条目过滤 + 展开唯一键。
+// - 过滤掉既无命令又无日志的空壳记录（展开后是空白，无展示价值）。
+// - 后端旧数据可能存在重复 id（跨重启复用 proc-N），Accordion 用 id 作展开值
+//   会因 value 相同导致同名条目同步展开，故用 id+endedAt 组合成唯一键。
+function historyKey(p: ProcessInfo): string {
+  return p.endedAt ? `${p.id}:${new Date(p.endedAt).getTime()}` : `${p.id}:${p.startedAt}`
+}
+
+const historyItems = computed(() =>
+  history.value.filter((p) => p.cmd || (p.log && p.log.length)),
+)
+
+// 角标/空态提示用过滤后的条目数，保证与列表一致。
+const historyCount = computed(() => historyItems.value.length)
 </script>
 
 <template>
@@ -129,9 +142,10 @@ const historyCount = computed(() => history.value.length)
           <DialogTitle>历史进程</DialogTitle>
           <DialogDescription v-if="historyCount === 0">暂无历史记录。</DialogDescription>
         </DialogHeader>
-        <div v-if="historyCount" class="h-[70vh] flex items-start overflow-y-auto pr-1">
+        <div v-if="historyItems.length" class="h-[70vh] flex items-start overflow-y-auto pr-1">
           <Accordion type="multiple" class="w-full">
-            <AccordionItem v-for="p in history" :key="p.id" :value="p.id" class="mb-2 rounded-md last:mb-0">
+            <AccordionItem v-for="p in historyItems" :key="historyKey(p)" :value="historyKey(p)"
+              class="mb-2 rounded-md !border-b-0 last:mb-0">
               <AccordionTrigger>
                 <div class="w-full flex justify-between items-center">
                   <span class="inline-flex items-center">
