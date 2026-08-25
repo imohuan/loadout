@@ -771,27 +771,46 @@ func (s *Service) SetServerEnabled(ctx context.Context, id string, enabled bool)
 
 // StartEnabled 启动时自动拉起所有 enabled 的上游（stdio 常驻进程）。
 // 并行 Connect（总耗时 = 最慢的一个，而非求和），单个失败只记日志不阻断
-// 整体启动——失败状态由前端经 ServerStatus 展示。
+// 整体启动——失败状态由前端经 ServerStatus 展示。成功/失败/汇总都会输出日志。
 func (s *Service) StartEnabled(ctx context.Context) {
 	servers, err := s.readServers()
 	if err != nil {
 		s.warn("mcphub: 启动恢复：读服务器清单失败", "err", err)
 		return
 	}
-	var wg sync.WaitGroup
+
+	var enabled []types.MCPServer
 	for _, srv := range servers {
-		if !srv.Enabled {
-			continue
+		if srv.Enabled {
+			enabled = append(enabled, srv)
 		}
+	}
+	if len(enabled) == 0 {
+		s.info("mcphub: 启动恢复：无启用的 MCP 服务器，跳过")
+		return
+	}
+	s.info("mcphub: 启动恢复：开始拉起", "count", len(enabled))
+
+	var wg sync.WaitGroup
+	var failed int
+	var mu sync.Mutex
+	for _, srv := range enabled {
 		wg.Add(1)
 		go func(srv types.MCPServer) {
 			defer wg.Done()
 			if err := s.getUpstream(srv).Connect(ctx); err != nil {
+				mu.Lock()
+				failed++
+				mu.Unlock()
 				s.warn("mcphub: 启动恢复拉起失败", "server", srv.Name, "err", err)
+			} else {
+				s.info("mcphub: 启动恢复拉起成功", "server", srv.Name)
 			}
 		}(srv)
 	}
 	wg.Wait()
+
+	s.info("mcphub: 启动恢复完成", "total", len(enabled), "ok", len(enabled)-failed, "failed", failed)
 }
 
 // ServerStatus 返回指定 server 的进程运行状态。
@@ -930,6 +949,13 @@ func (s *Service) skillBody(t ToolEntry) string {
 func (s *Service) warn(msg string, args ...any) {
 	if s.lg != nil {
 		s.lg.Warn(msg, args...)
+	}
+}
+
+// info 在日志器可用时记录一条信息日志（nil 日志器安全）。
+func (s *Service) info(msg string, args ...any) {
+	if s.lg != nil {
+		s.lg.Info(msg, args...)
 	}
 }
 
