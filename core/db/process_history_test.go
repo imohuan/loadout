@@ -4,12 +4,13 @@ import (
 	"database/sql"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"loadout/core/procreg"
 )
 
 // TestProcessHistoryPersistsAcrossRestart 验证进程历史经 SQLite 持久化后，
-// 重建注册表（模拟后端重启）仍能通过 Snapshot 恢复完整历史，且不受内存上限限制。
+// 后端（软件）重启时会被清空：旧会话日志不跨重启保留，前端历史面板只展示本次运行期间。
 func TestProcessHistoryPersistsAcrossRestart(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "proc-history.db")
 
@@ -42,7 +43,7 @@ func TestProcessHistoryPersistsAcrossRestart(t *testing.T) {
 	}
 	db1.Close()
 
-	// —— 第二次"运行期"：模拟后端重启，历史全清空，仅持久化保留 ——
+	// —— 第二次"运行期"：模拟后端重启，历史全清空（本次运行期从零开始） ——
 	db2 := mustOpen(t, path)
 	defer db2.Close()
 	repo2, err := NewProcessHistoryRepository(db2)
@@ -52,21 +53,10 @@ func TestProcessHistoryPersistsAcrossRestart(t *testing.T) {
 	r2 := procreg.New() // 全新注册表，内存历史为空
 	r2.SetHistoryStore(repo2)
 
+	// 重启后旧会话的进程历史应被清空（Clear 于 NewProcessHistoryRepository 执行）。
 	restored := r2.Snapshot()
-	if len(restored) != 7 {
-		t.Fatalf("restored snapshot = %d, want 7 (6 done + 1 error 历史保留)", len(restored))
-	}
-	// 新→旧排序校验：最近结束的在前。
-	if restored[0].ID != "proc-7" {
-		t.Errorf("want newest first (proc-7), got %s", restored[0].ID)
-	}
-	// 混合状态都应保留（不管 running/error/done）。
-	statusSeen := map[procreg.ProcStatus]bool{}
-	for _, p := range restored {
-		statusSeen[p.Status] = true
-	}
-	if !statusSeen[procreg.StatusError] || !statusSeen[procreg.StatusDone] {
-		t.Errorf("history should retain all statuses, got %v", statusSeen)
+	if len(restored) != 0 {
+		t.Fatalf("restored snapshot = %d, want 0 (旧会话历史应在重启时清空)", len(restored))
 	}
 }
 
@@ -85,8 +75,10 @@ func TestProcessHistoryStoreInjectedSnapshot(t *testing.T) {
 	// 结束一条历史。
 	r.RegisterExisting("p1", "旧任务", "skill", nil)
 	r.Unregister("p1", nil)
-	// 启动一条运行中。
+	p1Ended := r.Snapshot()[0].EndedAt
+	// 启动一条运行中（StartedAt 显式设晚于 p1 的 endedAt，避免时间戳撞上导致排序不确定）。
 	r.RegisterExisting("p2", "新任务", "skill", nil)
+	r.Running("p2").StartedAt = p1Ended.Add(time.Millisecond)
 
 	snap := r.Snapshot()
 	if len(snap) != 2 {

@@ -22,6 +22,11 @@ func NewProcessHistoryRepository(database *sql.DB) (*ProcessHistoryRepository, e
 	if database == nil {
 		return nil, fmt.Errorf("db: nil database")
 	}
+	// 历史记录为「本次运行会话」的日志：后端（软件）每次重启时清空旧记录，
+	// 确保前端历史面板只展示本次运行期间的进程日志。
+	if _, err := database.Exec(`DELETE FROM process_history`); err != nil {
+		return nil, fmt.Errorf("db: clear process history on startup: %w", err)
+	}
 	return &ProcessHistoryRepository{database: database}, nil
 }
 
