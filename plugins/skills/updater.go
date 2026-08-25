@@ -31,6 +31,13 @@ func newUpdateRunner(svc *Service) *UpdateRunner {
 
 // Subscribe 订阅更新日志流。若没有任务在跑则立即启动一个。
 // 返回事件 channel；任务结束（done/error 推送后）channel 由广播端关闭。
+// IsRunning 返回是否有更新任务正在跑。
+func (r *UpdateRunner) IsRunning() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.running
+}
+
 func (r *UpdateRunner) Subscribe() (<-chan UpdateEvent, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

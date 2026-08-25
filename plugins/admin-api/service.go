@@ -163,6 +163,7 @@ func (s *Service) Routes() []plugin.RouteSpec {
 		{Method: http.MethodGet, Pattern: "GET /api/skills/status", Auth: plugin.AuthSession, Handler: s.session(s.handleSkillsStatus)},
 		{Method: http.MethodPost, Pattern: "POST /api/skills/sync", Auth: plugin.AuthSession, Handler: s.session(s.handleSkillSync)},
 		{Method: http.MethodPost, Pattern: "POST /api/skills/check-updates", Auth: plugin.AuthSession, Handler: s.session(s.handleSkillCheckUpdates)},
+		{Method: http.MethodGet, Pattern: "GET /api/skills/update-status", Auth: plugin.AuthSession, Handler: s.session(s.handleSkillUpdateStatus)},
 		{Method: http.MethodGet, Pattern: "GET /api/skills/update-stream", Auth: plugin.AuthSession, Handler: s.session(s.handleSkillUpdateStream)},
 		{Method: http.MethodPost, Pattern: "POST /api/skills/restore", Auth: plugin.AuthSession, Handler: s.session(s.handleSkillRestore)},
 		{Method: http.MethodPost, Pattern: "POST /api/skills/restore-all", Auth: plugin.AuthSession, Handler: s.session(s.handleSkillRestoreAll)},
@@ -2017,6 +2018,12 @@ func (s *Service) handleSkillSync(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleSkillCheckUpdates 启动更新任务（单实例），立即返回；日志走
+// GET /api/skills/update-status 返回是否有更新任务正在跑，
+// 前端页面入口时查询，若在跑则自动显示「更新日志」Tab（不自动跳转）。
+func (s *Service) handleSkillUpdateStatus(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"running": s.skill.UpdateRunning()})
+}
+
 // GET /api/skills/update-stream 的 SSE 流实时推送。返回更新列表（若已完成）。
 func (s *Service) handleSkillCheckUpdates(w http.ResponseWriter, r *http.Request) {
 	ch, err := s.skill.SubscribeUpdate()

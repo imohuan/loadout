@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import {
   RiAddLine,
   RiArrowDownSLine,
@@ -366,6 +366,15 @@ async function checkUpdates() {
   activeTab.value = 'logs'
   updateTrigger.value++
 }
+// 页面进入/刷新时，若后台已有更新任务在跑，自动显示「更新日志」Tab（不自动跳转）。
+onMounted(async () => {
+  try {
+    const { running } = await api.updateStatus()
+    if (running) showLogsTab.value = true
+  } catch {
+    /* 查询失败静默忽略，保持默认隐藏 */
+  }
+})
 async function restoreBackup(status: { name: string; dir: string }) {
   const label = platformName(status.name)
   const confirmed = await confirmDialog({

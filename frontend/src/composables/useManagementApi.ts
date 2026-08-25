@@ -15,6 +15,8 @@ export function useManagementApi() {
   const syncSkills = () => request<{ synced: number }>('/api/skills/sync', 'POST')
   const checkSkillUpdates = () =>
     request<{ updates: string[] }>('/api/skills/check-updates', 'POST')
+  const updateStatus = () =>
+    request<{ running: boolean }>('/api/skills/update-status', 'GET')
   const restoreBackup = (target: string) => request<void>('/api/skills/restore', 'POST', { target })
   const restoreAllBackups = () => request<{ restored: string[] }>('/api/skills/restore-all', 'POST')
   const installSkill = (body: { name: string; source: string; version: string }) =>

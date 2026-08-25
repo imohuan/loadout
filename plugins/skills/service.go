@@ -79,6 +79,9 @@ func NewService(st *store.Store, lg *slog.Logger, repoDir, targetDir string) *Se
 func (s *Service) SetRepository(repo *db.Repository) { s.repo = repo }
 
 // SubscribeUpdate 订阅更新任务日志流（SSE 用）。
+// UpdateRunning 返回是否有更新任务正在跑（前端入口自动显示更新日志 Tab 用）。
+func (s *Service) UpdateRunning() bool { return s.updater.IsRunning() }
+
 func (s *Service) SubscribeUpdate() (<-chan UpdateEvent, error) {
 	return s.updater.Subscribe()
 }
