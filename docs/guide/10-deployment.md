@@ -24,20 +24,19 @@ go build -o loadout ./apps/server
 - 账号 `admin`，密码见 `~/.loadout/admin-password`；**改密后该文件自动删除**。
 - 对外三入口见 [01-架构总览](./01-architecture.md)。
 
-## 3. Linux 一键部署（推荐）
+## 3. Linux 部署（GitHub Actions 产出）
+
+Linux 产物由 GitHub Actions 在打 tag 发版时自动构建（见 `.github/workflows/release.yml`），
+产出 `loadout-server-linux-amd64.tar.gz`（单二进制 + systemd 单元）。手动部署步骤：
 
 ```bash
-curl -sL https://raw.githubusercontent.com/imohuan/loadout/main/scripts/deploy-loadout.sh -o deploy-loadout.sh
-bash deploy-loadout.sh                 # 默认 v0.1.0，端口 18000
-# bash deploy-loadout.sh v0.2.0 8080   # 指定版本与端口
-```
+# 下载对应版本的 Release 产物并解压
+curl -sL https://github.com/imohuan/loadout/releases/download/v0.1.0/loadout-server-linux-amd64.tar.gz -o loadout.tar.gz
+tar -xzf loadout.tar.gz && rm loadout.tar.gz
+sudo cp loadout-server/loadout /usr/local/bin/loadout
+sudo chmod +x /usr/local/bin/loadout
 
-脚本自动完成：下载 Release 产物 → 解压 → 安装到 `/usr/local/bin/loadout` →
-生成 systemd 单元（`/etc/systemd/system/loadout.service`）→ 建 `loadout` 运行用户 → 开机自启并启动。
-
-手动 systemd（若不用一键脚本）：
-
-```bash
+# systemd 服务
 sudo cp loadout-server/loadout.service /etc/systemd/system/
 # 改端口/数据目录：vim /etc/systemd/system/loadout.service
 sudo systemctl daemon-reload && sudo systemctl enable --now loadout

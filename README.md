@@ -52,15 +52,17 @@ go build -o loadout ./apps/server
 | `loadout-server-linux-amd64.tar.gz` | **Linux 无 UI 纯服务版**（单二进制 + systemd 单元），适合云服务器部署 |
 | `loadout-desktop-windows-amd64.exe` | Windows 桌面版（内嵌服务端，双击即用） |
 
-### Linux 一键部署脚本（推荐）
+### Linux 部署（GitHub Actions 产出）
+
+打 tag 发版后，GitHub Actions 自动构建 `loadout-server-linux-amd64.tar.gz`。手动部署：
 
 ```bash
-curl -sL https://raw.githubusercontent.com/imohuan/loadout/main/scripts/deploy-loadout.sh -o deploy-loadout.sh
-bash deploy-loadout.sh                 # 默认 v0.1.0，端口 18000
-# bash deploy-loadout.sh v0.2.0 8080   # 指定版本与端口
+curl -sL https://github.com/imohuan/loadout/releases/download/v0.1.0/loadout-server-linux-amd64.tar.gz -o loadout.tar.gz
+tar -xzf loadout.tar.gz && rm loadout.tar.gz
+sudo cp loadout-server/loadout /usr/local/bin/loadout && sudo chmod +x /usr/local/bin/loadout
+sudo cp loadout-server/loadout.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now loadout
 ```
-
-脚本自动完成：下载产物 → 解压 → 安装到 `/usr/local/bin/loadout` → 生成 systemd 单元（`/etc/systemd/system/loadout.service`）→ 建 `loadout` 运行用户 → 开机自启并启动。
 
 ### 手动部署
 
