@@ -615,6 +615,9 @@ const matrix = ref<Record<string, Record<PlatformId, McpMatrixCell>>>({})
 
 /** 把 --list-mcp --json 结果应用到界面：源全集（行）+ 各平台 enabled（初始勾选） */
 function applyMatrix(res: McpMatrixResult) {
+  // 卡片2「MCP 来源」：展示后端返回的真实源路径（cwd/mcp.json 或 ~/.unifyai/mcp.json），
+  // 不再用硬编码占位。未返回时保留默认提示。
+  if (res.source?.path) mcpSourcePath.value = res.source.path
   const srcServers: McpServerInfo[] = (res.source?.servers || []).map((item) => {
     const c = (item.config || {}) as Record<string, unknown>
     const type = c.type === 'remote' ? 'remote' : 'local'
@@ -878,6 +881,10 @@ async function handleUpdateMetadata() {
     }
     if (updated) {
       modelSource.value = updated
+      // 元数据缓存更新会改变 OpenCodex 模型的能力标记（🧠思考/👁视觉）与 OpenRouter 匹配数，
+      // 因此同步重拉模型列表，让「数据预览 → OpenCodex 模型」卡片一并刷新（与卡片1 保持自洽）。
+      // reloadOpenCodexModels 内部已 catch，失败不阻塞主流程。
+      await reloadOpenCodexModels()
       toast.success('模型元数据缓存已刷新', {
         description: `OpenRouter ${updated.modelCount} 个模型已更新（含 ${updated.visionCount} 视觉 / ${updated.reasoningCount} 思考）`,
       })
