@@ -17,6 +17,10 @@ import (
 	"loadout/core/linkfs"
 )
 
+// listenReadyTimeout 等待 fsnotify 初始化就绪的窗口。
+// 超过即放行启动（监听转入后台，由轮询/全量同步兜底），避免句柄竞争导致服务卡死。
+const listenReadyTimeout = 2 * time.Second
+
 // watchIgnoreNames 监听时忽略的目录/文件名。
 // 注意：忽略只影响「是否触发同步」，不影响复制——同步时 .git 照样整体复制。
 var watchIgnoreNames = map[string]bool{
@@ -84,22 +88,29 @@ func NewWatcher(svc *Service, recursive, polling bool, debounce, pollInterval ti
 }
 
 // Start 启动监听：按开关启动对应管道，并立即做一次全量同步兜底。
+//
+// 启动路径的取舍：fsnotify 初始化（NewWatcher + WalkDir 注册全部子目录）在
+// 特定环境（如旧实例句柄未释放）下可能长时间阻塞，因此单独放后台 goroutine，
+// 只等待一个短暂的「就绪窗口」——窗口内没就绪就放行，绝不拖住服务装配。
+// 监听未就绪时的技能变化由「立即全量同步」和「定时轮询」兜底。
 func (w *Watcher) Start() error {
 	w.stop = make(chan struct{})
 	w.done = make(chan struct{})
 
 	if w.recursive {
-		fw, err := fsnotify.NewWatcher()
-		if err != nil {
-			return fmt.Errorf("skills: 创建文件监听失败: %w", err)
+		ready := make(chan bool, 1)
+		go func() {
+			ready <- w.initListen()
+		}()
+		select {
+		case ok := <-ready:
+			if !ok {
+				w.lg.Warn("skills: 递归监听初始化失败，已降级为轮询/全量同步")
+			}
+		case <-time.After(listenReadyTimeout):
+			// 超时：fsnotify 大概率卡住，不再等待，后台 goroutine 若恢复会自行就绪。
+			w.lg.Warn("skills: 递归监听初始化超时，转入后台继续，启动不再等待")
 		}
-		w.watcher = fw
-		if err := w.watchRecursive(); err != nil {
-			_ = fw.Close()
-			return err
-		}
-		go w.eventLoop()
-		w.lg.Info("skills: 递归监听已启动", "dir", w.svc.targetDir, "debounce", w.debounce)
 	}
 
 	if w.polling {
@@ -107,21 +118,48 @@ func (w *Watcher) Start() error {
 		w.lg.Info("skills: 定时全量扫描已启动", "dir", w.svc.targetDir, "interval", w.pollInterval)
 	}
 
-	// 启动即全量同步一次（无论哪种模式），补齐监听启动前的差异。
-	go func() {
-		for _, name := range w.listTargetSkills() {
-			w.syncSkill(name)
-		}
-	}()
+	// 启动即全量同步一次（同步执行，不依赖 fsnotify），补齐监听启动前的差异。
+	for _, name := range w.listTargetSkills() {
+		w.syncSkill(name)
+	}
 	return nil
+}
+
+// initListen 初始化 fsnotify 递归监听并进入事件循环。仅在递归模式启用时调用，
+// 运行在后台 goroutine。返回是否成功就绪；失败只降级、不向上抛错。
+func (w *Watcher) initListen() (ok bool) {
+	defer func() { close(w.done) }()
+
+	fw, err := fsnotify.NewWatcher()
+	if err != nil {
+		w.lg.Warn("skills: 创建文件监听失败", "err", err)
+		return false
+	}
+	w.mu.Lock()
+	w.watcher = fw
+	w.mu.Unlock()
+	if err := w.watchRecursive(); err != nil {
+		w.lg.Warn("skills: 注册递归监听失败", "err", err)
+		w.mu.Lock()
+		w.watcher = nil
+		w.mu.Unlock()
+		_ = fw.Close()
+		return false
+	}
+	w.lg.Info("skills: 递归监听已启动", "dir", w.svc.targetDir, "debounce", w.debounce)
+	w.eventLoop()
+	return true
 }
 
 // Stop 停止监听并等待管道退出（幂等）。
 func (w *Watcher) Stop() {
 	w.stopOnce.Do(func() {
 		close(w.stop)
-		if w.watcher != nil {
-			_ = w.watcher.Close()
+		w.mu.Lock()
+		wt := w.watcher
+		w.mu.Unlock()
+		if wt != nil {
+			_ = wt.Close()
 		}
 		select {
 		case <-w.done:
@@ -168,7 +206,6 @@ func (w *Watcher) addWatch(dir string) {
 
 // eventLoop 消费 fsnotify 事件。
 func (w *Watcher) eventLoop() {
-	defer close(w.done)
 	for {
 		select {
 		case <-w.stop:
