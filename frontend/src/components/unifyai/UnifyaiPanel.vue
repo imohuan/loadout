@@ -933,6 +933,7 @@ onMounted(async () => {
         if (data?.platforms?.length) applyPlatforms(data.platforms)
       })
       .catch(() => {})
+  }
   } finally {
     const elapsed = performance.now() - startedAt
     const rest = Math.max(0, MIN_LOADING_MS - elapsed)
