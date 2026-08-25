@@ -148,7 +148,7 @@ async function changePassword() {
         <TabsContent value="runtime" class="space-y-4">
           <VolcQuotaCard />
           <div class="grid gap-4 lg:grid-cols-2">
-            <Card class="rounded-md">
+            <Card class="rounded-md hidden" >
               <CardHeader>
                 <CardTitle class="text-base">运行时设置</CardTitle>
               </CardHeader>

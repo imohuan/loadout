@@ -702,7 +702,7 @@ const displayName = (ch: Channel) => ch.channel_name || ch.name
             <AccordionContent>
               <VueDraggable :model-value="group.draggable ? focusCards : group.items" :disabled="!group.draggable"
                 :animation="150" ghost-class="opacity-0" drag-class="volc-dragging"
-                class="grid grid-cols-1 gap-2 sm:grid-cols-3! lg:grid-cols-4!" @update:model-value="onFocusReorder">
+                class="grid grid-cols-1 gap-2 md:grid-cols-2! lg:grid-cols-3! xl:grid-cols-4!" @update:model-value="onFocusReorder">
                 <div v-for="a in group.draggable ? focusCards : group.items" :key="a.model"
                   class="flex flex-col gap-1.5 rounded-md border p-3" :class="[
                     a.__noAggregate ? 'border-dashed border-muted-foreground/40 bg-muted/30 text-muted-foreground' : '',
