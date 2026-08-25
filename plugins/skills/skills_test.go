@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"loadout/core/config"
+	"loadout/core/procreg"
 	"loadout/core/store"
 	"loadout/plugins/types"
 )
@@ -141,19 +142,18 @@ func TestUpdateSkills(t *testing.T) {
 		t.Fatalf("写 lock 失败: %v", err)
 	}
 
-	orig := runCommandStream
-	runCommandStream = func(name string, args []string, onLine func(string)) error {
-		if name != "npx" {
-			t.Fatalf("期望 npx 命令，实际 %q", name)
+	orig := procreg.SetRunFn(func(_ *procreg.Registry, o procreg.Options) (*procreg.Handle, error) {
+		if o.Cmd != "npx" {
+			t.Fatalf("期望 npx 命令，实际 %q", o.Cmd)
 		}
 		// 模拟更新后 foo 的 hash 变化、fresh 不变。
 		body2 := `{"version":3,"skills":{"foo":{"source":"o/r","skillFolderHash":"bbbb","skillPath":"skills/foo/SKILL.md"},"fresh":{"source":"o/r","skillFolderHash":"cccc","skillPath":"skills/fresh/SKILL.md"}}}`
 		if err := os.WriteFile(lockPath, []byte(body2), 0o644); err != nil {
-			return err
+			return nil, err
 		}
-		return nil
-	}
-	t.Cleanup(func() { runCommandStream = orig })
+		return procreg.NewTestHandle(nil), nil
+	})
+	t.Cleanup(func() { procreg.SetRunFn(orig) })
 
 	updated, err := svc.UpdateSkills(nil)
 	if err != nil {
@@ -180,9 +180,10 @@ func TestUpdateSkillsRemovesExtras(t *testing.T) {
 		t.Fatalf("写技能库 lock 失败: %v", err)
 	}
 
-	orig := runCommandStream
-	runCommandStream = func(name string, args []string, onLine func(string)) error { return nil }
-	t.Cleanup(func() { runCommandStream = orig })
+	orig := procreg.SetRunFn(func(_ *procreg.Registry, _ procreg.Options) (*procreg.Handle, error) {
+		return procreg.NewTestHandle(nil), nil
+	})
+	t.Cleanup(func() { procreg.SetRunFn(orig) })
 
 	updated, err := svc.UpdateSkills(nil)
 	if err != nil {
@@ -212,12 +213,11 @@ func TestUpdateSkillsRemovesExtras(t *testing.T) {
 // TestUpdateSkillsEmptyLock 验证 lock 为空时 UpdateSkills 仍调用 update 但不报错。
 func TestUpdateSkillsEmptyLock(t *testing.T) {
 	called := false
-	orig := runCommandStream
-	runCommandStream = func(name string, args []string, onLine func(string)) error {
+	orig := procreg.SetRunFn(func(_ *procreg.Registry, _ procreg.Options) (*procreg.Handle, error) {
 		called = true
-		return nil
-	}
-	t.Cleanup(func() { runCommandStream = orig })
+		return procreg.NewTestHandle(nil), nil
+	})
+	t.Cleanup(func() { procreg.SetRunFn(orig) })
 
 	svc, _, _ := newTestService(t)
 	updated, err := svc.UpdateSkills(nil)

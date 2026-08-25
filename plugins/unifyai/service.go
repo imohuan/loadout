@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"loadout/core/cmdutil"
+	"loadout/core/procreg"
 	"loadout/core/config"
 )
 
@@ -387,7 +388,17 @@ func (s *Service) Run(args []string, onLog func(string)) error {
 	}
 	onLog(fmt.Sprintf("执行: %s %s", displayCmd(cmd, base), strings.Join(args, " ")))
 	full := append(append([]string{}, base...), args...)
-	if err := runCommandStream(cmd, full, onLog); err != nil {
+	h, err := procreg.Run(procreg.Options{
+		Name:  "UnifyAI 同步",
+		Kind:  "unifyai",
+		Cmd:   cmd,
+		Args:  full,
+		OnLog: onLog,
+	})
+	if err != nil {
+		return fmt.Errorf("unifyai: %w", err)
+	}
+	if err := h.Wait(); err != nil {
 		return fmt.Errorf("unifyai: %w", err)
 	}
 	return nil

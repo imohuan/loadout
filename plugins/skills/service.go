@@ -24,6 +24,7 @@ import (
 	"loadout/core/config"
 	"loadout/core/db"
 	"loadout/core/linkfs"
+	"loadout/core/procreg"
 	"loadout/core/store"
 	"loadout/plugins/types"
 )
@@ -1037,7 +1038,17 @@ func (s *Service) UpdateSkills(onLog func(string)) ([]string, error) {
 	// 2) 执行官方更新（逐行实时输出）。
 	onLog("执行 npx skills update -y…")
 	beforeHashes, _ := readLockEntries(s.targetDir)
-	err := runCommandStream("npx", []string{"-y", "skills", "update", "-y"}, onLog)
+	h, err := procreg.Run(procreg.Options{
+		Name:  "更新技能",
+		Kind:  "skill",
+		Cmd:   "npx",
+		Args:  []string{"-y", "skills", "update", "-y"},
+		OnLog: onLog,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("skills: 启动 npx skills update 失败: %w", err)
+	}
+	err = h.Wait()
 	if err != nil {
 		return nil, fmt.Errorf("skills: npx skills update 失败: %w", err)
 	}

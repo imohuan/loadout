@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"loadout/core/config"
+	"loadout/core/procreg"
 )
 
 // TestPlatformInfoFallback 验证 CLI 不可用时回落内置默认平台（页面仍可用）。
@@ -46,16 +47,15 @@ func TestPlatformInfoFallback(t *testing.T) {
 
 // TestRunStreamsLogs 验证 Run 逐行回调 CLI 输出（stdout/stderr 合并）。
 func TestRunStreamsLogs(t *testing.T) {
-	old := runCommandStream
-	defer func() { runCommandStream = old }()
-	runCommandStream = func(name string, args []string, onLine func(string)) error {
-		if name == "" || len(args) == 0 {
-			t.Errorf("runCommandStream 收到空命令: %q %v", name, args)
+	orig := procreg.SetRunFn(func(_ *procreg.Registry, o procreg.Options) (*procreg.Handle, error) {
+		if o.Cmd == "" || len(o.Args) == 0 {
+			t.Errorf("cmd empty")
 		}
-		onLine("line-a")
-		onLine("line-b")
-		return nil
-	}
+		if o.OnLog != nil { o.OnLog("line-a") }
+		if o.OnLog != nil { o.OnLog("line-b") }
+		return procreg.NewTestHandle(nil), nil
+	})
+	defer func() { procreg.SetRunFn(orig) }()
 	svc := NewService(slog.Default())
 	var got []string
 	if err := svc.Run([]string{"--dry-run"}, func(line string) { got = append(got, line) }); err != nil {
@@ -74,12 +74,11 @@ func TestRunStreamsLogs(t *testing.T) {
 
 // TestRunErrorPropagates 验证 Run 返回命令错误（非零退出）。
 func TestRunErrorPropagates(t *testing.T) {
-	old := runCommandStream
-	defer func() { runCommandStream = old }()
-	runCommandStream = func(name string, args []string, onLine func(string)) error {
-		onLine("boom")
-		return errFake
-	}
+	orig := procreg.SetRunFn(func(_ *procreg.Registry, o procreg.Options) (*procreg.Handle, error) {
+		if o.OnLog != nil { o.OnLog("boom") }
+		return procreg.NewTestHandle(errFake), nil
+	})
+	defer func() { procreg.SetRunFn(orig) }()
 	svc := NewService(slog.Default())
 	err := svc.Run(nil, nil)
 	if err == nil {
@@ -134,12 +133,11 @@ func TestEnvWithBinDir(t *testing.T) {
 
 // TestRunnerSingleInstanceAndBroadcast 验证单实例 + 多订阅者广播 + 终态关闭。
 func TestRunnerSingleInstanceAndBroadcast(t *testing.T) {
-	old := runCommandStream
-	defer func() { runCommandStream = old }()
-	runCommandStream = func(name string, args []string, onLine func(string)) error {
-		onLine("log-1")
-		return nil
-	}
+	orig := procreg.SetRunFn(func(_ *procreg.Registry, o procreg.Options) (*procreg.Handle, error) {
+		if o.OnLog != nil { o.OnLog("log-1") }
+		return procreg.NewTestHandle(nil), nil
+	})
+	defer func() { procreg.SetRunFn(orig) }()
 	svc := NewService(slog.Default())
 	svc.SetArgs([]string{"--all"})
 

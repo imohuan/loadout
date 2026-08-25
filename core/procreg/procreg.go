@@ -72,6 +72,13 @@ func (h *Handle) ID() string { return h.procID }
 // Wait 阻塞等待进程结束，返回命令退出错误（nil 表示成功）。
 func (h *Handle) Wait() error { return <-h.done }
 
+// NewTestHandle 返回一个 Wait 立即返回给定错误的 Handle（测试辅助，mock 命令执行用）。
+func NewTestHandle(err error) *Handle {
+	done := make(chan error, 1)
+	done <- err
+	return &Handle{procID: "test-handle", done: done}
+}
+
 // procreg 全局注册表。
 type Registry struct {
 	mu      sync.Mutex
@@ -95,12 +102,77 @@ var (
 	globalOnce sync.Once
 )
 
-// Get 返回全局注册表单例（所有接入点共享）。
+// Get 返回全局注册表单例（所有接入点共享），并自动启动内存采样循环。
 func Get() *Registry {
 	globalOnce.Do(func() {
 		global = New()
+		global.StartSampler(sampleInterval)
 	})
 	return global
+}
+
+// Run 包级便捷函数：在全局注册表上异步启动命令。等价于 Get().Run(o)。
+func Run(o Options) (*Handle, error) { return Get().Run(o) }
+
+// RegisterExisting 包级便捷函数：在全局注册表上登记外部进程。
+func RegisterExisting(id, name, kind string, cmd *exec.Cmd) *Handle {
+	return Get().RegisterExisting(id, name, kind, cmd)
+}
+
+// Kill 包级便捷函数：终止全局注册表中的进程。
+func Kill(id string) error { return Get().Kill(id) }
+
+// Running 包级便捷函数：查询全局注册表中的运行中进程。
+func Running(id string) *Proc { return Get().Running(id) }
+
+// runCommandFn 是 Registry.Run 的底层可替换 seam（测试可替换为 fake，
+// 避免真实执行命令、模拟命令的副作用与退出结果）。
+var runCommandFn = func(r *Registry, o Options) (*Handle, error) { return r.defaultRun(o) }
+
+// SetRunFn 替换底层命令执行实现（仅供测试使用）。返回旧实现，便于 Cleanup 恢复。
+func SetRunFn(fn func(r *Registry, o Options) (*Handle, error)) func(r *Registry, o Options) (*Handle, error) {
+	old := runCommandFn
+	if fn == nil {
+		runCommandFn = func(r *Registry, o Options) (*Handle, error) { return r.defaultRun(o) }
+	} else {
+		runCommandFn = fn
+	}
+	return old
+}
+
+// sampleInterval 内存采样周期。
+const sampleInterval = 2 * time.Second
+
+// StartSampler 启动后台内存采样循环：每 interval 采样一次所有运行中进程的内存。
+// 采样结果经 SetMem 广播（前端实时展示）。
+func (r *Registry) StartSampler(interval time.Duration) {
+	go func() {
+		for {
+			time.Sleep(interval)
+			r.sampleAll()
+		}
+	}()
+}
+
+// sampleAll 采样所有运行中进程的内存。
+func (r *Registry) sampleAll() {
+	r.mu.Lock()
+	ids := make([]string, 0, len(r.running))
+	pids := make([]int, 0, len(r.running))
+	for id, p := range r.running {
+		ids = append(ids, id)
+		pids = append(pids, p.PID)
+	}
+	r.mu.Unlock()
+	for i, id := range ids {
+		if pids[i] <= 0 {
+			continue
+		}
+		mem := sampleMem(pids[i])
+		if mem > 0 {
+			r.SetMem(id, mem)
+		}
+	}
 }
 
 // New 创建一个新的注册表（主要供测试使用）。
@@ -187,6 +259,11 @@ func (r *Registry) Kill(id string) error {
 // Run 统一执行入口：异步启动命令并登记到进程表，立即返回 Handle。
 // 状态/日志/结束通过订阅广播推送。名称 Name 必填。
 func (r *Registry) Run(o Options) (*Handle, error) {
+	return runCommandFn(r, o)
+}
+
+// defaultRun 是 Run 的默认实现：真正启动子进程。
+func (r *Registry) defaultRun(o Options) (*Handle, error) {
 	if strings.TrimSpace(o.Name) == "" {
 		return nil, errEmptyName
 	}
