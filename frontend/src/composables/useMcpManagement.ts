@@ -263,6 +263,18 @@ export function useMcpManagement() {
     // 目标状态 = 取反"实际激活态"，而非翻转 enabled 配置位。
     // failed 时 isServerActive=false → 目标 enabled=true → 点击=重试启动（不是禁用）。
     const nextEnabled = !isServerActive(server)
+    // 本地乐观更新：在接口返回前就把该行状态改到位，避免 refresh 慢/失败时
+    // UI 停留在旧状态（"已关闭"却显示"启用"之类的不一致）。
+    // 关键：用 id 定位行，绝不用索引——刷新/排序后索引会变，会误改到别的配置。
+    const idx = servers.value.findIndex((it) => it.id === server.id)
+    if (idx >= 0) {
+      servers.value[idx] = {
+        ...servers.value[idx],
+        enabled: nextEnabled,
+        // 关闭后进程尚未确认杀死前，不要立刻显示 running/failed，等 refresh 兜底。
+        status: nextEnabled ? undefined : 'stopped',
+      }
+    }
     await run(
       `server:${server.id}:toggle`,
       async () => {

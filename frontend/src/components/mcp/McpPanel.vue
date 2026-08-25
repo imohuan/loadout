@@ -438,7 +438,9 @@ async function copyConfig(endpoint: {
                                   :aria-label="
                                     isServerActive(server)
                                       ? `禁用 ${server.name}`
-                                      : `启用 ${server.name}`
+                                      : server.enabled === false
+                                        ? `启用 ${server.name}`
+                                        : `重试启动 ${server.name}`
                                   "
                                   :disabled="mcp.isPending(`server:${server.id}:toggle`)"
                                   @click="mcp.toggleServer(server)"
@@ -456,7 +458,11 @@ async function copyConfig(endpoint: {
                                   /> </Button
                               ></TooltipTrigger>
                               <TooltipContent>{{
-                                isServerActive(server) ? '禁用' : '启用'
+                                isServerActive(server)
+                                  ? '禁用'
+                                  : server.enabled === false
+                                    ? '启用'
+                                    : '进程失败，点击重试'
                               }}</TooltipContent>
                             </Tooltip>
                             <Tooltip>
