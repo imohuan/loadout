@@ -393,6 +393,10 @@ func TestModelNameFromConfigCode(t *testing.T) {
 		{"ym-rodin-gen2-free", "ark_ym_sanfang", "ym-rodin-gen2"},
 		{"hitem3D-2.0-free", "ark_sm_sanfang", "hitem3d-2-0"},
 		{"", "ark_bd", "ark-bd"},
+		// res 是 resource 的缩写变体后缀（v20 修复），三种形态都要吞掉：
+		{"DeepSeek_V4_flash_0731_infer_res", "ark_bd", "deepseek-v4-flash-0731"},
+		{"DeepSeek_V4_flash_0731_free_infer_res", "ark_bd", "deepseek-v4-flash-0731"},
+		{"DeepSeek_V4_flash_0731_free_inference_res", "ark_bd", "deepseek-v4-flash-0731"},
 	}
 	for _, c := range cases {
 		if got := modelNameFromConfigCode(c.code, c.product); got != c.want {

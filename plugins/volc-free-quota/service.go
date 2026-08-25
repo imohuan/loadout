@@ -1395,9 +1395,11 @@ func modelNameFromConfigCode(configCode, product string) string {
 
 // isConfigCodeSuffix 判断单段是否是资源包类型后缀。
 // 注意：code 不是后缀（Doubao_Seed_2.0_code_pack 的 code 是模型名一部分）。
+// res 是 resource 的缩写变体（如 "..._free_infer_res" / "..._free_inference_res"），
+// 作为独立尾段必须吞掉，否则模型名会残留 "-infer-res" 这类错误后缀。
 func isConfigCodeSuffix(seg string) bool {
 	switch strings.ToLower(seg) {
-	case "data", "collaboration", "resource", "pack", "free", "inference", "infer":
+	case "data", "collaboration", "resource", "res", "pack", "free", "inference", "infer":
 		return true
 	}
 	return false
