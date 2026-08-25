@@ -15,7 +15,6 @@ import (
 	"path"
 	"runtime/debug"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -303,12 +302,13 @@ func newRequestID() string {
 // Run 启动服务器：装配 → 自检日志 → 监听 → 优雅退出。
 // 全局可编程退出通道：外部（如桌面版退出）调用 TriggerShutdown 触发 servercore 优雅退出。
 var (
-	shutdownOnce sync.Once
-	shutdownCh   = make(chan struct{})
+	// 全局可编程退出 context：外部（如桌面版退出）调用 TriggerShutdown 触发优雅退出。
+	// 用 context 而非裸 channel：cancel 幂等、语义标准、无重复 close 风险。
+	shutdownCtx, shutdownCancel = context.WithCancel(context.Background())
 )
 
-// TriggerShutdown 触发 servercore 优雅退出（终止子进程、关闭 server）。幂等。
-func TriggerShutdown() { shutdownOnce.Do(func() { close(shutdownCh) }) }
+// TriggerShutdown 触发 servercore 优雅退出（终止子进程、关闭 server）。幂等可重复调用。
+func TriggerShutdown() { shutdownCancel() }
 
 func Run() error {
 	lg := newLogger()
@@ -356,7 +356,9 @@ func Run() error {
 	// 终止子进程 + 取消活跃连接，再优雅关闭 HTTP 服务器。
 	doShutdown := func(reason string) error {
 		// 1) 终止所有运行中的子进程（统一命令执行器），避免退出后残留孤儿进程。
-		procreg.Get().Shutdown()
+		if err := procreg.Get().Shutdown(); err != nil {
+			lg.Warn("终止子进程失败", "err", err)
+		}
 		// 2) 取消活跃连接 context，让 SSE 长连接立即断开，避免 srv.Shutdown 卡住。
 		connCancel()
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -369,7 +371,7 @@ func Run() error {
 	case sig := <-sigCh:
 		lg.Info("收到信号，退出", "signal", sig.String())
 		return doShutdown(sig.String())
-	case <-shutdownCh:
+	case <-shutdownCtx.Done():
 		lg.Info("收到退出请求")
 		return doShutdown("shutdown-requested")
 	}

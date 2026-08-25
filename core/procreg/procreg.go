@@ -10,6 +10,8 @@ package procreg
 
 import (
 	"bufio"
+	"errors"
+	"fmt"
 	"io"
 	"os/exec"
 	"sort"
@@ -260,18 +262,26 @@ func (r *Registry) Kill(id string) error {
 }
 
 // Shutdown 终止所有运行中的子进程（退出软件时调用，避免留下孤儿进程）。
-func (r *Registry) Shutdown() {
+// 一次持锁收集全部运行中进程的 PID，再逐个杀进程树，减少锁竞争。
+// 返回聚合错误：任一进程终止失败会累积到返回的 error（nil 表示全部成功）。
+func (r *Registry) Shutdown() error {
 	r.mu.Lock()
-	ids := make([]string, 0, len(r.running))
-	for id := range r.running {
-		ids = append(ids, id)
+	procs := make([]*Proc, 0, len(r.running))
+	for _, p := range r.running {
+		procs = append(procs, p)
 	}
 	r.mu.Unlock()
-	for _, id := range ids {
-		if p := r.Running(id); p != nil {
-			_ = killProcessTree(p.PID)
+
+	var errs []error
+	for _, p := range procs {
+		if p.PID <= 0 {
+			continue
+		}
+		if err := killProcessTree(p.PID); err != nil {
+			errs = append(errs, fmt.Errorf("kill %s(pid=%d): %w", p.Name, p.PID, err))
 		}
 	}
+	return errors.Join(errs...)
 }
 
 // Run 统一执行入口：异步启动命令并登记到进程表，立即返回 Handle。
