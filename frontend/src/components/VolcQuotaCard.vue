@@ -20,6 +20,7 @@ import type {
 import { useChannels } from '@/composables/useChannels'
 import { useVolcQuota } from '@/composables/useVolcQuota'
 import { useConfirm } from '@/composables/useConfirm'
+import { VueDraggable } from 'vue-draggable-plus'
 import EmptyState from '@/components/EmptyState.vue'
 
 const quota = useVolcQuota()
@@ -373,31 +374,21 @@ const otherAggregates = computed(() =>
   aggregates.value.filter((a) => !focusModels.value.some((fm) => matchQuotaModel(a.model, fm))),
 )
 
-// 拖拽重排（原生 HTML5 DnD，零依赖）：记录被拖项在关注区内的下标。
-const dragFrom = ref(-1)
-const dragOver = ref(-1)
-function onFocusDragStart(i: number) {
-  dragFrom.value = i
-}
-function onFocusDragOver(i: number) {
-  dragOver.value = i
-}
-function onFocusDragEnd() {
-  dragFrom.value = -1
-  dragOver.value = -1
-}
-function onFocusDrop(i: number) {
-  const from = dragFrom.value
-  if (from < 0 || from === i) {
-    onFocusDragEnd()
-    return
-  }
-  const arr = [...focusAggregates.value]
-  const [moved] = arr.splice(from, 1)
-  arr.splice(i, 0, moved)
-  focusOrder.value = arr.map((a) => a.model)
+// VueDraggable 拖拽目标列表：focusAggregates 是 computed 只读，拖拽需要可写数组。
+// 跟随 focusAggregates 同步（关注集合/聚合数据/顺序任一变化都会重算）。
+const focusCards = ref<FocusCardItem[]>([])
+watch(
+  focusAggregates,
+  (v) => {
+    focusCards.value = v
+  },
+  { immediate: true },
+)
+
+// 拖拽重排（vue-draggable-plus）：拖拽结束回传新顺序，写回 focusOrder 持久化。
+function onFocusReorder(list: FocusCardItem[]) {
+  focusOrder.value = list.map((a) => a.model)
   saveFocusOrder()
-  onFocusDragEnd()
 }
 
 // 卡片分组渲染：关注区（可拖拽）+ 其他区（不可拖拽）；关注为空时只显示「模型」一组。
@@ -700,21 +691,15 @@ const displayName = (ch: Channel) => ch.channel_name || ch.name
               <template #icon><span class="hidden" /></template>
             </AccordionTrigger>
             <AccordionContent>
-              <div class="grid grid-cols-1 gap-2 sm:grid-cols-3! lg:grid-cols-4!">
-                <div v-for="(a, i) in group.items" :key="a.model" class="flex flex-col gap-1.5 rounded-md border p-3"
-                  :class="[
+              <VueDraggable :model-value="group.draggable ? focusCards : group.items" :disabled="!group.draggable"
+                :animation="150" ghost-class="opacity-0" drag-class="volc-dragging"
+                class="grid grid-cols-1 gap-2 sm:grid-cols-3! lg:grid-cols-4!" @update:model-value="onFocusReorder">
+                <div v-for="a in group.draggable ? focusCards : group.items" :key="a.model"
+                  class="flex flex-col gap-1.5 rounded-md border p-3" :class="[
                     a.__noAggregate ? 'border-dashed border-muted-foreground/40 bg-muted/30 text-muted-foreground' : '',
                     !a.__noAggregate && a.exhausted ? 'border-destructive/40 bg-destructive/5' : '',
-                    group.draggable
-                      ? dragOver === i && dragFrom !== i
-                        ? 'cursor-grabbing border-primary/60 ring-1 ring-primary/40'
-                        : dragFrom === i
-                          ? 'opacity-50'
-                          : 'cursor-grab active:cursor-grabbing'
-                      : '',
-                  ]" :draggable="group.draggable" @dragstart="group.draggable && onFocusDragStart(i)"
-                  @dragover.prevent="group.draggable && onFocusDragOver(i)"
-                  @drop.prevent="group.draggable && onFocusDrop(i)" @dragend="onFocusDragEnd">
+                    group.draggable ? 'cursor-grab active:cursor-grabbing' : '',
+                  ]">
                   <!-- 顶部：左侧模型名，右侧 token 积分（当前剩余/总）；占位无数据 → 显示「暂无额度数据」标记 -->
                   <div class="flex items-start justify-between gap-2">
                     <div class="flex items-center min-w-0 gap-2">
@@ -755,7 +740,7 @@ const displayName = (ch: Channel) => ch.channel_name || ch.name
                     该模型不在火山引擎免费额度范围 / 未拉到账单明细。
                   </div>
                 </div>
-              </div>
+              </VueDraggable>
             </AccordionContent>
           </AccordionItem>
         </Accordion>
@@ -986,3 +971,29 @@ const displayName = (ch: Channel) => ch.channel_name || ch.name
     </DialogContent>
   </Dialog>
 </template>
+
+<style>
+/* 拖拽中的卡片样式：
+ * sortablejs 拖拽时把原节点从 grid 容器抽到 body 下、加 position:absolute + 内联 width/height，
+ * 破坏 Tailwind class 的 grid/flex 上下文（脱列、flex 塌陷、边框/背景色丢失）。
+ * 这里用 !important 强制恢复卡片基础视觉，再叠加倾斜+阴影。颜色走项目 token 保持一致。 */
+.volc-dragging {
+  /* 基础视觉重置 */
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 0.375rem !important;
+  padding: 0.75rem !important;
+  border: 1px solid hsl(var(--border)) !important;
+  border-radius: 0.375rem !important;
+  background-color: hsl(var(--background)) !important;
+  color: hsl(var(--foreground)) !important;
+  box-sizing: border-box !important;
+  width: 240px !important;
+  /* 拖拽增强 */
+  transform: rotate(2deg) scale(1.03) !important;
+  box-shadow: 0 20px 25px -5px rgb(0 0 0 / 0.18), 0 8px 10px -6px rgb(0 0 0 / 0.1) !important;
+  cursor: grabbing !important;
+  opacity: 1 !important;
+  z-index: 9999 !important;
+}
+</style>

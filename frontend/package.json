@@ -23,6 +23,7 @@
     "shadcn-vue-cdn": "^0.0.4",
     "tailwindcss": "^4.3.3",
     "vue": "^3.5.40",
+    "vue-draggable-plus": "^0.6.1",
     "vue-echarts": "^8.1.0",
     "vue-router": "^5.2.0",
     "vue-sonner": "^2.0.9"
