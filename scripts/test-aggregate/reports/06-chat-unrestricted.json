@@ -1,4 +1,0 @@
-{
-  "body": "{\"error\":{\"message\":\"所有模型均失败: 所有渠道均失败: Post \\\"http://127.0.0.1:19999/v1/chat/completions\\\": dial tcp 127.0.0.1:19999: connectex: No connection could be made because the target machine actively refused it.\",\"type\":\"no_available_channel\"}}\n",
-  "status": 502
-}

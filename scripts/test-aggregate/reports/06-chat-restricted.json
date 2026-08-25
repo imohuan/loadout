@@ -1,4 +1,0 @@
-{
-  "body": "{\"error\":{\"message\":\"API key 无权访问模型 \\\"auto-demo\\\"\",\"type\":\"permission_error\"}}\n",
-  "status": 403
-}

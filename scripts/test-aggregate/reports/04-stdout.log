@@ -1,6 +1,0 @@
-
-=== 04 探测 /v1/models 是否含 auto-demo ===
-[INFO] HTTP 200
-[INFO] 返回 1 个模型：auto-demo
-    - auto-demo
-[ OK ] ✅ /v1/models 包含虚拟模型 auto-demo

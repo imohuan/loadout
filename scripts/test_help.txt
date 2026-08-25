@@ -1,5 +1,0 @@
-python scripts/test_chat.py --api-key sk-01df90000f5a589d80f3a8e59f5c4a3c0cf572d3ed43f4988be76525639ad8c3 --prompt "你好" --model claude-haiku-4-5-20251001
-python scripts/test_chat.py --base-url https://imohuan.shop --api-key sk-01df90000f5a589d80f3a8e59f5c4a3c0cf572d3ed43f4988be76525639ad8c3 --prompt "你好" --model hy3
-
-
-python scripts/test_vision.py F:/其他/3b23dfb0e37b8c572af9811fe4595efe.jpg --api-key sk-01df90000f5a589d80f3a8e59f5c4a3c0cf572d3ed43f4988be76525639ad8c3 --prompt "图片是什么" --model volcengine_auto
