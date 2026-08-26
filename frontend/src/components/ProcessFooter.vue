@@ -9,14 +9,8 @@ import { useProcessMonitor } from '@/composables/useProcessMonitor'
 import { useConfirm } from '@/composables/useConfirm'
 import type { ProcessInfo } from '@/lib/types'
 
-const {
-  running,
-  history,
-  connected,
-  hasProcesses,
-  start,
-  kill,
-} = useProcessMonitor()
+const { running, history, connected, hasProcesses, start, kill, reconnectFailed, reconnectCount } =
+  useProcessMonitor()
 
 const { confirmDialog } = useConfirm()
 
@@ -88,9 +82,7 @@ function historyKey(p: ProcessInfo): string {
   return p.endedAt ? `${p.id}:${new Date(p.endedAt).getTime()}` : `${p.id}:${p.startedAt}`
 }
 
-const historyItems = computed(() =>
-  history.value.filter((p) => p.log && p.log.length),
-)
+const historyItems = computed(() => history.value.filter((p) => p.log && p.log.length))
 
 // 角标/空态提示用过滤后的条目数，保证与列表一致。
 const historyCount = computed(() => historyItems.value.length)
@@ -102,13 +94,26 @@ const historyCount = computed(() => historyItems.value.length)
       <div class="flex items-center gap-1.5 text-xs text-muted-foreground">
         <RiCpuLine size="14" />
         <span> {{ running.length }} 个进程运行中 </span>
-        <span class="size-1.5 rounded-full" :class="connected ? 'bg-emerald-500' : 'bg-red-500'"
-          :title="connected ? '已连接' : '连接断开'" />
+        <span
+          class="size-1.5 rounded-full"
+          :class="connected ? 'bg-emerald-500' : 'bg-red-500'"
+          :title="
+            connected
+              ? '已连接'
+              : reconnectFailed
+                ? '重连失败，请刷新'
+                : '重连中 (' + reconnectCount + ')'
+          "
+        />
       </div>
       <div class="flex items-center gap-1">
-        <button class="relative rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
-          :title="`历史记录（${historyCount}）`" :disabled="historyCount === 0"
-          :class="{ 'cursor-not-allowed opacity-40': historyCount === 0 }" @click="historyOpen = true">
+        <button
+          class="relative rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+          :title="`历史记录（${historyCount}）`"
+          :disabled="historyCount === 0"
+          :class="{ 'cursor-not-allowed opacity-40': historyCount === 0 }"
+          @click="historyOpen = true"
+        >
           <RiHistoryLine size="15" />
           <!-- <span v-if="historyCount"
             class="absolute -right-0.5 -top-0.5 flex min-w-3.5 items-center justify-center rounded-full bg-primary px-0.5 text-[9px] leading-4 text-primary-foreground">
@@ -121,13 +126,19 @@ const historyCount = computed(() => historyItems.value.length)
     <template v-if="hasProcesses">
       <!-- 运行中进程 -->
       <div v-if="running.length" class="space-y-1 px-2 pb-1.5">
-        <div v-for="p in running" :key="p.id"
-          class="group flex items-center gap-1.5 rounded px-1 py-0.5 text-xs hover:bg-muted">
+        <div
+          v-for="p in running"
+          :key="p.id"
+          class="group flex items-center gap-1.5 rounded px-1 py-0.5 text-xs hover:bg-muted"
+        >
           <span class="size-1.5 shrink-0 rounded-full" :class="statusDot(p.status)" />
           <span class="min-w-0 flex-1 truncate" :title="p.cmd">{{ p.name }}</span>
           <span class="shrink-0 tabular-nums text-muted-foreground">{{ fmtMem(p.memBytes) }}</span>
-          <button class="shrink-0 rounded p-0.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-            :title="`终止 ${p.name}`" @click="onKill(p)">
+          <button
+            class="shrink-0 rounded p-0.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+            :title="`终止 ${p.name}`"
+            @click="onKill(p)"
+          >
             <RiCloseLine size="13" />
           </button>
         </div>
@@ -144,19 +155,26 @@ const historyCount = computed(() => historyItems.value.length)
         </DialogHeader>
         <div v-if="historyItems.length" class="h-[70vh] flex items-start overflow-y-auto pr-1">
           <Accordion type="multiple" class="w-full">
-            <AccordionItem v-for="p in historyItems" :key="historyKey(p)" :value="historyKey(p)"
-              class="mb-2 rounded-md !border-b-0 last:mb-0">
+            <AccordionItem
+              v-for="p in historyItems"
+              :key="historyKey(p)"
+              :value="historyKey(p)"
+              class="mb-2 rounded-md !border-b-0 last:mb-0"
+            >
               <AccordionTrigger>
                 <div class="w-full flex justify-between items-center">
                   <span class="inline-flex items-center">
                     <RiArrowRightSLine
-                      class="mr-2 size-4 shrink-0 text-muted-foreground transition-transform duration-200 group-aria-expanded/accordion-trigger:rotate-90" />
+                      class="mr-2 size-4 shrink-0 text-muted-foreground transition-transform duration-200 group-aria-expanded/accordion-trigger:rotate-90"
+                    />
                     <span class="inline-flex items-center gap-2">
                       <span class="size-2 shrink-0 rounded-full" :class="statusDot(p.status)" />
                       {{ p.name }}
                     </span>
-                    <span class="ml-2 text-xs font-normal"
-                      :class="p.status === 'error' ? 'text-red-500' : 'text-muted-foreground'">
+                    <span
+                      class="ml-2 text-xs font-normal"
+                      :class="p.status === 'error' ? 'text-red-500' : 'text-muted-foreground'"
+                    >
                       {{ statusLabel(p.status) }}
                     </span>
                     <span class="ml-2 text-xs font-normal tabular-nums text-muted-foreground">
@@ -165,22 +183,37 @@ const historyCount = computed(() => historyItems.value.length)
                   </span>
                   <div class="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
                     <Badge variant="secondary" class="tabular-nums">{{ fmtStartAt(p) }}</Badge>
-                    <Badge variant="secondary" class="tabular-nums">内存 {{ fmtMem(p.memBytes) }}</Badge>
+                    <Badge variant="secondary" class="tabular-nums"
+                      >内存 {{ fmtMem(p.memBytes) }}</Badge
+                    >
                     <Badge variant="secondary" class="tabular-nums">PID {{ p.pid || '—' }}</Badge>
-                    <Badge v-if="p.exitCode !== undefined" variant="secondary" class="tabular-nums">退出码 {{ p.exitCode }}</Badge>
+                    <Badge v-if="p.exitCode !== undefined" variant="secondary" class="tabular-nums"
+                      >退出码 {{ p.exitCode }}</Badge
+                    >
                   </div>
                 </div>
                 <template #icon><span class="hidden" /></template>
               </AccordionTrigger>
               <AccordionContent>
                 <div class="space-y-1 text-xs text-muted-foreground">
-                  <Badge v-if="p.cmd" variant="outline" class="block w-fit truncate font-mono text-[11px]" :title="p.cmd">
+                  <Badge
+                    v-if="p.cmd"
+                    variant="outline"
+                    class="block w-fit truncate font-mono text-[11px]"
+                    :title="p.cmd"
+                  >
                     {{ p.cmd }}
                   </Badge>
-                  <div v-if="p.log.length"
-                    class="mt-1 max-h-60 overflow-y-auto rounded border border-border bg-muted/30 p-2 font-mono text-[11px] leading-relaxed text-muted-foreground">
-                    <div v-for="(line, i) in p.log" :key="i" class="whitespace-pre-wrap break-all"
-                      v-html="ansiToHtml(line)" />
+                  <div
+                    v-if="p.log.length"
+                    class="mt-1 max-h-60 overflow-y-auto rounded border border-border bg-muted/30 p-2 font-mono text-[11px] leading-relaxed text-muted-foreground"
+                  >
+                    <div
+                      v-for="(line, i) in p.log"
+                      :key="i"
+                      class="whitespace-pre-wrap break-all"
+                      v-html="ansiToHtml(line)"
+                    />
                   </div>
                 </div>
               </AccordionContent>
