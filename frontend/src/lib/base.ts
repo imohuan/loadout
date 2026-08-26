@@ -1,15 +1,22 @@
 // Loadout 后端「暴露给外部客户端 / 落盘」的绝对地址基址。
 //
+// 云端(纯 server 网页)环境下 origin 本身就是真实可达地址，直接用 location.origin，
+// 无需拉取 /api/desktop-base。
 // 桌面壳(WebView)的 origin 是框架注入的伪 host(http://wails.localhost)，只在壳内可解析，
 // 复制到外部 / 写进 mcp.json 就失效；且端口可由 --port / LOADOUT_SERVER_ADDR 指定。
-// 因此前端不写死，而是启动时向后端拉一次真实地址（/api/desktop-base 返回
-// http://127.0.0.1:<port>），缓存后复用。拉取失败则回退到 location.origin
-//（纯 server 网页模式下 origin 本身就是真实可达地址）。
+// 因此桌面壳下前端不写死，而是启动时向后端拉一次真实地址（/api/desktop-base 返回
+// http://127.0.0.1:<port>），缓存后复用。
+
+// 桌面壳识别：host 为 Wails 注入的伪 host。
+export const isDesktopShell: boolean =
+  typeof window !== 'undefined' && window.location.hostname === 'wails.localhost'
 
 let cachedBase: string | null = null
 let inflight: Promise<string> | null = null
 
 export async function getLoadoutBase(): Promise<string> {
+  // 云端环境：location.origin 就是后端真实地址，直接使用。
+  if (!isDesktopShell) return window.location.origin
   if (cachedBase) return cachedBase
   if (!inflight) {
     inflight = fetch('/api/desktop-base')
@@ -28,6 +35,8 @@ export async function getLoadoutBase(): Promise<string> {
 
 // 同步读取已缓存的 base（预热后才有真实值，否则回退 origin）。供模板等同步上下文使用。
 export function getLoadoutBaseSync(): string {
+  // 云端环境直接用 origin。
+  if (!isDesktopShell) return window.location.origin
   return cachedBase ?? window.location.origin
 }
 
