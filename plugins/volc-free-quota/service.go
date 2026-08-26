@@ -568,7 +568,7 @@ func (s *Service) accountsForChannels(channelIDs []string) []string {
 
 // aggregatePackagesForAccount 按 model 聚合某账号的资源包（卡片视图数据源，v19）。
 //
-// 只统计 active 包（initial_total > 0 且非过期/未到期），口径与 aggregateLocalRemaining /
+// 只统计 active 且未耗尽的包（initial_total > 0，非过期/未到期；账单口径 total_amount-used_amount<=0 的已用完组剔除），口径与 aggregateLocalRemaining /
 // 扣减 / 拦截一致。本地口径 UsedAmount = SUM(initial_total - local_remaining)；
 // Percentage = LocalRemaining / InitialTotal * 100。
 func (s *Service) aggregatePackagesForAccount(accountID string) []PackageAggregate {
@@ -581,7 +581,9 @@ func (s *Service) aggregatePackagesForAccount(accountID string) []PackageAggrega
 			-- 展示名 = 模型名（model）；仅当 model 为空时才退回组内资源包名兜底。
 			CASE WHEN model != '' THEN model ELSE MAX(configuration_name) END AS name,
 			MAX(unit) AS unit,
-			SUM(initial_total) AS initial_total,
+			-- 总额度折算：剩余 >= 50 万的包按完整 initial_total 计入；
+			-- 剩余 < 50 万的包只把其剩余额度计入总额（避免完整额度虚高）。
+			SUM(CASE WHEN local_remaining < 500000 THEN local_remaining ELSE initial_total END) AS initial_total,
 			SUM(local_remaining) AS local_remaining,
 			SUM(used_amount) AS used_amount,
 			SUM(total_amount) AS total_amount,
@@ -603,6 +605,8 @@ func (s *Service) aggregatePackagesForAccount(accountID string) []PackageAggrega
 			&usedLocal); err != nil {
 			continue
 		}
+		// 账单口径已用（聚合前快照，避免被下方本地口径覆盖）。
+		billingUsed := a.UsedAmount
 		// 本地口径已用（initial_total - local_remaining）优先，billing used_amount 兜底。
 		if a.InitialTotal > 0 {
 			a.UsedAmount = usedLocal
@@ -617,6 +621,11 @@ func (s *Service) aggregatePackagesForAccount(accountID string) []PackageAggrega
 				pct = 0
 			}
 			a.Percentage = pct
+		}
+		// 账单口径已用完（total_amount - used_amount <= 0）的资源不计入卡片聚合；
+		// 本地扣减未同步时 percentage 可能为 0 而账单仍有剩，故以账单口径为准。
+		if a.TotalAmount > 0 && a.TotalAmount-billingUsed <= 0 {
+			continue
 		}
 		if a.Unit == "" {
 			a.Unit = "token"
