@@ -366,11 +366,16 @@ async function checkUpdates() {
   activeTab.value = 'logs'
   updateTrigger.value++
 }
-// 页面进入/刷新时，若后台已有更新任务在跑，自动显示「更新日志」Tab（不自动跳转）。
+// 页面进入/刷新时，若后台已有更新任务在跑，自动显示「更新日志」Tab 并连接 SSE 拉取实时日志（不自动跳转）。
 onMounted(async () => {
   try {
     const { running } = await api.updateStatus()
-    if (running) showLogsTab.value = true
+    if (running) {
+      showLogsTab.value = true
+      // 递增 trigger 让 StreamLogPanel 立即连接 /api/skills/update-stream，
+      // 否则面板只显示空态、不会订阅 SSE，后台任务的日志也看不到。
+      updateTrigger.value++
+    }
   } catch {
     /* 查询失败静默忽略，保持默认隐藏 */
   }
