@@ -32,7 +32,8 @@ const configs = ref<VolcQuotaConfigDetails[]>([])
 const arkChannels = ref<Channel[]>([])
 const loading = ref(false)
 const saving = ref(false)
-const refreshingAll = ref(false)
+const refreshingLocal = ref(false)
+const refreshingRemote = ref(false)
 const loaded = ref(false)
 
 async function loadStatus(showSpinner = true) {
@@ -451,7 +452,7 @@ watch(
 // ===== 刷新 =====
 // 刷新本地：只重查 SQLite 现有数据，刷新 UI（不碰远程 API）。
 async function refreshLocal() {
-  refreshingAll.value = true
+  refreshingLocal.value = true
   try {
     await loadStatus(false)
     await loadAggregates()
@@ -461,7 +462,7 @@ async function refreshLocal() {
   } catch (e) {
     toast.error(e instanceof Error ? e.message : '刷新失败')
   } finally {
-    refreshingAll.value = false
+    refreshingLocal.value = false
   }
 }
 
@@ -510,7 +511,7 @@ async function checkRecentUsage() {
 
 async function confirmRemoteRefresh() {
   remoteDialogOpen.value = false
-  refreshingAll.value = true
+  refreshingRemote.value = true
   try {
     const result = await quota.refresh(remoteTarget.value || undefined, remoteForce.value)
     applyRefreshResult(result.configs_checked, result.failed_channels, result.disabled_models)
@@ -520,7 +521,7 @@ async function confirmRemoteRefresh() {
   } catch (e) {
     toast.error(e instanceof Error ? e.message : '刷新失败')
   } finally {
-    refreshingAll.value = false
+    refreshingRemote.value = false
   }
 }
 
@@ -670,12 +671,13 @@ const displayName = (ch: Channel) => ch.channel_name || ch.name
               <TabsTrigger value="table">表格</TabsTrigger>
             </TabsList>
           </Tabs>
-          <Button variant="outline" size="sm" :disabled="refreshingAll" @click="refreshLocal">
-            <RiRefreshLine size="16" />
+          <Button variant="outline" size="sm" :disabled="refreshingLocal" @click="refreshLocal">
+            <RiLoader4Line v-if="refreshingLocal" class="animate-spin" size="16" />
+            <RiRefreshLine v-else size="16" />
             刷新本地
           </Button>
-          <Button size="sm" :disabled="refreshingAll" @click="openRemoteRefresh()">
-            <RiLoader4Line v-if="refreshingAll" class="animate-spin" size="16" />
+          <Button size="sm" :disabled="refreshingRemote" @click="openRemoteRefresh()">
+            <RiLoader4Line v-if="refreshingRemote" class="animate-spin" size="16" />
             <RiRefreshLine v-else size="16" />
             刷新远程
           </Button>
@@ -787,7 +789,7 @@ const displayName = (ch: Channel) => ch.channel_name || ch.name
                 {{ statusBadge(item.config).label }}
               </Badge>
               <div class="flex items-center gap-0.5">
-                <Button variant="ghost" size="icon" class="size-8" aria-label="刷新此 Key 额度" :disabled="refreshingAll"
+                <Button variant="ghost" size="icon" class="size-8" aria-label="刷新此 Key 额度" :disabled="refreshingRemote"
                   @click="refreshOne(item.config.channel_id)">
                   <RiRefreshLine size="16" />
                 </Button>
@@ -980,8 +982,8 @@ const displayName = (ch: Channel) => ch.channel_name || ch.name
         </div>
       </div>
       <DialogFooter>
-        <Button type="button" :disabled="remoteChecking || refreshingAll" @click="confirmRemoteRefresh">
-          <RiLoader4Line v-if="refreshingAll" class="animate-spin" size="16" />
+        <Button type="button" :disabled="remoteChecking || refreshingRemote" @click="confirmRemoteRefresh">
+          <RiLoader4Line v-if="refreshingRemote" class="animate-spin" size="16" />
           确认刷新
         </Button>
         <Button type="button" variant="outline" @click="remoteDialogOpen = false">取消</Button>
