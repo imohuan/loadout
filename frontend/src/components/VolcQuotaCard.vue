@@ -816,62 +816,59 @@ const displayName = (ch: Channel) => ch.channel_name || ch.name
                   class="h-7 w-56 text-xs"
                   @update:model-value="(v: string) => setPkgFilter(item.config.channel_id, v)" />
               </div>
-              <Table class="w-full text-xs">
-                <TableHeader>
-                  <TableRow class="bg-muted/30 hover:bg-muted/30">
-                    <TableHead>资源包</TableHead>
-                    <TableHead class="text-right">总额</TableHead>
-                    <TableHead class="w-[30%]">剩余（本地）</TableHead>
-                    <TableHead class="text-right">已用</TableHead>
-                    <TableHead>状态</TableHead>
-                    <TableHead>到期</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  <TableRow v-for="p in filteredPackages(item)" :key="p.instance_no" class="hover:bg-muted/30">
-                    <TableCell class="py-1.5 align-top">
-                      <div class="truncate font-medium" :title="pkgName(p)">{{ pkgName(p) }}</div>
-                      <div class="truncate font-mono text-[10px] text-muted-foreground" :title="p.configuration_code">
+              <!-- 资源包卡片网格（v21）：替代原资源包明细表格，一个资源包一张卡 -->
+              <div v-if="filteredPackages(item).length" class="grid grid-cols-1 gap-2 md:grid-cols-2! xl:grid-cols-3!">
+                <div v-for="p in filteredPackages(item)" :key="p.instance_no"
+                  class="flex flex-col gap-1.5 rounded-md border p-3" :class="[
+                    p.local_remaining <= 0 && p.initial_total > 0 ? 'border-destructive/40 bg-destructive/5' : '',
+                  ]">
+                  <!-- 顶部：资源包名 + code，右侧状态徽章 -->
+                  <div class="flex items-start justify-between gap-2">
+                    <div class="min-w-0">
+                      <div class="truncate text-sm font-medium" :title="pkgName(p)">{{ pkgName(p) }}</div>
+                      <div class="truncate font-mono text-[10px] text-muted-foreground"
+                        :title="p.configuration_code || p.product || ''">
                         {{ p.configuration_code || p.product || '' }}
                       </div>
-                    </TableCell>
-                    <TableCell class="py-1.5 text-right tabular-nums">{{
-                      formatAmount(p.total_amount)
-                      }}</TableCell>
-                    <TableCell class="py-1.5">
-                      <div class="flex items-center gap-2">
-                        <Progress :model-value="pkgProgress(p)" :class="p.local_remaining <= 0 && p.initial_total > 0
-                            ? 'bg-destructive/20'
-                            : p.total_amount > 0 && p.available_amount / p.total_amount < 0.2
-                              ? 'bg-amber-500/20'
-                              : ''
-                          " class="h-1.5 flex-1" />
-                        <!-- 本地余额精确显示（千分位），否则 formatAmount(1999811)="2M" 看不到扣减差异 -->
-                        <span class="w-32 shrink-0 text-right tabular-nums" :class="p.local_remaining <= 0 && p.initial_total > 0 ? 'text-destructive' : ''
-                          " :title="`本地剩余 ${p.local_remaining} / 初始 ${p.initial_total}`">
-                          {{ p.local_remaining.toLocaleString()
-                          }}<span v-if="p.initial_total > 0" class="text-muted-foreground">/{{
-                            p.initial_total.toLocaleString() }}</span>
-                        </span>
-                      </div>
-                    </TableCell>
-                    <!-- 已用：本地口径（initial_total - local_remaining），不是 billing used_amount
-                         （billing 是 total-available，本地扣的不会算进去）。 -->
-                    <TableCell class="py-1.5 text-right tabular-nums text-muted-foreground">
-                      {{
-                        (p.initial_total > 0
+                    </div>
+                    <Badge :variant="pkgBadge(p).variant" class="shrink-0">{{ pkgBadge(p).label }}</Badge>
+                  </div>
+                  <!-- 进度条 + 剩余（本地精确值） -->
+                  <div class="flex items-center gap-2">
+                    <Progress :model-value="pkgProgress(p)" :class="p.local_remaining <= 0 && p.initial_total > 0
+                        ? 'bg-destructive/20'
+                        : p.total_amount > 0 && p.available_amount / p.total_amount < 0.2
+                          ? 'bg-amber-500/20'
+                          : ''
+                      " class="h-1.5 flex-1" />
+                    <span class="shrink-0 text-right text-xs tabular-nums"
+                      :class="p.local_remaining <= 0 && p.initial_total > 0 ? 'text-destructive' : ''"
+                      :title="'本地剩余 ' + p.local_remaining + ' / 初始 ' + p.initial_total">
+                      {{ p.local_remaining.toLocaleString() }}
+                    </span>
+                  </div>
+                  <!-- 底部统计：总额 / 已用 / 到期 -->
+                  <div class="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+                    <span class="flex items-center gap-1">
+                      <span class="tabular-nums">{{ formatAmount(p.total_amount) }}</span>
+                      <span class="text-muted-foreground/60">总额</span>
+                    </span>
+                    <span class="flex items-center gap-1">
+                      <span class="tabular-nums">
+                        {{ (p.initial_total > 0
                           ? p.initial_total - p.local_remaining
                           : p.used_amount
-                        ).toLocaleString()
-                      }}
-                    </TableCell>
-                    <TableCell class="py-1.5">
-                      <Badge :variant="pkgBadge(p).variant">{{ pkgBadge(p).label }}</Badge>
-                    </TableCell>
-                    <TableCell class="py-1.5 text-muted-foreground">{{ pkgExpiry(p) }}</TableCell>
-                  </TableRow>
-                </TableBody>
-              </Table>
+                        ).toLocaleString() }}
+                      </span>
+                      <span class="text-muted-foreground/60">已用</span>
+                    </span>
+                    <span class="flex items-center gap-1" :title="pkgExpiry(p)">
+                      <span class="text-muted-foreground/60">到期</span>
+                      <span class="tabular-nums">{{ pkgExpiry(p) || '—' }}</span>
+                    </span>
+                  </div>
+                </div>
+              </div>
               <div v-if="filteredPackages(item).length === 0"
                 class="px-3 py-4 text-center text-xs text-muted-foreground">
                 没有匹配「{{ getPkgFilter(item.config.channel_id) }}」的资源包
