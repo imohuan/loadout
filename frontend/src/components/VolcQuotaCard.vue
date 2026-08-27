@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { onMounted, reactive, ref } from 'vue'
 import { toast } from 'vue-sonner'
 import {
   RiAddLine,
@@ -12,7 +12,7 @@ import {
 } from '@remixicon/vue'
 import type {
   Channel,
-  VolcQuotaAggregate,
+
   VolcQuotaConfig,
   VolcQuotaConfigDetails,
   VolcQuotaPackage,
@@ -20,7 +20,7 @@ import type {
 import { useChannels } from '@/composables/useChannels'
 import { useVolcQuota } from '@/composables/useVolcQuota'
 import { useConfirm } from '@/composables/useConfirm'
-import { VueDraggable } from 'vue-draggable-plus'
+
 import EmptyState from '@/components/EmptyState.vue'
 
 const quota = useVolcQuota()
@@ -63,7 +63,6 @@ async function loadArkChannels() {
 onMounted(() => {
   loadStatus()
   loadArkChannels()
-  loadAggregates()
 })
 
 // ===== 折叠展开（参考 ChannelTable 的 expandedGroups 模式） =====
@@ -164,290 +163,12 @@ function filteredPackages(item: { config: { channel_id: string }; packages?: Vol
   return list.filter((p) => matchPackage(p, kw))
 }
 
-// ===== 资源包视图切换：卡片（聚合概览，默认）/ 表格（明细） =====
+// ===== 资源包展示方式：卡片（默认）/ 表格，控制折叠内部资源包的呈现 =====
 type PkgViewMode = 'card' | 'table'
 const pkgView = ref<PkgViewMode>('card')
 function setPkgView(v: string) {
   if (v === 'card' || v === 'table') pkgView.value = v
 }
-
-// ===== 卡片视图数据：后台按 model 聚合接口（/api/volc-quota/aggregate，v19） =====
-const aggregates = ref<VolcQuotaAggregate[]>([])
-const aggregatesLoaded = ref(false)
-async function loadAggregates() {
-  try {
-    const data = await quota.aggregate()
-    // 多配置可能共享同一账号（聚合按 account 对齐），取第一份非空即可；
-    // 卡片只展示聚合数据，不区分具体 channel 行。
-    aggregates.value =
-      data.configs.find((c) => c.aggregates?.length)?.aggregates || data.configs[0]?.aggregates || []
-  } catch {
-    aggregates.value = []
-  } finally {
-    aggregatesLoaded.value = true
-  }
-}
-
-// ===== 关注模型分组（v20）：渠道配置里勾选过的模型 →「关注」区，其余 →「其他」区 =====
-// 关注集合：所有方舟渠道勾选过的模型并集（去重）。渠道没勾选任何模型时退化为平铺视图。
-const focusModels = computed(() => {
-  const set = new Set<string>()
-  for (const ch of arkChannels.value) {
-    for (const m of ch.models || []) set.add(m)
-  }
-  return [...set]
-})
-
-// 关注区拖拽顺序：localStorage 持久化（仅 UI 观察用途，不回写渠道配置）。
-const FOCUS_ORDER_KEY = 'volc-quota-focus-order'
-const focusOrder = ref<string[]>(loadFocusOrder())
-function loadFocusOrder(): string[] {
-  try {
-    const raw = localStorage.getItem(FOCUS_ORDER_KEY)
-    if (!raw) return []
-    const arr = JSON.parse(raw)
-    return Array.isArray(arr) ? arr.filter((x) => typeof x === 'string') : []
-  } catch {
-    return []
-  }
-}
-function saveFocusOrder() {
-  localStorage.setItem(FOCUS_ORDER_KEY, JSON.stringify(focusOrder.value))
-}
-
-/** 关注区卡片项：来自用户勾选的全集。无聚合数据时填充占位字段 + __noAggregate 标记。 */
-type FocusCardItem = VolcQuotaAggregate & { __noAggregate?: boolean }
-
-function makePlaceholder(model: string): FocusCardItem {
-  return {
-    model,
-    name: model,
-    unit: 'token',
-    initial_total: 0,
-    local_remaining: 0,
-    used_amount: 0,
-    total_amount: 0,
-    percentage: 0,
-    exhausted: false,
-    __noAggregate: true,
-  }
-}
-
-// ===== 模型名匹配：完整复刻后端 volc-free-quota 扣减/拦截用的同一套规则 =====
-// （service.go matchOne / normalizeModelName / shareSignificantToken 系列）。
-// 必须与后端一致：卡片显示的"关注命中"要等于后端实际扣额度的模型，否则出现
-// 「显示有额度但请求被拦」或「显示无额度但能扣」的错觉。
-function normalizeModelName(name: string): string {
-  let out = ''
-  for (const ch of name) {
-    const code = ch.codePointAt(0)!
-    if (ch === ' ' || ch === '·' || ch === '、') continue
-    if (ch >= 'a' && ch <= 'z') out += ch
-    else if (ch >= 'A' && ch <= 'Z') out += String.fromCharCode(code + 32)
-    else if (ch >= '0' && ch <= '9') out += ch
-    else if (ch === '-' || ch === '_' || ch === '.') out += '-'
-  }
-  return out
-}
-
-// 模型修饰段（与型号无关，比较字母序列时忽略）：API 模型名比资源包 code 提取名
-// 多出的正式版/预览标记。lite/turbo/pro 等是型号一部分，绝不能过滤。
-const modelModifierSegs = new Set(['ga', 'preview', 'latest', 'beta'])
-
-function alphaTokens(s: string): string[] {
-  const out: string[] = []
-  let i = 0
-  while (i < s.length) {
-    const c = s[i]
-    if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'))) {
-      i++
-      continue
-    }
-    let j = i
-    while (j < s.length && ((s[j] >= 'a' && s[j] <= 'z') || (s[j] >= 'A' && s[j] <= 'Z'))) j++
-    out.push(s.slice(i, j))
-    i = j
-  }
-  return out
-}
-
-function filterModifiers(segs: string[]): string[] {
-  return segs.filter((s) => !modelModifierSegs.has(s))
-}
-
-// 显著 token = 含至少一个数字且总长 >= 2 的连续段（数字后紧跟 k/m/g 单位字母一并纳入）。
-function significantTokens(s: string): string[] {
-  const out: string[] = []
-  let i = 0
-  while (i < s.length) {
-    const c = s[i]
-    if (!(c >= '0' && c <= '9')) {
-      i++
-      continue
-    }
-    let j = i
-    while (j < s.length && s[j] >= '0' && s[j] <= '9') j++
-    if (j < s.length && ((s[j] >= 'a' && s[j] <= 'z') || (s[j] >= 'A' && s[j] <= 'Z'))) j++
-    if (j - i >= 2) out.push(s.slice(i, j))
-    i = j
-  }
-  return out
-}
-
-// 4 位 MMdd 与 6 位 YYMMdd 视为同一天：resource 包 code 用 "0731"，API 模型名用 "260731"。
-function sameDateToken(a: string, b: string): boolean {
-  if (!/^\d+$/.test(a) || !/^\d+$/.test(b)) return false
-  const la = a.length
-  const lb = b.length
-  if (la === 4 && lb === 4) return a === b
-  if (la === 6 && lb === 6) return a === b
-  if (la === 4 && lb === 6) return a === b.slice(2)
-  if (la === 6 && lb === 4) return a.slice(2) === b
-  return false
-}
-
-function shareSignificantToken(a: string, b: string): boolean {
-  const ta = significantTokens(a)
-  const tb = significantTokens(b)
-  let hit = false
-  for (const x of ta) {
-    for (const y of tb) {
-      if (x === y || sameDateToken(x, y)) {
-        hit = true
-        break
-      }
-    }
-    if (hit) break
-  }
-  if (!hit) return false
-  const fa = filterModifiers(alphaTokens(a))
-  const fb = filterModifiers(alphaTokens(b))
-  return fa.length === fb.length && fa.every((v, i) => v === fb[i])
-}
-
-// matchOne：聚合短名 quota 与勾选 API 模型名是否命中（双向包含 / 显著 token 交集）。
-function matchQuotaModel(quota: string, apiModel: string): boolean {
-  const q = normalizeModelName(quota)
-  const a = normalizeModelName(apiModel)
-  if (!q || !a) return false
-  if (a.includes(q) || q.includes(a)) return true
-  return shareSignificantToken(q, a)
-}
-
-// 一个勾选模型可能命中多个聚合短名（deepseek-v4-flash-ga-260731 ↔
-// deepseek-v4-flash + deepseek-v4-flash-0731），合并 SUM 展示该模型总额度。
-function mergeAggregates(list: VolcQuotaAggregate[]): FocusCardItem | undefined {
-  if (!list.length) return undefined
-  if (list.length === 1) return { ...list[0] }
-  const initialTotal = list.reduce((s, a) => s + a.initial_total, 0)
-  const localRemaining = list.reduce((s, a) => s + a.local_remaining, 0)
-  return {
-    model: list[0].model,
-    name: list[0].name || list[0].model,
-    unit: list.find((a) => a.unit)?.unit || 'token',
-    initial_total: initialTotal,
-    local_remaining: localRemaining,
-    used_amount: list.reduce(
-      (s, a) => s + (a.initial_total > 0 ? a.initial_total - a.local_remaining : a.used_amount),
-      0,
-    ),
-    total_amount: list.reduce((s, a) => s + a.total_amount, 0),
-    percentage:
-      initialTotal > 0 ? Math.max(0, Math.min(100, Math.round((localRemaining / initialTotal) * 100))) : 0,
-    exhausted: initialTotal > 0 && localRemaining <= 0,
-  }
-}
-
-/** 关注区卡片：来自渠道勾选的全集（用户视角的「已选」），按 localStorage 顺序排。
- * 同一聚合短名可能被多个渠道模型命中（如 doubao-seed-2-0-lite-260215 与
- * doubao-seed-2-0-lite-260428 都映射到 doubao-seed-2-0-lite），按命中到的 quota
- * 短名去重，只保留一张卡片；未命中任何聚合的占位卡（__noAggregate）各自保留。 */
-const focusAggregates = computed<FocusCardItem[]>(() => {
-  const orderMap = new Map(focusOrder.value.map((m, i) => [m, i]))
-  const items: FocusCardItem[] = []
-  const seenQuota = new Set<string>()
-  for (const fm of focusModels.value) {
-    const matched = aggregates.value.filter((a) => matchQuotaModel(a.model, fm))
-    // 去重键：命中的第一个聚合短名；未命中时退回 fm 自身（占位卡不被合并）
-    const cardKey = matched[0]?.model ?? fm
-    if (seenQuota.has(cardKey)) continue
-    seenQuota.add(cardKey)
-    items.push(mergeAggregates(matched) ?? makePlaceholder(fm))
-  }
-  return items.sort((a, b) => {
-    const ia = orderMap.has(a.model) ? (orderMap.get(a.model) as number) : Number.MAX_SAFE_INTEGER
-    const ib = orderMap.has(b.model) ? (orderMap.get(b.model) as number) : Number.MAX_SAFE_INTEGER
-    return ia - ib
-  })
-})
-const otherAggregates = computed(() =>
-  aggregates.value.filter((a) => !focusModels.value.some((fm) => matchQuotaModel(a.model, fm))),
-)
-
-// VueDraggable 拖拽目标列表：focusAggregates 是 computed 只读，拖拽需要可写数组。
-// 跟随 focusAggregates 同步（关注集合/聚合数据/顺序任一变化都会重算）。
-const focusCards = ref<FocusCardItem[]>([])
-watch(
-  focusAggregates,
-  (v) => {
-    focusCards.value = v
-  },
-  { immediate: true },
-)
-
-// 拖拽重排（vue-draggable-plus）：拖拽结束回传新顺序，写回 focusOrder 持久化。
-function onFocusReorder(list: FocusCardItem[]) {
-  focusOrder.value = list.map((a) => a.model)
-  saveFocusOrder()
-}
-
-// 卡片分组渲染：关注区（可拖拽）+ 其他区（不可拖拽）；关注为空时只显示「模型」一组。
-const cardGroups = computed(() => {
-  const focus = focusAggregates.value
-  const other = otherAggregates.value
-  const groups: {
-    key: string
-    label: string
-    hint?: string
-    items: FocusCardItem[]
-    draggable: boolean
-  }[] = []
-  if (focus.length) {
-    groups.push({
-      key: 'focus',
-      label: `关注模型 · ${focus.length}`,
-      hint: '拖拽卡片可调整顺序',
-      items: focus,
-      draggable: true,
-    })
-  }
-  if (other.length) {
-    groups.push({
-      key: 'other',
-      label: focus.length ? `其他模型 · ${other.length}` : `模型 · ${other.length}`,
-      // 其他区不会用到 __noAggregate 字段，但保留 FocusCardItem 推导一致性；
-      // 不复制额外字段，把 VolcQuotaAggregate 当作无标记的 FocusCardItem 用即可。
-      items: other as FocusCardItem[],
-      draggable: false,
-    })
-  }
-  return groups
-})
-
-// ===== 分组折叠（shadcn Accordion，参考 RequestLogDetailView）：关注默认展开、其他默认折叠 =====
-// 必须放在 cardGroups 声明之后。用户手动收起的组不强制展开，新出现的组按规则处理。
-const expandedGroups = ref<string[]>([])
-watch(
-  cardGroups,
-  (groups) => {
-    for (const g of groups) {
-      // 只有「关注」组默认展开；「其他」组默认折叠（要展开用户自己点）
-      if (g.key !== 'focus') continue
-      if (!expandedGroups.value.includes(g.key)) expandedGroups.value.push(g.key)
-    }
-  },
-  { immediate: true },
-)
 
 // ===== 刷新 =====
 // 刷新本地：只重查 SQLite 现有数据，刷新 UI（不碰远程 API）。
@@ -455,7 +176,6 @@ async function refreshLocal() {
   refreshingLocal.value = true
   try {
     await loadStatus(false)
-    await loadAggregates()
     // 同步渠道勾选，保持「关注」分组与渠道配置一致
     await loadArkChannels()
     toast.success('本地数据已刷新')
@@ -516,7 +236,6 @@ async function confirmRemoteRefresh() {
     const result = await quota.refresh(remoteTarget.value || undefined, remoteForce.value)
     applyRefreshResult(result.configs_checked, result.failed_channels, result.disabled_models)
     await loadStatus(false)
-    await loadAggregates()
     await loadArkChannels()
   } catch (e) {
     toast.error(e instanceof Error ? e.message : '刷新失败')
@@ -620,7 +339,6 @@ async function submit() {
     dialogOpen.value = false
     toast.success(editing.value ? '配置已更新' : '配置已添加')
     await Promise.all([loadStatus(false), loadArkChannels()])
-    await loadAggregates()
   } catch (e) {
     toast.error(e instanceof Error ? e.message : '保存失败')
   } finally {
@@ -638,7 +356,6 @@ async function remove(channelId: string) {
     )
     toast.success('配置已删除')
     await loadStatus(false)
-    await loadAggregates()
   } catch (e) {
     toast.error(e instanceof Error ? e.message : '删除失败')
   }
@@ -688,81 +405,9 @@ const displayName = (ch: Channel) => ch.channel_name || ch.name
         </div>
       </div>
 
-      <!-- 卡片视图：关注模型（可拖拽排序）/ 其他模型 两组折叠块，网格一行 4 个（默认） -->
-      <div v-if="pkgView === 'card'">
-        <Accordion v-if="aggregates.length" v-model="expandedGroups" type="multiple" class="w-full">
-          <AccordionItem v-for="group in cardGroups" :key="group.key" :value="group.key">
-            <AccordionTrigger>
-              <span class="inline-flex items-center">
-                <RiArrowRightSLine
-                  class="mr-2 size-4 shrink-0 text-muted-foreground transition-transform duration-200 group-aria-expanded/accordion-trigger:rotate-90" />
-                <span class="text-xs font-medium text-muted-foreground">{{ group.label }}</span>
-                <span v-if="group.hint" class="ml-2 text-[10px] font-normal text-muted-foreground/70">{{
-                  group.hint
-                  }}</span>
-              </span>
-              <template #icon><span class="hidden" /></template>
-            </AccordionTrigger>
-            <AccordionContent>
-              <VueDraggable :model-value="group.draggable ? focusCards : group.items" :disabled="!group.draggable"
-                :animation="150" ghost-class="opacity-0" drag-class="volc-dragging"
-                class="grid grid-cols-1 gap-2 md:grid-cols-2! lg:grid-cols-3! xl:grid-cols-4!" @update:model-value="onFocusReorder">
-                <div v-for="a in group.draggable ? focusCards : group.items" :key="a.model"
-                  class="flex flex-col gap-1.5 rounded-md border p-3" :class="[
-                    a.__noAggregate ? 'border-dashed border-muted-foreground/40 bg-muted/30 text-muted-foreground' : '',
-                    !a.__noAggregate && a.exhausted ? 'border-destructive/40 bg-destructive/5' : '',
-                    group.draggable ? 'cursor-grab active:cursor-grabbing' : '',
-                  ]">
-                  <!-- 顶部：左侧模型名，右侧 token 积分（当前剩余/总）；占位无数据 → 显示「暂无额度数据」标记 -->
-                  <div class="flex items-start justify-between gap-2">
-                    <div class="flex items-center min-w-0 gap-2">
-                      <div class="truncate text-sm font-mono font-bold select-all" :title="a.name || a.model">
-                        {{ a.name || a.model }}
-                      </div>
-                      <!-- <div class="text-[10px] uppercase tracking-wide text-muted-foreground">
-                        {{ a.unit }}
-                      </div> -->
-                      <Badge v-if="a.__noAggregate" variant="outline" class="shrink-0 text-[10px] font-normal">
-                        暂无额度数据
-                      </Badge>
-                    </div>
-                    <div v-if="!a.__noAggregate" class="shrink-0 text-right flex gap-2 items-center">
-                      <div class="text-sm font-semibold tabular-nums" :class="a.exhausted ? 'text-destructive' : ''">
-                        {{ a.local_remaining.toLocaleString() }}
-                      </div>
-                      <div class="text-[10px] text-muted-foreground tabular-nums">
-                        / {{ a.initial_total.toLocaleString() }}
-                      </div>
-                    </div>
-                    <div v-else class="text-xs text-muted-foreground">—</div>
-                  </div>
-                  <!-- 进度条 + 右侧百分比 -->
-                  <div v-if="!a.__noAggregate" class="flex items-center gap-2">
-                    <Progress :model-value="a.percentage" class="h-1.5 flex-1" :class="a.exhausted
-                        ? 'bg-destructive/20'
-                        : a.percentage < 20
-                          ? 'bg-amber-500/20'
-                          : ''
-                      " />
-                    <span class="w-9 shrink-0 text-right text-xs tabular-nums text-muted-foreground"
-                      :class="a.exhausted ? 'text-destructive' : ''">
-                      {{ a.percentage }}%
-                    </span>
-                  </div>
-                  <div v-else class="text-[10px] text-muted-foreground/70">
-                    该模型不在火山引擎免费额度范围 / 未拉到账单明细。
-                  </div>
-                </div>
-              </VueDraggable>
-            </AccordionContent>
-          </AccordionItem>
-        </Accordion>
-        <EmptyState v-else :title="aggregatesLoaded ? '暂无额度数据' : '加载中…'"
-          description="点击右侧「刷新远程」获取最新额度（账单有延迟，后台每 15 分钟自动刷新）。" />
-      </div>
 
       <!-- 表格视图：每个 Key 的折叠明细 -->
-      <div v-else-if="pkgView === 'table' && configs.length" class="divide-y rounded-md border">
+      <div v-if="configs.length" class="divide-y rounded-md border">
         <div v-for="item in configs" :key="item.config.channel_id">
           <!-- 折叠行 -->
           <div class="flex items-center gap-1 px-2 py-2">
@@ -816,7 +461,7 @@ const displayName = (ch: Channel) => ch.channel_name || ch.name
                   class="h-7 w-56 text-xs"
                   @update:model-value="(v: string) => setPkgFilter(item.config.channel_id, v)" />
               </div>
-              <Table class="w-full text-xs">
+              <Table v-if="pkgView === 'table'" class="w-full text-xs">
                 <TableHeader>
                   <TableRow class="bg-muted/30 hover:bg-muted/30">
                     <TableHead>资源包</TableHead>
@@ -872,6 +517,55 @@ const displayName = (ch: Channel) => ch.channel_name || ch.name
                   </TableRow>
                 </TableBody>
               </Table>
+              <div v-else class="grid grid-cols-1 gap-2 md:grid-cols-2! xl:grid-cols-3!">
+                <div v-for="p in filteredPackages(item)" :key="p.instance_no"
+                  class="flex flex-col gap-1.5 rounded-md border p-3" :class="[
+                    p.local_remaining <= 0 && p.initial_total > 0 ? 'border-destructive/40 bg-destructive/5' : '',
+                  ]">
+                  <div class="flex items-start justify-between gap-2">
+                    <div class="min-w-0">
+                      <div class="truncate text-sm font-medium" :title="pkgName(p)">{{ pkgName(p) }}</div>
+                      <div class="truncate font-mono text-[10px] text-muted-foreground"
+                        :title="p.configuration_code || p.product || ''">
+                        {{ p.configuration_code || p.product || '' }}
+                      </div>
+                    </div>
+                    <Badge :variant="pkgBadge(p).variant" class="shrink-0">{{ pkgBadge(p).label }}</Badge>
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <Progress :model-value="pkgProgress(p)" :class="p.local_remaining <= 0 && p.initial_total > 0
+                        ? 'bg-destructive/20'
+                        : p.total_amount > 0 && p.available_amount / p.total_amount < 0.2
+                          ? 'bg-amber-500/20'
+                          : ''
+                      " class="h-1.5 flex-1" />
+                    <span class="shrink-0 text-right text-xs tabular-nums"
+                      :class="p.local_remaining <= 0 && p.initial_total > 0 ? 'text-destructive' : ''"
+                      :title="'本地剩余 ' + p.local_remaining + ' / 初始 ' + p.initial_total">
+                      {{ p.local_remaining.toLocaleString() }}
+                    </span>
+                  </div>
+                  <div class="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+                    <span class="flex items-center gap-1">
+                      <span class="tabular-nums">{{ formatAmount(p.total_amount) }}</span>
+                      <span class="text-muted-foreground/60">总额</span>
+                    </span>
+                    <span class="flex items-center gap-1">
+                      <span class="tabular-nums">
+                        {{ (p.initial_total > 0
+                          ? p.initial_total - p.local_remaining
+                          : p.used_amount
+                        ).toLocaleString() }}
+                      </span>
+                      <span class="text-muted-foreground/60">已用</span>
+                    </span>
+                    <span class="flex items-center gap-1" :title="pkgExpiry(p)">
+                      <span class="text-muted-foreground/60">到期</span>
+                      <span class="tabular-nums">{{ pkgExpiry(p) || '—' }}</span>
+                    </span>
+                  </div>
+                </div>
+              </div>
               <div v-if="filteredPackages(item).length === 0"
                 class="px-3 py-4 text-center text-xs text-muted-foreground">
                 没有匹配「{{ getPkgFilter(item.config.channel_id) }}」的资源包
