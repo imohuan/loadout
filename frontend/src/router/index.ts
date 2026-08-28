@@ -12,6 +12,7 @@ const McpView = () => import('@/views/McpView.vue')
 const CapabilityRoutesView = () => import('@/views/CapabilityRoutesView.vue')
 const ManagementView = () => import('@/views/ManagementView.vue')
 const SkillsView = () => import('@/views/SkillsView.vue')
+const TranslateView = () => import('@/views/TranslateView.vue')
 const UnifyaiView = () => import('@/views/UnifyaiView.vue')
 import { useAuthStore } from '@/stores/auth'
 
@@ -74,6 +75,12 @@ const router = createRouter({
         },
         { path: 'settings', name: 'settings', component: ManagementView, meta: { title: '设置' } },
         { path: 'skills', name: 'skills', component: SkillsView, meta: { title: 'Skills' } },
+        {
+          path: 'translations',
+          name: 'translations',
+          component: TranslateView,
+          meta: { title: '翻译' },
+        },
         {
           path: 'unifyai',
           name: 'unifyai',

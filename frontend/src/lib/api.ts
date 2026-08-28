@@ -83,3 +83,86 @@ function clientTimeZone(): string {
     return ''
   }
 }
+
+// ---- 翻译（translate 插件）----
+
+export interface TranslateRequest {
+  source_text?: string
+  texts?: string[]
+  target_lang?: string
+  model?: string
+  prompt?: string
+  source_type?: string
+  source_id?: string
+  key?: string
+  type?: string
+}
+
+export interface TranslateResponse {
+  texts?: string[]
+  text?: string
+}
+
+export const translateText = (body: TranslateRequest) =>
+  request<TranslateResponse>('/api/translate', 'POST', body)
+
+export const getTranslateSources = () =>
+  api<{
+    items: {
+      source_type: 'mcp' | 'skill' | 'custom'
+      source_id: string
+      name: string
+      description: string
+      input_schema?: Record<string, unknown>
+      params?: { name: string; title?: string; description?: string; type?: string; required?: boolean }[]
+    }[]
+    count: number
+  }>('/api/translate/sources')
+
+export interface TranslateBatchRequest {
+  items: { source_type: string; source_id: string; description: string; key?: string }[]
+  target_lang?: string
+  model?: string
+  prompt?: string
+  type?: string
+  concurrency?: number
+}
+
+export interface TranslateBatchStart {
+  task_id: string
+  total: number
+}
+
+export interface TranslateBatchStatus {
+  task_id: string
+  done: number
+  total: number
+  running: boolean
+  finished: boolean
+  cancelled: boolean
+  error?: string
+}
+
+// startTranslateBatch 启动一个后台批量翻译任务，立即返回 task_id。
+// 任务在后端独立运行，不随本连接断开而取消；后续用 getTranslateBatchStatus 轮询进度。
+export const startTranslateBatch = (body: TranslateBatchRequest) =>
+  request<TranslateBatchStart>('/api/translate/batch', 'POST', body)
+
+// getTranslateBatchStatus 查询后台批量翻译任务进度。
+export const getTranslateBatchStatus = (taskId: string) =>
+  api<TranslateBatchStatus>(`/api/translate/batch/status?task_id=${encodeURIComponent(taskId)}`)
+
+// cancelTranslateBatch 取消后台批量翻译任务。
+export const cancelTranslateBatch = (taskId: string) =>
+  request<{ task_id: string; cancelled: boolean }>(
+    `/api/translate/batch/cancel?task_id=${encodeURIComponent(taskId)}`,
+    'POST',
+  )
+
+// translateLookup 只读查询已有译文（不触发翻译）。texts 与结果一一对应，未命中为 null。
+export const translateLookup = (body: {
+  source_text?: string
+  target_lang?: string
+  type?: string
+  items?: { text: string }[]
+}) => request<{ texts: (string | null)[] }>('/api/translate/lookup', 'POST', body)

@@ -469,3 +469,41 @@ export interface ProcessEvent {
   type: 'snapshot' | 'update'
   data: ProcessInfo[]
 }
+
+// ---- 翻译（translate 插件）----
+
+export type TranslateSourceType = 'mcp' | 'skill' | 'custom'
+
+export interface TranslateParamItem {
+  name: string
+  title?: string
+  description?: string
+  type?: string
+  required?: boolean
+}
+
+export interface TranslateSourceItem {
+  source_type: TranslateSourceType
+  source_id: string
+  name: string
+  description: string
+  input_schema?: Record<string, unknown>
+  params?: TranslateParamItem[]
+  /** 后端缓存里是否已有译文（决定"已翻译/未翻译"徽标初值） */
+  translated?: boolean
+}
+
+export interface TranslateBatchItem {
+  source_type: TranslateSourceType
+  source_id: string
+  description: string
+}
+
+export interface TranslateProgressEvent {
+  done: number
+  total: number
+  index: number
+  text?: string
+  error?: string
+  finished: boolean
+}
