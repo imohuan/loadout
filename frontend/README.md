@@ -111,7 +111,6 @@ createApp(App).use(ShadcnVue, { css: ':root { --primary: oklch(0.6 0.2 250); }' 
 ## 图标：@remixicon/vue
 
 图标从 `@remixicon/vue` 导入，命名导出为 `Ri` 前缀 + 图标名（`Line` 描边 / `Fill` 实心两种风格）：
-图标使用 tailwindcss size-* 不要使用 属性
 
 ```vue
 <script setup lang="ts">
@@ -119,14 +118,79 @@ import { RiHeartFill, RiCloseLine } from '@remixicon/vue'
 </script>
 
 <template>
-  <RiHeartFill size="16" color="currentColor" />
-  <RiCloseLine size="24" />
+  <!-- 图标组件默认撑满父容器，用 Tailwind 的 size-* 控制尺寸 -->
+  <RiHeartFill class="size-4 text-red-500" />
+  <RiCloseLine class="size-6" />
 </template>
 ```
 
 - 图标名在 [remixicon.com](https://remixicon.com) 上查，点图标复制 Vue 组件名即可。
-- props：`size`（默认 `"24px"`，字符串）、`color`（默认 `currentColor`）、`className`。
-- 控制尺寸用 `size`，不要用 Tailwind 的 `size-*`（对组件不生效）。
+- **不要用 `size` 属性控制尺寸**（特殊原因，该属性不可靠），统一用 Tailwind 的 `size-*`（如 `size-4` = 1rem）配合 `text-*` 调色，颜色用 `text-*` 即可。
+
+## 下拉配置：必须用分离写法
+
+下拉（Select）配置**一定使用分离方式**：`model-value` + `@update:model-value` 手动绑定，不要用 `v-model` 简写。这样能在选中"全部"占位值时把值置为 `undefined`，避免把占位文案当真实选项提交。
+
+```vue
+<Select
+  :model-value="form.channel_name || '__all__'"
+  @update:model-value="form.channel_name = $event === '__all__' ? undefined : String($event)"
+>
+  <SelectTrigger id="log-channel" class="w-full">
+    <SelectValue placeholder="所有渠道" />
+  </SelectTrigger>
+  <SelectContent position="popper" side="bottom" align="start" :side-offset="2">
+    <SelectGroup>
+      <SelectItem value="__all__">所有渠道</SelectItem>
+      <SelectItem v-for="channel in channels" :key="channel.name" :value="channel.name">
+        {{ channel.name }}
+      </SelectItem>
+    </SelectGroup>
+  </SelectContent>
+</Select>
+```
+
+## 折叠面板：Accordion
+
+折叠直接用 `shadcn-vue-cdn` 全局注册的 `Accordion` / `AccordionItem` / `AccordionTrigger` / `AccordionContent`（main.ts 里 `app.use(ShadcnVue)` 已全局注册，无需本地再包一层）。按 `RequestLogDetailView.vue` 的约定写法：
+
+- **图标放左侧**：在 `AccordionTrigger` 里放一个 `RiArrowRightSLine`，用 `group-aria-expanded/accordion-trigger:rotate-90` 做展开旋转动画。
+- **隐藏右侧默认图标**：用 `<template #icon><span class="hidden" /></template>` 占掉默认图标位。
+
+```vue
+<template>
+  <Accordion type="multiple" :default-value="['request', 'stream']" class="w-full">
+    <AccordionItem value="request">
+      <AccordionTrigger>
+        <span class="inline-flex items-center">
+          <RiArrowRightSLine
+            class="mr-2 size-4 shrink-0 text-muted-foreground transition-transform duration-200 group-aria-expanded/accordion-trigger:rotate-90" />
+          请求参数
+        </span>
+        <template #icon><span class="hidden" /></template>
+      </AccordionTrigger>
+      <AccordionContent>
+        <div class="mt-2">…内容…</div>
+      </AccordionContent>
+    </AccordionItem>
+    <AccordionItem value="response">
+      <AccordionTrigger>
+        <span class="inline-flex items-center">
+          <RiArrowRightSLine
+            class="mr-2 size-4 shrink-0 text-muted-foreground transition-transform duration-200 group-aria-expanded/accordion-trigger:rotate-90" />
+          响应结果
+        </span>
+        <template #icon><span class="hidden" /></template>
+      </AccordionTrigger>
+      <AccordionContent>
+        <div class="mt-2">…内容…</div>
+      </AccordionContent>
+    </AccordionItem>
+  </Accordion>
+</template>
+```
+
+> 多个可同时展开用 `type="multiple"`（配合 `:default-value="['item-a','item-b']"`）；只允许展开一个用手风琴 `type="single" collapsible`。
 
 ## 开发规范
 
