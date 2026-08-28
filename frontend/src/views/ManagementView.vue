@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { toast } from 'vue-sonner'
 import {
   RiAddLine,
   RiDeleteBinLine,
@@ -14,6 +15,7 @@ import { useManagementApi } from '@/composables/useManagementApi'
 import { useListLoader } from '@/composables/useListLoader'
 import { useAsyncTask } from '@/composables/useAsyncTask'
 import { useConfirm } from '@/composables/useConfirm'
+import { startTask, registerTask } from '@/composables/useTask'
 import PageHeader from '@/components/PageHeader.vue'
 import LoadingBlock from '@/components/LoadingBlock.vue'
 import EmptyState from '@/components/EmptyState.vue'
@@ -42,7 +44,7 @@ const activeTab = ref('runtime')
 const newKey = ref('')
 const skForm = reactive({ name: '', models: '' })
 const passwordForm = reactive({ old: '', new: '' })
-const settingsForm = reactive({ active_preset: '', default_model: '' })
+const settingsForm = reactive({ active_preset: '', default_model: '', use_global_cmd: false })
 watch(
   settingsData,
   (value) => {
@@ -101,6 +103,85 @@ async function changePassword() {
     '密码已修改',
   )
 }
+// ===== 依赖更新检查（unifyai / skills 全局包）=====
+const depsItems = ref<Array<{ name: string; installed: boolean; current: string; latest: string; needUpdate: boolean; error?: string }>>([])
+const depsChecking = ref(false)
+// 正在安装/更新的库名（立即置位显示按钮加载，任务结束由 useTask 收尾清空）。
+const depsBusy = ref<string | null>(null)
+
+/** 拉取依赖检查状态（后端启动时后台已自动查过一次，读缓存即可） */
+async function refreshDeps() {
+  try {
+    const res = await api.depsStatus()
+    depsItems.value = res.items || []
+    depsChecking.value = res.checking
+  } catch (e) {
+    toast.error(e instanceof Error ? e.message : '读取依赖状态失败')
+  }
+}
+
+/** 手动触发重新检查 */
+async function checkDeps() {
+  if (depsChecking.value) return
+  depsChecking.value = true
+  try {
+    // 后端同步查询，直接返回最新状态
+    const res = await api.depsRefresh()
+    depsItems.value = res.items || []
+    depsChecking.value = res.checking
+  } catch (e) {
+    toast.error(e instanceof Error ? e.message : '检查失败')
+  } finally {
+    depsChecking.value = false
+  }
+}
+
+/** 安装/更新全局包（后台 procreg 任务）。加载态与结束收尾统一由 useTask 管理。 */
+async function installDep(name: string) {
+  if (depsBusy.value) return
+  const taskId = `dep-install:${name}`
+  // 注册收尾：安装结束（done）刷新依赖状态并清空按钮加载态。
+  registerTask(taskId, {
+    kind: 'dep',
+    onDone: () => {
+      depsBusy.value = null
+      void refreshDeps()
+    },
+    onError: (err) => {
+      depsBusy.value = null
+      void refreshDeps()
+      toast.error(`安装/更新 ${name} 失败`, { description: String(err) })
+    },
+  })
+  depsBusy.value = name
+  try {
+    await startTask({ id: taskId, kind: 'dep', run: () => api.depsInstall(name, taskId) })
+  } catch (e) {
+    depsBusy.value = null
+    toast.error(e instanceof Error ? e.message : `启动安装 ${name} 失败`)
+  }
+}
+
+// 监听全局指令开关：仅在设置数据加载完成后才自动保存，避免初始赋值误触发。
+let depsSettingReady = false
+watch(
+  () => settingsForm.use_global_cmd,
+  () => {
+    if (!depsSettingReady) return
+    saveSettings()
+  },
+)
+// settingsData 首次加载完成后标记就绪（此后开关切换才保存）。
+watch(
+  settingsData,
+  () => {
+    depsSettingReady = true
+  },
+  { immediate: true },
+)
+onMounted(() => {
+  refreshDeps()
+})
 </script>
 
 <template>
@@ -178,6 +259,81 @@ async function changePassword() {
                     />保存设置
                   </Button>
                 </form>
+              </CardContent>
+            </Card>
+            <Card class="rounded-md">
+              <CardHeader>
+                <CardTitle class="text-base">依赖更新</CardTitle>
+                <CardDescription>检查 unifyai / skills 全局包是否需要更新</CardDescription>
+              </CardHeader>
+              <CardContent class="space-y-3">
+                <div class="flex items-center justify-between gap-3">
+                  <div class="flex items-center gap-2">
+                    <Switch id="use-global-cmd" v-model="settingsForm.use_global_cmd" />
+                    <Label for="use-global-cmd" class="cursor-pointer text-sm"
+                      >使用全局指令（关闭则用 npx）</Label
+                    >
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    :disabled="depsChecking"
+                    @click="checkDeps"
+                  >
+                    <RiLoader4Line v-if="depsChecking" class="animate-spin" size="14" />
+                    <RiRefreshLine v-else size="14" />
+                    {{ depsChecking ? '检查中…' : '刷新状态' }}
+                  </Button>
+                </div>
+                <div class="space-y-2">
+                  <div
+                    v-if="!depsItems.length && !depsChecking"
+                    class="rounded-md border p-3 text-sm text-muted-foreground"
+                  >
+                    暂无数据，点击「刷新状态」检查
+                  </div>
+                  <div
+                    v-for="dep in depsItems"
+                    :key="dep.name"
+                    class="flex items-center justify-between gap-2 rounded-md border p-3"
+                  >
+                    <div class="flex min-w-0 items-center gap-2">
+                      <span class="font-mono text-sm font-medium">{{ dep.name }}</span>
+                      <span
+                        v-if="dep.error"
+                        class="truncate text-xs text-destructive"
+                        :title="dep.error"
+                        >检查失败</span
+                      >
+                      <span v-else-if="!dep.installed" class="text-xs text-muted-foreground"
+                        >未安装</span
+                      >
+                      <span v-else-if="dep.needUpdate" class="text-xs text-amber-600"
+                        >{{ dep.current }} → {{ dep.latest }}</span
+                      >
+                      <span v-else class="text-xs text-emerald-600"
+                        >已是最新 {{ dep.latest }}</span
+                      >
+                    </div>
+                    <Button
+                      v-if="!dep.installed || dep.needUpdate"
+                      size="sm"
+                      :disabled="!!depsBusy"
+                      class="shrink-0"
+                      @click="installDep(dep.name)"
+                    >
+                      <RiLoader4Line
+                        v-if="depsBusy === dep.name"
+                        class="animate-spin"
+                        size="14"
+                      />
+                      <template v-else>{{ dep.installed ? '更新' : '安装' }}</template>
+                      <span v-if="depsBusy === dep.name" class="ml-1">{{
+                        dep.installed ? '更新中…' : '安装中…'
+                      }}</span>
+                    </Button>
+                  </div>
+                </div>
               </CardContent>
             </Card>
             <Card class="rounded-md">

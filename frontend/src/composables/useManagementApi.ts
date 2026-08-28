@@ -1,5 +1,5 @@
 import { api, request } from '@/lib/api'
-import type { ApiKey, Preset, Skill, SkillPlatformStatus } from '@/lib/types'
+import type { ApiKey, DepStatus, Preset, Skill, SkillPlatformStatus } from '@/lib/types'
 
 export function useManagementApi() {
   type PluginResult = {
@@ -13,8 +13,8 @@ export function useManagementApi() {
   const presets = () => api<Preset[]>('/api/presets')
   const skillStatus = () => api<SkillPlatformStatus[]>('/api/skills/status')
   const syncSkills = () => request<{ synced: number }>('/api/skills/sync', 'POST')
-  const checkSkillUpdates = () =>
-    request<{ updates: string[] }>('/api/skills/check-updates', 'POST')
+  const checkSkillUpdates = (id?: string) =>
+    request<{ updates: string[] }>('/api/skills/check-updates', 'POST', { id })
   const updateStatus = () =>
     request<{ running: boolean }>('/api/skills/update-status', 'GET')
   const restoreBackup = (target: string) => request<void>('/api/skills/restore', 'POST', { target })
@@ -57,11 +57,21 @@ export function useManagementApi() {
       'POST',
       body,
     )
-  const settings = () => api<{ active_preset: string; default_model: string }>('/api/settings')
-  const saveSettings = (body: { active_preset: string; default_model: string }) =>
-    request<void>('/api/settings', 'PUT', body)
+  const settings = () =>
+    api<{ active_preset: string; default_model: string; use_global_cmd: boolean }>('/api/settings')
+  const saveSettings = (body: {
+    active_preset: string
+    default_model: string
+    use_global_cmd: boolean
+  }) => request<void>('/api/settings', 'PUT', body)
   const changePassword = (body: { old: string; new: string }) =>
     request<void>('/api/change-password', 'POST', body)
+  const depsStatus = () =>
+    api<{ items: DepStatus[]; checking: boolean }>('/api/deps/status')
+  const depsRefresh = () =>
+    request<{ items: DepStatus[]; checking: boolean }>('/api/deps/refresh', 'POST')
+  const depsInstall = (name: string, id?: string) =>
+    request<{ started: boolean }>('/api/deps/install', 'POST', { name, id })
   return {
     plugins,
     skills,
@@ -88,5 +98,8 @@ export function useManagementApi() {
     settings,
     saveSettings,
     changePassword,
+    depsStatus,
+    depsRefresh,
+    depsInstall,
   }
 }

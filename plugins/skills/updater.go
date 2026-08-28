@@ -21,6 +21,7 @@ type UpdateRunner struct {
 	svc     *Service
 	mu      sync.Mutex
 	running bool
+	pendingID string // 本次更新任务的前端 task id（空=自动生成），经 procreg 透传
 	subs    map[chan UpdateEvent]bool
 	history []UpdateEvent
 }
@@ -31,6 +32,13 @@ func newUpdateRunner(svc *Service) *UpdateRunner {
 
 // Subscribe 订阅更新日志流。若没有任务在跑则立即启动一个。
 // 返回事件 channel；任务结束（done/error 推送后）channel 由广播端关闭。
+// SetUpdateID 设置本次更新任务的进程 ID（前端 task id），在下一次启动时使用。
+func (r *UpdateRunner) SetUpdateID(id string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.pendingID = id
+}
+
 // IsRunning 返回是否有更新任务正在跑。
 func (r *UpdateRunner) IsRunning() bool {
 	r.mu.Lock()
@@ -87,7 +95,11 @@ func (r *UpdateRunner) finish(ev UpdateEvent) {
 func (r *UpdateRunner) run() {
 	r.broadcast(UpdateEvent{Type: "log", Line: "开始检查并更新技能…"})
 
-	updates, err := r.svc.UpdateSkills(func(line string) {
+	r.mu.Lock()
+	id := r.pendingID
+	r.pendingID = ""
+	r.mu.Unlock()
+	updates, err := r.svc.UpdateSkills(id, func(line string) {
 		r.broadcast(UpdateEvent{Type: "log", Line: line})
 	})
 	if err != nil {

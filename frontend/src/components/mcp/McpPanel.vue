@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { reactive, ref } from 'vue'
+import { onMounted, reactive, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { toast } from 'vue-sonner'
 import {
   RiAddLine,
@@ -28,11 +29,29 @@ import { useMcpManagement, isServerActive } from '@/composables/useMcpManagement
 import { useManagementApi } from '@/composables/useManagementApi'
 import { useAsyncTask } from '@/composables/useAsyncTask'
 import { getLoadoutBaseSync } from '@/lib/base'
+import { useMcpNavStore } from '@/stores/mcpNavigation'
 const mcp = reactive(useMcpManagement())
 const api = useManagementApi()
 const { run: runKey, isPending: isKeyPending } = useAsyncTask()
 const labels: Record<string, string> = { http: 'Streamable HTTP', sse: 'SSE', stdio: 'stdio' }
 const activeTab = ref('upstream')
+// 外部跳转请求（ProcessFooter 点击 MCP 进程）：切到「原始日志」tab，McpLogsTab 再负责选中 server。
+// 跳转信号来源有二：① query 初始化（McpPanel 挂载/query 变化时消费）；② store 内跳转信号。
+const route = useRoute()
+const router = useRouter()
+const mcpNav = useMcpNavStore()
+
+// 消费 ?log=<server> 初始信号：切 tab + 写入 store 供 McpLogsTab 选中，随后清掉 query 防刷新残留。
+function applyLogQuery() {
+  const q = route.query.log
+  const serverName = Array.isArray(q) ? q[0] : q
+  if (!serverName) return
+  mcpNav.gotoServerLogs(serverName)
+  activeTab.value = 'logs'
+  const next: Record<string, string> = {}; for (const [k, v] of Object.entries(route.query)) if (k !== 'log' && typeof v === 'string') next[k] = v; router.replace({ name: 'integrations', query: next })
+}
+onMounted(applyLogQuery)
+watch(() => route.query.log, applyLogQuery)
 const serverDialog = ref(false)
 const groupDialog = ref(false)
 const expandedEndpoints = ref<string[]>([])

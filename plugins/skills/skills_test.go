@@ -155,7 +155,7 @@ func TestUpdateSkills(t *testing.T) {
 	})
 	t.Cleanup(func() { procreg.SetRunFn(orig) })
 
-	updated, err := svc.UpdateSkills(nil)
+	updated, err := svc.UpdateSkills("", nil)
 	if err != nil {
 		t.Fatalf("UpdateSkills 失败: %v", err)
 	}
@@ -185,7 +185,7 @@ func TestUpdateSkillsRemovesExtras(t *testing.T) {
 	})
 	t.Cleanup(func() { procreg.SetRunFn(orig) })
 
-	updated, err := svc.UpdateSkills(nil)
+	updated, err := svc.UpdateSkills("", nil)
 	if err != nil {
 		t.Fatalf("UpdateSkills 失败: %v", err)
 	}
@@ -220,7 +220,7 @@ func TestUpdateSkillsEmptyLock(t *testing.T) {
 	t.Cleanup(func() { procreg.SetRunFn(orig) })
 
 	svc, _, _ := newTestService(t)
-	updated, err := svc.UpdateSkills(nil)
+	updated, err := svc.UpdateSkills("", nil)
 	if err != nil {
 		t.Fatalf("UpdateSkills 失败: %v", err)
 	}

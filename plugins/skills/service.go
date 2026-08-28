@@ -20,6 +20,7 @@ import (
 
 	"loadout/core/cmdutil"
 	"loadout/core/config"
+	"loadout/core/deps"
 	"loadout/core/db"
 	"loadout/core/linkfs"
 	"loadout/core/procreg"
@@ -39,6 +40,16 @@ var runCommand = func(name string, args ...string) (string, error) {
 	cmdutil.HideWindow(cmd) // 桌面 exe 下不弹黑色终端框
 	out, err := cmd.CombinedOutput()
 	return string(out), err
+}
+// skillsCmd 返回 skills CLI 入口：skills 已全局安装 且 开关打开 → 全局 skills 指令；
+// 否则回退 npx 字面量（原行为，由 exec 在 PATH 中解析）。
+func skillsCmd() (string, []string) {
+	// 依赖开关：skills 已全局安装 且 开关打开 → 用全局 skills 指令；
+	// 否则回退 npx（npx -y skills 自动拉取）。
+	if deps.UseGlobal && deps.GlobalAvailable("skills") {
+		return "skills", []string{"update", "-y"}
+	}
+	return "npx", []string{"-y", "skills", "update", "-y"}
 }
 
 // manifestName 目标目录里 Loadout 自建的链接条目清单文件名。
@@ -84,6 +95,9 @@ func (s *Service) UpdateRunning() bool { return s.updater.IsRunning() }
 func (s *Service) SubscribeUpdate() (<-chan UpdateEvent, error) {
 	return s.updater.Subscribe()
 }
+
+// SetUpdateID 设置下一次更新任务的进程 ID（前端 task id）。
+func (s *Service) SetUpdateID(id string) { s.updater.SetUpdateID(id) }
 
 // RepoDir 返回技能仓库目录（所有技能真实文件所在，~/.loadout/skills）。
 func (s *Service) RepoDir() string { return s.repoDir }
@@ -981,7 +995,7 @@ func (s *Service) syncLockFile() error {
 // 注意：更新依赖 GitHub API（匿名限流 60 次/小时），失败时提示用户 gh auth login。
 // 旧版本不备份（skills-backup / lock-backup 不产生）：更新即替换，其他 agent 只读
 // SKILL.md，lock 更新后更全也不影响。
-func (s *Service) UpdateSkills(onLog func(string)) ([]string, error) {
+func (s *Service) UpdateSkills(id string, onLog func(string)) ([]string, error) {
 	if onLog == nil {
 		onLog = func(string) {}
 	}
@@ -1004,11 +1018,13 @@ func (s *Service) UpdateSkills(onLog func(string)) ([]string, error) {
 	// 2) 执行官方更新（逐行实时输出）。
 	onLog("执行 npx skills update -y…")
 	beforeHashes, _ := readLockEntries(s.targetDir)
+	cmd, args := skillsCmd()
 	h, err := procreg.Run(procreg.Options{
+		ID:    id,
 		Name:  "更新技能",
 		Kind:  "skill",
-		Cmd:   "npx",
-		Args:  []string{"-y", "skills", "update", "-y"},
+		Cmd:   cmd,
+		Args:  args,
 		OnLog: onLog,
 	})
 	if err != nil {

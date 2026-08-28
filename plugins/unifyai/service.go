@@ -18,9 +18,9 @@ import (
 	"sync"
 	"time"
 
-	"loadout/core/cmdutil"
 	"loadout/core/procreg"
 	"loadout/core/config"
+	"loadout/core/deps"
 )
 
 // OpenRouterMeta 对应 openrouter-models.json 中单个模型的元数据条目
@@ -135,19 +135,11 @@ type OpenCodexModelsResult struct {
 // enableVision=true 时追加 --enable-vision（强制所有模型标记为支持视觉）。
 // CLI 不可用/代理不可达时返回 Degraded=true + 原因（不报错），保证页面可用。
 func (s *Service) OpenCodexModels(enableVision bool) OpenCodexModelsResult {
-	cmd, base, err := resolveCmd()
-	if err != nil {
-		return OpenCodexModelsResult{Degraded: true, DegradedReason: err.Error()}
-	}
-	// 新版 CLI 用 `--list models --json`（旧 `--list-models` 已移除），输出 {models: {...}}。
-	args := append(append([]string{}, base...), "--list", "models", "--json")
+	args := []string{"--list", "models", "--json"}
 	if enableVision {
 		args = append(args, "--enable-vision")
 	}
-	proc := exec.Command(cmd, args...)
-	cmdutil.HideWindow(proc)
-	proc.Env = envWithBinDir(cmd)
-	out, err := proc.Output()
+	lines, err := runCollect(args)
 	if err != nil {
 		s.lg.Warn("unifyai: --list models 执行失败", "err", err)
 		return OpenCodexModelsResult{Degraded: true, DegradedReason: err.Error()}
@@ -155,7 +147,7 @@ func (s *Service) OpenCodexModels(enableVision bool) OpenCodexModelsResult {
 	var wrapped struct {
 		Models OpenCodexModelsResult `json:"models"`
 	}
-	if err := json.Unmarshal(out, &wrapped); err != nil {
+	if err := json.Unmarshal([]byte(strings.Join(lines, "\n")), &wrapped); err != nil {
 		s.lg.Warn("unifyai: 解析 --list models JSON 失败", "err", err)
 		return OpenCodexModelsResult{Degraded: true, DegradedReason: "解析 --list models 输出失败"}
 	}
@@ -220,6 +212,8 @@ type Service struct {
 	// pendingArgs 保存「启动任务前」由 handler 设置的 CLI 参数，
 	// runner 启动任务时取出（takePendingArgs 一次性消费）。
 	pendingArgs []string
+	// pendingID 保存前端传入的任务进程 ID（空=自动生成），与 pendingArgs 一并透传。
+	pendingID string
 }
 
 // NewService 创建服务。
@@ -234,6 +228,22 @@ func (s *Service) SetArgs(args []string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.pendingArgs = append([]string(nil), args...)
+}
+
+// SetID 设置下一次任务的进程 ID（前端 task id，启动前调用）。
+func (s *Service) SetID(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pendingID = id
+}
+
+// takePendingID 取出并清空待执行进程 ID。
+func (s *Service) takePendingID() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	id := s.pendingID
+	s.pendingID = ""
+	return id
 }
 
 // takePendingArgs 取出并清空待执行参数。
@@ -253,23 +263,13 @@ func (s *Service) Subscribe() (<-chan RunEvent, error) {
 // PlatformInfo 解析 `unifyai --list platforms --json`，返回平台能力列表。
 // CLI 不可用时回落到内置默认平台（与 UI 静态数据一致），保证页面可用。
 func (s *Service) PlatformInfo() (ListPlatformsResult, error) {
-	cmd, base, err := resolveCmd()
-	if err != nil {
-		s.lg.Warn("unifyai: 获取平台列表回落到内置默认", "err", err)
-		return defaultPlatforms(), nil
-	}
-	args := append(append([]string{}, base...), "--list", "platforms", "--json")
-	proc := exec.Command(cmd, args...)
-	cmdutil.HideWindow(proc) // 桌面 exe 下不弹黑色终端框
-	// 后台服务 PATH 可能不完整，把 npx 所在目录补到最前（含 node）。
-	proc.Env = envWithBinDir(cmd)
-	out, err := proc.Output()
+	lines, err := runCollect([]string{"--list", "platforms", "--json"})
 	if err != nil {
 		s.lg.Warn("unifyai: --list platforms 失败，回落到内置默认", "err", err)
 		return defaultPlatforms(), nil
 	}
 	var res ListPlatformsResult
-	if err := json.Unmarshal(out, &res); err != nil {
+	if err := json.Unmarshal([]byte(strings.Join(lines, "\n")), &res); err != nil {
 		s.lg.Warn("unifyai: 解析平台列表 JSON 失败，回落到内置默认", "err", err)
 		return defaultPlatforms(), nil
 	}
@@ -293,22 +293,13 @@ type AllConfigResult struct {
 // CLI 不可用时返回空结构（前端回落内置默认），不报错。
 func (s *Service) ListAll() (AllConfigResult, error) {
 	var empty AllConfigResult
-	cmd, base, err := resolveCmd()
-	if err != nil {
-		s.lg.Warn("unifyai: --list all 获取失败（未找到 npx）", "err", err)
-		return empty, nil
-	}
-	args := append(append([]string{}, base...), "--list", "all", "--json")
-	proc := exec.Command(cmd, args...)
-	cmdutil.HideWindow(proc)
-	proc.Env = envWithBinDir(cmd)
-	out, err := proc.Output()
+	lines, err := runCollect([]string{"--list", "all", "--json"})
 	if err != nil {
 		s.lg.Warn("unifyai: --list all 执行失败", "err", err)
 		return empty, nil
 	}
 	var res AllConfigResult
-	if err := json.Unmarshal(out, &res); err != nil {
+	if err := json.Unmarshal([]byte(strings.Join(lines, "\n")), &res); err != nil {
 		s.lg.Warn("unifyai: 解析 --list all JSON 失败", "err", err)
 		return empty, nil
 	}
@@ -350,35 +341,26 @@ func (s *Service) SyncConfigPath() string {
 // 供前端「MCP 同步矩阵」渲染（行=去重服务器，列=平台，勾选=该平台开启）。
 // CLI 不可用 / 执行失败时返回空结果（前端回落内置默认），不报错。
 func (s *Service) ListMcpMatrix() (McpMatrixResult, error) {
-	var empty McpMatrixResult
-	cmd, base, err := resolveCmd()
-	if err != nil {
-		s.lg.Warn("unifyai: --list mcp 获取失败（未找到 npx）", "err", err)
-		return empty, nil
-	}
-	args := append(append([]string{}, base...), "--list", "mcp", "--json")
-	proc := exec.Command(cmd, args...)
-	cmdutil.HideWindow(proc) // 桌面 exe 下不弹黑色终端框
-	proc.Env = envWithBinDir(cmd)
-	out, err := proc.Output()
+	lines, err := runCollect([]string{"--list", "mcp", "--json"})
 	if err != nil {
 		s.lg.Warn("unifyai: --list mcp 执行失败", "err", err)
-		return empty, nil
+		return McpMatrixResult{}, nil
 	}
 	// 新版 CLI 输出 {mcp: {source, platforms}}，多包一层 mcp。
 	var wrapped struct {
 		Mcp McpMatrixResult `json:"mcp"`
 	}
-	if err := json.Unmarshal(out, &wrapped); err != nil {
+	if err := json.Unmarshal([]byte(strings.Join(lines, "\n")), &wrapped); err != nil {
 		s.lg.Warn("unifyai: 解析 --list mcp JSON 失败", "err", err)
-		return empty, nil
+		return McpMatrixResult{}, nil
 	}
 	return wrapped.Mcp, nil
 }
 
 // Run 执行一次 unifyai 指令（args 为 CLI 参数，如 ["--all", "--dry-run"]），
 // 实时把 stdout/stderr 逐行回传给 onLog。返回进程退出错误（nil=成功）。
-func (s *Service) Run(args []string, onLog func(string)) error {
+// id 可传前端 task id（空则自动生成），用于按 id 关联/查询该进程。
+func (s *Service) Run(id string, args []string, onLog func(string)) error {
 	if onLog == nil {
 		onLog = func(string) {}
 	}
@@ -389,6 +371,7 @@ func (s *Service) Run(args []string, onLog func(string)) error {
 	onLog(fmt.Sprintf("执行: %s %s", displayCmd(cmd, base), strings.Join(args, " ")))
 	full := append(append([]string{}, base...), args...)
 	h, err := procreg.Run(procreg.Options{
+		ID:    id,
 		Name:  "UnifyAI 同步",
 		Kind:  "unifyai",
 		Cmd:   cmd,
@@ -404,6 +387,19 @@ func (s *Service) Run(args []string, onLog func(string)) error {
 	return nil
 }
 
+// runCollect 用 procreg 统一执行一条 unifyai 查询命令并收集全部输出行。
+// 走 procreg 让命令出现在全局进程面板（ProcessFooter 可见、可终止），kind 统一为 "unifyai"。
+// 命令入口统一经 resolveCmd()（含 LOADOUT_UNIFYAI_CMD / 全局指令 / npx 优先级），保证不绕过配置。
+// 通用实现提取到 procreg.RunCollect，并通过 EnvWithPathPrefix 补全命令目录到 PATH（确保 npx 能找到同目录 node）。
+func runCollect(args []string) ([]string, error) {
+	cmd, base, err := resolveCmd()
+	if err != nil {
+		return nil, err
+	}
+	full := append(append([]string{}, base...), args...)
+	return procreg.RunCollect("UnifyAI 查询", "unifyai", cmd, full, procreg.EnvWithPathPrefix(filepath.Dir(cmd)))
+}
+
 // resolveCmd 返回 unifyai 执行入口（cmd + 固定前缀参数）。
 // 优先级：
 //  1. LOADOUT_UNIFYAI_CMD（config.UnifyaiCmd）配置的命令行，按 shell 风格分词
@@ -414,6 +410,10 @@ func (s *Service) Run(args []string, onLog func(string)) error {
 // 注意：`-y`（跳过 npx 的 "Ok to proceed?" 安装确认）必须放在包名【前面】，
 // 放在包名后会作为 unifyai 的参数传入，导致 `error: unknown option '-y'`。
 func resolveCmd() (string, []string, error) {
+	// 依赖开关：库已全局安装 且 开关打开 → 用全局指令，不用 npx。
+	if deps.UseGlobal && deps.GlobalAvailable("unifyai") {
+		return "unifyai", nil, nil
+	}
 	if cfg := config.UnifyaiCmd; cfg != "" {
 		parts := splitCommandLine(cfg)
 		if len(parts) == 0 {
@@ -502,41 +502,6 @@ var npxCandidates = func() []string {
 		"/opt/node/bin/npx",
 		"/usr/local/node/bin/npx",
 	)
-}
-
-// findNpxFallback 在常见安装位置中寻找存在的 npx（兜底 PATH 缺失场景）。
-func findNpxFallback() string {
-	for _, p := range npxCandidates() {
-		if fileExists(p) {
-			return p
-		}
-	}
-	return ""
-}
-
-// envWithBinDir 在子进程环境变量中把命令所在目录放到 PATH 最前，
-// 保证 npx 能找到同目录下的 node（后台服务 PATH 不完整时）。
-func envWithBinDir(cmdPath string) []string {
-	dir := filepath.Dir(cmdPath)
-	return osEnvironWithPathPrefix(dir)
-}
-
-// osEnvironWithPathPrefix 返回 os.Environ 副本，并把 dir 放到 PATH 最前。
-// 后台服务/systemd 启动时 PATH 可能不完整，需显式补全命令所在目录。
-func osEnvironWithPathPrefix(dir string) []string {
-	env := os.Environ()
-	for i, kv := range env {
-		if j := strings.IndexByte(kv, '='); j > 0 && strings.EqualFold(kv[:j], "PATH") {
-			cur := kv[j+1:]
-			if cur == "" {
-				env[i] = "PATH=" + dir
-			} else if !strings.HasPrefix(cur, dir+string(os.PathListSeparator)) {
-				env[i] = "PATH=" + dir + string(os.PathListSeparator) + cur
-			}
-			return env
-		}
-	}
-	return append(env, "PATH="+dir)
 }
 
 // fileExists 判断路径存在且是普通文件。

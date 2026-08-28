@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, reactive, ref } from 'vue'
 import {
   RiAddLine,
   RiArrowDownSLine,
@@ -17,11 +17,11 @@ import { toast } from 'vue-sonner'
 import { useManagementApi } from '@/composables/useManagementApi'
 import { useListLoader } from '@/composables/useListLoader'
 import { useAsyncTask } from '@/composables/useAsyncTask'
+import { useTask, startTask } from '@/composables/useTask'
 import { useConfirm } from '@/composables/useConfirm'
 import PageHeader from '@/components/PageHeader.vue'
 import LoadingBlock from '@/components/LoadingBlock.vue'
 import EmptyState from '@/components/EmptyState.vue'
-import StreamLogPanel, { type StreamStatus } from '@/components/StreamLogPanel.vue'
 const api = useManagementApi()
 const {
   data: skills,
@@ -42,6 +42,15 @@ const {
 } = useListLoader(api.skillStatus)
 const { run, isPending } = useAsyncTask()
 const { confirmDialog } = useConfirm()
+// 后台「检查并更新技能」任务：注册收尾动作，更新结束（done）时自动刷新技能列表与平台状态。
+const skillUpdateRunning = useTask('skill-update', {
+  kind: 'skill',
+  onDone: () => {
+    void refreshSkills()
+    void refreshStatus()
+  },
+  onError: (err) => toast.error('技能更新失败', { description: String(err) }),
+}).isRunning
 const activeTab = ref('skills')
 const skillDialog = ref(false)
 const presetDialog = ref(false)
@@ -71,12 +80,6 @@ const anyRefreshing = computed(
 // 独立操作 loading（各自按钮显示旋转图标，互不干扰）。
 const syncing = ref(false)
 const npxCmd = ref('')
-
-// ===== 更新日志（SSE 实时进度，通用组件）=====
-const updateStatus = ref<StreamStatus>('idle')
-const updateTrigger = ref(0)
-// 「更新日志」Tab 默认隐藏，点击「检查并更新」后才显示。
-const showLogsTab = ref(false)
 
 // ===== 按来源聚合视图（折叠表格）=====
 const groupBySource = ref(false)
@@ -116,15 +119,6 @@ function toggleGroupBySource() {
   groupBySource.value = !groupBySource.value
   // 切换模式时清空展开状态，避免下次进入聚合态还残留旧展开项。
   expandedSources.value = []
-}
-
-function onUpdateDone() {
-  void refreshSkills()
-  void refreshStatus()
-}
-function onUpdateError() {
-  void refreshSkills()
-  void refreshStatus()
 }
 
 // 目标平台选项与标签（generic 映射后端空串 = 通用 .agents）。
@@ -360,26 +354,15 @@ async function syncSkills() {
   }
 }
 async function checkUpdates() {
-  if (updateStatus.value === 'running') return
-  // 触发通用日志组件连接 SSE（后端自动启动更新任务），日志实时推送到「更新日志」Tab。
-  showLogsTab.value = true
-  activeTab.value = 'logs'
-  updateTrigger.value++
+  // 触发后端检查并更新技能（后台 procreg 任务，日志显示在底部进程面板）。
+  // 加载态与结束收尾由 useTask('skill-update') 统一管理。
+  await startTask({
+    id: 'skill-update',
+    kind: 'skill',
+    run: () => api.checkSkillUpdates('skill-update'),
+  })
 }
-// 页面进入/刷新时，若后台已有更新任务在跑，自动显示「更新日志」Tab 并连接 SSE 拉取实时日志（不自动跳转）。
-onMounted(async () => {
-  try {
-    const { running } = await api.updateStatus()
-    if (running) {
-      showLogsTab.value = true
-      // 递增 trigger 让 StreamLogPanel 立即连接 /api/skills/update-stream，
-      // 否则面板只显示空态、不会订阅 SSE，后台任务的日志也看不到。
-      updateTrigger.value++
-    }
-  } catch {
-    /* 查询失败静默忽略，保持默认隐藏 */
-  }
-})
+
 async function restoreBackup(status: { name: string; dir: string }) {
   const label = platformName(status.name)
   const confirmed = await confirmDialog({
@@ -420,9 +403,9 @@ async function restoreAllBackups() {
             syncing ? '同步中…' : '主动同步'
           }}
         </Button>
-        <Button variant="outline" :disabled="updateStatus === 'running'" @click="checkUpdates">
-          <RiLoaderLine :class="updateStatus === 'running' ? 'animate-spin' : ''" size="16" />{{
-            updateStatus === 'running' ? '更新中…' : '检查并更新'
+        <Button variant="outline" :disabled="skillUpdateRunning" @click="checkUpdates">
+          <RiLoaderLine :class="skillUpdateRunning ? 'animate-spin' : ''" size="16" />{{
+            skillUpdateRunning ? '更新中…' : '检查并更新'
           }}
         </Button>
         <Button variant="outline" @click="presetDialog = true">
@@ -438,7 +421,6 @@ async function restoreAllBackups() {
           <TabsTrigger value="skills">技能列表</TabsTrigger>
           <TabsTrigger value="presets">预设列表</TabsTrigger>
           <TabsTrigger value="platforms">平台状态</TabsTrigger>
-          <TabsTrigger v-if="showLogsTab" value="logs">更新日志</TabsTrigger>
         </TabsList>
         <TabsContent value="skills" class="space-y-4">
           <Card class="rounded-md">
@@ -879,15 +861,6 @@ async function restoreAllBackups() {
               />
             </CardContent>
           </Card>
-        </TabsContent>
-        <TabsContent v-if="showLogsTab" value="logs" class="space-y-4">
-          <StreamLogPanel
-            :stream-url="'/api/skills/update-stream'"
-            :trigger="updateTrigger"
-            v-model:status="updateStatus"
-            @done="onUpdateDone"
-            @error="onUpdateError"
-          />
         </TabsContent>
       </Tabs>
     </TooltipProvider>

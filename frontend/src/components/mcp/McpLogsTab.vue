@@ -10,6 +10,7 @@ import { RiArrowUpLine, RiLoader4Line } from '@remixicon/vue'
 import { toast } from 'vue-sonner'
 import { api } from '@/lib/api'
 import { ansiToHtml } from '@/lib/ansi'
+import { useMcpNavStore } from '@/stores/mcpNavigation'
 
 interface LogFileInfo {
   name: string
@@ -81,6 +82,21 @@ const loading = ref(false)
 const errorMsg = ref('')
 const preRef = ref<HTMLElement | null>(null)
 
+// 外部跳转信号（ProcessFooter 点击 MCP 进程）：选中对应 server 并消费请求。
+const mcpNav = useMcpNavStore()
+
+// 消费待选中的 server 名：servers 已加载且名字存在时才 selectServer，随后清空防止重复触发。
+// 返回是否已消费跳转请求（供 loadServers 决定是否回退到默认第一个 server）。
+function applyPending(): boolean {
+  const target = mcpNav.pendingServer
+  if (!target) return false
+  const exists = servers.value.some((s) => s.name === target)
+  if (!exists) return false
+  mcpNav.consume()
+  if (selected.value !== target) selectServer(target)
+  return true
+}
+
 // 最新段（轮询目标）与正文最早处游标（「加载更早」回溯用）
 const latestFile = ref('')
 let tailOffset = 0
@@ -98,6 +114,7 @@ async function loadServers() {
   try {
     const resp = await api<{ items: LogServerItem[] }>('/api/mcp-servers/logs')
     servers.value = resp.items || []
+    applyPending()
     // 默认选中第一个有日志的 server
     if (!selected.value && servers.value.length) {
       selectServer(servers.value[0].name)
@@ -140,6 +157,8 @@ async function selectServer(name: string) {
     errorMsg.value = e instanceof Error ? e.message : String(e)
   } finally {
     loading.value = false
+    // 加载完成自动滚动到底部（若加载了内容）。
+    if (content.value) scrollFollow(true)
   }
 }
 
@@ -222,8 +241,8 @@ async function poll() {
   }
 }
 
-function scrollFollow() {
-  if (!follow.value) return
+function scrollFollow(force = false) {
+  if (!follow.value && !force) return
   nextTick(() => {
     const el = preRef.value
     if (el) el.scrollTop = el.scrollHeight
@@ -246,6 +265,12 @@ function stopPolling() {
   }
 }
 
+// 外部跳转请求：ProcessFooter 点击 MCP 进程时触发（pendingServer + requestId 组合监听，
+// 保证同名 server 重复点击也能触发）。
+watch(
+  () => [mcpNav.pendingServer, mcpNav.requestId] as const,
+  () => applyPending(),
+)
 watch(selected, (v) => {
   if (v) startPolling()
   else stopPolling()

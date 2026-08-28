@@ -2,10 +2,13 @@
 // 侧边栏底部全局进程面板：实时显示 procreg 统一执行器托管的进程。
 // 运行中的进程可终止；历史记录通过标题右侧的图标按钮打开 Dialog 查看。
 import { computed, onMounted, ref } from 'vue'
-import { RiCloseLine, RiCpuLine, RiHistoryLine, RiArrowRightSLine } from '@remixicon/vue'
+import { RiCloseLine, RiCpuLine, RiHistoryLine, RiEyeLine, RiArrowRightSLine } from '@remixicon/vue'
 import { toast } from 'vue-sonner'
 import { ansiToHtml } from '@/lib/ansi'
 import { useProcessMonitor } from '@/composables/useProcessMonitor'
+import { storeToRefs } from 'pinia'
+import { useRouter } from 'vue-router'
+import { useProcessStore } from '@/stores/processes'
 import { useConfirm } from '@/composables/useConfirm'
 import type { ProcessInfo } from '@/lib/types'
 
@@ -86,6 +89,31 @@ const historyItems = computed(() => history.value.filter((p) => p.log && p.log.l
 
 // 角标/空态提示用过滤后的条目数，保证与列表一致。
 const historyCount = computed(() => historyItems.value.length)
+
+// 运行中进程日志弹窗（全局）：状态在 processStore，任何组件可 openLog(id) 触发。
+const processStore = useProcessStore()
+const { viewLogOpen: viewOpen, viewLogProc: viewProc } = storeToRefs(processStore)
+// MCP 进程跳转日志面板：用 query 传递目标 server，McpPanel 挂载后消费。
+const router = useRouter()
+
+// 从进程名剥离 MCP 前缀。后端 MCP 进程 name 形如 "MCP: github"，日志 API 用 "github"。
+function mcpServerName(p: ProcessInfo): string | null {
+  if (p.kind !== 'mcp') return null
+  const m = p.name.match(/^MCP:\s*(.+)$/)
+  return m ? m[1].trim() : null
+}
+
+// 点击进程：MCP 进程跳转到日志面板并选中对应 server；其他进程打开全局日志弹窗。
+function openView(p: ProcessInfo) {
+  const serverName = mcpServerName(p)
+  if (serverName) {
+    // 用 query 作为跨路由初始信号：McpPanel 挂载后读 query 切 tab 并选中 server。
+    // 相比纯 store 信号，query 在「已在 MCP 页 / 从其他页跳来」两种场景都可靠。
+    router.push({ name: 'integrations', query: { log: serverName } })
+    return
+  }
+  processStore.openLog(p.id)
+}
 </script>
 
 <template>
@@ -132,8 +160,21 @@ const historyCount = computed(() => historyItems.value.length)
           class="group flex items-center gap-1.5 rounded px-1 py-0.5 text-xs hover:bg-muted"
         >
           <span class="size-1.5 shrink-0 rounded-full" :class="statusDot(p.status)" />
-          <span class="min-w-0 flex-1 truncate" :title="p.cmd">{{ p.name }}</span>
+          <button
+            class="min-w-0 flex-1 truncate text-left"
+            :title="`查看 ${p.name} 日志`"
+            @click="openView(p)"
+          >
+            {{ p.name }}
+          </button>
           <span class="shrink-0 tabular-nums text-muted-foreground">{{ fmtMem(p.memBytes) }}</span>
+          <button
+            class="shrink-0 rounded p-0.5 text-muted-foreground hover:bg-muted"
+            :title="`查看日志`"
+            @click="openView(p)"
+          >
+            <RiEyeLine size="13" />
+          </button>
           <button
             class="shrink-0 rounded p-0.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
             :title="`终止 ${p.name}`"
@@ -219,6 +260,33 @@ const historyCount = computed(() => historyItems.value.length)
               </AccordionContent>
             </AccordionItem>
           </Accordion>
+        </div>
+      </DialogContent>
+    </Dialog>
+
+    <!-- 运行中进程日志 Dialog：点击进程行弹出，实时显示日志 -->
+    <Dialog v-model:open="viewOpen" @update:open="(o: boolean) => o || processStore.closeLog()">
+      <DialogContent class="max-w-5xl!">
+        <DialogHeader v-if="viewProc">
+          <DialogTitle class="flex items-center gap-2">
+            <span class="size-2 rounded-full" :class="statusDot(viewProc.status)" />
+            {{ viewProc.name }}
+            <span class="text-xs font-normal text-muted-foreground">{{ statusLabel(viewProc.status) }}</span>
+          </DialogTitle>
+          <DialogDescription class="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+            <Badge v-if="viewProc.cmd" variant="outline" class="max-w-full truncate font-mono text-[11px]" :title="viewProc.cmd">
+              {{ viewProc.cmd }}
+            </Badge>
+            <Badge variant="secondary" class="tabular-nums">PID {{ viewProc.pid || '—' }}</Badge>
+            <Badge variant="secondary" class="tabular-nums">内存 {{ fmtMem(viewProc.memBytes) }}</Badge>
+            <span v-if="viewProc.startedAt" class="text-muted-foreground">已运行 {{ fmtDuration(viewProc) }}</span>
+          </DialogDescription>
+        </DialogHeader>
+        <div class="h-[60vh] overflow-y-auto rounded border border-border bg-muted/30 p-3 font-mono text-[11px] leading-relaxed text-muted-foreground">
+          <template v-if="viewProc && viewProc.log.length">
+            <div v-for="(line, i) in viewProc.log" :key="i" class="whitespace-pre-wrap break-all" v-html="ansiToHtml(line)" />
+          </template>
+          <p v-else class="text-muted-foreground">暂无日志输出。</p>
         </div>
       </DialogContent>
     </Dialog>
