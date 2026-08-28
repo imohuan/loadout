@@ -61,11 +61,14 @@ func readManifestForTest(t *testing.T, targetDir string) []string {
 }
 
 // TestRegisterListRemove 验证仓库清单 Register/List/Remove 往返。
-// List 扫描技能库目录（含 SKILL.md 的子目录），Remove 删除目录 + 移除登记。
+// List 扫描技能库目录（含 SKILL.md 的子目录），Remove 删除目标目录副本（targetDir）+ 移除登记，
+// Unregister 删除源目录（repoDir）+ 移除登记。
 func TestRegisterListRemove(t *testing.T) {
-	svc, repoDir, _ := newTestService(t)
+	svc, repoDir, targetDir := newTestService(t)
 	mkSkill(t, repoDir, "a")
 	mkSkill(t, repoDir, "b")
+	// 目标目录里放一份 a 的副本（agent 实际使用的那份）。
+	mkSkill(t, targetDir, "a")
 
 	if err := svc.Register("a", "repo/a", "main"); err != nil {
 		t.Fatalf("Register(a) 失败: %v", err)
@@ -88,19 +91,31 @@ func TestRegisterListRemove(t *testing.T) {
 		t.Fatalf("List[1] 内容不符: %+v", got[1])
 	}
 
-	// Remove 删除目录 + 移除登记。
+	// Remove 删除目标目录（targetDir）副本 + 移除登记，源目录（repoDir）保留。
 	if err := svc.Remove("a"); err != nil {
 		t.Fatalf("Remove(a) 失败: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(repoDir, "a")); !os.IsNotExist(err) {
-		t.Fatalf("Remove 后技能目录 a 应被删除，Stat=%v", err)
+	if _, err := os.Stat(filepath.Join(targetDir, "a")); !os.IsNotExist(err) {
+		t.Fatalf("Remove 后目标目录副本 a 应被删除，Stat=%v", err)
 	}
+	if _, err := os.Stat(filepath.Join(repoDir, "a")); err != nil {
+		t.Fatalf("Remove 后源目录 a 应保留，Stat=%v", err)
+	}
+
+	// Unregister 删除源目录（repoDir）+ 移除登记。
+	if err := svc.Unregister("b"); err != nil {
+		t.Fatalf("Unregister(b) 失败: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(repoDir, "b")); !os.IsNotExist(err) {
+		t.Fatalf("Unregister 后源目录 b 应被删除，Stat=%v", err)
+	}
+
 	got, err = svc.List()
 	if err != nil {
-		t.Fatalf("Remove 后 List 失败: %v", err)
+		t.Fatalf("Remove/Unregister 后 List 失败: %v", err)
 	}
-	if len(got) != 1 || got[0].Name != "b" {
-		t.Fatalf("Remove 后 List = %+v，期望只剩 b", got)
+	if len(got) != 1 || got[0].Name != "a" {
+		t.Fatalf("List = %+v，期望只剩源目录里的 a", got)
 	}
 }
 

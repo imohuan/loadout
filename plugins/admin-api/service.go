@@ -170,6 +170,7 @@ func (s *Service) Routes() []plugin.RouteSpec {
 		{Method: http.MethodPost, Pattern: "POST /api/skills/install", Auth: plugin.AuthSession, Handler: s.session(s.handleSkillInstall)},
 		{Method: http.MethodPost, Pattern: "POST /api/skills/import-zip", Auth: plugin.AuthSession, Handler: s.session(s.handleSkillImportZip)},
 		{Method: http.MethodDelete, Pattern: "DELETE /api/skills/{name}", Auth: plugin.AuthSession, Handler: s.session(s.handleSkillDelete)},
+		{Method: http.MethodDelete, Pattern: "DELETE /api/skills/{name}/source", Auth: plugin.AuthSession, Handler: s.session(s.handleSkillUnregister)},
 		{Method: http.MethodGet, Pattern: "GET /api/skills/status", Auth: plugin.AuthSession, Handler: s.session(s.handleSkillsStatus)},
 		{Method: http.MethodPost, Pattern: "POST /api/skills/sync", Auth: plugin.AuthSession, Handler: s.session(s.handleSkillSync)},
 		{Method: http.MethodPost, Pattern: "POST /api/skills/check-updates", Auth: plugin.AuthSession, Handler: s.session(s.handleSkillCheckUpdates)},
@@ -181,7 +182,7 @@ func (s *Service) Routes() []plugin.RouteSpec {
 		{Method: http.MethodPost, Pattern: "POST /api/presets", Auth: plugin.AuthSession, Handler: s.session(s.handlePresetCreate)},
 		{Method: http.MethodDelete, Pattern: "DELETE /api/presets", Auth: plugin.AuthSession, Handler: s.session(s.handlePresetDelete)},
 		{Method: http.MethodPost, Pattern: "POST /api/presets/apply", Auth: plugin.AuthSession, Handler: s.session(s.handlePresetApply)},
-		
+
 		// 全局进程（统一命令执行器）
 		{Method: http.MethodGet, Pattern: "GET /api/processes/stream", Auth: plugin.AuthSession, Handler: s.session(s.handleProcessesStream)},
 		{Method: http.MethodPost, Pattern: "POST /api/processes/{id}/kill", Auth: plugin.AuthSession, Handler: s.session(s.handleProcessKill)},
@@ -1913,9 +1914,21 @@ func (s *Service) handleSkillRegister(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-// handleSkillDelete 按名字从技能仓库移除一个技能。
+// handleSkillDelete 删除本地技能：移除通用目标目录（targetDir，~/.agents/skills）里
+// 对应目录（agent 实际使用的那份副本）并移除登记。
 func (s *Service) handleSkillDelete(w http.ResponseWriter, r *http.Request) {
 	if err := s.skill.Remove(r.PathValue("name")); err != nil {
+		s.writeServerError(w, err)
+		return
+	}
+	s.invalidateHub()
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// handleSkillUnregister 删除技能源：移除技能库（repoDir，~/.loadout/skills）里对应目录
+// （技能源实际所在的文件夹）并移除登记。
+func (s *Service) handleSkillUnregister(w http.ResponseWriter, r *http.Request) {
+	if err := s.skill.Unregister(r.PathValue("name")); err != nil {
 		s.writeServerError(w, err)
 		return
 	}

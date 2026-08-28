@@ -29,6 +29,8 @@ export function useManagementApi() {
   }
   const deleteSkill = (name: string) =>
     request<void>(`/api/skills/${encodeURIComponent(name)}`, 'DELETE')
+  const unregisterSkill = (name: string) =>
+    request<void>(`/api/skills/${encodeURIComponent(name)}/source`, 'DELETE')
   const createPreset = (body: { name: string; skills: string[]; targets: string[] }) =>
     request<void>('/api/presets', 'POST', body)
   const applyPreset = (name: string) => request<void>('/api/presets/apply', 'POST', { name })
@@ -85,6 +87,7 @@ export function useManagementApi() {
     installSkill,
     importSkillZip,
     deleteSkill,
+    unregisterSkill,
     createPreset,
     applyPreset,
     deletePreset,

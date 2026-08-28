@@ -7,6 +7,7 @@ import {
   RiDeleteBinLine,
   RiEditLine,
   RiGroup2Line,
+  RiLinksLine,
   RiListUnordered,
   RiLoader4Line,
   RiLoaderLine,
@@ -319,8 +320,20 @@ function presetTargetsLabel(preset: { target?: string; targets?: string[] }): st
   const list = preset.targets?.length ? preset.targets : preset.target ? [preset.target] : ['']
   return list.map((t) => platformName(t)).join('、') || '通用 (.agents)'
 }
+async function unregisterSkill(name: string) {
+  if (!(await confirmDialog('删除技能源「' + name + '」？这会删除 ~/.loadout/skills 里对应的文件夹。'))) return
+  await run(
+    `skill:${name}:unregister`,
+    async () => {
+      await api.unregisterSkill(name)
+      await refreshSkills()
+      await refreshStatus()
+    },
+    '技能源已删除',
+  )
+}
 async function removeSkill(name: string) {
-  if (!(await confirmDialog('移除技能「' + name + '」？'))) return
+  if (!(await confirmDialog('删除本地技能「' + name + '」？这会删除技能所在的文件夹。'))) return
   await run(
     `skill:${name}:remove`,
     async () => {
@@ -328,7 +341,7 @@ async function removeSkill(name: string) {
       await refreshSkills()
       await refreshStatus()
     },
-    '技能已移除',
+    '本地技能已删除',
   )
 }
 async function applyPreset(name: string) {
@@ -562,23 +575,42 @@ async function restoreAllBackups() {
                         >
                       </TableCell>
                       <TableCell class="w-12 text-right">
-                        <Tooltip>
-                          <TooltipTrigger as-child
-                            ><Button
-                              variant="ghost"
-                              size="icon"
-                              aria-label="移除技能"
-                              :disabled="isPending(`skill:${skill.name}:remove`)"
-                              @click="removeSkill(skill.name)"
-                            >
-                              <RiLoader4Line
-                                v-if="isPending(`skill:${skill.name}:remove`)"
-                                class="animate-spin"
-                                size="16"
-                              /><RiDeleteBinLine v-else class="size-4" /> </Button
-                          ></TooltipTrigger>
-                          <TooltipContent>移除技能</TooltipContent>
-                        </Tooltip>
+                        <div class="flex justify-end gap-1">
+                          <Tooltip>
+                            <TooltipTrigger as-child
+                              ><Button
+                                variant="ghost"
+                                size="icon"
+                                aria-label="删除技能源"
+                                :disabled="isPending(`skill:${skill.name}:unregister`) || isPending(`skill:${skill.name}:remove`)"
+                                @click="unregisterSkill(skill.name)"
+                              >
+                                <RiLoader4Line
+                                  v-if="isPending(`skill:${skill.name}:unregister`)"
+                                  class="animate-spin"
+                                  size="16"
+                                /><RiLinksLine v-else class="size-4" /> </Button
+                            ></TooltipTrigger>
+                            <TooltipContent>删除技能源（~/.loadout/skills 文件夹）</TooltipContent>
+                          </Tooltip>
+                          <Tooltip>
+                            <TooltipTrigger as-child
+                              ><Button
+                                variant="ghost"
+                                size="icon"
+                                aria-label="删除本地技能"
+                                :disabled="isPending(`skill:${skill.name}:unregister`) || isPending(`skill:${skill.name}:remove`)"
+                                @click="removeSkill(skill.name)"
+                              >
+                                <RiLoader4Line
+                                  v-if="isPending(`skill:${skill.name}:remove`)"
+                                  class="animate-spin"
+                                  size="16"
+                                /><RiDeleteBinLine v-else class="size-4" /> </Button
+                            ></TooltipTrigger>
+                            <TooltipContent>删除本地技能（~/.agents/skills 文件夹）</TooltipContent>
+                          </Tooltip>
+                        </div>
                       </TableCell>
                     </TableRow>
                   </TableBody>
@@ -714,23 +746,42 @@ async function restoreAllBackups() {
                                   >
                                 </TableCell>
                                 <TableCell class="w-12 text-right">
-                                  <Tooltip>
-                                    <TooltipTrigger as-child
-                                      ><Button
-                                        variant="ghost"
-                                        size="icon"
-                                        aria-label="移除技能"
-                                        :disabled="isPending(`skill:${skill.name}:remove`)"
-                                        @click="removeSkill(skill.name)"
-                                      >
-                                        <RiLoader4Line
-                                          v-if="isPending(`skill:${skill.name}:remove`)"
-                                          class="animate-spin"
-                                          size="16"
-                                        /><RiDeleteBinLine v-else class="size-4" /> </Button
-                                    ></TooltipTrigger>
-                                    <TooltipContent>移除技能</TooltipContent>
-                                  </Tooltip>
+                                  <div class="flex justify-end gap-1">
+                                    <Tooltip>
+                                      <TooltipTrigger as-child
+                                        ><Button
+                                          variant="ghost"
+                                          size="icon"
+                                          aria-label="删除技能源"
+                                          :disabled="isPending(`skill:${skill.name}:unregister`) || isPending(`skill:${skill.name}:remove`)"
+                                          @click="unregisterSkill(skill.name)"
+                                        >
+                                          <RiLoader4Line
+                                            v-if="isPending(`skill:${skill.name}:unregister`)"
+                                            class="animate-spin"
+                                            size="16"
+                                          /><RiLinksLine v-else class="size-4" /> </Button
+                                      ></TooltipTrigger>
+                                      <TooltipContent>删除技能源（~/.loadout/skills 文件夹）</TooltipContent>
+                                    </Tooltip>
+                                    <Tooltip>
+                                      <TooltipTrigger as-child
+                                        ><Button
+                                          variant="ghost"
+                                          size="icon"
+                                          aria-label="删除本地技能"
+                                          :disabled="isPending(`skill:${skill.name}:unregister`) || isPending(`skill:${skill.name}:remove`)"
+                                          @click="removeSkill(skill.name)"
+                                        >
+                                          <RiLoader4Line
+                                            v-if="isPending(`skill:${skill.name}:remove`)"
+                                            class="animate-spin"
+                                            size="16"
+                                          /><RiDeleteBinLine v-else class="size-4" /> </Button
+                                      ></TooltipTrigger>
+                                      <TooltipContent>删除本地技能（~/.agents/skills 文件夹）</TooltipContent>
+                                    </Tooltip>
+                                  </div>
                                 </TableCell>
                               </TableRow>
                             </TableBody>

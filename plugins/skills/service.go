@@ -20,8 +20,8 @@ import (
 
 	"loadout/core/cmdutil"
 	"loadout/core/config"
-	"loadout/core/deps"
 	"loadout/core/db"
+	"loadout/core/deps"
 	"loadout/core/linkfs"
 	"loadout/core/procreg"
 	"loadout/core/store"
@@ -41,6 +41,7 @@ var runCommand = func(name string, args ...string) (string, error) {
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
+
 // skillsCmd 返回 skills CLI 入口：skills 已全局安装 且 开关打开 → 全局 skills 指令；
 // 否则回退 npx 字面量（原行为，由 exec 在 PATH 中解析）。
 func skillsCmd() (string, []string) {
@@ -59,11 +60,11 @@ const manifestName = ".loadout-manifest.json"
 type Service struct {
 	st           *store.Store
 	lg           *slog.Logger
-	repo         *db.Repository      // SQLite 仓储（skills/presets/settings 持久化）
-	repoDir      string              // 技能库目录（~/.loadout/skills，全部技能，永不删除）
-	targetDir    string              // 通用目标目录（~/.agents/skills）
-	platformDirs map[string]string   // 指定平台 → 其技能目录（codex/claudecode/opencode…）
-	updater      *UpdateRunner       // 更新任务广播器（SSE 日志流）
+	repo         *db.Repository    // SQLite 仓储（skills/presets/settings 持久化）
+	repoDir      string            // 技能库目录（~/.loadout/skills，全部技能，永不删除）
+	targetDir    string            // 通用目标目录（~/.agents/skills）
+	platformDirs map[string]string // 指定平台 → 其技能目录（codex/claudecode/opencode…）
+	updater      *UpdateRunner     // 更新任务广播器（SSE 日志流）
 }
 
 // NewService 创建服务。repoDir/targetDir 为空时用 config.SkillsDir / config.ResolveAgentSkillsDir()。
@@ -261,16 +262,8 @@ func (s *Service) Register(name, source, version string) error {
 	return s.writeSkills(skills)
 }
 
-// Remove 删除技能：移除技能库（repoDir）里对应目录 + 从 skills.json 移除登记。
-// 目录不存在时仅移除登记，静默成功。
-func (s *Service) Remove(name string) error {
-	if err := validSkillName(name); err != nil {
-		return err
-	}
-	if err := os.RemoveAll(filepath.Join(s.repoDir, name)); err != nil {
-		return fmt.Errorf("skills: 删除技能目录失败: %w", err)
-	}
-
+// removeRegistration 从技能清单（skills.json / SQLite）移除登记项。清单中不存在该技能时静默成功。
+func (s *Service) removeRegistration(name string) error {
 	skills, err := s.readSkills()
 	if err != nil {
 		return err
@@ -283,6 +276,30 @@ func (s *Service) Remove(name string) error {
 		}
 	}
 	return s.writeSkills(out)
+}
+
+// Unregister 删除技能源：移除技能库（repoDir，~/.loadout/skills）里对应目录，
+// 即技能源实际所在的文件夹（同时从登记清单移除）。目录不存在时仅移除登记，静默成功。
+func (s *Service) Unregister(name string) error {
+	if err := validSkillName(name); err != nil {
+		return err
+	}
+	if err := os.RemoveAll(filepath.Join(s.repoDir, name)); err != nil {
+		return fmt.Errorf("skills: 删除技能源目录失败: %w", err)
+	}
+	return s.removeRegistration(name)
+}
+
+// Remove 删除本地技能：移除通用目标目录（targetDir，~/.agents/skills）里对应目录，
+// 即 agent 实际使用的那份技能副本（同时从登记清单移除）。目录不存在时仅移除登记，静默成功。
+func (s *Service) Remove(name string) error {
+	if err := validSkillName(name); err != nil {
+		return err
+	}
+	if err := os.RemoveAll(filepath.Join(s.targetDir, name)); err != nil {
+		return fmt.Errorf("skills: 删除本地技能目录失败: %w", err)
+	}
+	return s.removeRegistration(name)
 }
 
 // ===== 预设 =====
@@ -979,7 +996,6 @@ func (s *Service) syncLockFile() error {
 	}
 	return nil
 }
-
 
 // UpdateSkills 检测并更新技能。完整流程（官方 check/update 同命令，检测即更新）：
 //  0. 快照：扫描 ~/.agents/skills 得到当前在用的技能列表（scanSkills，与列表接口同逻辑）；
