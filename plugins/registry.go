@@ -20,6 +20,7 @@ import (
 	routelog "loadout/plugins/route-log"
 	sensitivefilter "loadout/plugins/sensitive-filter"
 	skills "loadout/plugins/skills"
+	translate "loadout/plugins/translate"
 	unifyai "loadout/plugins/unifyai"
 	// vision "loadout/plugins/vision"
 	visionv2 "loadout/plugins/vision_v2"
@@ -46,5 +47,6 @@ func All() []plugin.Plugin {
 		mcphub.New(),
 		adminapi.New(),
 		volcfreequota.New(),
+		translate.New(),
 	}
 }
