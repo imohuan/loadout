@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive, ref } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import {
   RiAddLine,
   RiArrowDownSLine,
@@ -11,6 +11,7 @@ import {
   RiLoader4Line,
   RiLoaderLine,
   RiRefreshLine,
+  RiTextWrap,
   RiUploadLine,
 } from '@remixicon/vue'
 import { toast } from 'vue-sonner'
@@ -22,13 +23,29 @@ import { useConfirm } from '@/composables/useConfirm'
 import PageHeader from '@/components/PageHeader.vue'
 import LoadingBlock from '@/components/LoadingBlock.vue'
 import EmptyState from '@/components/EmptyState.vue'
+import TranslateText from '@/components/TranslateText.vue'
+import { useTranslateStore } from '@/stores/translate'
 const api = useManagementApi()
+const translateStore = useTranslateStore()
 const {
   data: skills,
   loading: skillsLoading,
   refreshing: skillsRefreshing,
   refresh: refreshSkills,
 } = useListLoader(api.skills)
+// 技能列表加载后，批量查询数据库已有译文并灌入 store，TranslateText 即时显示（只读，不触发翻译）
+watch(
+  () => skills.value,
+  (list) => {
+    if (!list || !list.length) return
+    const texts: { text: string; textKey: string }[] = []
+    for (const s of list) {
+      if (s.description) texts.push({ text: s.description, textKey: 'skill:' + s.name })
+    }
+    if (texts.length) void translateStore.lookupBatch(texts)
+  },
+  { immediate: true },
+)
 const {
   data: presets,
   loading: presetsLoading,
@@ -81,6 +98,8 @@ const anyRefreshing = computed(
 const syncing = ref(false)
 const npxCmd = ref('')
 
+// 表格描述自动换行开关（默认开启；关闭后描述只显示一行）
+const wrapDescription = ref(true)
 // ===== 按来源聚合视图（折叠表格）=====
 const groupBySource = ref(false)
 const expandedSources = ref<string[]>([])
@@ -396,32 +415,51 @@ async function restoreAllBackups() {
     <PageHeader title="Skills" description="安装、移除技能，并保存可快速切换的技能预设。">
       <template #actions
         ><Button variant="outline" :disabled="loading || anyRefreshing" @click="refresh">
-          <RiRefreshLine :class="anyRefreshing ? 'animate-spin' : ''" size="7" />刷新
+          <RiRefreshLine :class="anyRefreshing ? 'size-4 animate-spin' : 'size-4'" />刷新
         </Button>
         <Button variant="outline" :disabled="syncing" @click="syncSkills">
-          <RiLoaderLine v-if="syncing" class="animate-spin" size="22" /><RiUploadLine v-else size="16" />{{
+          <RiLoaderLine v-if="syncing" class="size-4 animate-spin" /><RiUploadLine v-else class="size-4" />{{
             syncing ? '同步中…' : '主动同步'
           }}
         </Button>
         <Button variant="outline" :disabled="skillUpdateRunning" @click="checkUpdates">
-          <RiLoaderLine :class="skillUpdateRunning ? 'animate-spin' : ''" size="16" />{{
+          <RiLoaderLine :class="skillUpdateRunning ? 'size-4 animate-spin' : 'size-4'" />{{
             skillUpdateRunning ? '更新中…' : '检查并更新'
           }}
         </Button>
         <Button variant="outline" @click="presetDialog = true">
-          <RiAddLine size="16" />创建预设
+          <RiAddLine class="size-4" />创建预设
         </Button>
-        <Button @click="skillDialog = true"> <RiAddLine size="16" />安装技能 </Button>
+        <Button @click="skillDialog = true"> <RiAddLine class="size-4" />安装技能 </Button>
       </template>
     </PageHeader>
     <LoadingBlock v-if="loading" />
     <TooltipProvider v-else>
       <Tabs v-model="activeTab" class="flex-1 space-y-4">
-        <TabsList class="inline-flex h-auto w-fit max-w-full flex-wrap justify-start gap-1">
-          <TabsTrigger value="skills">技能列表</TabsTrigger>
-          <TabsTrigger value="presets">预设列表</TabsTrigger>
-          <TabsTrigger value="platforms">平台状态</TabsTrigger>
-        </TabsList>
+        <div class="flex items-center justify-between gap-2">
+          <TabsList class="inline-flex h-auto w-fit max-w-full flex-wrap justify-start gap-1">
+            <TabsTrigger value="skills">技能列表</TabsTrigger>
+            <TabsTrigger value="presets">预设列表</TabsTrigger>
+            <TabsTrigger value="platforms">平台状态</TabsTrigger>
+          </TabsList>
+          <Tooltip :delay-duration="150">
+            <TooltipTrigger as-child>
+              <Button
+                variant="ghost"
+                size="icon"
+                :aria-label="wrapDescription ? '关闭表格描述自动换行' : '开启表格描述自动换行'"
+                :aria-pressed="wrapDescription"
+                @click="wrapDescription = !wrapDescription"
+              >
+                <RiTextWrap v-if="wrapDescription" class="size-4" />
+                <RiTextWrap v-else class="size-4 text-muted-foreground opacity-60" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">
+              {{ wrapDescription ? '关闭自动换行（描述只显示一行）' : '开启自动换行' }}
+            </TooltipContent>
+          </Tooltip>
+        </div>
         <TabsContent value="skills" class="space-y-4">
           <Card class="rounded-md">
             <CardHeader>
@@ -446,7 +484,7 @@ async function restoreAllBackups() {
                                 aria-label="按来源聚合"
                                 @click="toggleGroupBySource"
                               >
-                                <RiGroup2Line size="14" />
+                                <RiGroup2Line class="size-3.5" />
                               </Button>
                             </TooltipTrigger>
                             <TooltipContent>按来源聚合</TooltipContent>
@@ -473,7 +511,7 @@ async function restoreAllBackups() {
                                 aria-label="取消按来源聚合"
                                 @click="toggleGroupBySource"
                               >
-                                <RiListUnordered size="14" />
+                                <RiListUnordered class="size-3.5" />
                               </Button>
                             </TooltipTrigger>
                             <TooltipContent>取消按来源聚合</TooltipContent>
@@ -488,21 +526,14 @@ async function restoreAllBackups() {
                   <TableBody v-if="!groupBySource">
                     <TableRow v-for="skill in skills" :key="skill.name">
                       <TableCell class="w-64 font-medium truncate">{{ skill.name }}</TableCell>
-                      <TableCell class="w-fit">
-                        <Tooltip v-if="skill.description" :delay-duration="150">
-                          <TooltipTrigger as-child>
-                            <p class="line-clamp-2 text-sm text-muted-foreground">
-                              {{ skill.description }}
-                            </p>
-                          </TooltipTrigger>
-                          <TooltipContent
-                            side="bottom"
-                            align="start"
-                            class="max-w-md whitespace-normal break-words"
-                          >
-                            {{ skill.description }}
-                          </TooltipContent>
-                        </Tooltip>
+                      <TableCell :class="wrapDescription ? 'break-words whitespace-normal' : 'truncate'">
+                        <TranslateText
+                          v-if="skill.description"
+                          :source="skill.description"
+                          source-type="skill"
+                          :source-id="skill.name"
+                          class="line-clamp-2 text-sm text-muted-foreground" :single-line="!wrapDescription"
+                        />
                         <span v-else class="text-sm text-muted-foreground">—</span>
                       </TableCell>
                       <TableCell class="w-32 font-mono text-xs truncate">{{ skill.source || '-' }}</TableCell>
@@ -544,7 +575,7 @@ async function restoreAllBackups() {
                                 v-if="isPending(`skill:${skill.name}:remove`)"
                                 class="animate-spin"
                                 size="16"
-                              /><RiDeleteBinLine v-else size="16" /> </Button
+                              /><RiDeleteBinLine v-else class="size-4" /> </Button
                           ></TooltipTrigger>
                           <TooltipContent>移除技能</TooltipContent>
                         </Tooltip>
@@ -569,7 +600,7 @@ async function restoreAllBackups() {
                               v-if="isSourceExpanded(group.key)"
                               size="16"
                             />
-                            <RiArrowRightSLine v-else size="16" />
+                            <RiArrowRightSLine v-else class="size-4" />
                           </Button>
                         </TableCell>
                         <TableCell class="w-32">
@@ -597,7 +628,12 @@ async function restoreAllBackups() {
                               align="start"
                               class="max-w-md whitespace-normal break-words"
                             >
-                              {{ group.firstDescription }}
+                              <TranslateText
+                                :source="group.firstDescription"
+                                source-type="skill"
+                                :source-id="group.skills[0]?.name || ''"
+                                display-mode="both"
+                              />
                             </TooltipContent>
                           </Tooltip>
                           <span v-else class="text-sm text-muted-foreground">—</span>
@@ -632,7 +668,12 @@ async function restoreAllBackups() {
                                       align="start"
                                       class="max-w-md whitespace-normal break-words"
                                     >
-                                      {{ skill.description }}
+                                      <TranslateText
+                                        :source="skill.description"
+                                        source-type="skill"
+                                        :source-id="skill.name"
+                                        display-mode="both"
+                                      />
                                     </TooltipContent>
                                   </Tooltip>
                                   <span v-else class="text-sm text-muted-foreground">—</span>
@@ -678,7 +719,7 @@ async function restoreAllBackups() {
                                           v-if="isPending(`skill:${skill.name}:remove`)"
                                           class="animate-spin"
                                           size="16"
-                                        /><RiDeleteBinLine v-else size="16" /> </Button
+                                        /><RiDeleteBinLine v-else class="size-4" /> </Button
                                     ></TooltipTrigger>
                                     <TooltipContent>移除技能</TooltipContent>
                                   </Tooltip>
@@ -756,7 +797,7 @@ async function restoreAllBackups() {
                                 aria-label="编辑预设"
                                 @click="openEditPreset(preset)"
                               >
-                                <RiEditLine size="16" /> </Button
+                                <RiEditLine class="size-4" /> </Button
                             ></TooltipTrigger>
                             <TooltipContent>编辑预设</TooltipContent>
                           </Tooltip>
@@ -773,7 +814,7 @@ async function restoreAllBackups() {
                                   v-if="isPending(`preset:${preset.name}:remove`)"
                                   class="animate-spin"
                                   size="16"
-                                /><RiDeleteBinLine v-else size="16" /> </Button
+                                /><RiDeleteBinLine v-else class="size-4" /> </Button
                             ></TooltipTrigger>
                             <TooltipContent>删除预设</TooltipContent>
                           </Tooltip>
@@ -907,14 +948,14 @@ async function restoreAllBackups() {
           </div>
           <DialogFooter>
             <Button type="submit" :disabled="isPending('install-skill')">
-              <RiLoader4Line v-if="isPending('install-skill')" class="animate-spin" size="16" />安装
+              <RiLoader4Line v-if="isPending('install-skill')" class="size-4 animate-spin" />安装
             </Button>
             <Button
               type="button"
               variant="secondary"
               :disabled="isPending('import-skill') || !skillFile"
               @click="importSkillZip"
-              ><RiLoader4Line v-if="isPending('import-skill')" class="animate-spin" size="16" />导入
+              ><RiLoader4Line v-if="isPending('import-skill')" class="size-4 animate-spin" />导入
               ZIP</Button
             >
             <Button type="button" variant="outline" @click="skillDialog = false">取消</Button>
@@ -986,7 +1027,12 @@ async function restoreAllBackups() {
                       </Button>
                     </TooltipTrigger>
                     <TooltipContent side="bottom" class="max-w-md whitespace-normal break-words">
-                      {{ skill.description }}
+                      <TranslateText
+                        :source="skill.description"
+                        source-type="skill"
+                        :source-id="skill.name"
+                        display-mode="both"
+                      />
                     </TooltipContent>
                   </Tooltip>
                   <Button
@@ -1053,7 +1099,12 @@ async function restoreAllBackups() {
                         align="start"
                         class="max-w-md whitespace-normal break-words"
                       >
-                        {{ skill.description }}
+                        <TranslateText
+                          :source="skill.description"
+                          source-type="skill"
+                          :source-id="skill.name"
+                          display-mode="both"
+                        />
                       </TooltipContent>
                     </Tooltip>
                   </span>
@@ -1085,7 +1136,7 @@ async function restoreAllBackups() {
           </div>
           <DialogFooter
             ><Button type="submit" :disabled="isPending('save-preset')"
-              ><RiLoader4Line v-if="isPending('save-preset')" class="animate-spin" size="16" />{{
+              ><RiLoader4Line v-if="isPending('save-preset')" class="size-4 animate-spin" />{{
                 editingPreset ? '保存' : '创建预设'
               }}</Button
             ><Button type="button" variant="outline" @click="closePresetDialog()"

@@ -5,6 +5,7 @@ import ModelChannelList from '@/components/ModelChannelList.vue'
 import SensitiveWordList from '@/components/capability-routes/SensitiveWordList.vue'
 import MessageInjectList from '@/components/capability-routes/MessageInjectList.vue'
 import ChannelGroupPicker, { type ChannelSelection } from '@/components/ChannelGroupPicker.vue'
+import TargetModelPicker from '@/components/TargetModelPicker.vue'
 import {
   channelLevelSegments,
   formatChannelGroupLabel,
@@ -126,7 +127,11 @@ watch(
         ? route.replacements.map((r) => ({ from: r.from || '', to: r.to || '', regex: !!r.regex }))
         : [{ from: '', to: '', regex: false }],
       injections: route?.injections?.length
-        ? route.injections.map((i) => ({ role: i.role || 'system', content: i.content || '', position: i.position || 'prepend' }))
+        ? route.injections.map((i) => ({
+            role: i.role || 'system',
+            content: i.content || '',
+            position: i.position || 'prepend',
+          }))
         : [{ role: 'system', content: '', position: 'prepend' }],
       fieldRulesText: {
         request_strip: (route?.field_rules?.request_strip || []).join('\n'),
@@ -236,32 +241,6 @@ const candidateModels = computed(() => {
   return [...set].sort()
 })
 
-// ===== 目标模型（下拉多选 + 搜索 + 自定义）=====
-const targetOpen = ref(false)
-const targetSearch = ref('')
-function toggleModel(model: string) {
-  const i = form.models.indexOf(model)
-  if (i >= 0) form.models.splice(i, 1)
-  else form.models.push(model)
-}
-function addCustomModel() {
-  const name = targetSearch.value.trim()
-  if (!name || form.models.includes(name)) return
-  form.models.push(name)
-  targetSearch.value = ''
-}
-// 回车直接添加（避免误触表单提交）。
-function onTargetSearchEnter() {
-  if (!targetSearch.value.trim()) return
-  addCustomModel()
-}
-// 目标模型下拉内的过滤列表（tag 网格用，基于渠道过滤后的候选）。
-const filteredModels = computed(() => {
-  const q = targetSearch.value.trim().toLowerCase()
-  if (!q) return candidateModels.value
-  return candidateModels.value.filter((m) => m.toLowerCase().includes(q))
-})
-
 // ===== 能力与路由方式选项 =====
 const capabilityOptions = [
   { value: CAP_VISION, label: 'vision（视觉）' },
@@ -301,13 +280,15 @@ const routeHint = computed(() => {
   }
   if (form.capability === CAP_REQUEST_LOG) {
     return {
-      proxy: '记录该模型/渠道下每次请求的完整输入输出（独立库 request-log.db，脱敏后落库）；转发日志页可从该行跳转查看详情。',
+      proxy:
+        '记录该模型/渠道下每次请求的完整输入输出（独立库 request-log.db，脱敏后落库）；转发日志页可从该行跳转查看详情。',
       native: '不记录完整请求日志（请求体/响应体均不落库）。',
     }[form.route]
   }
   if (form.capability === CAP_MESSAGE_INJECT) {
     return {
-      proxy: '按注入列表把自定义内容加到请求 messages（新增消息，或拼到原始第一条开头/结尾），再转发给目标模型。',
+      proxy:
+        '按注入列表把自定义内容加到请求 messages（新增消息，或拼到原始第一条开头/结尾），再转发给目标模型。',
       native: '请求体原样透传，不做消息注入（适合通配规则下的精确豁免）。',
     }[form.route]
   }
@@ -359,7 +340,11 @@ function submit() {
   const injections =
     form.route !== 'native' && isMessageInject
       ? form.injections
-          .map((i) => ({ role: i.role || 'system', content: i.content.trim(), position: i.position || 'prepend' }))
+          .map((i) => ({
+            role: i.role || 'system',
+            content: i.content.trim(),
+            position: i.position || 'prepend',
+          }))
           .filter((i) => i.content)
       : []
   const field_rules =
@@ -442,67 +427,12 @@ function submit() {
         </div>
         <div class="space-y-2">
           <Label>目标模型</Label>
-          <Popover v-model:open="targetOpen">
-            <PopoverTrigger as-child>
-              <Button type="button" variant="outline" class="w-full justify-between font-normal">
-                <span v-if="form.models.length" class="text-muted-foreground"
-                  >已选 {{ form.models.length }} 个模型</span
-                ><span v-else class="text-muted-foreground">选择目标模型（可搜索 / 自定义）</span
-                ><RiSearchLine class="size-4 shrink-0 opacity-50" />
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent class="w-[var(--reka-popper-anchor-width)] p-2" align="start">
-              <div class="space-y-2">
-                <Input
-                  v-model="targetSearch"
-                  placeholder="搜索模型…"
-                  @keydown.esc="targetOpen = false"
-                  @keydown.enter.prevent="onTargetSearchEnter"
-                />
-                <div
-                  v-if="filteredModels.length"
-                  class="flex max-h-56 flex-wrap gap-1.5 overflow-y-auto rounded-md border border-border p-2"
-                >
-                  <Button
-                    v-for="m in filteredModels"
-                    :key="m"
-                    type="button"
-                    size="sm"
-                    :variant="form.models.includes(m) ? 'default' : 'outline'"
-                    @click="toggleModel(m)"
-                    >{{ m }}</Button
-                  >
-                </div>
-                <div
-                  v-else
-                  class="flex flex-col items-center gap-2 rounded-md border border-border p-3"
-                >
-                  <p class="text-xs text-muted-foreground">未找到「{{ targetSearch }}」</p>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    :disabled="!targetSearch.trim()"
-                    @click="addCustomModel"
-                    >自定义添加</Button
-                  >
-                </div>
-              </div>
-            </PopoverContent>
-          </Popover>
-          <div v-if="form.models.length" class="flex flex-wrap gap-1.5">
-            <Badge v-for="m in form.models" :key="m" variant="secondary" class="gap-1 py-0 pr-1">
-              {{ m }}
-              <button
-                type="button"
-                class="rounded-full p-0.5 hover:bg-muted hover:text-destructive"
-                aria-label="移除"
-                @click="toggleModel(m)"
-              >
-                <RiCloseLine size="12" />
-              </button>
-            </Badge>
-          </div>
+          <TargetModelPicker
+            v-model="form.models"
+            :models="candidateModels"
+            multiple
+            allow-custom
+          />
           <p class="text-xs text-muted-foreground">
             支持 <code class="font-mono">*</code> 通配与前缀匹配；候选随目标渠道过滤（通用/空 =
             全部渠道模型）。 未命中默认原生透传。

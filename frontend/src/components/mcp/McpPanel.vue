@@ -25,6 +25,7 @@ import EmptyState from '@/components/EmptyState.vue'
 import LoadingBlock from '@/components/LoadingBlock.vue'
 import McpLogsTab from '@/components/mcp/McpLogsTab.vue'
 import McpInvocationsTab from '@/components/mcp/McpInvocationsTab.vue'
+import TranslateText from '@/components/TranslateText.vue'
 import { useMcpManagement, isServerActive } from '@/composables/useMcpManagement'
 import { useManagementApi } from '@/composables/useManagementApi'
 import { useAsyncTask } from '@/composables/useAsyncTask'
@@ -32,6 +33,10 @@ import { getLoadoutBaseSync } from '@/lib/base'
 import { useMcpNavStore } from '@/stores/mcpNavigation'
 const mcp = reactive(useMcpManagement())
 const api = useManagementApi()
+// 与 TranslateView 一致的 MCP 文本 textKey，复用已翻译结果
+const toolDescKey = (serverName: string, toolName: string) => `mcp:${serverName}/${toolName}`
+const toolParamDescKey = (serverName: string, toolName: string, paramName: string) =>
+  `mcp:${serverName}/${toolName}/param/${paramName}/description`
 const { run: runKey, isPending: isKeyPending } = useAsyncTask()
 const labels: Record<string, string> = { http: 'Streamable HTTP', sse: 'SSE', stdio: 'stdio' }
 const activeTab = ref('upstream')
@@ -537,7 +542,14 @@ async function copyConfig(endpoint: {
                                 <div
                                   class="mt-1 line-clamp-2 break-words text-xs leading-5 text-muted-foreground"
                                 >
-                                  {{ tool.description || '暂无描述' }}
+                                  <TranslateText
+                                    v-if="tool.description"
+                                    :source="tool.description"
+                                    :text-key="toolDescKey(server.name, tool.name)"
+                                    source-type="mcp"
+                                    :source-id="`${server.name}/${tool.name}`"
+                                  />
+                                  <span v-else>暂无描述</span>
                                 </div>
                               </div>
                               <div class="flex shrink-0 gap-2">
@@ -1028,9 +1040,16 @@ async function copyConfig(endpoint: {
       <DialogContent class="flex max-h-[calc(100dvh-2rem)] flex-col overflow-hidden sm:max-w-2xl!">
         <DialogHeader>
           <DialogTitle class="truncate">测试工具：{{ activeTool?.name }}</DialogTitle>
-          <DialogDescription class="line-clamp-2 break-words">{{
-            activeTool?.description || '填写参数后点击执行调用。'
-          }}</DialogDescription>
+          <DialogDescription class="line-clamp-2 break-words">
+            <TranslateText
+              v-if="activeTool?.description"
+              :source="activeTool.description"
+              :text-key="toolDescKey(activeTool.serverName, activeTool.name)"
+              source-type="mcp"
+              :source-id="`${activeTool.serverName}/${activeTool.name}`"
+            />
+            <span v-else>填写参数后点击执行调用。</span>
+          </DialogDescription>
         </DialogHeader>
         <div v-if="toolLoading" class="flex-1 py-8 text-center text-sm text-muted-foreground">
           正在读取输入配置...
@@ -1063,7 +1082,12 @@ async function copyConfig(endpoint: {
                 v-if="schema.description"
                 class="break-words text-xs leading-5 text-muted-foreground"
               >
-                {{ schema.description }}
+                <TranslateText
+                  :source="schema.description"
+                  :text-key="toolParamDescKey(activeTool?.serverName || '', activeTool?.name || '', name)"
+                  source-type="mcp"
+                  :source-id="`${activeTool?.serverName || ''}/${activeTool?.name || ''}/param/${name}/description`"
+                />
               </p>
               <Select v-if="schemaOptions(schema).length" v-model="toolArgs[name]">
                 <SelectTrigger>
@@ -1139,7 +1163,16 @@ async function copyConfig(endpoint: {
         <div class="space-y-4">
           <div class="space-y-1.5"><Label>工具名称</Label><Input v-model="toolEditName" /></div>
           <div class="space-y-1.5">
-            <Label>工具描述</Label><Textarea v-model="toolEditDescription" rows="4" />
+            <Label>工具描述</Label>
+            <TranslateText
+              v-if="activeTool?.description"
+              :source="activeTool.description"
+              :text-key="toolDescKey(activeTool.serverName, activeTool.name)"
+              source-type="mcp"
+              :source-id="`${activeTool.serverName}/${activeTool.name}`"
+              class="block text-xs text-muted-foreground"
+            />
+            <Textarea v-model="toolEditDescription" rows="4" />
           </div>
         </div>
         <DialogFooter><Button @click="editToolDialog = false">完成</Button></DialogFooter>
