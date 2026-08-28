@@ -33,7 +33,7 @@ func (s *Service) SetRepository(repo *db.Repository) { s.repo = repo }
 // 若有多个匹配的 proxy 路由，返回全部匹配项（叠加规则）。
 // 读表/解析失败 fail-open：记录日志并返回 nil，不拒绝请求。
 // 选择策略统一走 types.SelectCapabilityRoutes（与 sensitive-filter/vision/request-log 一致）。
-func (s *Service) decideRoutes(pipe *modelgateway.ProxyPipeline) ([]*types.CapabilityRoute, error) {
+func (s *Service) decideRoutes(pipe *modelgateway.ProxyPipeline, virtualModel string) ([]*types.CapabilityRoute, error) {
 	if pipe == nil || pipe.Request == nil {
 		// 无请求上下文，返回空列表
 		return nil, nil
@@ -42,7 +42,7 @@ func (s *Service) decideRoutes(pipe *modelgateway.ProxyPipeline) ([]*types.Capab
 	if s.repo != nil {
 		routes, err := s.repo.ListCapabilityRoutes(context.Background())
 		if err == nil {
-			return types.SelectCapabilityRoutes(routes, capabilityName, pipe.Request.Model, scope), nil
+			return types.SelectCapabilityRoutesEx(routes, capabilityName, pipe.Request.Model, virtualModel, scope), nil
 		}
 		s.lg.Warn("field-filter: 从 SQLite 读能力路由表失败，回退 JSON", "err", err)
 	}
@@ -56,7 +56,7 @@ func (s *Service) decideRoutes(pipe *modelgateway.ProxyPipeline) ([]*types.Capab
 		return nil, nil
 	}
 
-	selected := types.SelectCapabilityRoutes(routes, capabilityName, pipe.Request.Model, scope)
+	selected := types.SelectCapabilityRoutesEx(routes, capabilityName, pipe.Request.Model, virtualModel, scope)
 	s.lg.Debug("field-filter: 未命中 field_filter 路由（透传）",
 		"model", pipe.Request.Model, "routes", len(routes),
 		"scope_ids", scope.IDs, "scope_base_urls", scope.BaseURLs)
@@ -145,7 +145,7 @@ func (s *Service) HandleProxyBeforeUpstream(payload any) (any, error) {
 		}
 	}
 
-	routes, err := s.decideRoutes(pipe)
+	routes, err := s.decideRoutes(pipe, types.VirtualModelFromMetadata(pipe.Metadata))
 	if err != nil {
 		pipe.Metadata[routeMetaKey] = nil
 		return payload, nil
@@ -276,7 +276,7 @@ func (s *Service) HandleProxyAfterUpstream(payload any) (any, error) {
 	// 若无缓存路由，回退查询
 	if len(routes) == 0 {
 		var err error
-		routes, err = s.decideRoutes(after.Pipe)
+		routes, err = s.decideRoutes(after.Pipe, types.VirtualModelFromMetadata(after.Pipe.Metadata))
 		if err != nil || len(routes) == 0 {
 			return payload, nil
 		}

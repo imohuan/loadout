@@ -3,6 +3,7 @@ import { computed, reactive, ref, watch } from 'vue'
 import { RiClipboardLine, RiCloseLine, RiSearchLine, RiUploadLine } from '@remixicon/vue'
 import ModelChannelList from '@/components/ModelChannelList.vue'
 import SensitiveWordList from '@/components/capability-routes/SensitiveWordList.vue'
+import MessageInjectList from '@/components/capability-routes/MessageInjectList.vue'
 import ChannelGroupPicker, { type ChannelSelection } from '@/components/ChannelGroupPicker.vue'
 import {
   channelLevelSegments,
@@ -17,6 +18,7 @@ import type {
   CapabilityRoute,
   Channel,
   FieldRules,
+  MessageInjection,
   ModelChannelItem,
   SensitiveReplacement,
 } from '@/lib/types'
@@ -36,10 +38,18 @@ type SensitiveWordListHandle = {
 }
 const sensitiveListRef = ref<SensitiveWordListHandle | null>(null)
 
+// 消息注入列表子组件引用：导出/导入按钮调用其暴露的方法。
+type MessageInjectListHandle = {
+  exportToClipboard: () => Promise<void> | void
+  importFromClipboard: () => Promise<void> | void
+}
+const messageInjectRef = ref<MessageInjectListHandle | null>(null)
+
 // 能力常量与文案。
 const CAP_VISION = 'vision'
 const CAP_SENSITIVE = 'sensitive_filter'
 const CAP_FIELD_FILTER = 'field_filter'
+const CAP_MESSAGE_INJECT = 'message_inject'
 const CAP_REQUEST_LOG = 'request_log'
 
 // 字段过滤规则编辑态：模板用 v-model 绑定原始文本（每行一个字段路径），
@@ -67,6 +77,7 @@ const form = reactive<{
   route: string
   viaOptions: ModelChannelItem[]
   replacements: SensitiveReplacement[]
+  injections: MessageInjection[]
   fieldRulesText: Record<FieldRulesKey, string>
 }>({
   models: [],
@@ -74,6 +85,7 @@ const form = reactive<{
   route: 'proxy',
   viaOptions: [{ model: '', channel_id: '', channel_ids: [] }],
   replacements: [{ from: '', to: '', regex: false }],
+  injections: [{ role: 'system', content: '', position: 'prepend' }],
   fieldRulesText: emptyFieldRulesText(),
 })
 
@@ -113,6 +125,9 @@ watch(
       replacements: route?.replacements?.length
         ? route.replacements.map((r) => ({ from: r.from || '', to: r.to || '', regex: !!r.regex }))
         : [{ from: '', to: '', regex: false }],
+      injections: route?.injections?.length
+        ? route.injections.map((i) => ({ role: i.role || 'system', content: i.content || '', position: i.position || 'prepend' }))
+        : [{ role: 'system', content: '', position: 'prepend' }],
       fieldRulesText: {
         request_strip: (route?.field_rules?.request_strip || []).join('\n'),
         request_keep: (route?.field_rules?.request_keep || []).join('\n'),
@@ -143,6 +158,8 @@ function onCapabilityChange(value: string) {
   form.route = 'proxy'
   if (value === CAP_SENSITIVE) {
     form.replacements = [{ from: '', to: '', regex: false }]
+  } else if (value === CAP_MESSAGE_INJECT) {
+    form.injections = [{ role: 'system', content: '', position: 'prepend' }]
   } else if (value === CAP_FIELD_FILTER) {
     form.fieldRulesText = emptyFieldRulesText()
   } else {
@@ -250,6 +267,7 @@ const capabilityOptions = [
   { value: CAP_VISION, label: 'vision（视觉）' },
   { value: CAP_SENSITIVE, label: 'sensitive_filter（敏感词过滤）' },
   { value: CAP_FIELD_FILTER, label: 'field_filter（字段过滤）' },
+  { value: CAP_MESSAGE_INJECT, label: 'message_inject（消息注入）' },
   { value: CAP_REQUEST_LOG, label: 'request_log（完整请求日志）' },
 ]
 // 路由方式选项：sensitive_filter 三态里 error（命中拒绝）已废弃移除——
@@ -287,6 +305,12 @@ const routeHint = computed(() => {
       native: '不记录完整请求日志（请求体/响应体均不落库）。',
     }[form.route]
   }
+  if (form.capability === CAP_MESSAGE_INJECT) {
+    return {
+      proxy: '按注入列表把自定义内容加到请求 messages（新增消息，或拼到原始第一条开头/结尾），再转发给目标模型。',
+      native: '请求体原样透传，不做消息注入（适合通配规则下的精确豁免）。',
+    }[form.route]
+  }
   return {
     proxy: '图片被拦截，候选视觉模型看图生成文字描述后再转发给目标模型。',
     native: '图片原样透传给目标模型自行处理（适合支持视觉的模型，或通配规则下的精确豁免）。',
@@ -297,6 +321,7 @@ function submit() {
   if (!form.models.length) return
   const isSensitive = form.capability === CAP_SENSITIVE
   const isFieldFilter = form.capability === CAP_FIELD_FILTER
+  const isMessageInject = form.capability === CAP_MESSAGE_INJECT
   // 遗留 route="error" 数据归一化为 native（语义即「不支持就不管他」降级透传），
   // 避免编辑保存时把已废弃的 error 值写回 DB。
   if (form.route === 'error') form.route = 'native'
@@ -305,6 +330,8 @@ function submit() {
       if (!form.replacements.some((r) => r.from.trim())) return
     } else if (isFieldFilter) {
       if (!hasFieldRulesText()) return
+    } else if (isMessageInject) {
+      if (!form.injections.some((i) => i.content.trim())) return
     } else if (form.capability === CAP_REQUEST_LOG) {
       // request_log 无额外配置（脱敏开关在独立 config 表），直接放行
     } else if (!form.viaOptions.some((o) => o.model.trim())) {
@@ -329,6 +356,12 @@ function submit() {
           .filter((r) => r.from)
       : []
   // field_rules：仅 field_filter 且非 native 时输出；全空则省略（后端 nil = 透传）。
+  const injections =
+    form.route !== 'native' && isMessageInject
+      ? form.injections
+          .map((i) => ({ role: i.role || 'system', content: i.content.trim(), position: i.position || 'prepend' }))
+          .filter((i) => i.content)
+      : []
   const field_rules =
     form.route !== 'native' && isFieldFilter && hasFieldRulesText() ? parseFieldRules() : undefined
   // channel_ids 只存「显式勾选的 Key」；渠道级由 channel_base_urls 单独承载。
@@ -345,6 +378,7 @@ function submit() {
     via_options: viaOptions,
     replacements,
     field_rules,
+    injections,
   })
 }
 </script>
@@ -630,6 +664,55 @@ function submit() {
             ref="sensitiveListRef"
             v-model="form.replacements"
             add-label="添加规则"
+          />
+        </div>
+        <div
+          v-else-if="form.capability === CAP_MESSAGE_INJECT && form.route !== 'native'"
+          class="space-y-2"
+        >
+          <div class="flex items-center justify-between gap-2">
+            <Label>消息注入列表（按从上到下顺序依次注入）</Label>
+            <div class="flex shrink-0 items-center gap-1">
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger as-child>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      class="h-7 px-2 text-xs"
+                      aria-label="导出到剪贴板"
+                      @click="messageInjectRef?.exportToClipboard?.()"
+                    >
+                      <RiClipboardLine size="14" />导出
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>把当前注入以 JSON 复制到剪贴板</TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger as-child>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      class="h-7 px-2 text-xs"
+                      aria-label="从剪贴板导入"
+                      @click="messageInjectRef?.importFromClipboard?.()"
+                    >
+                      <RiUploadLine size="14" />导入
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>从剪贴板读取 JSON 覆盖当前注入</TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+            </div>
+          </div>
+          <MessageInjectList
+            ref="messageInjectRef"
+            v-model="form.injections"
+            add-label="添加注入"
           />
         </div>
         <div v-else-if="form.capability === CAP_VISION && form.route === 'proxy'" class="space-y-2">

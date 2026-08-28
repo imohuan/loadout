@@ -289,7 +289,8 @@ func (s *Service) HandleProxyBeforeUpstream(payload any) (any, error) {
 	//   - 聚合渠道级/Key 多选目标 → __current_channel="" + __channel_candidates（候选 Key 集合）
 	//     + __current_channel_base_url（渠道组地址）。必须读齐三者，否则聚合流量匹配不到渠道约束路由。
 	scope := channelScopeFromMetadata(pipe.Metadata, s.requestChannelBaseURLs)
-	route, err := s.DecideRouteScope(model, scope)
+	virtualModel := types.VirtualModelFromMetadata(pipe.Metadata)
+	route, err := s.DecideRouteScope(model, virtualModel, scope)
 	if err != nil {
 		return nil, visionError(err.Error())
 	}

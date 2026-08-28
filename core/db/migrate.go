@@ -569,6 +569,21 @@ CREATE TABLE process_history (
 CREATE UNIQUE INDEX idx_process_history_proc_ended ON process_history(proc_id, ended_at);
 CREATE INDEX idx_process_history_ended_at ON process_history(ended_at DESC);
 `,
+	}, {
+		version: 27,
+		name:    "settings-use-global-cmd",
+		sql: `
+-- 运行时设置缺 use_global_cmd 列：布尔开关被 PutSettings 静默丢弃，
+-- GetSettings 永远回读 false，导致前端 watch 回写触发重复保存。
+ALTER TABLE settings ADD COLUMN use_global_cmd INTEGER NOT NULL DEFAULT 0;
+`,
+	}, {
+		version: 28,
+		name:    "capability-routes-injections",
+		sql: `
+-- message_inject 能力插件：往请求 messages 注入自定义内容（夹装子内部分，与 via_options/replacements/field_rules 同模式）。
+ALTER TABLE capability_routes ADD COLUMN injections_json TEXT NOT NULL DEFAULT '[]';
+`,
 	}}
 
 // Migrate applies all pending schema migrations and rejects an incompatible

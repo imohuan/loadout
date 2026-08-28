@@ -52,11 +52,11 @@ func (s *Service) requestChannelBaseURLs(term string) []string {
 // 选择策略统一走 types.SelectCapabilityRoutes：native（及历史 error 降级）优先短路，
 // proxy 取首个候选。未命中返回 nil（透传）。
 // SQLite repo 优先，store JSON 兜底。
-func (s *Service) DecideRouteScope(model string, scope types.ChannelRequestScope) (*types.CapabilityRoute, error) {
+func (s *Service) DecideRouteScope(model string, virtualModel string, scope types.ChannelRequestScope) (*types.CapabilityRoute, error) {
 	if s.repo != nil {
 		routes, err := s.repo.ListCapabilityRoutes(context.Background())
 		if err == nil {
-			selected := types.SelectCapabilityRoutes(routes, capabilityName, model, scope)
+			selected := types.SelectCapabilityRoutesEx(routes, capabilityName, model, virtualModel, scope)
 			if len(selected) == 0 {
 				return nil, nil
 			}
@@ -71,7 +71,7 @@ func (s *Service) DecideRouteScope(model string, scope types.ChannelRequestScope
 		}
 		return nil, fmt.Errorf("vision_v2: 读取能力路由表失败: %w", err)
 	}
-	selected := types.SelectCapabilityRoutes(routes, capabilityName, model, scope)
+	selected := types.SelectCapabilityRoutesEx(routes, capabilityName, model, virtualModel, scope)
 	if len(selected) == 0 {
 		return nil, nil
 	}

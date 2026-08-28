@@ -94,7 +94,7 @@ func (s *Service) HandleBeforeUpstream(payload any) (any, error) {
 		return payload, nil
 	}
 	pipe.Metadata["__aggregate_processed"] = true
-	pipe.Metadata["__virtual_model"] = model
+	pipe.Metadata[types.MetadataVirtualModel] = model
 	pipe.Metadata["__aggregate_targets"] = agg.Targets
 	pipe.Metadata["__failed_targets"] = []string{}
 	pipe.Metadata["__retry_count"] = 0
@@ -141,7 +141,7 @@ func (s *Service) HandleUpstreamFailed(payload any) (any, error) {
 	pipe := failure.Pipe
 
 	// 检查是否是聚合模型的失败
-	virtualModel, ok := pipe.Metadata["__virtual_model"].(string)
+	virtualModel, ok := pipe.Metadata[types.MetadataVirtualModel].(string)
 	if !ok || virtualModel == "" {
 		s.lg.Debug("[aggregate] 非聚合模型失败，跳过")
 		return payload, nil // 不是聚合模型，交给其他插件

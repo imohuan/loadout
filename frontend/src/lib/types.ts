@@ -97,8 +97,26 @@ export interface RouteAttempt {
   request_log_id?: string
 }
 
+/** 模型测试页挂在日志上的配置快照：加载记录时一键回填表单。
+ *  仅存可 JSON 序列化字段（持久化进 localStorage），附件不落快照。
+ */
+export interface TestLogMeta {
+  suffix_mode?: string
+  channel_id?: string
+  base_url?: string
+  api_key?: string
+  sk_key_hash?: string
+  model?: string
+  messages?: { role: string; content: string }[]
+  /** 右侧输入区文本（draft） */
+  draft?: string
+  attachments?: { name: string; kind: "image" | "file" }[]
+}
+
 export interface RouteLog {
   request_id: string
+  /** 模型测试页的配置快照（本地生成并持久化，后端 detail 覆盖时需手动保留） */
+  meta?: TestLogMeta
   /** request-log 插件关联主键（独立库 request_logs.id，UUID）；非空时前端显示"完整日志"入口 */
   request_log_id?: string
   requested_model: string
@@ -180,6 +198,15 @@ export interface SkillPlatformStatus {
   has_backup: boolean // 是否存在 <dir>-backup
 }
 
+export interface DepStatus {
+  name: string // 库名（unifyai / skills）
+  installed: boolean // 是否已全局安装
+  current: string // 当前已装版本（未装时为空）
+  latest: string // 最新版本
+  needUpdate: boolean // 已装且需要更新
+  error?: string // 检查错误信息
+}
+
 export interface ApiKey {
   id: string
   name: string
@@ -213,6 +240,13 @@ export interface SensitiveReplacement {
   regex?: boolean // true = from 按正则匹配
 }
 
+// 消息注入配置（message_inject 用）：往请求 messages 注入自定义内容。
+export interface MessageInjection {
+  role: string // 注入消息的 role：system / user / assistant
+  content: string // 注入的文本内容
+  position: string // 注入位置：prepend / append / prepend_first / append_first
+}
+
 // 字段过滤规则（field_filter 用）：请求/响应方向的体字段、头字段剔除与保留。
 // 字段路径支持顶层 key 与点路径嵌套（如 a.b.c）；Keep 非空走白名单（只保留，忽略同方向 Strip）。
 // 请求/响应头按 HTTP 标准大小写不敏感匹配。
@@ -234,6 +268,7 @@ export interface CapabilityRoute {
   via_options?: ViaOption[] // proxy 时的候选，顺序即兜底优先级（vision 用）
   replacements?: SensitiveReplacement[] // proxy 时的敏感词替换规则，顺序即替换顺序（sensitive_filter 用）
   field_rules?: FieldRules // 字段过滤规则（field_filter 用；nil/undefined = 未配置，原样透传）
+  injections?: MessageInjection[] // 消息注入配置，顺序即注入顺序（message_inject 用）
 }
 
 // ---- MCP 调用统计 ----

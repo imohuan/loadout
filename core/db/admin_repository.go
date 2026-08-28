@@ -18,7 +18,7 @@ import (
 
 // ListCapabilityRoutes 返回全部能力路由（按 position 排序）。
 func (r *Repository) ListCapabilityRoutes(ctx context.Context) ([]types.CapabilityRoute, error) {
-	rows, err := r.database.QueryContext(ctx, `SELECT capability, route, models_json, channel_ids_json, channel_base_urls_json, via_options_json, replacements_json, field_rules_json FROM capability_routes ORDER BY position, id`)
+	rows, err := r.database.QueryContext(ctx, `SELECT capability, route, models_json, channel_ids_json, channel_base_urls_json, via_options_json, replacements_json, field_rules_json, injections_json FROM capability_routes ORDER BY position, id`)
 	if err != nil {
 		return nil, fmt.Errorf("db: list capability routes: %w", err)
 	}
@@ -26,11 +26,11 @@ func (r *Repository) ListCapabilityRoutes(ctx context.Context) ([]types.Capabili
 	var routes []types.CapabilityRoute
 	for rows.Next() {
 		var route types.CapabilityRoute
-		var modelsJSON, channelsJSON, baseURLsJSON, viaJSON, replJSON, fieldRulesJSON string
-		if err := rows.Scan(&route.Capability, &route.Route, &modelsJSON, &channelsJSON, &baseURLsJSON, &viaJSON, &replJSON, &fieldRulesJSON); err != nil {
+		var modelsJSON, channelsJSON, baseURLsJSON, viaJSON, replJSON, fieldRulesJSON, injJSON string
+		if err := rows.Scan(&route.Capability, &route.Route, &modelsJSON, &channelsJSON, &baseURLsJSON, &viaJSON, &replJSON, &fieldRulesJSON, &injJSON); err != nil {
 			return nil, fmt.Errorf("db: scan capability route: %w", err)
 		}
-		if err := unmarshalEach(modelsJSON, &route.Models, channelsJSON, &route.ChannelIDs, baseURLsJSON, &route.ChannelBaseURLs, viaJSON, &route.ViaOptions, replJSON, &route.Replacements); err != nil {
+		if err := unmarshalEach(modelsJSON, &route.Models, channelsJSON, &route.ChannelIDs, baseURLsJSON, &route.ChannelBaseURLs, viaJSON, &route.ViaOptions, replJSON, &route.Replacements, injJSON, &route.Injections); err != nil {
 			return nil, fmt.Errorf("db: parse capability route: %w", err)
 		}
 		if fieldRulesJSON != "" && fieldRulesJSON != "{}" {
@@ -74,6 +74,10 @@ func (r *Repository) ReplaceCapabilityRoutes(ctx context.Context, routes []types
 			if err != nil {
 				return fmt.Errorf("db: marshal route replacements: %w", err)
 			}
+			inj, err := json.Marshal(route.Injections)
+			if err != nil {
+				return fmt.Errorf("db: marshal route injections: %w", err)
+			}
 			fieldRulesJSON := "{}"
 			if route.FieldRules != nil {
 				if b, err := json.Marshal(route.FieldRules); err != nil {
@@ -82,7 +86,7 @@ func (r *Repository) ReplaceCapabilityRoutes(ctx context.Context, routes []types
 					fieldRulesJSON = string(b)
 				}
 			}
-			if _, err := tx.ExecContext(ctx, `INSERT INTO capability_routes (position, capability, route, models_json, channel_ids_json, channel_base_urls_json, via_options_json, replacements_json, field_rules_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, i, route.Capability, route.Route, string(models), string(channels), string(baseURLs), string(via), string(repl), fieldRulesJSON); err != nil {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO capability_routes (position, capability, route, models_json, channel_ids_json, channel_base_urls_json, via_options_json, replacements_json, field_rules_json, injections_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, i, route.Capability, route.Route, string(models), string(channels), string(baseURLs), string(via), string(repl), fieldRulesJSON, string(inj)); err != nil {
 				return fmt.Errorf("db: insert capability route: %w", err)
 			}
 		}
@@ -332,7 +336,9 @@ func (r *Repository) ReplacePresets(ctx context.Context, presets []types.Preset)
 func (r *Repository) GetSettings(ctx context.Context) (types.Settings, error) {
 	var settings types.Settings
 	var targetsJSON string
-	err := r.database.QueryRowContext(ctx, `SELECT active_preset, active_preset_target, active_preset_targets_json, default_model FROM settings WHERE id = 1`).Scan(&settings.ActivePreset, &settings.ActivePresetTarget, &targetsJSON, &settings.DefaultModel)
+	var useGlobalCmd int
+	err := r.database.QueryRowContext(ctx, `SELECT active_preset, active_preset_target, active_preset_targets_json, default_model, use_global_cmd FROM settings WHERE id = 1`).Scan(&settings.ActivePreset, &settings.ActivePresetTarget, &targetsJSON, &settings.DefaultModel, &useGlobalCmd)
+	settings.UseGlobalCmd = useGlobalCmd == 1
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return types.Settings{}, nil
@@ -351,7 +357,7 @@ func (r *Repository) PutSettings(ctx context.Context, settings types.Settings) e
 	if err != nil {
 		return fmt.Errorf("db: marshal settings targets: %w", err)
 	}
-	if _, err := r.database.ExecContext(ctx, `INSERT INTO settings (id, active_preset, active_preset_target, active_preset_targets_json, default_model) VALUES (1, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET active_preset = excluded.active_preset, active_preset_target = excluded.active_preset_target, active_preset_targets_json = excluded.active_preset_targets_json, default_model = excluded.default_model`, settings.ActivePreset, settings.ActivePresetTarget, string(targets), settings.DefaultModel); err != nil {
+	if _, err := r.database.ExecContext(ctx, `INSERT INTO settings (id, active_preset, active_preset_target, active_preset_targets_json, default_model, use_global_cmd) VALUES (1, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET active_preset = excluded.active_preset, active_preset_target = excluded.active_preset_target, active_preset_targets_json = excluded.active_preset_targets_json, default_model = excluded.default_model, use_global_cmd = excluded.use_global_cmd`, settings.ActivePreset, settings.ActivePresetTarget, string(targets), settings.DefaultModel, boolInt(settings.UseGlobalCmd)); err != nil {
 		return fmt.Errorf("db: put settings: %w", err)
 	}
 	return nil

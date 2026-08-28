@@ -261,7 +261,7 @@ func importPresets(ctx context.Context, tx *sql.Tx, values []types.Preset) error
 
 func importSettings(ctx context.Context, tx *sql.Tx, value types.Settings) error {
 	targets, _ := json.Marshal(value.ActivePresetTargets)
-	if _, err := tx.ExecContext(ctx, `INSERT INTO settings (id, active_preset, active_preset_target, active_preset_targets_json, default_model) VALUES (1, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET active_preset = excluded.active_preset, active_preset_target = excluded.active_preset_target, active_preset_targets_json = excluded.active_preset_targets_json, default_model = excluded.default_model`, value.ActivePreset, value.ActivePresetTarget, string(targets), value.DefaultModel); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO settings (id, active_preset, active_preset_target, active_preset_targets_json, default_model, use_global_cmd) VALUES (1, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET active_preset = excluded.active_preset, active_preset_target = excluded.active_preset_target, active_preset_targets_json = excluded.active_preset_targets_json, default_model = excluded.default_model, use_global_cmd = excluded.use_global_cmd`, value.ActivePreset, value.ActivePresetTarget, string(targets), value.DefaultModel, boolInt(value.UseGlobalCmd)); err != nil {
 		return fmt.Errorf("db: import settings: %w", err)
 	}
 	return nil

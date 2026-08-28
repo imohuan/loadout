@@ -63,6 +63,22 @@ function replacementLabel(r: { from: string; to: string; regex?: boolean }) {
 function proxyReplacementsLabel(route: CapabilityRoute) {
   return (route.replacements || []).map((r) => replacementLabel(r)).join('\n')
 }
+// message_inject 的注入配置摘要：每条输出「[位置] role: 内容」。
+const injectPositionLabel: Record<string, string> = {
+  prepend: '新增为第一条',
+  append: '新增为最后一条',
+  prepend_first: '拼到第一条开头',
+  append_first: '拼到第一条结尾',
+}
+function messageInjectLabel(route: CapabilityRoute): string {
+  return (route.injections || [])
+    .map((i) => {
+      const pos = injectPositionLabel[i.position] || i.position || 'prepend'
+      const content = (i.content || '').replace(/\n/g, '⏎')
+      return `[${pos}] ${i.role || 'system'}: ${content}`
+    })
+    .join('\n')
+}
 // field_filter 的字段过滤规则摘要：非空项逐行输出「方向+动作: 字段路径」，空项省略。
 function fieldRulesLabel(route: CapabilityRoute): string {
   const r = route.field_rules
@@ -185,6 +201,9 @@ function channelScopeLabel(channels: Channel[], ids?: string[], baseURLs?: strin
                         <template v-else-if="route.capability === 'request_log'">
                           记录完整请求/响应
                         </template>
+                        <template v-else-if="route.capability === 'message_inject'">
+                          {{ messageInjectLabel(route) || '—' }}
+                        </template>
                         <template v-else>
                           <template v-for="(o, i) in viaOptions(route)" :key="i">
                             <ModelChannelRef
@@ -208,6 +227,9 @@ function channelScopeLabel(channels: Channel[], ids?: string[], baseURLs?: strin
                       </template>
                       <template v-else-if="route.capability === 'field_filter'">
                         <span class="whitespace-pre-wrap">{{ fieldRulesLabel(route) || '—' }}</span>
+                      </template>
+                      <template v-else-if="route.capability === 'message_inject'">
+                        <span class="whitespace-pre-wrap">{{ messageInjectLabel(route) || '—' }}</span>
                       </template>
                       <template v-else>
                         <div class="flex flex-col items-start gap-1">

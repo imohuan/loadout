@@ -63,7 +63,7 @@ func (s *Service) HandleProxyBeforeUpstream(payload any) (any, error) {
 		return payload, nil
 	}
 	pipe.Metadata["__aggregate_processed"] = true
-	pipe.Metadata["__virtual_model"] = model
+	pipe.Metadata[types.MetadataVirtualModel] = model
 	pipe.Metadata["__aggregate_targets"] = agg.Targets
 	pipe.Metadata["__failed_targets"] = []string{}
 	pipe.Metadata["__retry_count"] = 0
@@ -103,7 +103,7 @@ func (s *Service) HandleProxyUpstreamFailed(payload any) (any, error) {
 	}
 	pipe := failure.Pipe
 
-	virtualModel, ok := pipe.Metadata["__virtual_model"].(string)
+	virtualModel, ok := pipe.Metadata[types.MetadataVirtualModel].(string)
 	if !ok || virtualModel == "" {
 		s.lg.Debug("[aggregate] 非聚合模型失败，跳过")
 		return payload, nil
@@ -168,7 +168,7 @@ func (s *Service) HandleProxyUpstreamSucceeded(payload any) (any, error) {
 	if !ok || success == nil || success.Pipe == nil || success.Pipe.Metadata == nil {
 		return payload, nil
 	}
-	if _, ok := success.Pipe.Metadata["__virtual_model"].(string); !ok {
+	if _, ok := success.Pipe.Metadata[types.MetadataVirtualModel].(string); !ok {
 		return payload, nil
 	}
 	if s.health != nil {

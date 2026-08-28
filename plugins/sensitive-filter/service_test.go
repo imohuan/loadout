@@ -8,6 +8,7 @@ import (
 	"loadout/core/store"
 	modelgateway "loadout/plugins/model-gateway"
 	"loadout/plugins/types"
+	routetest "loadout/testkit/routetest"
 )
 
 // newTestService 用临时目录建 Store。
@@ -52,7 +53,13 @@ func runHook(svc *Service, payload any) (*modelgateway.ProxyPipeline, error) {
 	return pipe, nil
 }
 
-// TestDecideRoute 验证路由命中/未命中/渠道约束/通配。
+
+// scopeFor 构造单渠道 scope（复用共享 routetest.ScopeWithChannelID）。
+func scopeFor(svc *Service, channelID string) types.ChannelRequestScope {
+	return routetest.ScopeWithChannelID(channelID, svc.requestChannelBaseURLs(channelID))
+}
+
+// TestDecideRoute 验证路由命中/未命中/渠道约束/通配（直接测 DecideRoutesScope）。
 func TestDecideRoute(t *testing.T) {
 	svc, st := newTestService(t)
 	routes := []types.CapabilityRoute{
@@ -68,27 +75,27 @@ func TestDecideRoute(t *testing.T) {
 		t.Fatalf("写能力路由表失败: %v", err)
 	}
 
-	hit, err := svc.DecideRoute("deepseek-chat", "")
+	hit, err := routetest.FirstRoute(svc.DecideRoutesScope("deepseek-chat", "", scopeFor(svc, "")))
 	if err != nil {
-		t.Fatalf("DecideRoute 出错: %v", err)
+		t.Fatalf("DecideRoutesScope 出错: %v", err)
 	}
 	if hit == nil || hit.Route != types.RouteProxy || len(hit.Replacements) != 1 {
 		t.Fatalf("应命中 proxy 路由: %+v", hit)
 	}
 
-	if hit, _ := svc.DecideRoute("gpt-5", "ch-a"); hit != nil {
+	if hit, _ := routetest.FirstRoute(svc.DecideRoutesScope("gpt-5", "", scopeFor(svc, "ch-a"))); hit != nil {
 		t.Fatalf("渠道 ch-a 不应命中: %+v", hit)
 	}
-	if hit, _ := svc.DecideRoute("gpt-5", "ch-b"); hit == nil {
+	if hit, _ := routetest.FirstRoute(svc.DecideRoutesScope("gpt-5", "", scopeFor(svc, "ch-b"))); hit == nil {
 		t.Fatal("渠道 ch-b 应命中")
 	}
-	if hit, _ := svc.DecideRoute("claude-x", "any"); hit == nil {
+	if hit, _ := routetest.FirstRoute(svc.DecideRoutesScope("claude-x", "", scopeFor(svc, "any"))); hit == nil {
 		t.Fatal("通配渠道应命中")
 	}
-	if hit, _ := svc.DecideRoute("vision-model", ""); hit != nil {
+	if hit, _ := routetest.FirstRoute(svc.DecideRoutesScope("vision-model", "", scopeFor(svc, ""))); hit != nil {
 		t.Fatalf("vision 能力不应命中 sensitive_filter: %+v", hit)
 	}
-	if hit, _ := svc.DecideRoute("unknown-model", ""); hit != nil {
+	if hit, _ := routetest.FirstRoute(svc.DecideRoutesScope("unknown-model", "", scopeFor(svc, ""))); hit != nil {
 		t.Fatalf("未知模型不应命中: %+v", hit)
 	}
 }
@@ -460,7 +467,7 @@ func TestDecideRouteReadErrorFailOpen(t *testing.T) {
 	if err := st.Write(types.FileCapabilityRoutes, "not-json-array"); err != nil {
 		t.Fatalf("写坏表失败: %v", err)
 	}
-	route, err := svc.DecideRoute("deepseek-chat", "")
+	route, err := routetest.FirstRoute(svc.DecideRoutesScope("deepseek-chat", "", types.ChannelRequestScope{}))
 	if err != nil {
 		t.Fatalf("读表失败应 fail-open，实际报错: %v", err)
 	}
@@ -601,4 +608,31 @@ func TestSubRequestSkipSecurity(t *testing.T) {
 	if string(out.Request.Body) != string(pipe.Request.Body) {
 		t.Fatalf("skip_security 子请求 body 被替换:\n got: %s\nwant: %s", out.Request.Body, pipe.Request.Body)
 	}
+}
+
+
+// TestDecideRoutesScopeVirtualModel 验证虚拟模型（聚合）请求：路由配虚拟前缀 `git-*`，
+// 真实模型不匹配、但 virtualModel 命中时仍命中；virtualModel 为空时不命中。
+func TestDecideRoutesScopeVirtualModel(t *testing.T) {
+	svc, st := newTestService(t)
+	routes := []types.CapabilityRoute{{
+		Models:     []string{"git-*"},
+		Capability: capabilityName,
+		Route:      types.RouteProxy,
+		Replacements: []types.SensitiveReplacement{{From: "dirty", To: "***"}},
+	}}
+	if err := st.Write(types.FileCapabilityRoutes, routes); err != nil {
+		t.Fatalf("写路由失败: %v", err)
+	}
+	scope := types.ChannelRequestScope{}
+	// 真实模型 deepseek-v4-flash 不匹配 git-*，virtualModel 为空 -> 不命中。
+	if r, _ := svc.DecideRoutesScope("deepseek-v4-flash", "", scope); len(r) != 0 {
+		t.Fatalf("virtualModel 为空不应命中: %+v", r)
+	}
+	// virtualModel=git-xxx 命中。
+	r, err := svc.DecideRoutesScope("deepseek-v4-flash", "git-xxx", scope)
+	if err != nil || len(r) != 1 {
+		t.Fatalf("虚拟模型应命中 1 条: %v %v", r, err)
+	}
+	_ = r
 }

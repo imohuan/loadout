@@ -398,7 +398,7 @@ func TestDecideRouteChannelLevelExactMatch(t *testing.T) {
 		Request:  &modelgateway.ProxyRequest{Model: "gpt-4o", Body: []byte(`{"model":"gpt-4o","client_metadata":{}}`)},
 		Metadata: map[string]any{"__current_channel": "k1"},
 	}
-	routes, err := svc.decideRoutes(pipe)
+	routes, err := svc.decideRoutes(pipe, "")
 	if err != nil || len(routes) == 0 {
 		t.Fatalf("精确匹配（带 /v1）应命中, routes=%v err=%v", routes, err)
 	}
@@ -425,7 +425,7 @@ func TestDecideRouteChannelLevelVersionMismatch(t *testing.T) {
 		Request:  &modelgateway.ProxyRequest{Model: "gpt-4o", Body: []byte(`{"model":"gpt-4o","client_metadata":{}}`)},
 		Metadata: map[string]any{"__current_channel": "k1"},
 	}
-	routes, err := svc.decideRoutes(pipe)
+	routes, err := svc.decideRoutes(pipe, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -564,5 +564,28 @@ func TestSubRequestSkipSecurityResponse(t *testing.T) {
 	got := out.(*modelgateway.AfterUpstreamPayload)
 	if string(got.Response.Body) != string(after.Response.Body) {
 		t.Fatalf("skip_security 子请求响应被删字段:\n got: %s\nwant: %s", got.Response.Body, after.Response.Body)
+	}
+}
+
+
+// TestDecideRoutesVirtualModel 验证虚拟模型（聚合）请求：路由配虚拟前缀 `git-*`，
+// 真实模型 gpt-4o 不匹配、但 virtualModel 命中时仍命中；virtualModel 为空时不命中。
+func TestDecideRoutesVirtualModel(t *testing.T) {
+	svc, st := newTestService(t)
+	seedRoute(t, st, types.CapabilityRoute{
+		Models:     []string{"git-*"},
+		Capability: capabilityName,
+		Route:      types.RouteProxy,
+		FieldRules: &types.FieldRules{RequestStrip: []string{"client_metadata"}},
+	})
+	pipe := proxyPipe(t, map[string]any{"model": "gpt-4o", "client_metadata": "x"})
+	// 无虚拟模型：真实模型 gpt-4o 不匹配 git-*，不命中。
+	if r, _ := svc.decideRoutes(pipe, ""); len(r) != 0 {
+		t.Fatalf("virtualModel 为空不应命中: %+v", r)
+	}
+	// virtualModel=git-xxx 命中。
+	r, err := svc.decideRoutes(pipe, "git-xxx")
+	if err != nil || len(r) != 1 {
+		t.Fatalf("虚拟模型应命中 1 条: %v %v", r, err)
 	}
 }
