@@ -620,20 +620,24 @@ async function restoreAllBackups() {
                           >
                             <TooltipTrigger as-child>
                               <p class="truncate text-sm text-muted-foreground">
-                                {{ group.firstDescription }}
+                                <TranslateText
+                                  :source="group.firstDescription"
+                                  source-type="skill"
+                                  :source-id="group.skills[0]?.name || ''"
+                                  single-line
+                                />
                               </p>
                             </TooltipTrigger>
                             <TooltipContent
                               side="bottom"
                               align="start"
-                              class="max-w-md whitespace-normal break-words"
+                              class="max-w-md whitespace-normal break-words "
                             >
                               <TranslateText
                                 :source="group.firstDescription"
                                 source-type="skill"
                                 :source-id="group.skills[0]?.name || ''"
-                                display-mode="both"
-                              />
+                                />
                             </TooltipContent>
                           </Tooltip>
                           <span v-else class="text-sm text-muted-foreground">—</span>
@@ -660,7 +664,12 @@ async function restoreAllBackups() {
                                   <Tooltip v-if="skill.description" :delay-duration="150">
                                     <TooltipTrigger as-child>
                                       <p class="truncate text-sm text-muted-foreground">
-                                        {{ skill.description }}
+                                        <TranslateText
+                                          :source="skill.description"
+                                          source-type="skill"
+                                          :source-id="skill.name"
+                                          single-line
+                                        />
                                       </p>
                                     </TooltipTrigger>
                                     <TooltipContent
@@ -672,8 +681,7 @@ async function restoreAllBackups() {
                                         :source="skill.description"
                                         source-type="skill"
                                         :source-id="skill.name"
-                                        display-mode="both"
-                                      />
+                                        />
                                     </TooltipContent>
                                   </Tooltip>
                                   <span v-else class="text-sm text-muted-foreground">—</span>
@@ -1013,7 +1021,7 @@ async function restoreAllBackups() {
                 class="flex max-h-56 flex-wrap gap-2 overflow-y-auto rounded-md border border-border p-3"
               >
                 <template v-for="skill in skills" :key="skill.name">
-                  <Tooltip v-if="skill.description" :delay-duration="3000">
+                  <Tooltip v-if="skill.description" :delay-duration="1000">
                     <TooltipTrigger as-child>
                       <Button
                         type="button"
@@ -1031,8 +1039,7 @@ async function restoreAllBackups() {
                         :source="skill.description"
                         source-type="skill"
                         :source-id="skill.name"
-                        display-mode="both"
-                      />
+                        />
                     </TooltipContent>
                   </Tooltip>
                   <Button
@@ -1091,20 +1098,24 @@ async function restoreAllBackups() {
                     <Tooltip v-if="skill.description" :delay-duration="150">
                       <TooltipTrigger as-child>
                         <span class="block truncate text-xs text-muted-foreground">
-                          {{ skill.description }}
+                          <TranslateText
+                            :source="skill.description"
+                            source-type="skill"
+                            :source-id="skill.name"
+                            single-line
+                          />
                         </span>
                       </TooltipTrigger>
                       <TooltipContent
                         side="bottom"
                         align="start"
-                        class="max-w-md whitespace-normal break-words"
+                        class="max-w-md whitespace-normal break-words "
                       >
                         <TranslateText
                           :source="skill.description"
                           source-type="skill"
                           :source-id="skill.name"
-                          display-mode="both"
-                        />
+                          />
                       </TooltipContent>
                     </Tooltip>
                   </span>

@@ -2,8 +2,12 @@
 // 可复用翻译文本组件：只读取已翻译结果，绝不主动触发翻译、绝不发网络请求。
 // 通过 textKey 从 translate store 的 translatedMap 读取译文展示；
 // 译文由 TranslateView 在加载时批量 lookup、翻译时显式写入 translatedMap。
-import { computed } from 'vue'
+import { computed, useAttrs } from 'vue'
 import { useTranslateStore } from '@/stores/translate'
+
+// 透传组件外部传入的 class：TranslateText 默认渲染根节点是 slot 的默认 span（fragment），
+// 外部 class 无法自动 fallthrough，需显式合并到根 span 上。
+const attrs = useAttrs()
 
 const props = withDefaults(
   defineProps<{
@@ -62,15 +66,16 @@ const showOriginal = computed(() => {
     :original="source"
   >
     <span
-      :class="
+      :class="[
         singleLine
           ? 'block w-full truncate min-w-0'
-          : 'inline-flex min-w-0 flex-wrap items-center gap-1 break-words whitespace-normal'
-      "
+          : 'inline-flex min-w-0 flex-wrap items-center gap-1 break-words whitespace-normal',
+        (attrs.class as string) || '',
+      ]"
     >
       <span v-if="showOriginal" class="min-w-0 break-words text-muted-foreground">{{ source }}</span>
       <span v-if="showOriginal && showTranslated && translated" class="text-muted-foreground/50 mx-1">/</span>
-      <span v-if="showTranslated && translated" class="min-w-0 break-words font-medium text-foreground">{{ translated }}</span>
+      <span v-if="showTranslated && translated" class="min-w-0 break-words font-medium">{{ translated }}</span>
     </span>
   </slot>
 </template>
