@@ -9,6 +9,7 @@ import {
   RiLoader4Line,
   RiRefreshLine,
   RiSettings3Line,
+  RiTranslate2,
   RiUpload2Line,
 } from '@remixicon/vue'
 import { useManagementApi } from '@/composables/useManagementApi'
@@ -22,6 +23,7 @@ import EmptyState from '@/components/EmptyState.vue'
 import VolcQuotaCard from '@/components/VolcQuotaCard.vue'
 import ConfigExportDialog from '@/components/config-transfer/ConfigExportDialog.vue'
 import ConfigImportDialog from '@/components/config-transfer/ConfigImportDialog.vue'
+import TranslateView from '@/views/TranslateView.vue'
 
 const api = useManagementApi()
 const { data: keys, loading: keysLoading, refresh: refreshKeys } = useListLoader(api.keys)
@@ -53,7 +55,13 @@ watch(
   { immediate: true },
 )
 const loading = computed(() => keysLoading.value || pluginsLoading.value || settingsLoading.value)
+const translateRef = ref<InstanceType<typeof TranslateView> | null>(null)
 async function refresh() {
+  // 翻译 Tab 激活时，顶部「刷新」按钮刷新的是翻译来源
+  if (activeTab.value === 'translations') {
+    await translateRef.value?.refresh()
+    return
+  }
   await Promise.all([refreshKeys(), refreshPlugins(), refreshSettings()])
 }
 async function createSkKey() {
@@ -224,6 +232,7 @@ onMounted(() => {
         <TabsList class="inline-flex h-auto w-fit max-w-full flex-wrap justify-start gap-1">
           <TabsTrigger value="runtime"> <RiSettings3Line size="16" />运行设置 </TabsTrigger>
           <TabsTrigger value="credentials"> <RiKey2Line size="16" />模型密钥 </TabsTrigger>
+          <TabsTrigger value="translations"> <RiTranslate2 size="16" />翻译 </TabsTrigger>
           <TabsTrigger value="plugins">插件</TabsTrigger>
         </TabsList>
         <TabsContent value="runtime" class="space-y-4">
@@ -417,6 +426,9 @@ onMounted(() => {
               </CardContent>
             </Card>
           </TooltipProvider>
+        </TabsContent>
+        <TabsContent value="translations">
+          <TranslateView ref="translateRef" embedded />
         </TabsContent>
         <TabsContent value="plugins">
           <Card class="rounded-md">

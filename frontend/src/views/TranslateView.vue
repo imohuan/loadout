@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+// embedded：嵌入到设置页面 Tab 中时，不渲染完整 PageHeader，改用紧凑子标题
+const props = withDefaults(defineProps<{ embedded?: boolean }>(), { embedded: false })
 import { toast } from 'vue-sonner'
 import { RiLoader4Line, RiRefreshLine, RiStopCircleLine, RiTranslate2 } from '@remixicon/vue'
 import PageHeader from '@/components/PageHeader.vue'
@@ -273,11 +275,14 @@ onMounted(() => {
   // 刷新后若存在未完成的后台批量翻译任务，恢复进度条继续显示（由 store.batchRunning 驱动）
   void store.resumeBatch()
 })
+// 供设置页顶部「刷新」按钮调用（翻译 Tab 激活时刷新来源）
+defineExpose({ refresh: loadSources })
 </script>
 
 <template>
   <div class="space-y-6">
-    <PageHeader title="翻译" description="配置目标语言/模型/提示词，批量翻译 MCP 工具与技能描述。">
+    <!-- 独立页面（/translations）时仍显示 PageHeader -->
+    <PageHeader v-if="!embedded" title="翻译" description="配置目标语言/模型/提示词，批量翻译 MCP 工具与技能描述。">
       <template #actions>
         <Button variant="outline" :disabled="sourcesLoading" @click="loadSources">
           <RiLoader4Line v-if="sourcesLoading" class="size-4 animate-spin" />
