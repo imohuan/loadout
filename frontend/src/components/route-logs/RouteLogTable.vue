@@ -20,15 +20,20 @@ const props = withDefaults(
     liveProgress?: boolean
     /** 后端返回的全量条数（真分页）。缺省时回退 logs.length，保持本地伪分页兼容（模型测试页） */
     total?: number
+    /** false = 隐藏「完整日志」列（模型测试页：日志为本地同步对象，无 request_log 入口） */
+    showFullLog?: boolean
+    /** true = 显示「操作」列（加载按钮，从日志 meta 回填）。仅模型测试页开启，转发日志面板默认关闭 */
+    showLoadAction?: boolean
     /** 受控分页页码（真分页模式：父组件 RouteLogsView 持有，过滤/清空时可重置回 1）。
      *  缺省时内部自管理（模型测试页兼容，配合无 total 的本地切片）。 */
     page?: number
     pageSize?: number
   }>(),
-  { collapsible: true, liveProgress: true },
+  { collapsible: true, liveProgress: true, showFullLog: true, showLoadAction: false },
 )
 const emit = defineEmits<{
   expand: [log: RouteLog]
+  load: [log: RouteLog]
   'update:page': [value: number]
   'update:pageSize': [value: number]
 }>()
@@ -282,7 +287,8 @@ function isFailureResult(result?: string) {
               <TableHead>Tokens</TableHead>
               <TableHead>缓存</TableHead>
               <TableHead>耗时</TableHead>
-              <TableHead class="w-24">完整日志</TableHead>
+              <TableHead v-if="props.showFullLog" class="w-24">完整日志</TableHead>
+              <TableHead v-if="props.showLoadAction" class="w-16">操作</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody><template v-for="log in pagedLogs" :key="log.request_id">
@@ -343,10 +349,15 @@ function isFailureResult(result?: string) {
                 <TableCell class="whitespace-nowrap tabular-nums text-sm font-mono">{{
                   formatDuration(log.duration_ms)
                 }}</TableCell>
-                <TableCell class="whitespace-nowrap">
+                <TableCell v-if="props.showFullLog" class="whitespace-nowrap">
                   <router-link v-if="log.request_log_id"
                     :to="`/request-logs/${log.request_log_id}`"
                     class="text-xs text-primary hover:underline" @click.stop>进入日志</router-link>
+                  <span v-else class="text-xs text-muted-foreground">-</span>
+                </TableCell>
+                <TableCell v-if="props.showLoadAction" class="whitespace-nowrap">
+                  <Button v-if="log.meta" type="button" variant="outline" size="sm"
+                    @click.stop="emit('load', log)">加载</Button>
                   <span v-else class="text-xs text-muted-foreground">-</span>
                 </TableCell>
               </TableRow>

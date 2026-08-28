@@ -16,6 +16,8 @@ export type TestTemplate = {
   name: string
   text: string
   attachments: TemplateAttachment[]
+  /** 左侧 Messages 列表快照（不含 id，回填时重新分配），老模板可能缺失 */
+  messages?: { role: 'system' | 'user' | 'assistant'; content: string }[]
   savedAt: number
 }
 
