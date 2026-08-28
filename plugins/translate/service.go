@@ -22,6 +22,7 @@ import (
 	modelgateway "loadout/plugins/model-gateway"
 	mcphub "loadout/plugins/mcp-hub"
 	gatewaykeys "loadout/plugins/gateway-keys"
+	skills "loadout/plugins/skills"
 )
 
 // Service 翻译服务。
@@ -31,8 +32,9 @@ type Service struct {
 	db   *sql.DB
 	lg   *slog.Logger
 	gw   *modelgateway.Service
-	hub  *mcphub.Service
-	keys *gatewaykeys.Manager
+	hub      *mcphub.Service
+	keys     *gatewaykeys.Manager
+	skillSvc *skills.Service
 
 	// 批量翻译后台任务管理：task_id -> 任务状态。
 	batchMu   sync.Mutex
@@ -41,8 +43,8 @@ type Service struct {
 }
 
 // NewService 创建翻译服务。
-func NewService(st *store.Store, repo *db.Repository, database *sql.DB, lg *slog.Logger, gw *modelgateway.Service, hub *mcphub.Service, keys *gatewaykeys.Manager) *Service {
-	return &Service{st: st, repo: repo, db: database, lg: lg, gw: gw, hub: hub, keys: keys, batchJobs: make(map[string]*batchTask)}
+func NewService(st *store.Store, repo *db.Repository, database *sql.DB, lg *slog.Logger, gw *modelgateway.Service, hub *mcphub.Service, keys *gatewaykeys.Manager, skillSvc *skills.Service) *Service {
+	return &Service{st: st, repo: repo, db: database, lg: lg, gw: gw, hub: hub, keys: keys, skillSvc: skillSvc, batchJobs: make(map[string]*batchTask)}
 }
 
 // ---- 翻译核心 ----
@@ -539,18 +541,20 @@ func (s *Service) collectSources(ctx context.Context) ([]SourceItem, error) {
 		return nil, fmt.Errorf("translate: 构建索引失败: %w", err)
 	}
 	var items []SourceItem
+	// MCP 工具来源：索引中的非 skill 条目（skill 由技能仓库单独提供，与管理面板对齐）。
 	for _, t := range index.Tools {
+		if t.IsSkill {
+			continue
+		}
 		st := SourceMCP
 		sid := t.Name
-		if t.IsSkill {
-			st = SourceSkill
-		} else if t.Source != "" {
+		if t.Source != "" {
 			sid = t.Source + "/" + t.Name
 		}
 		// 参数翻译：从 InputSchema 提取（MCP 工具才有；skill 无 schema）
 		var params []ParamItem
 		var inputSchema map[string]any
-		if !t.IsSkill && t.InputSchema != nil {
+		if t.InputSchema != nil {
 			inputSchema = t.InputSchema
 			params = extractParams(t.InputSchema)
 		}
@@ -565,6 +569,26 @@ func (s *Service) collectSources(ctx context.Context) ([]SourceItem, error) {
 			Description: t.Description,
 			InputSchema: inputSchema,
 			Params:      params,
+		})
+	}
+	// 技能来源：直接读技能仓库（扫描 repoDir 下含 SKILL.md 的目录），
+	// 与「Skills 管理面板」/api/skills 完全同源，避免两边清单不一致。
+	if s.skillSvc == nil {
+		return nil, fmt.Errorf("translate: skills 服务未初始化")
+	}
+	skillList, err := s.skillSvc.List()
+	if err != nil {
+		return nil, fmt.Errorf("translate: 读取技能清单失败: %w", err)
+	}
+	for _, sk := range skillList {
+		if strings.TrimSpace(sk.Description) == "" {
+			continue
+		}
+		items = append(items, SourceItem{
+			SourceType:  SourceSkill,
+			SourceID:    sk.Name,
+			Name:        sk.Name,
+			Description: sk.Description,
 		})
 	}
 	return items, nil

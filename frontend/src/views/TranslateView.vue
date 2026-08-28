@@ -400,14 +400,14 @@ defineExpose({ refresh: loadSources })
           :value="group.type"
           class="overflow-hidden rounded-md border"
         >
-          <AccordionTrigger class="border-b bg-muted/40 px-4 py-3 hover:no-underline">
+          <AccordionTrigger class="flex items-center justify-center border-b bg-muted/40 px-4 py-3 hover:no-underline">
             <RiArrowRightSLine
               class="mr-2 size-4 shrink-0 text-muted-foreground transition-transform duration-200 group-aria-expanded/accordion-trigger:rotate-90"
             />
-            <Badge :variant="group.type === 'mcp' ? 'default' : 'secondary'">
+            <Badge :variant="group.type === 'mcp' ? 'default' : 'secondary'" class="font-mono">
               {{ group.type === 'mcp' ? 'MCP' : 'Skill' }}
             </Badge>
-            <span class="text-sm text-muted-foreground">{{ group.items.length }} 项</span>
+            <span class="text-sm text-muted-foreground ml-2">{{ group.items.length }} 项</span>
             <div class="ml-auto flex items-center gap-1" @click.stop>
               <Button variant="outline" size="sm" @click.stop="toggleTypeAll(group.type)">
                 {{ typeAllSelected(group.type) ? '取消全选' : '全选' }}

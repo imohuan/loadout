@@ -170,22 +170,18 @@ async function installDep(name: string) {
   }
 }
 
-// 监听全局指令开关：仅在设置数据加载完成后才自动保存，避免初始赋值误触发。
-let depsSettingReady = false
-watch(
-  () => settingsForm.use_global_cmd,
-  () => {
-    if (!depsSettingReady) return
-    saveSettings()
-  },
-)
-// settingsData 首次加载完成后标记就绪（此后开关切换才保存）。
+// 全局指令开关自动保存：仅在设置数据真正加载完成（后端值已回填到 settingsForm）后，
+// 才开始监听 use_global_cmd，从根上避免「进入设置页 → 异步回填 use_global_cmd」误触发保存。
+let stopGlobalCmdWatch: (() => void) | null = null
 watch(
   settingsData,
-  () => {
-    depsSettingReady = true
+  (value) => {
+    if (!value || stopGlobalCmdWatch) return
+    stopGlobalCmdWatch = watch(
+      () => settingsForm.use_global_cmd,
+      () => saveSettings(),
+    )
   },
-  { immediate: true },
 )
 onMounted(() => {
   refreshDeps()

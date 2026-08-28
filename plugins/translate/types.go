@@ -23,6 +23,7 @@ import (
 	modelgateway "loadout/plugins/model-gateway"
 	mcphub "loadout/plugins/mcp-hub"
 	gatewaykeys "loadout/plugins/gateway-keys"
+	skills "loadout/plugins/skills"
 )
 
 // ServiceName 是本插件在服务容器里的注册名。
@@ -131,7 +132,7 @@ func (p *pluginImpl) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name:    "translate",
 		Version: "0.1.0",
-		Inject:  []string{"store", "db", "logger", "model-gateway", "mcp-hub", "gateway-keys"},
+		Inject:  []string{"store", "db", "logger", "model-gateway", "mcp-hub", "gateway-keys", "skills"},
 		Provide: []string{ServiceName},
 	}
 }
@@ -156,6 +157,10 @@ func (p *pluginImpl) Apply(ctx plugin.Context) error {
 	if !ok || keys == nil {
 		return fmt.Errorf("translate: missing gateway-keys service")
 	}
+	skillSvc, ok := ctx.Get("skills").(*skills.Service)
+	if !ok || skillSvc == nil {
+		return fmt.Errorf("translate: missing skills service")
+	}
 
 	if err := migrate(database); err != nil {
 		return fmt.Errorf("translate: migrate: %w", err)
@@ -164,7 +169,7 @@ func (p *pluginImpl) Apply(ctx plugin.Context) error {
 	if err != nil {
 		return fmt.Errorf("translate: 初始化仓储失败: %w", err)
 	}
-	svc := NewService(st, repo, database, lg, gw, hub, keys)
+	svc := NewService(st, repo, database, lg, gw, hub, keys, skillSvc)
 	ctx.Set(ServiceName, svc)
 
 	ctx.RegisterRoute(plugin.RouteSpec{Method: "POST", Pattern: "/api/translate", Auth: plugin.AuthSession, Handler: http.HandlerFunc(svc.handleTranslate)})
