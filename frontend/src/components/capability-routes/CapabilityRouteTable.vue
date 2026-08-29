@@ -126,7 +126,6 @@ function channelScopeLabel(channels: Channel[], ids?: string[], baseURLs?: strin
             <TableHeader>
               <TableRow>
                 <TableHead>目标模型</TableHead>
-                <TableHead class="w-16 text-center">数量</TableHead>
                 <TableHead>渠道</TableHead>
                 <TableHead>能力</TableHead>
                 <TableHead>路由方式</TableHead>
@@ -158,9 +157,6 @@ function channelScopeLabel(channels: Channel[], ids?: string[], baseURLs?: strin
                     </TooltipTrigger>
                     <TooltipContent>{{ (route.models || []).join(', ') || '-' }}</TooltipContent>
                   </Tooltip>
-                </TableCell>
-                <TableCell class="text-center tabular-nums">
-                  <div class="min-w-[100px]">{{ route.models?.length || 0 }}</div>
                 </TableCell>
                 <TableCell class="max-w-xs text-sm text-muted-foreground">
                   <Tooltip>
