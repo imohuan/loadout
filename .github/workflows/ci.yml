@@ -15,20 +15,16 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      # 复用前端构建 workflow（内含 setup-node + pnpm store 缓存 + install + build）
+      - uses: ./.github/workflows/build-frontend.yml
         with:
-          node-version: "20"
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 9
-      - name: build frontend
-        working-directory: frontend
-        run: |
-          pnpm install --frozen-lockfile
-          pnpm run build
+          runs-on: ${{ matrix.os }}
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26.3"
+          # setup-go 自带缓存（默认开启），缓存 go modules 与 build outputs，
+          # go.sum 位于仓库根，cache-dependency-path 无需额外指定。
+          cache: true
       - name: go test
         run: go test ./...
       - name: go vet
