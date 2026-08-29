@@ -8,7 +8,6 @@ import {
   RiArrowDownSLine,
   RiArrowRightSLine,
   RiCloseLine,
-  RiDeleteBinLine,
   RiEditLine,
   RiImportLine,
   RiLoader4Line,
