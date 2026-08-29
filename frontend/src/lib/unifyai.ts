@@ -2,8 +2,8 @@
 import { getLoadoutBase } from '@/lib/base'
 // UnifyAI 配置同步 —— 前端数据层
 //
-// 本文件只承载「类型定义 + 平台能力矩阵 + 界面初始数据」，以及供后台接入的
-// 函数签名（当前返回 mock / 抛出 TODO，等待后端实现后替换为真实 API 调用）。
+// 本文件只承载「类型定义 + 平台能力矩阵 + 界面初始数据」，以及通过后端 API 获取配置的
+// 数据层函数。
 //
 // 同步模型（与 UI-DESIGN-SPEC.md §1 一致）：
 //   - 模型：全量覆盖写平台配置（源：OpenCodex 代理 / Provider API）
@@ -305,12 +305,6 @@ export const LOG_ICONS: Record<LogLevel, string> = {
 // ---- 同步内容三态（文档 §3.2） ----
 
 export type SyncMode = 'all' | 'models' | 'mcp'
-
-// ============================================================================
-// 预留的后台接入点 —— 后端就绪后替换 mock 实现即可，UI 侧无需改动。
-// ============================================================================
-
-const NOT_IMPLEMENTED = '后端接口未接入，当前返回模拟数据'
 
 /**
  * 读取 OpenRouter 模型来源与元数据缓存状态（后端读 ~/.unifyai/cache/openrouter-models.json）。
@@ -642,21 +636,6 @@ export function buildCommand(_opts: Parameters<typeof buildArgs>[0]): string {
 
 export const DEFAULT_SOURCE = '~/.opencodex/config.json'
 
-/**
- * 执行同步（文档 §6.1 完整执行序列）。当前返回模拟进度回调，
- * TODO(backend): 接入真实执行器后，改为逐行 push 真实日志。
- */
-export async function runSync(): Promise<void> {
-  console.warn(NOT_IMPLEMENTED)
-}
-
-/**
- * 强制刷新 OpenRouter 模型元数据缓存（--list metadata，非 JSON 模式即刷新；文档 §5.4）。
- * TODO(backend): 替换为真实刷新调用。
- */
-export async function updateMetadata(): Promise<void> {
-  console.warn(NOT_IMPLEMENTED)
-}
 
 // ============================================================================
 // MCP 同步矩阵（--list-mcp --json 数据层）
