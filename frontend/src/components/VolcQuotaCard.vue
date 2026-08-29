@@ -12,7 +12,6 @@ import {
 } from '@remixicon/vue'
 import type {
   Channel,
-
   VolcQuotaConfig,
   VolcQuotaConfigDetails,
   VolcQuotaPackage,
@@ -20,8 +19,8 @@ import type {
 import { useChannels } from '@/composables/useChannels'
 import { useVolcQuota } from '@/composables/useVolcQuota'
 import { useConfirm } from '@/composables/useConfirm'
-
 import EmptyState from '@/components/EmptyState.vue'
+import VolcQuotaModelCards from '@/components/VolcQuotaModelCards.vue'
 
 const quota = useVolcQuota()
 const channelsApi = useChannels()
@@ -41,6 +40,10 @@ async function loadStatus(showSpinner = true) {
   try {
     const data = await quota.status()
     configs.value = data.configs || []
+    // 默认展开第一个 Key 渠道，方便直接看明细
+    if (!expanded.value.length && configs.value.length) {
+      expanded.value = [configs.value[0].config.channel_id]
+    }
   } catch (e) {
     toast.error(e instanceof Error ? e.message : '加载额度状态失败')
   } finally {
@@ -74,6 +77,31 @@ function toggle(channelId: string) {
 }
 function isExpanded(channelId: string) {
   return expanded.value.includes(channelId)
+}
+
+// ===== 卡片组件实例收集：按 channel_id 存储每个 Key 的模型聚合卡片，
+// 刷新后调用对应实例的 refresh() 重载数据（无需重新挂载组件）。 =====
+const cardRefs = new Map<string, { refresh: () => Promise<void> }>()
+// 缓存每个 channelId 的 ref 回调，避免 :ref 每次渲染重建新函数。
+const cardRefCbs = new Map<string, (el: unknown) => void>()
+function setCardRef(channelId: string) {
+  let cb = cardRefCbs.get(channelId)
+  if (!cb) {
+    cb = (el: unknown) => {
+      if (el) cardRefs.set(channelId, el as { refresh: () => Promise<void> })
+      else cardRefs.delete(channelId)
+    }
+    cardRefCbs.set(channelId, cb)
+  }
+  return cb
+}
+function refreshCards(channelIds?: string[]) {
+  const targets = channelIds
+    ? channelIds.map((id) => cardRefs.get(id)).filter(Boolean)
+    : [...cardRefs.values()]
+  return Promise.all(
+    (targets as { refresh: () => Promise<void> }[]).map((c) => c.refresh()),
+  )
 }
 
 // ===== 展示辅助 =====
@@ -163,7 +191,7 @@ function filteredPackages(item: { config: { channel_id: string }; packages?: Vol
   return list.filter((p) => matchPackage(p, kw))
 }
 
-// ===== 资源包展示方式：卡片（默认）/ 表格，控制折叠内部资源包的呈现 =====
+// ===== 资源包视图切换：卡片（聚合概览，默认）/ 表格（明细） =====
 type PkgViewMode = 'card' | 'table'
 const pkgView = ref<PkgViewMode>('card')
 function setPkgView(v: string) {
@@ -178,6 +206,8 @@ async function refreshLocal() {
     await loadStatus(false)
     // 同步渠道勾选，保持「关注」分组与渠道配置一致
     await loadArkChannels()
+    // 同步刷新所有卡片的聚合数据（表格数据已由 loadStatus 刷新）
+    await refreshCards()
     toast.success('本地数据已刷新')
   } catch (e) {
     toast.error(e instanceof Error ? e.message : '刷新失败')
@@ -237,6 +267,8 @@ async function confirmRemoteRefresh() {
     applyRefreshResult(result.configs_checked, result.failed_channels, result.disabled_models)
     await loadStatus(false)
     await loadArkChannels()
+    // 同步刷新卡片聚合数据：单 Key 只刷该 Key，全量刷所有
+    await refreshCards(remoteTarget.value ? [remoteTarget.value] : undefined)
   } catch (e) {
     toast.error(e instanceof Error ? e.message : '刷新失败')
   } finally {
@@ -339,6 +371,8 @@ async function submit() {
     dialogOpen.value = false
     toast.success(editing.value ? '配置已更新' : '配置已添加')
     await Promise.all([loadStatus(false), loadArkChannels()])
+
+    await refreshCards()
   } catch (e) {
     toast.error(e instanceof Error ? e.message : '保存失败')
   } finally {
@@ -356,6 +390,7 @@ async function remove(channelId: string) {
     )
     toast.success('配置已删除')
     await loadStatus(false)
+    await refreshCards()
   } catch (e) {
     toast.error(e instanceof Error ? e.message : '删除失败')
   }
@@ -406,6 +441,7 @@ const displayName = (ch: Channel) => ch.channel_name || ch.name
       </div>
 
 
+
       <!-- 表格视图：每个 Key 的折叠明细 -->
       <div v-if="configs.length" class="divide-y rounded-md border">
         <div v-for="item in configs" :key="item.config.channel_id">
@@ -451,8 +487,17 @@ const displayName = (ch: Channel) => ch.channel_name || ch.name
 
           <!-- 展开行：资源包逐条明细（v14，同 main.go 输出粒度） -->
           <div v-if="isExpanded(item.config.channel_id)" class="space-y-3 border-t bg-muted/30 px-4 py-4">
-            <!-- 资源包逐条明细 -->
-            <div v-if="item.packages?.length" class="overflow-hidden rounded-md border bg-background/60">
+            <!-- 卡片：该 Key 模型聚合（关注/其他分组） -->
+            <!-- 卡片（常驻，切换 tab 不重复请求） -->
+            <div v-show="pkgView === 'card'">
+              <VolcQuotaModelCards
+                :ref="setCardRef(item.config.channel_id)"
+                :channel-id="item.config.channel_id"
+              />
+            </div>
+            <!-- 表格（常驻） -->
+            <div v-show="pkgView === 'table'">
+              <div v-if="item.packages?.length" class="overflow-hidden rounded-md border bg-background/60">
               <div class="flex items-center justify-between gap-2 border-b bg-muted/50 px-3 py-1.5">
                 <span class="text-xs font-medium text-muted-foreground">
                   资源包（{{ filteredPackages(item).length }} / {{ item.packages.length }}）
@@ -461,7 +506,7 @@ const displayName = (ch: Channel) => ch.channel_name || ch.name
                   class="h-7 w-56 text-xs"
                   @update:model-value="(v: string) => setPkgFilter(item.config.channel_id, v)" />
               </div>
-              <Table v-if="pkgView === 'table'" class="w-full text-xs">
+              <Table class="w-full text-xs">
                 <TableHeader>
                   <TableRow class="bg-muted/30 hover:bg-muted/30">
                     <TableHead>资源包</TableHead>
@@ -517,65 +562,16 @@ const displayName = (ch: Channel) => ch.channel_name || ch.name
                   </TableRow>
                 </TableBody>
               </Table>
-              <div v-else class="grid grid-cols-1 gap-2 md:grid-cols-2! xl:grid-cols-3!">
-                <div v-for="p in filteredPackages(item)" :key="p.instance_no"
-                  class="flex flex-col gap-1.5 rounded-md border p-3" :class="[
-                    p.local_remaining <= 0 && p.initial_total > 0 ? 'border-destructive/40 bg-destructive/5' : '',
-                  ]">
-                  <div class="flex items-start justify-between gap-2">
-                    <div class="min-w-0">
-                      <div class="truncate text-sm font-medium" :title="pkgName(p)">{{ pkgName(p) }}</div>
-                      <div class="truncate font-mono text-[10px] text-muted-foreground"
-                        :title="p.configuration_code || p.product || ''">
-                        {{ p.configuration_code || p.product || '' }}
-                      </div>
-                    </div>
-                    <Badge :variant="pkgBadge(p).variant" class="shrink-0">{{ pkgBadge(p).label }}</Badge>
-                  </div>
-                  <div class="flex items-center gap-2">
-                    <Progress :model-value="pkgProgress(p)" :class="p.local_remaining <= 0 && p.initial_total > 0
-                        ? 'bg-destructive/20'
-                        : p.total_amount > 0 && p.available_amount / p.total_amount < 0.2
-                          ? 'bg-amber-500/20'
-                          : ''
-                      " class="h-1.5 flex-1" />
-                    <span class="shrink-0 text-right text-xs tabular-nums"
-                      :class="p.local_remaining <= 0 && p.initial_total > 0 ? 'text-destructive' : ''"
-                      :title="'本地剩余 ' + p.local_remaining + ' / 初始 ' + p.initial_total">
-                      {{ p.local_remaining.toLocaleString() }}
-                    </span>
-                  </div>
-                  <div class="flex items-center justify-between gap-2 text-xs text-muted-foreground">
-                    <span class="flex items-center gap-1">
-                      <span class="tabular-nums">{{ formatAmount(p.total_amount) }}</span>
-                      <span class="text-muted-foreground/60">总额</span>
-                    </span>
-                    <span class="flex items-center gap-1">
-                      <span class="tabular-nums">
-                        {{ (p.initial_total > 0
-                          ? p.initial_total - p.local_remaining
-                          : p.used_amount
-                        ).toLocaleString() }}
-                      </span>
-                      <span class="text-muted-foreground/60">已用</span>
-                    </span>
-                    <span class="flex items-center gap-1" :title="pkgExpiry(p)">
-                      <span class="text-muted-foreground/60">到期</span>
-                      <span class="tabular-nums">{{ pkgExpiry(p) || '—' }}</span>
-                    </span>
-                  </div>
-                </div>
-              </div>
               <div v-if="filteredPackages(item).length === 0"
                 class="px-3 py-4 text-center text-xs text-muted-foreground">
                 没有匹配「{{ getPkgFilter(item.config.channel_id) }}」的资源包
               </div>
-            </div>
-
-            <EmptyState v-else-if="!item.packages?.length" title="暂无额度数据"
+              </div>
+              <EmptyState v-else title="暂无额度数据"
               description="点击右侧刷新按钮获取最新额度（账单有延迟，后台每 15 分钟自动刷新）。" />
           </div>
         </div>
+      </div>
       </div>
 
       <EmptyState v-else title="还没有配置" description="添加一个方舟渠道 Key 的 AK/SK，即可查看各免费模型的剩余额度。" />

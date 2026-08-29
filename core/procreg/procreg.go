@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"sort"
 	"strconv"
@@ -57,10 +58,12 @@ type Event struct {
 
 // Options 统一执行入口的启动参数。
 type Options struct {
+	ID    string   // 进程 ID；空则自动生成。前端可传 task id 以便按 id 关联/查询。
 	Name  string   // 展示名（如「更新技能」），SSE 与前端用它展示
 	Kind  string   // 分类（skill | unifyai | mcp | …）
 	Cmd   string   // 命令
 	Args  []string // 参数
+	Env   []string // 子进程环境变量；空=继承当前进程环境
 	OnLog func(line string)
 }
 
@@ -81,6 +84,48 @@ func NewTestHandle(err error) *Handle {
 	done := make(chan error, 1)
 	done <- err
 	return &Handle{procID: "test-handle", done: done}
+}
+
+// EnvWithPathPrefix 返回 os.Environ 的副本，并把 dir 放到 PATH 最前。
+// 后台服务/systemd 启动时 PATH 可能不完整，需显式补全命令所在目录（如 npx 所在目录包含 node）。
+func EnvWithPathPrefix(dir string) []string {
+	env := os.Environ()
+	for i, kv := range env {
+		if j := strings.IndexByte(kv, '='); j > 0 && strings.EqualFold(kv[:j], "PATH") {
+			cur := kv[j+1:]
+			if cur == "" {
+				env[i] = "PATH=" + dir
+			} else if !strings.HasPrefix(cur, dir+string(os.PathListSeparator)) {
+				env[i] = "PATH=" + dir + string(os.PathListSeparator) + cur
+			}
+			return env
+		}
+	}
+	return append(env, "PATH="+dir)
+}
+
+// RunCollect 统一执行一条命令并收集全部输出行（同步等待结束）。
+// 经 procreg 让命令出现在全局进程面板。env 可为空（继承环境）；需补全提供子进程环境。
+// 注意：输出按行切分，JSON 结果需用 strings.Join(lines, "\n") 拼回后再解析。
+func RunCollect(name, kind, cmd string, args, env []string) ([]string, error) {
+	var mu sync.Mutex
+	var lines []string
+	h, err := Get().Run(Options{
+		Name:  name,
+		Kind:  kind,
+		Cmd:   cmd,
+		Args:  args,
+		Env:   env,
+		OnLog: func(line string) { mu.Lock(); lines = append(lines, line); mu.Unlock() },
+	})
+	if err != nil {
+		return nil, err
+	}
+	runErr := h.Wait()
+	mu.Lock()
+	out := append([]string(nil), lines...)
+	mu.Unlock()
+	return out, runErr
 }
 
 // HistoryStore 进程历史持久化接口。注入后可让历史记录跨后端重启保留。
@@ -362,6 +407,9 @@ func (r *Registry) defaultRun(o Options) (*Handle, error) {
 		return nil, errEmptyName
 	}
 	cmd := exec.Command(o.Cmd, o.Args...)
+	if o.Env != nil {
+		cmd.Env = o.Env
+	}
 	cmdutil.HideWindow(cmd)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -492,7 +540,10 @@ func newProcID() string {
 // add 登记一个新启动的进程并广播。
 func (r *Registry) add(o Options, pid int) *Proc {
 	r.mu.Lock()
-	id := newProcID()
+	id := o.ID
+	if id == "" {
+		id = newProcID()
+	}
 	proc := &Proc{
 		ID:        id,
 		Name:      o.Name,

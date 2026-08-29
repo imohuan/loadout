@@ -106,33 +106,15 @@ func (s *Service) DetectImages(messages []modelgateway.ChatMessage) []string {
 	return images
 }
 
-// DecideRoute 查能力路由表：model + channelID 的 vision 能力。未命中返回 nil（视为 native 透传）。
-// channelID 为请求当前渠道（pipe.Metadata["__current_channel"]，聚合模型指定渠道后已设置；
-// 普通请求渠道未知传空串）。路由未绑定渠道（channel_ids 与 channel_base_urls 都为空）= 全渠道命中，行为与旧版一致；
-// 绑定渠道后仅请求渠道命中集合内（含 channel_base_urls 渠道级）才生效，避免同名模型跨渠道误伤。
-//
-// 注意：聚合模型对渠道级/Key 多选目标会写 __current_channel=""，此时本函数只拿得到空渠道——
-// 聚合流量请用 DecideRouteScope（读取 __channel_candidates / __current_channel_base_url）。
-func (s *Service) DecideRoute(model, channelID string) (*types.CapabilityRoute, error) {
-	scope := types.ChannelRequestScope{}
-	if channelID != "" {
-		scope.IDs = []string{channelID}
-		if bus := s.requestChannelBaseURLs(channelID); len(bus) > 0 {
-			scope.BaseURLs = bus
-		}
-	}
-	return s.DecideRouteScope(model, scope)
-}
-
 // DecideRouteScope 查能力路由表：model + 请求渠道上下文（含聚合模型的候选 Key 集合）。
 // scope.IDs 为实际命中的渠道 key 集合（单 key 或 __channel_candidates），
 // scope.BaseURLs 为渠道组地址（__current_channel_base_url / 按 id 查表）。
 // 选择策略统一走 types.SelectCapabilityRoutes（native/历史 error 短路，proxy 取首候选）。
-func (s *Service) DecideRouteScope(model string, scope types.ChannelRequestScope) (*types.CapabilityRoute, error) {
+func (s *Service) DecideRouteScope(model string, virtualModel string, scope types.ChannelRequestScope) (*types.CapabilityRoute, error) {
 	if s.repo != nil {
 		routes, err := s.repo.ListCapabilityRoutes(context.Background())
 		if err == nil {
-			selected := types.SelectCapabilityRoutes(routes, capabilityName, model, scope)
+			selected := types.SelectCapabilityRoutesEx(routes, capabilityName, model, virtualModel, scope)
 			if len(selected) == 0 {
 				return nil, nil
 			}
@@ -147,7 +129,7 @@ func (s *Service) DecideRouteScope(model string, scope types.ChannelRequestScope
 		}
 		return nil, fmt.Errorf("vision: 读取能力路由表失败: %w", err)
 	}
-	selected := types.SelectCapabilityRoutes(routes, capabilityName, model, scope)
+	selected := types.SelectCapabilityRoutesEx(routes, capabilityName, model, virtualModel, scope)
 	if len(selected) == 0 {
 		return nil, nil
 	}
@@ -335,7 +317,8 @@ func (s *Service) HandleBeforeUpstream(payload any) (any, error) {
 	// 聚合渠道级/Key 多选目标会写 __channel_candidates（__current_channel 为空），
 	// 必须读齐 metadata 三个字段，否则聚合流量匹配不到渠道约束路由。
 	scope := channelScopeFromMetadata(pipe.Metadata, s.requestChannelBaseURLs)
-	route, err := s.DecideRouteScope(model, scope)
+	virtualModel := types.VirtualModelFromMetadata(pipe.Metadata)
+	route, err := s.DecideRouteScope(model, virtualModel, scope)
 	if err != nil {
 		return nil, visionError(err.Error())
 	}

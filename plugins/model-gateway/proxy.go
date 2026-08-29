@@ -1007,7 +1007,7 @@ func (s *Service) tryProxyAggregateFailover(pipe *ProxyPipeline, model string, f
 	if pipe.Metadata == nil {
 		return nil, false
 	}
-	if _, ok := pipe.Metadata["__virtual_model"].(string); !ok {
+	if _, ok := pipe.Metadata[types.MetadataVirtualModel].(string); !ok {
 		return nil, false
 	}
 	out, failErrEvent := s.ctx.Waterfall(ProxyUpstreamFailed, &ProxyFailurePayload{
@@ -1156,7 +1156,7 @@ func (s *Service) proxyBeginLog(r *http.Request, pipe *ProxyPipeline) {
 	if s.routeLog == nil || pipe.Request == nil || isSubRequest(pipe) {
 		return
 	}
-	virtual, _ := pipe.Metadata["__virtual_model"].(string)
+	virtual, _ := pipe.Metadata[types.MetadataVirtualModel].(string)
 	requested := pipe.Request.Model
 	if virtual != "" {
 		requested = virtual
@@ -1195,7 +1195,7 @@ func (s *Service) proxyAttemptLog(r *http.Request, pipe *ProxyPipeline, model, c
 	action := "首次尝试"
 	if mainStep > 0 {
 		action = "切换渠道"
-		if pipe.Metadata["__virtual_model"] != nil {
+		if pipe.Metadata[types.MetadataVirtualModel] != nil {
 			action = "切换模型"
 		}
 	}
@@ -1276,7 +1276,7 @@ func (s *Service) proxyStreamAttempt(r *http.Request, pipe *ProxyPipeline, model
 		pipe.Metadata["__main_route_step"] = mainStep + 1
 		if mainStep > 0 {
 			action = "切换渠道"
-			if pipe.Metadata["__virtual_model"] != nil {
+			if pipe.Metadata[types.MetadataVirtualModel] != nil {
 				action = "切换模型"
 			}
 		}
@@ -1381,7 +1381,7 @@ func (s *Service) proxyRejectedLog(r *http.Request, pipe *ProxyPipeline, err err
 	}
 	virtual := ""
 	if pipe.Metadata != nil {
-		virtual, _ = pipe.Metadata["__virtual_model"].(string)
+		virtual, _ = pipe.Metadata[types.MetadataVirtualModel].(string)
 	}
 	requested := pipe.Request.Model
 	if virtual != "" {

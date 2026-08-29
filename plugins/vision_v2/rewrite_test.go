@@ -348,3 +348,28 @@ func TestURLImageFallback(t *testing.T) {
 		t.Fatalf("URL 图应保留原样但被移除: %s", got)
 	}
 }
+
+
+// TestDecideRouteScopeVirtualModel 验证虚拟模型（聚合）请求：路由配虚拟前缀 `git-*`，
+// 真实模型 gpt-4o 不匹配、但 virtualModel 命中时仍命中；virtualModel 为空时不命中。
+func TestDecideRouteScopeVirtualModel(t *testing.T) {
+	svc := newTestServiceWithRepo(t, []types.CapabilityRoute{{
+		Models:     []string{"git-*"},
+		Capability: capabilityName,
+		Route:      types.RouteProxy,
+		ViaOptions: []types.ViaOption{{ViaModel: "qwen-vl-max"}},
+	}})
+	scope := types.ChannelRequestScope{}
+	// 真实模型 gpt-4o 不匹配 git-*，virtualModel 为空 -> 不命中。
+	if r, _ := svc.DecideRouteScope("gpt-4o", "", scope); r != nil {
+		t.Fatalf("virtualModel 为空不应命中: %+v", r)
+	}
+	// virtualModel=git-xxx 命中。
+	r, err := svc.DecideRouteScope("gpt-4o", "git-xxx", scope)
+	if err != nil || r == nil {
+		t.Fatalf("虚拟模型应命中: %v %v", r, err)
+	}
+	if r.Route != types.RouteProxy {
+		t.Fatalf("应命中 proxy 路由: %+v", r)
+	}
+}

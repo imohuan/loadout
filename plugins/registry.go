@@ -13,12 +13,14 @@ import (
 	fieldfilter "loadout/plugins/field-filter"
 	gatewaykeys "loadout/plugins/gateway-keys"
 	mcphub "loadout/plugins/mcp-hub"
+	messageinject "loadout/plugins/message-inject"
 	modelgateway "loadout/plugins/model-gateway"
 	modelhealth "loadout/plugins/model-health"
 	requestlog "loadout/plugins/request-log"
 	routelog "loadout/plugins/route-log"
 	sensitivefilter "loadout/plugins/sensitive-filter"
 	skills "loadout/plugins/skills"
+	translate "loadout/plugins/translate"
 	unifyai "loadout/plugins/unifyai"
 	// vision "loadout/plugins/vision"
 	visionv2 "loadout/plugins/vision_v2"
@@ -34,6 +36,7 @@ func All() []plugin.Plugin {
 		unifyai.New(),
 		modelgateway.New(),
 		modelhealth.New(),
+		messageinject.New(),
 		routelog.New(),
 		requestlog.New(),
 		aggregate.New(),
@@ -44,5 +47,6 @@ func All() []plugin.Plugin {
 		mcphub.New(),
 		adminapi.New(),
 		volcfreequota.New(),
+		translate.New(),
 	}
 }

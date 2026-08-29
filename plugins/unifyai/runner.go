@@ -67,8 +67,9 @@ func (r *RunRunner) finish(ev RunEvent) {
 // args 为 CLI 参数（由 handler 在启动时通过 setArgs 传入，缺省为 []）。
 func (r *RunRunner) run() {
 	args := r.svc.takePendingArgs()
+	id := r.svc.takePendingID()
 	r.broadcast(RunEvent{Type: "log", Line: "开始执行 unifyai…"})
-	if err := r.svc.Run(args, func(line string) {
+	if err := r.svc.Run(id, args, func(line string) {
 		r.broadcast(RunEvent{Type: "log", Line: line})
 	}); err != nil {
 		r.finish(RunEvent{Type: "error", Data: err.Error()})

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"gopkg.in/yaml.v3"
 
 	"loadout/core/config"
 	"loadout/core/db"
@@ -1130,22 +1131,25 @@ func readSkillBody(path string) string {
 
 // parseSkillDescription 解析 SKILL.md 的 YAML frontmatter，返回 description 字段；无则返回空。
 func parseSkillDescription(body string) string {
+	// 用 YAML 解析 frontmatter，正确处理多行 folded (`>`) / literal (`|`) 描述。
+	// 旧实现只匹配单行 `description:`，遇到 `description: >` 只返回 `>` 一个字符。
 	const sep = "---"
-	lines := strings.Split(body, "\n")
-	if len(lines) == 0 || strings.TrimSpace(lines[0]) != sep {
+	if !strings.HasPrefix(strings.TrimSpace(body), sep) {
 		return ""
 	}
-	for i := 1; i < len(lines); i++ {
-		line := strings.TrimSpace(lines[i])
-		if line == sep {
-			break
-		}
-		if strings.HasPrefix(line, "description:") {
-			v := strings.TrimSpace(strings.TrimPrefix(line, "description:"))
-			return strings.Trim(v, `"'`)
-		}
+	rest := body[strings.Index(body, sep)+len(sep):]
+	endIdx := strings.Index(rest, "\n"+sep)
+	if endIdx < 0 {
+		return ""
 	}
-	return ""
+	block := rest[:endIdx]
+	var meta struct {
+		Description string `yaml:"description"`
+	}
+	if err := yaml.Unmarshal([]byte(block), &meta); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(meta.Description)
 }
 
 // truncateRunes 按字符数截断字符串；未超限返回原串。

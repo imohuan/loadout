@@ -416,8 +416,24 @@ async function send() {
   const selectedChannel = channels.value?.find((item) => item.id === config.channelId)
   const channelName = selectedChannel?.channel_name || selectedChannel?.name || undefined
 
+  // 本次请求的配置快照：写入日志 meta，供「加载」按钮一键回填表单。
   const entry: RouteLog = {
     request_id: `${Date.now()}`,
+    meta: {
+      suffix_mode: suffixMode.value,
+      channel_id: config.channelId,
+      base_url: config.baseUrl,
+      api_key: config.apiKey,
+      sk_key_hash: config.skKeyHash,
+      model: config.model,
+      messages: requestMessages.map((m) => ({
+        role: m.role,
+        content:
+          typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
+      })),
+      draft: draft.value,
+      attachments: attachments.value.map((a) => ({ name: a.name, kind: a.kind })),
+    },
     requested_model: config.model,
     final_model: config.model,
     final_channel_id: config.channelId || undefined,
@@ -534,6 +550,7 @@ async function syncTestLog(entry: RouteLog, summary: RouteLog | null) {
     if (index >= 0) {
       logs.value[index] = {
         ...detail,
+        meta: entry.meta,
         final_channel_name: detail.final_channel_name ?? entry.final_channel_name,
         attempts: detail.attempts?.length
           ? detail.attempts.map((a) => ({
@@ -546,6 +563,7 @@ async function syncTestLog(entry: RouteLog, summary: RouteLog | null) {
     } else {
       const withSnapshot = {
         ...detail,
+        meta: entry.meta,
         final_channel_name: detail.final_channel_name ?? entry.final_channel_name,
         attempts: detail.attempts?.length
           ? detail.attempts.map((a) => ({
@@ -576,6 +594,7 @@ async function expand(log: RouteLog) {
       // 后端 detail 无渠道名称快照时保留本地快照（与 syncTestLog 一致）。
       logs.value[index] = {
         ...detail,
+        meta: log.meta,
         final_channel_name: detail.final_channel_name ?? log.final_channel_name,
         attempts: detail.attempts?.length
           ? detail.attempts.map((a, i) => ({
@@ -647,6 +666,9 @@ async function saveAsTemplate() {
       name,
       text: draft.value,
       attachments: templateAttachments,
+      messages: messages.value
+        .filter((m) => m.content.trim())
+        .map((m) => ({ role: m.role, content: m.content })),
       savedAt: Date.now(),
     }
     await saveTemplate(template)
@@ -664,12 +686,40 @@ async function saveAsTemplate() {
 // 点击模板：清空当前输入区，回填文本 + 附件（Blob 还原成 File 走 addFiles 生成预览）。
 function applyTemplate(template: TestTemplate) {
   clearAttachments()
+  // 老模板可能没有 messages 字段（升级前只存文本+附件）：无则不触碰左侧 Messages。
+  if (template.messages?.length) {
+    messages.value = template.messages.map((m) => ({
+      id: nextMessageId.value++,
+      role: m.role,
+      content: m.content,
+    }))
+  }
   draft.value = template.text
   for (const attachment of template.attachments) {
     const file = new File([attachment.blob], attachment.name, { type: attachment.blob.type })
     addFiles([file])
   }
   templatePopoverOpen.value = false
+}
+
+// 从日志 meta 快照一键回填表单：预设/后缀/baseUrl/apiKey/模型/messages/右侧输入。
+// 与「模板」加载手感一致；老日志无 meta 时忽略（按钮本身只在有 meta 时显示）。
+function loadFromLogMeta(meta: RouteLog['meta']) {
+  if (!meta) return
+  if (meta.channel_id !== undefined) config.channelId = meta.channel_id
+  if (meta.base_url !== undefined) config.baseUrl = meta.base_url
+  if (meta.api_key !== undefined) config.apiKey = meta.api_key
+  if (meta.sk_key_hash !== undefined) config.skKeyHash = meta.sk_key_hash
+  if (meta.model !== undefined) config.model = meta.model
+  if (meta.suffix_mode !== undefined) setSuffixMode(meta.suffix_mode)
+  if (meta.messages?.length) {
+    messages.value = meta.messages.map((m) => ({
+      id: nextMessageId.value++,
+      role: m.role as MessageRole,
+      content: m.content,
+    }))
+  }
+  if (meta.draft !== undefined) draft.value = meta.draft
 }
 
 async function deleteTemplateItem(id: string) {
@@ -694,7 +744,7 @@ onBeforeUnmount(() => {
       description="后台代理上游 /models 与 /chat/completions，规避跨域；测试请求不写转发日志，访问摘要随响应回带，下方面板直接展示。"
     />
 
-    <div class="grid gap-6 md:grid-cols-[minmax(22rem,5fr)_minmax(0,7fr)]">
+    <div class="grid gap-6 lg:grid-cols-[minmax(22rem,5fr)_minmax(0,7fr)]">
       <section class="min-w-0 space-y-4">
         <Card class="rounded-md">
           <CardHeader class="pb-4">
@@ -1089,7 +1139,10 @@ onBeforeUnmount(() => {
           :loading-detail="loadingDetail"
           :collapsible="false"
           :live-progress="false"
+          :show-full-log="false"
+          :show-load-action="true"
           @expand="expand"
+          @load="(log) => loadFromLogMeta(log.meta)"
         >
           <template #actions>
             <Button

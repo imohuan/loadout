@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { toast } from 'vue-sonner'
+import { startTask, registerTask, clearTask } from '@/composables/useTask'
+import { useProcessStore } from '@/stores/processes'
 import {
   RiAddLine,
   RiArrowDownSLine,
@@ -21,7 +23,6 @@ import { useConfirm } from '@/composables/useConfirm'
 import PlatformCard from '@/components/unifyai/PlatformCard.vue'
 import ExcludeMatrix from '@/components/unifyai/ExcludeMatrix.vue'
 import CommandPreview from '@/components/unifyai/CommandPreview.vue'
-import StreamLogPanel, { type StreamStatus } from '@/components/StreamLogPanel.vue'
 import {
   DEFAULT_SOURCE,
   IMPORT_MCP_ARGS,
@@ -727,7 +728,7 @@ const commandOpts = computed(() => ({
   dryRun: false,
   source: sourcePath.value,
   verbose: verbose.value,
-  // 「强制视觉」开关同时影响命令预览（command）和实际执行（streamUrl）——两路都走同一 buildArgs。
+  // 「强制视觉」开关同时影响命令预览（command）和实际执行（execute）——两路都走同一 buildArgs。
   enableVision: enableVision.value,
 }))
 
@@ -737,27 +738,45 @@ const command = computed(() => buildCommand(commandOpts.value))
 /** sync.json 配置内容预览：始终显示完整配置（全量 + 矩阵合并），实时反映所有 UI 改动 */
 const configPreview = computed(() => buildSyncConfig())
 
-// ---------- 执行（真实 unifyai CLI，经后端 SSE 流式日志） ----------
-const runTrigger = ref(0)
-const runStatus = ref<StreamStatus>('idle')
-const runExitCode = ref<number | null>(null)
+// ---------- 执行（真实 unifyai CLI，经 POST /api/unifyai/run 后台启动，日志走 ProcessFooter） ----------
+const runStatus = ref(false)
 const dryRunMode = ref(false)
 /** 自定义 CLI 参数（矩阵同步 / 导入用）；null = 用 buildArgs 默认命令 */
 const customArgs = ref<string[] | null>(null)
+/** 当前执行任务的 task id（unifyai 单实例，同一时间只有一个任务）。 */
+const currentTaskId = ref<string | null>(null)
 
-/** SSE 端点：args 数组 JSON 编码进查询参数，连接即触发任务 */
-const streamUrl = computed(() => {
-  const args = customArgs.value ?? buildArgs({ ...commandOpts.value, dryRun: dryRunMode.value })
-  return `/api/unifyai/stream?args=${encodeURIComponent(JSON.stringify(args))}`
-})
+/** 启动 unifyai 任务（后台执行，日志进全局进程面板 ProcessFooter）。返回终态或运行中。 */
+async function launchRun(id: string, args: string[]): Promise<'started' | 'done' | 'error'> {
+  const res = await fetch('/api/unifyai/run', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ args, id }),
+  })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  const body = await res.json()
+  if (body.error) return 'error'
+  return body.done ? 'done' : 'started'
+}
 
-/** 用指定参数启动任务（全量同步 / 矩阵同步 / 导入共用） */
-/**
- * 用指定参数启动任务（全量同步 / 矩阵同步 / 导入共用）。
+/** 任务结束处理（成功/失败通用，清按钮加载态 + 收尾）。 */
+function handleRunFinished(success: boolean, err?: unknown) {
+  runStatus.value = false
+  currentTaskId.value = null
+  if (success) {
+    toast.success(dryRunMode.value ? '预览完成（dry-run，未写入文件）' : '同步完成')
+    // 导入完成 → 刷新矩阵（源 mcp.json 已更新）
+    if (customArgs.value?.[0] === '--import-mcp') reloadMatrix()
+  } else {
+    toast.error(err ? String(err) : '命令执行失败', { description: '请查看全局进程面板日志' })
+  }
+}
+
+/** 用指定参数启动任务（全量同步 / 矩阵同步 / 导入共用）。
  * 传 config 时先保存到 sync.json（--config 引用的唯一来源）再执行。
- */
+ * 启动后自动弹出日志对话框查看实时输出（日志在全局进程面板同步可见）。 */
 async function executeWithArgs(args: string[], dryRun = false, config?: unknown) {
-  if (runStatus.value === 'running') return
+  if (runStatus.value) return
   if (config !== undefined) {
     try {
       await saveSyncConfig(config)
@@ -766,10 +785,37 @@ async function executeWithArgs(args: string[], dryRun = false, config?: unknown)
       return
     }
   }
+  const id = `unifyai:${Date.now()}`
+  const processStore = useProcessStore()
   customArgs.value = args
   dryRunMode.value = dryRun
-  runExitCode.value = null
-  runTrigger.value++ // 触发 StreamLogPanel 连接 SSE（后端自动启动任务）
+  runStatus.value = true
+  currentTaskId.value = id
+  // 注册收尾：后台进程结束（done/error）由 useTask 监听器统一回调。
+  registerTask(id, {
+    kind: 'unifyai',
+    onDone: () => handleRunFinished(true),
+    onError: (e) => handleRunFinished(false, e),
+  })
+  processStore.openLog(id) // 自动弹出日志对话框查看任务输出
+  try {
+    const result = await startTask({
+      id,
+      kind: 'unifyai',
+      run: () => launchRun(id, args),
+    })
+    // POST 返回终态（任务瞬间完成）：直接收尾并清掉注册，避免监听器重复回调；否则等 SSE 监听器。
+    if (result === 'done') {
+      clearTask(id)
+      handleRunFinished(true)
+    } else if (result === 'error') {
+      clearTask(id)
+      handleRunFinished(false)
+    }
+  } catch (err) {
+    clearTask(id)
+    handleRunFinished(false, err)
+  }
 }
 
 /** 构造完整 sync.json 配置（仅 CLI 执行所需字段：mode/platforms/mcp/enableVision/source） */
@@ -793,21 +839,6 @@ function buildSyncConfig() {
 /** 全量同步（统一入口）：先落盘完整 sync.json（含矩阵勾选，CLI 自动分发矩阵/全量）再执行 */
 function execute(dryRun: boolean) {
   executeWithArgs(buildArgs({ ...commandOpts.value, dryRun }), dryRun, buildSyncConfig())
-}
-
-function onRunDone(exitCode: string) {
-  runExitCode.value = Number(exitCode) || 0
-  if (runExitCode.value === 0) {
-    toast.success(dryRunMode.value ? '预览完成（dry-run，未写入文件）' : '同步完成')
-    // 导入完成 → 刷新矩阵（源 mcp.json 已更新）
-    if (customArgs.value?.[0] === '--import-mcp') reloadMatrix()
-  } else {
-    toast.error(`命令退出码 ${runExitCode.value}，请查看日志`)
-  }
-}
-
-function onRunError(message: string) {
-  toast.error(message || '命令执行失败')
 }
 
 // ---------- 执行前确认弹窗（文档 §10.3） ----------
@@ -843,7 +874,7 @@ function startSync() {
 
 /** 导入各平台 MCP 配置到源 mcp.json（--import-mcp），完成后自动刷新矩阵 */
 function startImportMcp() {
-  if (runStatus.value === 'running') return
+  if (runStatus.value) return
   executeWithArgs(IMPORT_MCP_ARGS, false)
 }
 
@@ -865,7 +896,7 @@ async function handleUpdateMetadata() {
   if (metadataUpdating.value) return
   metadataUpdating.value = true
   try {
-    // 通过后端桥接启动 unifyai --list metadata（非 JSON 模式即强制刷新缓存；SSE 日志走 /api/unifyai/stream）。
+    // 通过后端桥接启动 unifyai --list metadata（非 JSON 模式即强制刷新缓存；日志走全局进程面板）。
     const res = await fetch('/api/unifyai/run', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -996,8 +1027,7 @@ onMounted(async () => {
       </CardHeader>
       <CardContent>
         <div
-          class="grid grid-cols-2 gap-2 md:grid-cols-3"
-          style="grid-template-columns: repeat(6, minmax(0, 1fr))"
+          class="grid grid-cols-2 gap-2 md:grid-cols-4! lg:grid-cols-6!"
         >
           <PlatformCard
             v-for="platform in platforms"
@@ -1025,7 +1055,7 @@ onMounted(async () => {
           <Button
             variant="outline"
             size="sm"
-            :disabled="runStatus === 'running'"
+            :disabled="runStatus"
             @click="startImportMcp"
           >
             <RiImportLine size="16" />导入各平台配置到源
@@ -1098,55 +1128,19 @@ onMounted(async () => {
           </div>
         </div>
         <div class="flex flex-wrap justify-end gap-2">
-          <Button variant="outline" :disabled="runStatus === 'running'" @click="execute(true)">
-            <RiPlayLine size="16" />预览（dry-run）
-          </Button>
-          <Button :disabled="runStatus === 'running'" @click="startSync">
-            <RiLoader4Line v-if="runStatus === 'running'" size="16" class="animate-spin" />
+          <Button variant="outline" :disabled="runStatus" @click="execute(true)">
+            <RiLoader4Line v-if="runStatus && dryRunMode" size="16" class="animate-spin" />
             <RiPlayLine v-else size="16" />
-            {{ runStatus === 'running' ? '执行中...' : '开始同步' }}
+            {{ runStatus && dryRunMode ? '预览中…' : '预览（dry-run）' }}
+          </Button>
+          <Button :disabled="runStatus" @click="startSync">
+            <RiLoader4Line v-if="runStatus && !dryRunMode" size="16" class="animate-spin" />
+            <RiPlayLine v-else size="16" />
+            {{ runStatus && !dryRunMode ? '同步中…' : '开始同步' }}
           </Button>
         </div>
       </CardContent>
     </Card>
-
-    <!-- ⑥ 执行日志（真实 unifyai 输出，SSE 流式）。
-         ⚠ 不要加 v-if="runStatus !== 'idle'"：该组件必须先实例化才能 watch trigger、
-         才能 emit('update:status','running') 把 runStatus 拉离 idle（v-model 闭环要求）。
-         空态文案由组件内部 <div v-if="!logLines.length"> 承担，与 SkillsView 用法一致。
-         执行指标（结果/退出码/模式）通过 #header-extra 嵌到卡片头部右侧，不再用单独卡片。 -->
-    <StreamLogPanel
-      :stream-url="streamUrl"
-      :trigger="runTrigger"
-      v-model:status="runStatus"
-      :empty-text="'正在连接执行任务…'"
-      @done="onRunDone"
-      @error="onRunError"
-    >
-      <template #header-extra>
-        <div
-          v-if="runStatus === 'done' || runStatus === 'error'"
-          class="flex flex-wrap items-center gap-x-3 gap-y-0.5"
-        >
-          <span class="flex items-baseline gap-1">
-            <span class="text-muted-foreground">执行结果</span>
-            <span
-              class="font-semibold"
-              :class="runStatus === 'done' ? 'text-emerald-600' : 'text-destructive'"
-              >{{ runStatus === 'done' ? '成功' : '失败' }}</span
-            >
-          </span>
-          <span class="flex items-baseline gap-1">
-            <span class="text-muted-foreground">退出码</span>
-            <span class="font-mono font-semibold">{{ runExitCode ?? '-' }}</span>
-          </span>
-          <span class="flex items-baseline gap-1">
-            <span class="text-muted-foreground">模式</span>
-            <span class="font-semibold">{{ dryRunMode ? 'dry-run 预览' : '实际同步' }}</span>
-          </span>
-        </div>
-      </template>
-    </StreamLogPanel>
     </template>
 
     <!-- 添加 / 导入 MCP 工具弹窗 -->

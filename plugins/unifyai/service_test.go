@@ -58,7 +58,7 @@ func TestRunStreamsLogs(t *testing.T) {
 	defer func() { procreg.SetRunFn(orig) }()
 	svc := NewService(slog.Default())
 	var got []string
-	if err := svc.Run([]string{"--dry-run"}, func(line string) { got = append(got, line) }); err != nil {
+	if err := svc.Run("", []string{"--dry-run"}, func(line string) { got = append(got, line) }); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if len(got) != 3 { // 执行: 前缀 + 2 行
@@ -80,7 +80,7 @@ func TestRunErrorPropagates(t *testing.T) {
 	})
 	defer func() { procreg.SetRunFn(orig) }()
 	svc := NewService(slog.Default())
-	err := svc.Run(nil, nil)
+	err := svc.Run("", nil, nil)
 	if err == nil {
 		t.Fatal("Run 应返回错误")
 	}
@@ -94,42 +94,6 @@ var errFake = errFakeType{}
 type errFakeType struct{}
 
 func (errFakeType) Error() string { return "fake command failed" }
-
-// TestFindNpxFallback 验证 PATH 不完整(LookPath 失败)时,
-// 能按常见安装位置兜底找到 npx 完整路径(修复后台服务找不到 npx 的问题)。
-func TestFindNpxFallback(t *testing.T) {
-	old := npxCandidates
-	defer func() { npxCandidates = old }()
-	dir := t.TempDir()
-	missing := filepath.Join(dir, "missing", "npx")
-	good := filepath.Join(dir, "npx")
-	if err := os.WriteFile(good, []byte("#!/bin/sh\n"), 0o755); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-	npxCandidates = func() []string { return []string{missing, good} }
-	if got := findNpxFallback(); got != good {
-		t.Fatalf("findNpxFallback = %q, want %q", got, good)
-	}
-}
-
-// TestEnvWithBinDir 验证 PATH 补充:命令所在目录放到最前,
-// 保证 npx 子进程能找到同目录的 node(后台服务 PATH 不完整时)。
-func TestEnvWithBinDir(t *testing.T) {
-	env := envWithBinDir(filepath.Join(string(filepath.Separator), "home", "u", ".nvm", "versions", "node", "v20.10.0", "bin", "npx"))
-	wantPrefix := filepath.Join(string(filepath.Separator), "home", "u", ".nvm", "versions", "node", "v20.10.0", "bin") + string(os.PathListSeparator)
-	found := false
-	for _, kv := range env {
-		if i := strings.IndexByte(kv, '='); i >= 0 && strings.EqualFold(kv[:i], "PATH") {
-			if !strings.HasPrefix(strings.TrimPrefix(kv, kv[:i+1]), wantPrefix) {
-				t.Errorf("PATH 应以命令目录开头, got %q", kv)
-			}
-			found = true
-		}
-	}
-	if !found {
-		t.Error("env 中应包含 PATH 条目")
-	}
-}
 
 // TestRunnerSingleInstanceAndBroadcast 验证单实例 + 多订阅者广播 + 终态关闭。
 func TestRunnerSingleInstanceAndBroadcast(t *testing.T) {

@@ -21,11 +21,13 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"loadout/core/auth"
 	"loadout/core/config"
 	"loadout/core/db"
+	"loadout/core/deps"
 	"loadout/core/mcpkit"
 	"loadout/core/plugin"
 	"loadout/core/store"
@@ -56,6 +58,9 @@ type Service struct {
 	sqlDB          *sql.DB                     // 共享 SQLite 连接（route-log 统计直接查询 route_requests 用）
 	pluginCount    int                         // 已装配的插件总数（由 server 装配层注入，概览页展示）
 	checksProvider func() []plugin.PluginCheck // 插件自检结果提供者（由 server 装配层注入）
+	depsMu         sync.Mutex                  // 保护 depsCache / depsChecking
+	depsCache      []deps.Status               // 依赖检查结果缓存（启动时后台自动刷新）
+	depsChecking   bool                        // 是否正在后台检查
 }
 
 // NewService 组装管理后台服务。lg 为 nil 时回落到 slog.Default()；hub 可为 nil（测试）。
@@ -165,6 +170,7 @@ func (s *Service) Routes() []plugin.RouteSpec {
 		{Method: http.MethodPost, Pattern: "POST /api/skills/install", Auth: plugin.AuthSession, Handler: s.session(s.handleSkillInstall)},
 		{Method: http.MethodPost, Pattern: "POST /api/skills/import-zip", Auth: plugin.AuthSession, Handler: s.session(s.handleSkillImportZip)},
 		{Method: http.MethodDelete, Pattern: "DELETE /api/skills/{name}", Auth: plugin.AuthSession, Handler: s.session(s.handleSkillDelete)},
+		{Method: http.MethodDelete, Pattern: "DELETE /api/skills/{name}/source", Auth: plugin.AuthSession, Handler: s.session(s.handleSkillUnregister)},
 		{Method: http.MethodGet, Pattern: "GET /api/skills/status", Auth: plugin.AuthSession, Handler: s.session(s.handleSkillsStatus)},
 		{Method: http.MethodPost, Pattern: "POST /api/skills/sync", Auth: plugin.AuthSession, Handler: s.session(s.handleSkillSync)},
 		{Method: http.MethodPost, Pattern: "POST /api/skills/check-updates", Auth: plugin.AuthSession, Handler: s.session(s.handleSkillCheckUpdates)},
@@ -176,7 +182,7 @@ func (s *Service) Routes() []plugin.RouteSpec {
 		{Method: http.MethodPost, Pattern: "POST /api/presets", Auth: plugin.AuthSession, Handler: s.session(s.handlePresetCreate)},
 		{Method: http.MethodDelete, Pattern: "DELETE /api/presets", Auth: plugin.AuthSession, Handler: s.session(s.handlePresetDelete)},
 		{Method: http.MethodPost, Pattern: "POST /api/presets/apply", Auth: plugin.AuthSession, Handler: s.session(s.handlePresetApply)},
-		
+
 		// 全局进程（统一命令执行器）
 		{Method: http.MethodGet, Pattern: "GET /api/processes/stream", Auth: plugin.AuthSession, Handler: s.session(s.handleProcessesStream)},
 		{Method: http.MethodPost, Pattern: "POST /api/processes/{id}/kill", Auth: plugin.AuthSession, Handler: s.session(s.handleProcessKill)},
@@ -223,6 +229,9 @@ func (s *Service) Routes() []plugin.RouteSpec {
 		// 设置
 		{Method: http.MethodGet, Pattern: "GET /api/settings", Auth: plugin.AuthSession, Handler: s.session(s.handleSettingsGet)},
 		{Method: http.MethodPut, Pattern: "PUT /api/settings", Auth: plugin.AuthSession, Handler: s.session(s.handleSettingsPut)},
+		{Method: http.MethodGet, Pattern: "GET /api/deps/status", Auth: plugin.AuthSession, Handler: s.session(s.handleDepsStatus)},
+		{Method: http.MethodPost, Pattern: "POST /api/deps/refresh", Auth: plugin.AuthSession, Handler: s.session(s.handleDepsRefresh)},
+		{Method: http.MethodPost, Pattern: "POST /api/deps/install", Auth: plugin.AuthSession, Handler: s.session(s.handleDepsInstall)},
 		{Method: http.MethodPost, Pattern: "POST /api/change-password", Auth: plugin.AuthSession, Handler: s.session(s.handleChangePassword)},
 
 		// 配置导入导出（设置页）
@@ -1905,9 +1914,21 @@ func (s *Service) handleSkillRegister(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-// handleSkillDelete 按名字从技能仓库移除一个技能。
+// handleSkillDelete 删除本地技能：移除通用目标目录（targetDir，~/.agents/skills）里
+// 对应目录（agent 实际使用的那份副本）并移除登记。
 func (s *Service) handleSkillDelete(w http.ResponseWriter, r *http.Request) {
 	if err := s.skill.Remove(r.PathValue("name")); err != nil {
+		s.writeServerError(w, err)
+		return
+	}
+	s.invalidateHub()
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// handleSkillUnregister 删除技能源：移除技能库（repoDir，~/.loadout/skills）里对应目录
+// （技能源实际所在的文件夹）并移除登记。
+func (s *Service) handleSkillUnregister(w http.ResponseWriter, r *http.Request) {
+	if err := s.skill.Unregister(r.PathValue("name")); err != nil {
 		s.writeServerError(w, err)
 		return
 	}
@@ -2056,6 +2077,11 @@ func (s *Service) handleSkillUpdateStatus(w http.ResponseWriter, r *http.Request
 
 // GET /api/skills/update-stream 的 SSE 流实时推送。返回更新列表（若已完成）。
 func (s *Service) handleSkillCheckUpdates(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ID string `json:"id"`
+	}
+	_ = decodeJSON(w, r, &req) // id 可选；body 为空/非法时忽略
+	s.skill.SetUpdateID(req.ID)
 	ch, err := s.skill.SubscribeUpdate()
 	if err != nil {
 		s.writeServerError(w, err)
@@ -2171,11 +2197,13 @@ func (s *Service) handleUnifyaiOpenCodexModels(w http.ResponseWriter, r *http.Re
 func (s *Service) handleUnifyaiRun(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Args []string `json:"args"`
+		ID   string   `json:"id"`
 	}
 	if !decodeJSON(w, r, &req) {
 		return
 	}
 	s.unify.SetArgs(req.Args)
+	s.unify.SetID(req.ID)
 	ch, err := s.unify.Subscribe()
 	if err != nil {
 		s.writeServerError(w, err)
@@ -2468,10 +2496,87 @@ func (s *Service) handleSettingsPut(w http.ResponseWriter, r *http.Request) {
 		s.writeServerError(w, err)
 		return
 	}
+	deps.UseGlobal = req.UseGlobalCmd // 开关即时生效（unifyai/skills 后续执行按此选命令）
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 // handleChangePassword 修改管理员密码（单账号，固定用户名 admin）。
+
+// ===== 依赖更新检查（unifyai / skills 全局包） =====
+
+// depNames 返回后台监控的依赖库列表。
+func depNames() []string { return []string{"unifyai", "skills"} }
+
+// syncUseGlobal 把设置的全局指令开关同步到 deps 包（供 unifyai/skills 执行时选命令）。
+func (s *Service) syncUseGlobal(ctx context.Context) {
+	settings, err := s.readSettings(ctx)
+	if err == nil {
+		deps.UseGlobal = settings.UseGlobalCmd
+	}
+}
+
+// RefreshDeps 后台检查依赖状态并更新缓存（并发安全，单实例执行）。
+func (s *Service) RefreshDeps() {
+	s.depsMu.Lock()
+	if s.depsChecking {
+		s.depsMu.Unlock()
+		return
+	}
+	s.depsChecking = true
+	s.depsMu.Unlock()
+
+	statuses := deps.CheckAll(depNames())
+
+	s.depsMu.Lock()
+	s.depsCache = statuses
+	s.depsChecking = false
+	s.depsMu.Unlock()
+}
+
+// handleDepsStatus 返回依赖检查缓存结果；缓存为空（未检查过）时立即触发一次。
+func (s *Service) handleDepsStatus(w http.ResponseWriter, r *http.Request) {
+	s.depsMu.Lock()
+	cache := make([]deps.Status, len(s.depsCache))
+	copy(cache, s.depsCache)
+	checking := s.depsChecking
+	s.depsMu.Unlock()
+
+	if len(cache) == 0 && !checking {
+		go s.RefreshDeps()
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": cache, "checking": checking})
+}
+
+// handleDepsRefresh 手动触发重新检查依赖状态。
+func (s *Service) handleDepsRefresh(w http.ResponseWriter, r *http.Request) {
+	// 同步查询：本次请求直接查完并返回最新状态，前端拿到即可展示，无需二次读取缓存。
+	statuses := deps.CheckAll(depNames())
+	s.depsMu.Lock()
+	s.depsCache = statuses
+	s.depsChecking = false
+	s.depsMu.Unlock()
+	writeJSON(w, http.StatusOK, map[string]any{"items": statuses, "checking": false})
+}
+
+// handleDepsInstall 安装/更新全局包（npm install -g <name>@latest，经 procreg 统一执行）。
+func (s *Service) handleDepsInstall(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name string `json:"name"`
+		ID   string `json:"id"`
+	}
+	if !decodeJSON(w, r, &req) || strings.TrimSpace(req.Name) == "" {
+		writeError(w, http.StatusBadRequest, "缺少库名 name")
+		return
+	}
+	name := strings.TrimSpace(req.Name)
+	go func() {
+		if err := deps.Install(name, req.ID, nil); err != nil {
+			s.lg.Warn("deps: 安装失败", "name", name, "err", err)
+		}
+	}()
+	writeJSON(w, http.StatusOK, map[string]any{"started": true, "id": req.ID})
+}
+
 func (s *Service) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Old string `json:"old"`

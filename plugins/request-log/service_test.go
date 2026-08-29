@@ -15,6 +15,7 @@ import (
 	"loadout/core/store"
 	modelgateway "loadout/plugins/model-gateway"
 	"loadout/plugins/types"
+	routetest "loadout/testkit/routetest"
 )
 
 // testService 种子能力路由（JSON 文件模式，不依赖 repo），返回 Service。
@@ -32,9 +33,15 @@ func testService(t *testing.T, routes []types.CapabilityRoute) *Service {
 	return NewService(st, slog.New(slog.DiscardHandler), nil, nil)
 }
 
+
+// scopeFor 构造单渠道 scope（复用共享 routetest.ScopeWithChannelID）。
+func scopeFor(svc *Service, channelID string) types.ChannelRequestScope {
+	return routetest.ScopeWithChannelID(channelID, svc.requestChannelBaseURLs(channelID))
+}
+
 func TestDecideRouteMiss(t *testing.T) {
 	svc := testService(t, nil)
-	route, err := svc.DecideRoute("gpt-4o", "")
+	route, err := routetest.FirstRoute(svc.DecideRoutesScope("gpt-4o", scopeFor(svc, "")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +54,7 @@ func TestDecideRouteNativeStops(t *testing.T) {
 	svc := testService(t, []types.CapabilityRoute{
 		{Models: []string{"*"}, Capability: capabilityName, Route: types.RouteNative},
 	})
-	route, err := svc.DecideRoute("gpt-4o", "")
+	route, err := routetest.FirstRoute(svc.DecideRoutesScope("gpt-4o", scopeFor(svc, "")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +67,7 @@ func TestDecideRouteProxyWildcardModel(t *testing.T) {
 	svc := testService(t, []types.CapabilityRoute{
 		{Models: []string{"*"}, Capability: capabilityName, Route: types.RouteProxy},
 	})
-	route, err := svc.DecideRoute("gpt-4o", "")
+	route, err := routetest.FirstRoute(svc.DecideRoutesScope("gpt-4o", scopeFor(svc, "")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +81,7 @@ func TestDecideRouteChannelScoped(t *testing.T) {
 		{Models: []string{"*"}, Capability: capabilityName, Route: types.RouteProxy, ChannelIDs: []string{"c1"}},
 	})
 	// 命中绑定渠道
-	route, err := svc.DecideRoute("gpt-4o", "c1")
+	route, err := routetest.FirstRoute(svc.DecideRoutesScope("gpt-4o", scopeFor(svc, "c1")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +89,7 @@ func TestDecideRouteChannelScoped(t *testing.T) {
 		t.Fatal("channel c1 should match")
 	}
 	// 未命中其他渠道
-	route, err = svc.DecideRoute("gpt-4o", "c2")
+	route, err = routetest.FirstRoute(svc.DecideRoutesScope("gpt-4o", scopeFor(svc, "c2")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +103,7 @@ func TestDecideRouteUnboundChannelMatchesAny(t *testing.T) {
 	svc := testService(t, []types.CapabilityRoute{
 		{Models: []string{"*"}, Capability: capabilityName, Route: types.RouteProxy},
 	})
-	route, err := svc.DecideRoute("gpt-4o", "c2")
+	route, err := routetest.FirstRoute(svc.DecideRoutesScope("gpt-4o", scopeFor(svc, "c2")))
 	if err != nil {
 		t.Fatal(err)
 	}

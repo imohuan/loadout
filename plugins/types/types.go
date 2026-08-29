@@ -24,6 +24,12 @@ const (
 	FileModelHealth      = "model_health.json"      // 模型健康状态
 )
 
+// MetadataVirtualModel pipe.Metadata 中"聚合（虚拟）模型名"的键。
+// 聚合插件在 ProxyBeforeUpstream 把请求 model 改写为真实目标模型名时，将原虚拟名
+// 写入此键保留；能力插件（message-inject/sensitive/field/vision 等）在改写后的
+// ProxyBeforeAttempt 做路由选择时，用 MatchModelsEx 让虚拟前缀路由（如 `git-*`）命中。
+const MetadataVirtualModel = "__virtual_model"
+
 // ============ 5.1 管理员账号 ============
 
 // User 管理员账号（单账号）。
@@ -104,11 +110,25 @@ const (
 //   - proxy 路由收集全部匹配项（叠加规则，如字段过滤多条规则合并），返回数组。
 //
 // 返回 nil = 无匹配（调用方按透传处理）。读表/解析失败由调用方自行 fail-open。
+//
+// 本函数按真实模型名匹配（虚拟模型名传空）；需要按虚拟模型（聚合模型）名匹配的调用方
+// 请用 SelectCapabilityRoutesEx（见下），避免各插件选择策略分叉。
 func SelectCapabilityRoutes(routes []CapabilityRoute, capability, model string, scope ChannelRequestScope) []*CapabilityRoute {
+	return SelectCapabilityRoutesEx(routes, capability, model, "", scope)
+}
+
+// SelectCapabilityRoutesEx 同 SelectCapabilityRoutes，但额外支持按虚拟模型名匹配。
+// virtualModel 为请求的聚合（虚拟）模型名（pipe.Metadata["__virtual_model"]，可能为空）。
+// 模型命中判定用 MatchModelsEx：真实模型名或虚拟模型名任一命中配置列表即匹配。
+// 这样路由表里用虚拟模型前缀（如 `git-*`）配置的能力，能命中经过聚合改写后的请求
+// （聚合会在 ProxyBeforeUpstream 把真实模型名写回 Request.Model，同时保留虚拟名在
+// Metadata），避免「虚拟名只在入口可见、能力安检在改写后执行」导致的路由失配。
+// 其余语义（native 短路 / proxy 叠加 / 渠道约束）与 SelectCapabilityRoutes 完全一致。
+func SelectCapabilityRoutesEx(routes []CapabilityRoute, capability, model, virtualModel string, scope ChannelRequestScope) []*CapabilityRoute {
 	var matched []*CapabilityRoute
 	for i := range routes {
 		if routes[i].Capability != capability ||
-			!MatchModels(routes[i].Models, model) ||
+			!MatchModelsEx(routes[i].Models, model, virtualModel) ||
 			!MatchChannelScopeEx(routes[i].ChannelIDs, routes[i].ChannelBaseURLs, scope) {
 			continue
 		}
@@ -138,6 +158,30 @@ func MatchModels(models []string, model string) bool {
 		}
 	}
 	return false
+}
+
+// MatchModelsEx 判断真实模型名 model 或虚拟模型名 virtualModel 是否命中目标模型列表。
+// 虚拟模型名（聚合模型名）为空时退化为一元匹配（等价 MatchModels(model)）。
+// 场景：聚合模型请求在入口被改写为真实模型名，虚拟名保留在 Metadata——能力路由用
+// 虚拟名（如 `git-*`）配置时，靠本函数让改写过后的请求仍能命中。
+func MatchModelsEx(models []string, model, virtualModel string) bool {
+	if MatchModels(models, model) {
+		return true
+	}
+	if virtualModel != "" {
+		return MatchModels(models, virtualModel)
+	}
+	return false
+}
+
+// VirtualModelFromMetadata 从 pipe.Metadata 读取聚合（虚拟）模型名；未设置或非字符串返回空串。
+// 各能力插件统一用它取虚拟名，避免重复的裸字符串索引与类型断言。metadata 为 nil 时安全返回空串。
+func VirtualModelFromMetadata(md map[string]any) string {
+	if md == nil {
+		return ""
+	}
+	v, _ := md[MetadataVirtualModel].(string)
+	return v
 }
 
 // MatchChannel 判断 channelID 是否命中渠道约束列表：
@@ -340,6 +384,26 @@ type SensitiveReplacement struct {
 	Regex bool   `json:"regex,omitempty"` // true = from 按正则匹配
 }
 
+// 消息注入位置常量（message_inject 能力用）。
+const (
+	// InjectPrepend 新增一条消息作为 messages 数组的第一项。
+	InjectPrepend = "prepend"
+	// InjectAppend 新增一条消息作为 messages 数组的最后一项。
+	InjectAppend = "append"
+	// InjectPrependFirst 把内容追加到「原始第一条」消息 content 的开头。
+	InjectPrependFirst = "prepend_first"
+	// InjectAppendFirst 把内容追加到「原始第一条」消息 content 的结尾。
+	InjectAppendFirst = "append_first"
+)
+
+// MessageInjection 消息注入配置（message_inject 能力用）：往请求 messages 注入自定义内容。
+// 一条配置 = 一段内容 + 注入位置；多条按配置顺序依次应用。
+type MessageInjection struct {
+	Role     string `json:"role"`               // 注入消息的 role：system / user / assistant
+	Content  string `json:"content"`            // 注入的文本内容
+	Position string `json:"position,omitempty"` // 注入位置：prepend / append / prepend_first / append_first
+}
+
 // FieldRules 字段过滤规则（field_filter 能力用；nil = 未配置，原样透传）。
 // 字段路径支持顶层 key 与点路径嵌套（如 a.b.c）；Keep 非空时走白名单
 // （只保留，忽略同方向 Strip）；均无命中时原字节透传。
@@ -363,6 +427,7 @@ type CapabilityRoute struct {
 	ViaOptions      []ViaOption            `json:"via_options,omitempty"`        // proxy 时的视觉候选，顺序即兜底优先级（vision 用）
 	Replacements    []SensitiveReplacement `json:"replacements,omitempty"`       // proxy 时的敏感词替换规则，顺序即替换顺序（sensitive_filter 用）
 	FieldRules      *FieldRules            `json:"field_rules,omitempty"`        // 字段过滤规则（field_filter 用；nil=未配置）
+	Injections      []MessageInjection     `json:"injections,omitempty"`         // 消息注入配置，顺序即注入顺序（message_inject 用）
 }
 
 // ============ 5.12 聚合模型（轮询） ============
@@ -479,6 +544,7 @@ type Settings struct {
 	ActivePresetTarget  string   `json:"active_preset_target"`            // 兼容旧字段：当前预设的目标平台（空=通用，多平台时逗号连接）
 	ActivePresetTargets []string `json:"active_preset_targets,omitempty"` // 当前预设的目标平台列表（空=通用）
 	DefaultModel        string   `json:"default_model"`                   // 默认模型
+	UseGlobalCmd        bool     `json:"use_global_cmd"`                  // 依赖执行优先用全局指令（true），否则用 npx（false）
 }
 
 // ============ 5.12 模型健康状态（aggregate 插件） ============

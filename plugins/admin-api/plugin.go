@@ -8,6 +8,7 @@
 package adminapi
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"log/slog"
@@ -91,6 +92,12 @@ func (p *adminAPI) Apply(ctx plugin.Context) error {
 
 	svc := NewService(st, lg, auth, keys, skill, hub, unify)
 	svc.SetRoutingServices(database, routing, health, routeLog)
+	// 依赖状态：先同步全局指令开关，再后台自动检查一次（unifyai / skills）。
+	svc.syncUseGlobal(context.Background())
+	plugin.RunBackground("deps-startup-check", func() error {
+		svc.RefreshDeps()
+		return nil
+	})
 	ctx.Set("admin-api", svc)
 	for _, spec := range svc.Routes() {
 		ctx.RegisterRoute(spec)

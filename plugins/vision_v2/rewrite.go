@@ -119,7 +119,8 @@ func (s *Service) HandleProxyBeforeUpstream(payload any) (any, error) {
 	}
 	// 路由判断（复制旧 DecideRouteScope 语义）
 	scope := channelScopeFromMetadata(pipe.Metadata, s.requestChannelBaseURLs)
-	route, err := s.DecideRouteScope(pipe.Request.Model, scope)
+	virtualModel := types.VirtualModelFromMetadata(pipe.Metadata)
+	route, err := s.DecideRouteScope(pipe.Request.Model, virtualModel, scope)
 	if err != nil {
 		return nil, visionError(err.Error())
 	}

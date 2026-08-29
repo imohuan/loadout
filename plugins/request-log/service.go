@@ -79,23 +79,6 @@ func NewService(st *store.Store, lg *slog.Logger, reqDB, database *sql.DB) *Serv
 // 同时用于能力路由查询与 route_requests.request_log_id 的 UPDATE（同一 loadout.db）。
 func (s *Service) SetRepository(repo *db.Repository) { s.repo = repo }
 
-// DecideRoute 查能力路由表：model + channelID 的 request_log 能力。
-// 未命中返回 nil（视为 native 透传）。channelID 空 = 全渠道命中（与 sensitive-filter 一致）。
-func (s *Service) DecideRoute(model, channelID string) (*types.CapabilityRoute, error) {
-	scope := types.ChannelRequestScope{}
-	if channelID != "" {
-		scope.IDs = []string{channelID}
-		if bus := s.requestChannelBaseURLs(channelID); len(bus) > 0 {
-			scope.BaseURLs = bus
-		}
-	}
-	routes, err := s.DecideRoutesScope(model, scope)
-	if err != nil || len(routes) == 0 {
-		return nil, err
-	}
-	return routes[0], nil
-}
-
 // DecideRoutesScope 查能力路由表：model + 请求渠道上下文（含聚合模型的候选 Key 集合）。
 // 返回所有匹配的路由；native（及历史 error 降级）立即返回，proxy 路由收集全部匹配项。
 // 选择策略统一走 types.SelectCapabilityRoutes（与 vision/sensitive/field-filter 一致）。

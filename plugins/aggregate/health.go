@@ -257,7 +257,7 @@ func (s *Service) HandleUpstreamSucceeded(payload any) (any, error) {
 	if !ok || success == nil || success.Pipe == nil || success.Pipe.Metadata == nil {
 		return payload, nil
 	}
-	if _, ok := success.Pipe.Metadata["__virtual_model"].(string); !ok {
+	if _, ok := success.Pipe.Metadata[types.MetadataVirtualModel].(string); !ok {
 		return payload, nil
 	}
 

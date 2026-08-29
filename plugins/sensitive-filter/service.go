@@ -34,37 +34,13 @@ func NewService(st *store.Store, lg *slog.Logger) *Service {
 // SetRepository 注入 SQLite 仓储（由装配层在 db 就绪后调用；测试可省略）。
 func (s *Service) SetRepository(repo *db.Repository) { s.repo = repo }
 
-// DecideRoute 查能力路由表：model + channelID 的 sensitive_filter 能力。未命中返回 nil（视为 native 透传）。
-// channelID 为请求当前渠道（pipe.Metadata["__current_channel"]，聚合模型指定渠道后已设置；
-// 普通请求渠道未知传空串）。路由未绑定渠道（channel_ids 与 channel_base_urls 都为空）= 全渠道命中，行为与 vision 一致；
-// 绑定渠道后仅请求渠道命中集合内（含 channel_base_urls 渠道级）才生效。
-//
-// 注意：聚合模型对渠道级/Key 多选目标会写 __current_channel=""，此时请用 DecideRouteScope。
-//
-// 读表/解析失败采取 fail-open：记录日志并返回 nil（按 native 透传），不拒绝请求。
-// 与 vision 不同，敏感词过滤对每个 JSON 请求都会查表，坏表若 fail-closed 会拒绝全部 /v1 流量。
-func (s *Service) DecideRoute(model, channelID string) (*types.CapabilityRoute, error) {
-	scope := types.ChannelRequestScope{}
-	if channelID != "" {
-		scope.IDs = []string{channelID}
-		if bus := s.requestChannelBaseURLs(channelID); len(bus) > 0 {
-			scope.BaseURLs = bus
-		}
-	}
-	routes, err := s.DecideRoutesScope(model, scope)
-	if err != nil || len(routes) == 0 {
-		return nil, err
-	}
-	return routes[0], nil
-}
-
 // DecideRoutesScope 查能力路由表：model + 请求渠道上下文（含聚合模型的候选 Key 集合）。
 // 返回所有匹配的路由；命中 native（及历史 error 降级）立即返回该项，跳过后续匹配。
-func (s *Service) DecideRoutesScope(model string, scope types.ChannelRequestScope) ([]*types.CapabilityRoute, error) {
+func (s *Service) DecideRoutesScope(model string, virtualModel string, scope types.ChannelRequestScope) ([]*types.CapabilityRoute, error) {
 	if s.repo != nil {
 		routes, err := s.repo.ListCapabilityRoutes(context.Background())
 		if err == nil {
-			return types.SelectCapabilityRoutes(routes, capabilityName, model, scope), nil
+			return types.SelectCapabilityRoutesEx(routes, capabilityName, model, virtualModel, scope), nil
 		}
 		s.lg.Error("sensitive-filter: 从 SQLite 读能力路由表失败，回退 JSON", "err", err)
 	}
@@ -76,7 +52,7 @@ func (s *Service) DecideRoutesScope(model string, scope types.ChannelRequestScop
 		s.lg.Error("sensitive-filter: 读取能力路由表失败，按透传处理", "err", err)
 		return nil, nil
 	}
-	return types.SelectCapabilityRoutes(routes, capabilityName, model, scope), nil
+	return types.SelectCapabilityRoutesEx(routes, capabilityName, model, virtualModel, scope), nil
 }
 
 // requestChannelBaseURLs 反查渠道 base_url 列表：term 可为渠道 key id（精确匹配，返回该 key
@@ -132,7 +108,8 @@ func (s *Service) HandleProxyBeforeUpstream(payload any) (any, error) {
 	// 聚合渠道级/Key 多选目标会写 __channel_candidates（__current_channel 为空），
 	// 必须读齐 metadata 三个字段，否则聚合流量匹配不到渠道约束路由。
 	scope := types.ChannelScopeFromMetadata(pipe.Metadata, s.requestChannelBaseURLs)
-	routes, err := s.DecideRoutesScope(model, scope)
+	virtualModel := types.VirtualModelFromMetadata(pipe.Metadata)
+	routes, err := s.DecideRoutesScope(model, virtualModel, scope)
 	if err != nil {
 		// 防御：DecideRoute 现为 fail-open，正常不会走到这里。
 		return nil, sensitiveError(err.Error())
