@@ -25,6 +25,7 @@ import EmptyState from '@/components/EmptyState.vue'
 import LoadingBlock from '@/components/LoadingBlock.vue'
 import McpLogsTab from '@/components/mcp/McpLogsTab.vue'
 import McpInvocationsTab from '@/components/mcp/McpInvocationsTab.vue'
+import KeyValueRowsEditor from '@/components/mcp/KeyValueRowsEditor.vue'
 import TranslateText from '@/components/TranslateText.vue'
 import { useMcpManagement, isServerActive } from '@/composables/useMcpManagement'
 import { useManagementApi } from '@/composables/useManagementApi'
@@ -79,8 +80,6 @@ const toolExecuting = ref(false)
 const toolEditName = ref('')
 const toolEditDescription = ref('')
 const expandedGroupServers = ref<string[]>([])
-const add = (rows: Array<{ key: string; value: string }>) => rows.push({ key: '', value: '' })
-const remove = (rows: Array<{ key: string; value: string }>, index: number) => rows.splice(index, 1)
 function openServerDialog(server?: (typeof mcp.servers)[number]) {
   if (server) mcp.editServer(server)
   else mcp.resetServer()
@@ -869,29 +868,12 @@ async function copyConfig(endpoint: {
             </div>
             <div class="space-y-2">
               <Label>Headers</Label>
-              <div v-for="(row, index) in mcp.headers" :key="index" class="flex gap-2">
-                <Input v-model="row.key" placeholder="名称" /><Input
-                  v-model="row.value"
-                  placeholder="值"
-                />
-                <TooltipProvider>
-                  <Tooltip>
-                    <TooltipTrigger as-child
-                      ><Button
-                        variant="ghost"
-                        size="icon"
-                        aria-label="删除 Header"
-                        @click="remove(mcp.headers, index)"
-                      >
-                        <RiDeleteBinLine size="16" /> </Button
-                    ></TooltipTrigger>
-                    <TooltipContent>删除 Header</TooltipContent>
-                  </Tooltip>
-                </TooltipProvider>
-              </div>
-              <Button variant="outline" size="sm" @click="add(mcp.headers)">
-                <RiAddLine size="16" />添加 Header
-              </Button>
+              <KeyValueRowsEditor
+                :rows="mcp.headers"
+                key-placeholder="名称"
+                add-label="添加 Header"
+                remove-aria-label="删除 Header"
+              />
             </div>
           </div>
           <div v-else class="space-y-3">
@@ -905,29 +887,11 @@ async function copyConfig(endpoint: {
             </div>
             <div class="space-y-2">
               <Label>环境变量</Label>
-              <div v-for="(row, index) in mcp.env" :key="index" class="flex gap-2">
-                <Input v-model="row.key" placeholder="KEY" /><Input
-                  v-model="row.value"
-                  placeholder="值"
-                />
-                <TooltipProvider>
-                  <Tooltip>
-                    <TooltipTrigger as-child
-                      ><Button
-                        variant="ghost"
-                        size="icon"
-                        aria-label="删除变量"
-                        @click="remove(mcp.env, index)"
-                      >
-                        <RiDeleteBinLine size="16" /> </Button
-                    ></TooltipTrigger>
-                    <TooltipContent>删除变量</TooltipContent>
-                  </Tooltip>
-                </TooltipProvider>
-              </div>
-              <Button variant="outline" size="sm" @click="add(mcp.env)">
-                <RiAddLine size="16" />添加变量
-              </Button>
+              <KeyValueRowsEditor
+                :rows="mcp.env"
+                add-label="添加变量"
+                remove-aria-label="删除变量"
+              />
             </div>
           </div>
         </div>
