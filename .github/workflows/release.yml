@@ -14,20 +14,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      # 复用前端构建 workflow（内含 setup-node + pnpm store 缓存 + install + build）
+      - uses: ./.github/workflows/build-frontend.yml
         with:
-          node-version: "20"
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 9
-      - name: build frontend
-        working-directory: frontend
-        run: |
-          pnpm install --frozen-lockfile
-          pnpm run build
+          runs-on: ubuntu-latest
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26.3"
+          # setup-go 自带缓存（默认开启），缓存 go modules 与 build outputs
+          cache: true
       - name: build server binary
         working-directory: apps/server
         run: |
@@ -48,17 +43,10 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      # 复用前端构建 workflow（内含 setup-node + pnpm store 缓存 + install + build）
+      - uses: ./.github/workflows/build-frontend.yml
         with:
-          node-version: "20"
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 9
-      - name: build frontend
-        working-directory: frontend
-        run: |
-          pnpm install --frozen-lockfile
-          pnpm run build
+          runs-on: windows-latest
       - name: copy dist to desktop embed dir
         shell: pwsh
         run: |
@@ -69,6 +57,8 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26.3"
+          # setup-go 自带缓存（默认开启），缓存 go modules 与 build outputs
+          cache: true
       - name: build exe
         working-directory: apps/desktop
         shell: pwsh
