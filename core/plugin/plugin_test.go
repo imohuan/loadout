@@ -67,6 +67,38 @@ func TestLoadInjectMissingService(t *testing.T) {
 	}
 }
 
+func TestLoadOrderDependencyForcesAfter(t *testing.T) {
+	var order []string
+	mk := func(name string, inject, provide []string) fakePlugin {
+		return fakePlugin{
+			manifest: Manifest{Name: name, Version: "0.1.0", Inject: inject, Provide: provide},
+			apply: func(ctx Context) error {
+				order = append(order, name)
+				for _, s := range provide {
+					ctx.Set(s, name)
+				}
+				return nil
+			},
+		}
+	}
+	plugins := []Plugin{
+		mk("sensitive-filter", []string{"svc-field-filter", "svc-message-inject"}, []string{"svc-sensitive-filter"}),
+		mk("field-filter", nil, []string{"svc-field-filter"}),
+		mk("message-inject", nil, []string{"svc-message-inject"}),
+	}
+	asm, err := Load(plugins, Options{})
+	if err != nil {
+		t.Fatalf("Load 失败: %v", err)
+	}
+	defer asm.Unload()
+	if len(order) != 3 {
+		t.Fatalf("装配插件数 = %d, want 3 (%v)", len(order), order)
+	}
+	if order[2] != "sensitive-filter" {
+		t.Fatalf("sensitive-filter 未排在最后, 装配顺序 = %v", order)
+	}
+}
+
 func TestLoadDetectsCycle(t *testing.T) {
 	mk := func(name string, inject []string) fakePlugin {
 		return fakePlugin{manifest: Manifest{Name: name, Inject: inject, Provide: []string{"svc-" + name}}}

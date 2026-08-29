@@ -33,11 +33,17 @@ func New() plugin.Plugin {
 }
 
 // Manifest 返回插件清单：依赖 store/logger/db，提供 sensitive-filter 服务。
+//
+// Inject 额外声明依赖 field-filter 与 message-inject，仅为**排序约束**，并非取用其服务：
+// 三者都订阅 proxy:before-attempt 改同一份请求体，sensitive-filter 做的是整体字符串替换，
+// 必须**最后**执行，才能把 message-inject 新注入内容里的敏感词一并过滤掉。
+// 依赖声明让 topoSort 强制本插件排在其后（不再依赖插件名字典序巧合）；若这两插件被移除，
+// 本插件会因依赖无人提供而启动失败，防止顺序契约被无意破坏。
 func (p *sensitiveFilterPlugin) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name:    "sensitive-filter",
 		Version: "0.1.0",
-		Inject:  []string{"store", "logger", "db"},
+		Inject:  []string{"store", "logger", "db", "field-filter", "message-inject"},
 		Provide: []string{"sensitive-filter"},
 	}
 }
