@@ -23,6 +23,7 @@ import { useConfirm } from '@/composables/useConfirm'
 import PlatformCard from '@/components/unifyai/PlatformCard.vue'
 import ExcludeMatrix from '@/components/unifyai/ExcludeMatrix.vue'
 import CommandPreview from '@/components/unifyai/CommandPreview.vue'
+import KeyValueRowsEditor from '@/components/mcp/KeyValueRowsEditor.vue'
 import {
   DEFAULT_SOURCE,
   IMPORT_MCP_ARGS,
@@ -378,14 +379,6 @@ function openAddDialog() {
   addForm.env = []
   // 打开即自动拉一次，避免用户再点「加载列表」
   loadImportSource()
-}
-
-function addEnvRow(rows: Array<{ key: string; value: string }>) {
-  rows.push({ key: '', value: '' })
-}
-
-function removeEnvRow(rows: Array<{ key: string; value: string }>, index: number) {
-  rows.splice(index, 1)
 }
 
 /** 从 MCP 管理加载可导入的服务器 */
@@ -1256,28 +1249,11 @@ onMounted(async () => {
             </div>
             <div v-if="addForm.type === 'local'" class="space-y-2">
               <Label>环境变量</Label>
-              <div v-for="(row, index) in addForm.env" :key="index" class="flex gap-2">
-                <Input v-model="row.key" placeholder="KEY" />
-                <Input v-model="row.value" placeholder="值" />
-                <TooltipProvider>
-                  <Tooltip>
-                    <TooltipTrigger as-child>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        aria-label="删除环境变量"
-                        @click="removeEnvRow(addForm.env, index)"
-                      >
-                        <RiDeleteBinLine size="16" />
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>删除环境变量</TooltipContent>
-                  </Tooltip>
-                </TooltipProvider>
-              </div>
-              <Button variant="outline" size="sm" @click="addEnvRow(addForm.env)">
-                <RiAddLine size="16" />添加环境变量
-              </Button>
+              <KeyValueRowsEditor
+                :rows="addForm.env"
+                add-label="添加环境变量"
+                remove-aria-label="删除环境变量"
+              />
             </div>
             <template v-else>
               <div class="space-y-1">
@@ -1354,28 +1330,11 @@ onMounted(async () => {
             </div>
             <div v-if="editForm.type === 'local'" class="space-y-2">
               <Label>环境变量</Label>
-              <div v-for="(row, index) in editForm.env" :key="index" class="flex gap-2">
-                <Input v-model="row.key" placeholder="KEY" />
-                <Input v-model="row.value" placeholder="值" />
-                <TooltipProvider>
-                  <Tooltip>
-                    <TooltipTrigger as-child>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        aria-label="删除环境变量"
-                        @click="removeEnvRow(editForm.env, index)"
-                      >
-                        <RiDeleteBinLine size="16" />
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>删除环境变量</TooltipContent>
-                  </Tooltip>
-                </TooltipProvider>
-              </div>
-              <Button variant="outline" size="sm" @click="addEnvRow(editForm.env)">
-                <RiAddLine size="16" />添加环境变量
-              </Button>
+              <KeyValueRowsEditor
+                :rows="editForm.env"
+                add-label="添加环境变量"
+                remove-aria-label="删除环境变量"
+              />
             </div>
             <template v-else>
               <div class="space-y-1">
