@@ -1206,43 +1206,40 @@ async function restoreAllBackups() {
               <p class="text-xs text-muted-foreground">
                 点击切换选中，已选 {{ presetForm.selectedSkills.length }} 个
               </p>
-              <div class="flex items-center gap-2">
-                <Button
+              <div class="inline-flex shrink-0 items-center gap-2">
+                <button
                   type="button"
-                  size="sm"
-                  variant="ghost"
                   class="text-muted-foreground hover:text-foreground inline-flex items-center gap-1 text-xs"
                   :disabled="!skills?.length"
+                  :aria-label="'全选当前列表中的全部技能'"
                   title="全选当前列表中的全部技能"
                   @click="selectAllSkills"
                 >
                   <RiCheckboxLine size="14" />
                   全选
-                </Button>
-                <Button
+                </button>
+                <button
                   type="button"
-                  size="sm"
-                  variant="ghost"
                   class="text-muted-foreground hover:text-foreground inline-flex items-center gap-1 text-xs"
                   :disabled="!skills?.length"
+                  :aria-label="'反选（在当前已选中换未选）'"
                   title="反选（在当前已选中换未选）"
                   @click="invertSkills"
                 >
                   <RiListCheck size="14" />
                   反选
-                </Button>
-                <Button
+                </button>
+                <button
                   type="button"
-                  size="sm"
-                  variant="ghost"
                   class="text-muted-foreground hover:text-foreground inline-flex items-center gap-1 text-xs"
                   :disabled="presetForm.selectedSkills.length === 0"
+                  :aria-label="'清空已选的技能'"
                   title="清空已选的技能"
                   @click="clearSkills"
                 >
                   <RiCheckboxBlankLine size="14" />
                   清空
-                </Button>
+                </button>
               </div>
             </div>
           </div>
