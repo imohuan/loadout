@@ -7,20 +7,18 @@ import {
   RiArrowDownSLine,
   RiArrowRightSLine,
   RiCheckLine,
-  RiCheckboxBlankLine,
-  RiCheckboxLine,
   RiClipboardLine,
   RiDeleteBinLine,
   RiEditLine,
   RiFileCopyLine,
   RiKey2Line,
-  RiListCheck,
   RiLoader4Line,
   RiRefreshLine,
   RiTestTubeLine,
   RiToggleFill,
   RiToggleLine,
 } from '@remixicon/vue'
+import BulkSelectButtons from '@/components/BulkSelectButtons.vue'
 import PageHeader from '@/components/PageHeader.vue'
 import EmptyState from '@/components/EmptyState.vue'
 import LoadingBlock from '@/components/LoadingBlock.vue'
@@ -168,11 +166,7 @@ function invertAllServerTools(serverId: string) {
     mcp.toggleTool(serverId, tool.name)
   }
 }
-function clearAllServerTools(serverId: string) {
-  for (const tool of serverTools(serverId)) {
-    if (mcp.selected(serverId, tool.name)) mcp.toggleTool(serverId, tool.name)
-  }
-}
+
 function schemaProperties() {
   return Object.entries((toolSchema.value?.properties || {}) as Record<string, any>)
 }
@@ -967,36 +961,14 @@ async function copyConfig(endpoint: {
                       >{{ entry.tools.length }} 个工具</Badge
                     >
                   </button>
-                  <div class="inline-flex shrink-0 items-center gap-2">
-                    <button
-                      type="button"
-                      class="text-muted-foreground hover:text-foreground inline-flex items-center gap-1 text-xs"
-                      :aria-label="isAllServerToolsSelected(entry.id) ? '取消全选' : '全选工具'"
-                      @click="toggleAllServerTools(entry.id)"
-                    >
-                      <RiCheckboxLine v-if="isAllServerToolsSelected(entry.id)" size="14" />
-                      <RiCheckboxBlankLine v-else size="14" />
-                      全选
-                    </button>
-                    <button
-                      type="button"
-                      class="text-muted-foreground hover:text-foreground inline-flex items-center gap-1 text-xs"
-                      aria-label="反选工具"
-                      @click="invertAllServerTools(entry.id)"
-                    >
-                      <RiListCheck size="14" />
-                      反选
-                    </button>
-                    <button
-                      type="button"
-                      class="text-muted-foreground hover:text-foreground inline-flex items-center gap-1 text-xs"
-                      aria-label="清空工具"
-                      @click="clearAllServerTools(entry.id)"
-                    >
-                      <RiCheckboxBlankLine size="14" />
-                      清空
-                    </button>
-                  </div>
+                  <BulkSelectButtons
+                    :all-selected="isAllServerToolsSelected(entry.id)"
+                    :can-operate="entry.tools.length > 0"
+                    :has-selection="selectedCountForServer(entry.id) > 0"
+                    @select-all="toggleAllServerTools(entry.id)"
+                    @invert="invertAllServerTools(entry.id)"
+                    @clear="toggleAllServerTools(entry.id)"
+                  />
                 </div>
                 <div v-if="isGroupServerExpanded(entry.id)" class="border-t">
                   <div v-if="entry.tools.length" class="divide-y">

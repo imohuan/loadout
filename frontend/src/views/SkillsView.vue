@@ -4,13 +4,10 @@ import {
   RiAddLine,
   RiArrowDownSLine,
   RiArrowRightSLine,
-  RiCheckboxBlankLine,
-  RiCheckboxLine,
   RiDeleteBinLine,
   RiEditLine,
   RiGroup2Line,
   RiLinksLine,
-  RiListCheck,
   RiListUnordered,
   RiLoader4Line,
   RiLoaderLine,
@@ -24,6 +21,7 @@ import { useListLoader } from '@/composables/useListLoader'
 import { useAsyncTask } from '@/composables/useAsyncTask'
 import { useTask, startTask } from '@/composables/useTask'
 import { useConfirm } from '@/composables/useConfirm'
+import BulkSelectButtons from '@/components/BulkSelectButtons.vue'
 import PageHeader from '@/components/PageHeader.vue'
 import LoadingBlock from '@/components/LoadingBlock.vue'
 import EmptyState from '@/components/EmptyState.vue'
@@ -114,6 +112,11 @@ function invertSkills() {
 function clearSkills() {
   presetForm.selectedSkills.length = 0
 }
+// 当前技能列表是否已全部选中（用于全选按钮的切换态）。
+const allSkillsSelected = computed(() => {
+  if (!skills.value || !skills.value.length) return false
+  return skills.value.every((s) => presetForm.selectedSkills.includes(s.name))
+})
 const loading = computed(() => skillsLoading.value || presetsLoading.value)
 const anyRefreshing = computed(
   () => skillsRefreshing.value || presetsRefreshing.value || statusRefreshing.value,
@@ -1206,41 +1209,14 @@ async function restoreAllBackups() {
               <p class="text-xs text-muted-foreground">
                 点击切换选中，已选 {{ presetForm.selectedSkills.length }} 个
               </p>
-              <div class="inline-flex shrink-0 items-center gap-2">
-                <button
-                  type="button"
-                  class="text-muted-foreground hover:text-foreground inline-flex items-center gap-1 text-xs"
-                  :disabled="!skills?.length"
-                  :aria-label="'全选当前列表中的全部技能'"
-                  title="全选当前列表中的全部技能"
-                  @click="selectAllSkills"
-                >
-                  <RiCheckboxLine size="14" />
-                  全选
-                </button>
-                <button
-                  type="button"
-                  class="text-muted-foreground hover:text-foreground inline-flex items-center gap-1 text-xs"
-                  :disabled="!skills?.length"
-                  :aria-label="'反选（在当前已选中换未选）'"
-                  title="反选（在当前已选中换未选）"
-                  @click="invertSkills"
-                >
-                  <RiListCheck size="14" />
-                  反选
-                </button>
-                <button
-                  type="button"
-                  class="text-muted-foreground hover:text-foreground inline-flex items-center gap-1 text-xs"
-                  :disabled="presetForm.selectedSkills.length === 0"
-                  :aria-label="'清空已选的技能'"
-                  title="清空已选的技能"
-                  @click="clearSkills"
-                >
-                  <RiCheckboxBlankLine size="14" />
-                  清空
-                </button>
-              </div>
+              <BulkSelectButtons
+                :all-selected="allSkillsSelected"
+                :can-operate="(skills?.length ?? 0) > 0"
+                :has-selection="presetForm.selectedSkills.length > 0"
+                @select-all="selectAllSkills"
+                @invert="invertSkills"
+                @clear="clearSkills"
+              />
             </div>
           </div>
           <div class="space-y-2">
