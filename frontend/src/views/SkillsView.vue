@@ -578,6 +578,7 @@ async function restoreAllBackups() {
                       <TableCell class="w-48 font-mono text-xs truncate">{{ skill.source || '-' }}</TableCell>
                       <TableCell class="w-28">{{ skill.version || '-' }}</TableCell>
                       <TableCell>
+                        <div class="inline-flex w-fit items-center gap-1 whitespace-nowrap">
                         <Tooltip :disabled="!skill.updated_at">
                           <TooltipTrigger as-child>
                             <span
@@ -596,9 +597,10 @@ async function restoreAllBackups() {
                             skill.updated_at
                           }}</TooltipContent>
                         </Tooltip>
-                        <Badge v-if="isRecent(skill.updated_at)" variant="default" class="ml-1"
+                        <Badge v-if="isRecent(skill.updated_at)" variant="default"
                           >近期</Badge
                         >
+                        </div>
                       </TableCell>
                       <TableCell class="w-12 text-right">
                         <div class="flex justify-end gap-1">
@@ -750,6 +752,7 @@ async function restoreAllBackups() {
                                 </TableCell>
                                 <TableCell class="w-32">{{ skill.version || '-' }}</TableCell>
                                 <TableCell>
+                                  <div class="inline-flex w-fit items-center gap-1 whitespace-nowrap">
                                   <Tooltip :disabled="!skill.updated_at">
                                     <TooltipTrigger as-child>
                                       <span
@@ -771,9 +774,9 @@ async function restoreAllBackups() {
                                   <Badge
                                     v-if="isRecent(skill.updated_at)"
                                     variant="default"
-                                    class="ml-1"
                                     >近期</Badge
                                   >
+                                  </div>
                                 </TableCell>
                                 <TableCell class="w-12 text-right">
                                   <div class="flex justify-end gap-1">
