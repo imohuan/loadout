@@ -92,7 +92,9 @@ func TestSourceFromSync(t *testing.T) {
 	}
 
 	svc.UpdateSource("~/ok/config.json")
-	if got := svc.sourceFromSync(); got != "~/ok/config.json" {
-		t.Errorf("配置后 sourceFromSync = %q, want ~/ok/config.json", got)
+	home, _ := os.UserHomeDir()
+	expected := filepath.Join(home, "ok", "config.json")
+	if got := svc.sourceFromSync(); got != expected {
+		t.Errorf("配置后 sourceFromSync = %q, want %q（~ 已展开）", got, expected)
 	}
 }

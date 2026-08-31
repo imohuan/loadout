@@ -379,17 +379,31 @@ func (s *Service) UpdateSource(source string) (string, error) {
 	return s.SaveSyncConfig(raw)
 }
 
-// sourceFromSync 读取 sync.json 里持久化的 source（模型源配置路径）。
-// 返回空串表示未配置（调用方不拼 --source，让 CLI 用默认路径）。
+// sourceFromSync 读取 sync.json 里持久化的 source（模型源配置路径），
+// 并展开开头的 ~ 为绝对路径。返回空串表示未配置（调用方不拼 --source）。
+// 注意：unifyai CLI 的 --list 查询路径不会自行展开 ~（只有同步 runFullSync 会），
+// 因此必须在这里转成绝对路径，否则 CLI 会把字面 ~ 当作路径导致「配置文件不存在」。
 func (s *Service) sourceFromSync() string {
 	cfg, err := s.SyncConfig()
 	if err != nil {
 		return ""
 	}
-	if src, ok := cfg["source"].(string); ok {
+	src, ok := cfg["source"].(string)
+	if !ok || src == "" {
+		return ""
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
 		return src
 	}
-	return ""
+	switch {
+	case src == "~":
+		return home
+	case strings.HasPrefix(src, "~/") || strings.HasPrefix(src, "~\\"):
+		return filepath.Join(home, src[2:])
+	default:
+		return src
+	}
 }
 
 // ListMcpMatrix 解析 `unifyai --list mcp --json`，返回源 mcp.json + 各平台 MCP 开关状态，

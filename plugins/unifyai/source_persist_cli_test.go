@@ -58,7 +58,7 @@ func TestListAllPassesSourceToCLI(t *testing.T) {
 	}
 	got := string(raw)
 	t.Logf("CLI 收到的 args: %s", got)
-	if !strings.Contains(got, `"--source"`) || !strings.Contains(got, `~/custom/models.json`) {
+	if !strings.Contains(got, `"--source"`) || strings.Contains(got, `~`) {
 		t.Errorf("args 缺少 --source，got %s", got)
 	}
 }
@@ -74,7 +74,7 @@ func TestOpenCodexModelsPassesSourceToCLI(t *testing.T) {
 	}
 	got := string(raw)
 	t.Logf("CLI 收到的 args: %s", got)
-	if !strings.Contains(got, `"--source"`) || !strings.Contains(got, `~/custom/models.json`) {
+	if !strings.Contains(got, `"--source"`) || strings.Contains(got, `~`) {
 		t.Errorf("args 缺少 --source，got %s", got)
 	}
 }
