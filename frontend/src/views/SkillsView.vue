@@ -1203,11 +1203,11 @@ async function restoreAllBackups() {
               <p class="text-xs text-muted-foreground">
                 点击切换选中，已选 {{ presetForm.selectedSkills.length }} 个
               </p>
-              <div class="flex rounded-md border border-border p-0.5">
+              <div class="flex items-center gap-2">
                 <Button
                   type="button"
                   size="sm"
-                  variant="ghost"
+                  variant="outline"
                   :disabled="!skills?.length"
                   title="全选当前列表中的全部技能"
                   @click="selectAllSkills"
@@ -1217,9 +1217,9 @@ async function restoreAllBackups() {
                 <Button
                   type="button"
                   size="sm"
-                  variant="ghost"
+                  variant="outline"
                   :disabled="!skills?.length"
-                  title="反选\uff08在当前已选中换未选\uff09"
+                  title="反选（在当前已选中换未选）"
                   @click="invertSkills"
                 >
                   反选
@@ -1230,6 +1230,7 @@ async function restoreAllBackups() {
                   variant="ghost"
                   :disabled="presetForm.selectedSkills.length === 0"
                   title="清空已选的技能"
+                  class="text-destructive hover:text-destructive"
                   @click="clearSkills"
                 >
                   清空
