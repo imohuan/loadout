@@ -91,6 +91,26 @@ function toggleTarget(value: string) {
   if (i >= 0) presetForm.targets.splice(i, 1)
   else presetForm.targets.push(value)
 }
+// 批量操作：全选当前技能列表全部、反选、清空已选。
+function selectAllSkills() {
+  if (!skills.value) return
+  for (const s of skills.value) {
+    if (!presetForm.selectedSkills.includes(s.name)) {
+      presetForm.selectedSkills.push(s.name)
+    }
+  }
+}
+function invertSkills() {
+  if (!skills.value) return
+  const current = new Set(presetForm.selectedSkills)
+  presetForm.selectedSkills.length = 0
+  for (const s of skills.value) {
+    if (!current.has(s.name)) presetForm.selectedSkills.push(s.name)
+  }
+}
+function clearSkills() {
+  presetForm.selectedSkills.length = 0
+}
 const loading = computed(() => skillsLoading.value || presetsLoading.value)
 const anyRefreshing = computed(
   () => skillsRefreshing.value || presetsRefreshing.value || statusRefreshing.value,
@@ -1044,25 +1064,60 @@ async function restoreAllBackups() {
           <div class="space-y-2">
             <div class="flex items-center justify-between">
               <Label>技能清单</Label>
-              <div class="flex rounded-md border border-border p-0.5">
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="ghost"
-                  :class="skillDisplayMode === 'tag' ? 'bg-muted' : ''"
-                  @click="skillDisplayMode = 'tag'"
-                >
-                  标签
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="ghost"
-                  :class="skillDisplayMode === 'detail' ? 'bg-muted' : ''"
-                  @click="skillDisplayMode = 'detail'"
-                >
-                  详情
-                </Button>
+              <div class="flex items-center gap-3">
+                <div class="flex rounded-md border border-border p-0.5">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    :class="skillDisplayMode === 'tag' ? 'bg-muted' : ''"
+                    @click="skillDisplayMode = 'tag'"
+                  >
+                    标签
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    :class="skillDisplayMode === 'detail' ? 'bg-muted' : ''"
+                    @click="skillDisplayMode = 'detail'"
+                  >
+                    详情
+                  </Button>
+                </div>
+                <!-- 批量选择：全选/反选/清空，其中反选代表只选切换前的反（方便只有些部分着要转换场景的情况下）。点击会覆盖当前模式的全部显示技能。 -->
+                <div class="flex rounded-md border border-border p-0.5">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    :disabled="!skills?.length"
+                    title="全选当前列表中的全部技能"
+                    @click="selectAllSkills"
+                  >
+                    全选
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    :disabled="!skills?.length"
+                    title="反选（在当前已选中换未选）"
+                    @click="invertSkills"
+                  >
+                    反选
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    :disabled="presetForm.selectedSkills.length === 0"
+                    title="清空已选的技能"
+                    @click="clearSkills"
+                  >
+                    清空
+                  </Button>
+                </div>
               </div>
             </div>
             <template v-if="skills?.length">
