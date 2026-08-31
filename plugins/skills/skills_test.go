@@ -1067,3 +1067,56 @@ func TestInstallNpx(t *testing.T) {
 		t.Fatalf("登记清单不符: %+v err=%v", items, err)
 	}
 }
+
+
+// TestRemoveUnregisterDirNameMismatch verifies that when a skill dir name differs
+// from its SKILL.md frontmatter name, Remove/Unregister still find and delete the
+// real directory by matching the frontmatter name (regression: ask-matt copy dir
+// declares ask-matt-v2, previously os.RemoveAll(repoDir/name) missed the dir).
+func TestRemoveUnregisterDirNameMismatch(t *testing.T) {
+	svc, repoDir, targetDir := newTestService(t)
+
+	// dir "dir-a" with frontmatter name "alias-a".
+	dir := filepath.Join(repoDir, "dir-a")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir repo dir: %v", err)
+	}
+	md := "---\nname: alias-a\ndescription: d\n---\n# body"
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(md), 0o644); err != nil {
+		t.Fatalf("write repo SKILL.md: %v", err)
+	}
+	tdir := filepath.Join(targetDir, "dir-a")
+	if err := os.MkdirAll(tdir, 0o755); err != nil {
+		t.Fatalf("mkdir target dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tdir, "SKILL.md"), []byte(md), 0o644); err != nil {
+		t.Fatalf("write target SKILL.md: %v", err)
+	}
+
+	got, err := svc.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(got) != 1 || got[0].Name != "alias-a" {
+		t.Fatalf("List = %+v, want alias-a", got)
+	}
+
+	// Remove should delete targetDir/dir-a and keep repoDir/dir-a.
+	if err := svc.Remove("alias-a"); err != nil {
+		t.Fatalf("Remove(alias-a): %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(targetDir, "dir-a")); !os.IsNotExist(err) {
+		t.Fatalf("target dir-a should be removed, Stat=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(repoDir, "dir-a")); err != nil {
+		t.Fatalf("repo dir-a should remain, Stat=%v", err)
+	}
+
+	// Unregister should delete repoDir/dir-a.
+	if err := svc.Unregister("alias-a"); err != nil {
+		t.Fatalf("Unregister(alias-a): %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(repoDir, "dir-a")); !os.IsNotExist(err) {
+		t.Fatalf("repo dir-a should be removed, Stat=%v", err)
+	}
+}

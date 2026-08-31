@@ -278,14 +278,41 @@ func (s *Service) removeRegistration(name string) error {
 	return s.writeSkills(out)
 }
 
+// resolveSkillDir 在 dir 里找到名称为 skillName 的技能目录的真实路径：
+// 优先按目录名精确匹配，其次匹配 SKILL.md frontmatter 里声明的 name。
+// 这能正确处理「目录名与 frontmatter name 不一致」（如目录 ask-matt copy、
+// frontmatter name 却是 ask-matt-v2）的情况，避免按 name 拼路径删不到目录。
+// 找不到时返回空串。
+func resolveSkillDir(dir, skillName string) string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return ""
+	}
+	for _, e := range entries {
+		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
+			continue
+		}
+		if e.Name() == skillName {
+			return filepath.Join(dir, e.Name())
+		}
+		sk := parseSkillFrontmatter(e.Name(), filepath.Join(dir, e.Name(), "SKILL.md"))
+		if sk.Name == skillName {
+			return filepath.Join(dir, e.Name())
+		}
+	}
+	return ""
+}
+
 // Unregister 删除技能源：移除技能库（repoDir，~/.loadout/skills）里对应目录，
 // 即技能源实际所在的文件夹（同时从登记清单移除）。目录不存在时仅移除登记，静默成功。
 func (s *Service) Unregister(name string) error {
 	if err := validSkillName(name); err != nil {
 		return err
 	}
-	if err := os.RemoveAll(filepath.Join(s.repoDir, name)); err != nil {
-		return fmt.Errorf("skills: 删除技能源目录失败: %w", err)
+	if dir := resolveSkillDir(s.repoDir, name); dir != "" {
+		if err := os.RemoveAll(dir); err != nil {
+			return fmt.Errorf("skills: 删除技能源目录失败: %w", err)
+		}
 	}
 	return s.removeRegistration(name)
 }
@@ -296,8 +323,10 @@ func (s *Service) Remove(name string) error {
 	if err := validSkillName(name); err != nil {
 		return err
 	}
-	if err := os.RemoveAll(filepath.Join(s.targetDir, name)); err != nil {
-		return fmt.Errorf("skills: 删除本地技能目录失败: %w", err)
+	if dir := resolveSkillDir(s.targetDir, name); dir != "" {
+		if err := os.RemoveAll(dir); err != nil {
+			return fmt.Errorf("skills: 删除本地技能目录失败: %w", err)
+		}
 	}
 	return s.removeRegistration(name)
 }
