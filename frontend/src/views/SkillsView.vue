@@ -578,28 +578,21 @@ async function restoreAllBackups() {
                       <TableCell class="w-48 font-mono text-xs truncate">{{ skill.source || '-' }}</TableCell>
                       <TableCell class="w-28">{{ skill.version || '-' }}</TableCell>
                       <TableCell class="w-32">
-                        <div class="inline-flex w-fit items-center gap-1 whitespace-nowrap">
-                        <Tooltip :disabled="!skill.updated_at">
-                          <TooltipTrigger as-child>
-                            <span
-                              :class="
-                                skill.updated_at
-                                  ? isRecent(skill.updated_at)
-                                    ? 'text-green-600'
-                                    : 'text-muted-foreground'
+                        <div class="inline-flex items-center gap-1 whitespace-nowrap overflow-hidden">
+                          <span
+                            :class="
+                              skill.updated_at
+                                ? isRecent(skill.updated_at)
+                                  ? 'text-green-600'
                                   : 'text-muted-foreground'
-                              "
-                            >
-                              {{ timeAgo(skill.updated_at) }}
-                            </span>
-                          </TooltipTrigger>
-                          <TooltipContent v-if="skill.updated_at">{{
-                            skill.updated_at
-                          }}</TooltipContent>
-                        </Tooltip>
-                        <Badge v-if="isRecent(skill.updated_at)" variant="default"
-                          >近期</Badge
-                        >
+                                : 'text-muted-foreground'
+                            "
+                          >
+                            {{ timeAgo(skill.updated_at) }}
+                          </span>
+                          <Badge v-if="isRecent(skill.updated_at)" variant="default"
+                            >近期</Badge
+                          >
                         </div>
                       </TableCell>
                       <TableCell class="w-12 text-right">
@@ -752,30 +745,23 @@ async function restoreAllBackups() {
                                 </TableCell>
                                 <TableCell class="w-32">{{ skill.version || '-' }}</TableCell>
                                 <TableCell class="w-32">
-                                  <div class="inline-flex w-fit items-center gap-1 whitespace-nowrap">
-                                  <Tooltip :disabled="!skill.updated_at">
-                                    <TooltipTrigger as-child>
-                                      <span
-                                        :class="
-                                          skill.updated_at
-                                            ? isRecent(skill.updated_at)
-                                              ? 'text-green-600'
-                                              : 'text-muted-foreground'
+                                  <div class="inline-flex items-center gap-1 whitespace-nowrap overflow-hidden">
+                                    <span
+                                      :class="
+                                        skill.updated_at
+                                          ? isRecent(skill.updated_at)
+                                            ? 'text-green-600'
                                             : 'text-muted-foreground'
-                                        "
-                                      >
-                                        {{ timeAgo(skill.updated_at) }}
-                                      </span>
-                                    </TooltipTrigger>
-                                    <TooltipContent v-if="skill.updated_at">{{
-                                      skill.updated_at
-                                    }}</TooltipContent>
-                                  </Tooltip>
-                                  <Badge
-                                    v-if="isRecent(skill.updated_at)"
-                                    variant="default"
-                                    >近期</Badge
-                                  >
+                                          : 'text-muted-foreground'
+                                      "
+                                    >
+                                      {{ timeAgo(skill.updated_at) }}
+                                    </span>
+                                    <Badge
+                                      v-if="isRecent(skill.updated_at)"
+                                      variant="default"
+                                      >近期</Badge
+                                    >
                                   </div>
                                 </TableCell>
                                 <TableCell class="w-12 text-right">
