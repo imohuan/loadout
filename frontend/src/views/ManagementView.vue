@@ -153,11 +153,11 @@ async function installDep(name: string) {
     kind: 'dep',
     onDone: () => {
       depsBusy.value = null
-      void refreshDeps()
+      void checkDeps()
     },
     onError: (err) => {
       depsBusy.value = null
-      void refreshDeps()
+      void checkDeps()
       toast.error(`安装/更新 ${name} 失败`, { description: String(err) })
     },
   })

@@ -2573,6 +2573,9 @@ func (s *Service) handleDepsInstall(w http.ResponseWriter, r *http.Request) {
 		if err := deps.Install(name, req.ID, nil); err != nil {
 			s.lg.Warn("deps: 安装失败", "name", name, "err", err)
 		}
+		// 安装/更新结束后刷新依赖状态缓存，让前端 readCache 的 depsStatus
+		// 能拿到最新结果（此前缓存不更新，前端安装后读到的仍是旧状态）。
+		s.RefreshDeps()
 	}()
 	writeJSON(w, http.StatusOK, map[string]any{"started": true, "id": req.ID})
 }
