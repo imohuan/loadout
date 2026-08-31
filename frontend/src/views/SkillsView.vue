@@ -7,7 +7,6 @@ import {
   RiDeleteBinLine,
   RiEditLine,
   RiGroup2Line,
-  RiLinksLine,
   RiListUnordered,
   RiLoader4Line,
   RiLoaderLine,
@@ -73,6 +72,15 @@ const skillUpdateRunning = useTask('skill-update', {
 const activeTab = ref('skills')
 const skillDialog = ref(false)
 const presetDialog = ref(false)
+// 技能删除弹窗：单个删除按钮 + switch 控制是否连同删除本地技能
+const deleteDialog = ref(false)
+const deleteTarget = ref('')
+const deleteLocal = ref(false)
+function openDeleteDialog(name: string) {
+  deleteTarget.value = name
+  deleteLocal.value = false
+  deleteDialog.value = true
+}
 const skillFile = ref<File>()
 const skillForm = reactive({ name: '', source: '', version: '' })
 const presetForm = reactive({
@@ -346,29 +354,35 @@ function presetTargetsLabel(preset: { target?: string; targets?: string[] }): st
   const list = preset.targets?.length ? preset.targets : preset.target ? [preset.target] : ['']
   return list.map((t) => platformName(t)).join('、') || '通用 (.agents)'
 }
-async function unregisterSkill(name: string) {
-  if (!(await confirmDialog('删除技能源「' + name + '」？这会删除 ~/.loadout/skills 里对应的文件夹。'))) return
-  await run(
-    `skill:${name}:unregister`,
-    async () => {
-      await api.unregisterSkill(name)
-      await refreshSkills()
-      await refreshStatus()
-    },
-    '技能源已删除',
-  )
-}
-async function removeSkill(name: string) {
-  if (!(await confirmDialog('删除本地技能「' + name + '」？这会删除技能所在的文件夹。'))) return
-  await run(
-    `skill:${name}:remove`,
-    async () => {
-      await api.deleteSkill(name)
-      await refreshSkills()
-      await refreshStatus()
-    },
-    '本地技能已删除',
-  )
+async function confirmDeleteSkill() {
+  const name = deleteTarget.value
+  if (!name) return
+  deleteDialog.value = false
+  const deleteLocalSkill = deleteLocal.value
+  if (deleteLocalSkill) {
+    // 同时删除技能源与本地技能
+    await run(
+      `skill:${name}:remove`,
+      async () => {
+        await api.unregisterSkill(name)
+        await api.deleteSkill(name)
+        await refreshSkills()
+        await refreshStatus()
+      },
+      '技能已删除',
+    )
+  } else {
+    // 只删除技能源（~/.loadout/skills 文件夹）
+    await run(
+      `skill:${name}:unregister`,
+      async () => {
+        await api.unregisterSkill(name)
+        await refreshSkills()
+        await refreshStatus()
+      },
+      '技能源已删除',
+    )
+  }
 }
 async function applyPreset(name: string) {
   const confirmed = await confirmDialog({
@@ -531,7 +545,7 @@ async function restoreAllBackups() {
                         </div>
                       </TableHead>
                       <TableHead class="w-28">版本</TableHead>
-                      <TableHead class="w-32">更新时间</TableHead>
+                      <TableHead class="w-42">更新时间</TableHead>
                       <TableHead class="w-12 text-right">操作</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -596,40 +610,30 @@ async function restoreAllBackups() {
                         </div>
                       </TableCell>
                       <TableCell class="w-12 text-right">
-                        <div class="flex justify-end gap-1">
+                        <div class="flex justify-end">
                           <Tooltip>
                             <TooltipTrigger as-child
                               ><Button
                                 variant="ghost"
                                 size="icon"
-                                aria-label="删除技能源"
-                                :disabled="isPending(`skill:${skill.name}:unregister`) || isPending(`skill:${skill.name}:remove`)"
-                                @click="unregisterSkill(skill.name)"
+                                class="text-destructive hover:text-destructive"
+                                aria-label="删除技能"
+                                :disabled="
+                                  isPending(`skill:${skill.name}:unregister`) ||
+                                  isPending(`skill:${skill.name}:remove`)
+                                "
+                                @click="openDeleteDialog(skill.name)"
                               >
                                 <RiLoader4Line
-                                  v-if="isPending(`skill:${skill.name}:unregister`)"
-                                  class="animate-spin"
-                                  size="16"
-                                /><RiLinksLine v-else class="size-4" /> </Button
-                            ></TooltipTrigger>
-                            <TooltipContent>删除技能源（~/.loadout/skills 文件夹）</TooltipContent>
-                          </Tooltip>
-                          <Tooltip>
-                            <TooltipTrigger as-child
-                              ><Button
-                                variant="ghost"
-                                size="icon"
-                                aria-label="删除本地技能"
-                                :disabled="isPending(`skill:${skill.name}:unregister`) || isPending(`skill:${skill.name}:remove`)"
-                                @click="removeSkill(skill.name)"
-                              >
-                                <RiLoader4Line
-                                  v-if="isPending(`skill:${skill.name}:remove`)"
+                                  v-if="
+                                    isPending(`skill:${skill.name}:unregister`) ||
+                                    isPending(`skill:${skill.name}:remove`)
+                                  "
                                   class="animate-spin"
                                   size="16"
                                 /><RiDeleteBinLine v-else class="size-4" /> </Button
                             ></TooltipTrigger>
-                            <TooltipContent>删除本地技能（~/.agents/skills 文件夹）</TooltipContent>
+                            <TooltipContent>删除技能</TooltipContent>
                           </Tooltip>
                         </div>
                       </TableCell>
@@ -765,40 +769,30 @@ async function restoreAllBackups() {
                                   </div>
                                 </TableCell>
                                 <TableCell class="w-12 text-right">
-                                  <div class="flex justify-end gap-1">
+                                  <div class="flex justify-end">
                                     <Tooltip>
                                       <TooltipTrigger as-child
                                         ><Button
                                           variant="ghost"
                                           size="icon"
-                                          aria-label="删除技能源"
-                                          :disabled="isPending(`skill:${skill.name}:unregister`) || isPending(`skill:${skill.name}:remove`)"
-                                          @click="unregisterSkill(skill.name)"
+                                          class="text-destructive hover:text-destructive"
+                                          aria-label="删除技能"
+                                          :disabled="
+                                            isPending(`skill:${skill.name}:unregister`) ||
+                                            isPending(`skill:${skill.name}:remove`)
+                                          "
+                                          @click="openDeleteDialog(skill.name)"
                                         >
                                           <RiLoader4Line
-                                            v-if="isPending(`skill:${skill.name}:unregister`)"
-                                            class="animate-spin"
-                                            size="16"
-                                          /><RiLinksLine v-else class="size-4" /> </Button
-                                      ></TooltipTrigger>
-                                      <TooltipContent>删除技能源（~/.loadout/skills 文件夹）</TooltipContent>
-                                    </Tooltip>
-                                    <Tooltip>
-                                      <TooltipTrigger as-child
-                                        ><Button
-                                          variant="ghost"
-                                          size="icon"
-                                          aria-label="删除本地技能"
-                                          :disabled="isPending(`skill:${skill.name}:unregister`) || isPending(`skill:${skill.name}:remove`)"
-                                          @click="removeSkill(skill.name)"
-                                        >
-                                          <RiLoader4Line
-                                            v-if="isPending(`skill:${skill.name}:remove`)"
+                                            v-if="
+                                              isPending(`skill:${skill.name}:unregister`) ||
+                                              isPending(`skill:${skill.name}:remove`)
+                                            "
                                             class="animate-spin"
                                             size="16"
                                           /><RiDeleteBinLine v-else class="size-4" /> </Button
                                       ></TooltipTrigger>
-                                      <TooltipContent>删除本地技能（~/.agents/skills 文件夹）</TooltipContent>
+                                      <TooltipContent>删除技能</TooltipContent>
                                     </Tooltip>
                                   </div>
                                 </TableCell>
@@ -1238,6 +1232,34 @@ async function restoreAllBackups() {
             ></DialogFooter
           >
         </form>
+      </DialogContent>
+    </Dialog>
+    <Dialog v-model:open="deleteDialog">
+      <DialogContent class="sm:max-w-md!">
+        <DialogHeader>
+          <DialogTitle>删除技能「{{ deleteTarget }}」</DialogTitle>
+          <DialogDescription class="text-sm text-muted-foreground">
+            删除技能源会移除 ~/.loadout/skills 里对应的文件夹。
+          </DialogDescription>
+        </DialogHeader>
+        <div class="flex items-center justify-between rounded-md border border-border p-3">
+          <div>
+            <Label>删除本地资源</Label>
+            <p class="text-xs text-muted-foreground">
+              开启后连同删除本地技能（~/.agents/skills 文件夹）
+            </p>
+          </div>
+          <Switch v-model="deleteLocal" />
+        </div>
+        <DialogFooter>
+          <Button variant="destructive" :disabled="isPending(`skill:${deleteTarget}:unregister`) || isPending(`skill:${deleteTarget}:remove`)" @click="confirmDeleteSkill">
+            <RiLoader4Line
+              v-if="isPending(`skill:${deleteTarget}:unregister`) || isPending(`skill:${deleteTarget}:remove`)"
+              class="size-4 animate-spin"
+            />删除
+          </Button>
+          <Button type="button" variant="outline" @click="deleteDialog = false">取消</Button>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   </div>
