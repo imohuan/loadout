@@ -22,7 +22,6 @@ export const useProcessStore = defineStore('processes', () => {
   let reconnectAttempts = 0
   let started = false
 
-  const MAX_RECONNECT_ATTEMPTS = 5
   const BASE_RECONNECT_DELAY_MS = 1000
   const MAX_RECONNECT_DELAY_MS = 16000
 
@@ -79,11 +78,9 @@ export const useProcessStore = defineStore('processes', () => {
 
   function scheduleReconnect() {
     connected.value = false
-    if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
-      closeEs()
-      reconnectCount.value = reconnectAttempts
-      return
-    }
+    // 持续指数退避重连（封顶 MAX_RECONNECT_DELAY_MS），永不放弃：
+    // 安装依赖、后端重启等场景连接可能短暂不可达，断线后应自动恢复，
+    // 而不是重试几次就停在断开状态（此前需手动刷新页面才重新连接）。
     const delay = Math.min(BASE_RECONNECT_DELAY_MS * 2 ** reconnectAttempts, MAX_RECONNECT_DELAY_MS)
     reconnectAttempts += 1
     reconnectCount.value = reconnectAttempts
@@ -155,7 +152,6 @@ export const useProcessStore = defineStore('processes', () => {
   const history = computed(() => processes.value.filter((p) => p.status !== 'running'))
   const hasProcesses = computed(() => processes.value.length > 0)
   const runningCount = computed(() => running.value.length)
-  const reconnectFailed = computed(() => reconnectCount.value >= MAX_RECONNECT_ATTEMPTS)
 
   return {
     processes,
@@ -165,7 +161,6 @@ export const useProcessStore = defineStore('processes', () => {
     hasProcesses,
     runningCount,
     reconnectCount,
-    reconnectFailed,
     ensureStarted,
     stop,
     kill,

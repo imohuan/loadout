@@ -15,7 +15,6 @@ export function useProcessMonitor() {
     hasProcesses: computed(() => store.hasProcesses),
     runningCount: computed(() => store.runningCount),
     reconnectCount: computed(() => store.reconnectCount),
-    reconnectFailed: computed(() => store.reconnectFailed),
     start: () => store.ensureStarted(),
     stop: () => store.stop(),
     kill: (id: string) => store.kill(id),

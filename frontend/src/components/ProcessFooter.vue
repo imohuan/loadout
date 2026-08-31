@@ -12,7 +12,7 @@ import { useProcessStore } from '@/stores/processes'
 import { useConfirm } from '@/composables/useConfirm'
 import type { ProcessInfo } from '@/lib/types'
 
-const { running, history, connected, hasProcesses, start, kill, reconnectFailed, reconnectCount } =
+const { running, history, connected, hasProcesses, start, kill, reconnectCount } =
   useProcessMonitor()
 
 const { confirmDialog } = useConfirm()
@@ -125,13 +125,7 @@ function openView(p: ProcessInfo) {
         <span
           class="size-1.5 rounded-full"
           :class="connected ? 'bg-emerald-500' : 'bg-red-500'"
-          :title="
-            connected
-              ? '已连接'
-              : reconnectFailed
-                ? '重连失败，请刷新'
-                : '重连中 (' + reconnectCount + ')'
-          "
+          :title="connected ? '已连接' : '重连中 (' + reconnectCount + ')'"
         />
       </div>
       <div class="flex items-center gap-1">
