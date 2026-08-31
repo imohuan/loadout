@@ -506,11 +506,11 @@ async function restoreAllBackups() {
             </CardHeader>
             <CardContent class="p-0">
               <div v-if="skills?.length" class="overflow-x-auto">
-                <Table class="table-auto w-full">
+                <Table class="table-fixed w-full">
                   <TableHeader v-if="!groupBySource">
                     <TableRow>
                       <TableHead class="w-48">名称</TableHead>
-                      <TableHead class="w-[28rem] min-w-72">描述</TableHead>
+                      <TableHead class="min-w-72">描述</TableHead>
                       <TableHead class="w-48">
                         <div class="flex items-center gap-1">
                           <span>来源</span>
@@ -531,7 +531,7 @@ async function restoreAllBackups() {
                         </div>
                       </TableHead>
                       <TableHead class="w-28">版本</TableHead>
-                      <TableHead>更新时间</TableHead>
+                      <TableHead class="w-32">更新时间</TableHead>
                       <TableHead class="w-12 text-right">操作</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -557,7 +557,7 @@ async function restoreAllBackups() {
                           </Tooltip>
                         </div>
                       </TableHead>
-                      <TableHead class="w-[28rem] min-w-72">描述</TableHead>
+                      <TableHead class="min-w-72">描述</TableHead>
                       <TableHead class="w-24">技能数</TableHead>
                       <TableHead class="w-12 text-right">操作</TableHead>
                     </TableRow>
@@ -565,7 +565,7 @@ async function restoreAllBackups() {
                   <TableBody v-if="!groupBySource">
                     <TableRow v-for="skill in skills" :key="skill.name">
                       <TableCell class="w-48 font-medium truncate">{{ skill.name }}</TableCell>
-                      <TableCell class="w-[28rem] min-w-72" :class="wrapDescription ? 'break-words whitespace-normal' : 'truncate'">
+                      <TableCell class="min-w-72" :class="wrapDescription ? 'break-words whitespace-normal' : 'truncate'">
                         <TranslateText
                           v-if="skill.description"
                           :source="skill.description"
@@ -577,7 +577,7 @@ async function restoreAllBackups() {
                       </TableCell>
                       <TableCell class="w-48 font-mono text-xs truncate">{{ skill.source || '-' }}</TableCell>
                       <TableCell class="w-28">{{ skill.version || '-' }}</TableCell>
-                      <TableCell>
+                      <TableCell class="w-32">
                         <div class="inline-flex w-fit items-center gap-1 whitespace-nowrap">
                         <Tooltip :disabled="!skill.updated_at">
                           <TooltipTrigger as-child>
@@ -714,16 +714,16 @@ async function restoreAllBackups() {
                         class="bg-muted/30 hover:bg-muted/30"
                       >
                         <TableCell :colspan="5" class="whitespace-normal p-0 w-full overflow-hidden">
-                          <Table class="table-auto w-full">
+                          <Table class="table-fixed w-full">
                             <TableBody>
                               <TableRow
                                 v-for="skill in group.skills"
                                 :key="skill.name"
                                 class="hover:bg-transparent"
                               >
-                                <TableCell class="w-64 font-medium truncate">{{ skill.name }}</TableCell>
-                                <TableCell class="w-96">
-                                  <div class="w-96 min-w-0">
+                                <TableCell class="w-48 font-medium truncate">{{ skill.name }}</TableCell>
+                                <TableCell class="min-w-72">
+                                  <div class="min-w-0">
                                   <Tooltip v-if="skill.description" :delay-duration="150">
                                     <TooltipTrigger as-child>
                                       <p class="truncate text-sm text-muted-foreground">
@@ -751,7 +751,7 @@ async function restoreAllBackups() {
                                   </div>
                                 </TableCell>
                                 <TableCell class="w-32">{{ skill.version || '-' }}</TableCell>
-                                <TableCell>
+                                <TableCell class="w-32">
                                   <div class="inline-flex w-fit items-center gap-1 whitespace-nowrap">
                                   <Tooltip :disabled="!skill.updated_at">
                                     <TooltipTrigger as-child>
