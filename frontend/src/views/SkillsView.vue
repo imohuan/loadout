@@ -506,7 +506,7 @@ async function restoreAllBackups() {
             </CardHeader>
             <CardContent class="p-0">
               <div v-if="skills?.length" class="overflow-x-auto">
-                <Table class="table-fixed w-full">
+                <Table class="table-fixed w-full min-w-[60rem]">
                   <TableHeader v-if="!groupBySource">
                     <TableRow>
                       <TableHead class="w-48">名称</TableHead>
@@ -673,8 +673,8 @@ async function restoreAllBackups() {
                             </div>
                           </div>
                         </TableCell>
-                        <TableCell class="w-[28rem]">
-                          <div class="w-[28rem] min-w-0">
+                        <TableCell class="min-w-72">
+                          <div class="min-w-0">
                           <Tooltip
                             v-if="group.firstDescription"
                             :delay-duration="150"
@@ -714,7 +714,7 @@ async function restoreAllBackups() {
                         class="bg-muted/30 hover:bg-muted/30"
                       >
                         <TableCell :colspan="5" class="whitespace-normal p-0 w-full overflow-hidden">
-                          <Table class="table-fixed w-full">
+                          <Table class="table-fixed w-full min-w-[48rem]">
                             <TableBody>
                               <TableRow
                                 v-for="skill in group.skills"
