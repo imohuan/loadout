@@ -13,10 +13,11 @@ import {
   RiUpload2Line,
 } from '@remixicon/vue'
 import { useManagementApi } from '@/composables/useManagementApi'
+import { useProcessStore } from '@/stores/processes'
 import { useListLoader } from '@/composables/useListLoader'
 import { useAsyncTask } from '@/composables/useAsyncTask'
 import { useConfirm } from '@/composables/useConfirm'
-import { startTask, registerTask } from '@/composables/useTask'
+import { startTask } from '@/composables/useTask'
 import PageHeader from '@/components/PageHeader.vue'
 import LoadingBlock from '@/components/LoadingBlock.vue'
 import EmptyState from '@/components/EmptyState.vue'
@@ -144,30 +145,34 @@ async function checkDeps() {
   }
 }
 
-/** 安装/更新全局包（后台 procreg 任务）。加载态与结束收尾统一由 useTask 管理。 */
+/** 安装/更新全局包（后台 procreg 任务）。用轮询 settleOf 兜底，SSE onDone 不可靠时也能恢复按钮状态。 */
 async function installDep(name: string) {
   if (depsBusy.value) return
   const taskId = `dep-install:${name}`
-  // 注册收尾：安装结束（done）刷新依赖状态并清空按钮加载态。
-  registerTask(taskId, {
-    kind: 'dep',
-    onDone: () => {
-      depsBusy.value = null
-      // 安装完成实时查最新状态，避免读到后端尚未刷新的旧缓存。
-      void checkDeps()
-    },
-    onError: (err) => {
-      depsBusy.value = null
-      void checkDeps()
-      toast.error(`安装/更新 ${name} 失败`, { description: String(err) })
-    },
-  })
   depsBusy.value = name
+  // 主动轮询 useProcessStore.settledOf：SSE onDone 在后端重启历史清空、SSE 断开错过 done 事件
+  // 等场景下不可靠，这里直接轮询确保按钮加载态一定会清，避免永久转圈。
+  const store = useProcessStore()
+  let finished = false
+  const settle = (err?: unknown) => {
+    if (finished) return
+    finished = true
+    clearInterval(timer)
+    depsBusy.value = null
+    void checkDeps()
+    if (err) toast.error(`安装/更新 ${name} 失败`, { description: String(err) })
+  }
+  const timer = setInterval(() => {
+    const st = store.settledOf(taskId)
+    if (st === 'done' || st === 'error') {
+      settle(st === 'error' ? 'install error' : undefined)
+    }
+  }, 1000)
+  setTimeout(() => settle('install timeout'), 5 * 60 * 1000)
   try {
     await startTask({ id: taskId, kind: 'dep', run: () => api.depsInstall(name, taskId) })
   } catch (e) {
-    depsBusy.value = null
-    toast.error(e instanceof Error ? e.message : `启动安装 ${name} 失败`)
+    settle(e instanceof Error ? e.message : `启动安装 ${name} 失败`)
   }
 }
 
