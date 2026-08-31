@@ -1,0 +1,39 @@
+# 统一换行符为 LF（Unix 风格），避免 CRLF/LF 混用导致工具读写出问题
+# 文本文件一律按 LF 处理；如需某类文件强制 CRLF，另行覆盖
+* text=auto
+
+# 所有常见文本源码强制 LF
+*.vue text eol=lf
+*.ts text eol=lf
+*.tsx text eol=lf
+*.js text eol=lf
+*.jsx text eol=lf
+*.css text eol=lf
+*.scss text eol=lf
+*.html text eol=lf
+*.py text eol=lf
+*.go text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.toml text eol=lf
+*.sh text eol=lf
+*.bat text eol=lf
+*.ps1 text eol=lf
+
+# 二进制/依赖目录不转换
+node_modules/ -text
+dist/ -text
+build/ -text
+vendor/ -text
+*.exe binary
+*.dll binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.ttf binary
+*.woff binary
+*.woff2 binary
