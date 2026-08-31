@@ -153,11 +153,12 @@ async function installDep(name: string) {
     kind: 'dep',
     onDone: () => {
       depsBusy.value = null
-      void checkDeps()
+      // 后端安装完成已刷新该库缓存，直接读缓存拿最新状态。
+      void refreshDeps()
     },
     onError: (err) => {
       depsBusy.value = null
-      void checkDeps()
+      void refreshDeps()
       toast.error(`安装/更新 ${name} 失败`, { description: String(err) })
     },
   })
