@@ -11,7 +11,7 @@ import type { ProcessEvent, ProcessInfo } from '@/lib/types'
 // 断线重连策略（沿用原 useProcessMonitor）：
 //  - 依赖 EventSource readyState 识别异常终止，主动关闭并用指数退避重连。
 //  - 重连前重新换取短期 sse_token，避免用过期 token 撞服务端。
-//  - 超过最大次数停止重连，connected 置 false，交由上层提示。
+//  - 持续指数退避重连（封顶 MAX_RECONNECT_DELAY_MS），永不放弃，断线后自动恢复。
 export const useProcessStore = defineStore('processes', () => {
   const processes = ref<ProcessInfo[]>([])
   const connected = ref(false)
@@ -23,7 +23,7 @@ export const useProcessStore = defineStore('processes', () => {
   let started = false
 
   const BASE_RECONNECT_DELAY_MS = 1000
-  const MAX_RECONNECT_DELAY_MS = 16000
+  const MAX_RECONNECT_DELAY_MS = 30000
 
   function upsert(p: ProcessInfo) {
     const i = processes.value.findIndex((x) => x.id === p.id)
