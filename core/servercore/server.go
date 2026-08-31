@@ -359,7 +359,10 @@ func Run() error {
 		Handler:           handler,
 		BaseContext:       func(net.Listener) context.Context { return connCtx },
 		ReadHeaderTimeout: config.HTTPReadTimeout,
-		WriteTimeout:      config.UpstreamTimeout,
+		// 不设 WriteTimeout：它是「从请求开始算的绝对超时」，会定时掐断 SSE 等长连接
+		//（此前 =UpstreamTimeout 300s，导致 /api/processes/stream 每 5 分钟被强制断开一次）。
+		// SSE 处理器自带心跳 + r.Context().Done() 主动退出，server 关闭时 connCancel()
+		// 也会主动断开所有活跃连接，故无需 WriteTimeout 兜底。
 	}
 
 	lg.Info("监听", "addr", addr)
