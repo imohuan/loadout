@@ -137,13 +137,12 @@ async function checkDeps(name?: string) {
     // 后端同步查询，直接返回最新状态
     const res = await api.depsRefresh(name)
     const items = res.items || []
-    // 单库刷新（name）只更新该库记录，保留其他库；全量刷新则整体替换。
-    if (name) {
-      const others = depsItems.value.filter((d) => d.name !== name)
-      depsItems.value = [...items, ...others]
-    } else {
-      depsItems.value = items
-    }
+    // 合并：按 name 去重，items 中的记录优先覆盖已有同名的（保留最新）。
+    // 防止 depsItems 累积重复项导致依赖区域重复渲染。
+    const map = new Map<string, (typeof depsItems.value)[number]>()
+    for (const d of depsItems.value) map.set(d.name, d)
+    for (const d of items) map.set(d.name, d)
+    depsItems.value = Array.from(map.values())
     depsChecking.value = res.checking
   } catch (e) {
     toast.error(e instanceof Error ? e.message : '检查失败')
@@ -161,14 +160,19 @@ async function installDep(name: string) {
   // 等场景下不可靠，这里直接轮询确保按钮加载态一定会清，避免永久转圈。
   const store = useProcessStore()
   let finished = false
-  const settle = (err?: unknown) => {
+  // settle：安装进程结束后还要等 checkDeps（自检 + 检查版本）跑完才算真正结束，
+  // 所以先 await checkDeps 再清按钮加载态。
+  const settle = async (err?: unknown) => {
     if (finished) return
     finished = true
     clearInterval(timer)
-    depsBusy.value = null
-    // 只刷新刚安装/更新的这个库，避免全量查其他库。
-    void checkDeps(name)
     if (err) toast.error(`安装/更新 ${name} 失败`, { description: String(err) })
+    try {
+      // 只刷新刚安装/更新的这个库，避免全量查其他库；等它返回（自检+查版本完成）再清按钮。
+      await checkDeps(name)
+    } finally {
+      depsBusy.value = null
+    }
   }
   const timer = setInterval(() => {
     const st = store.settledOf(taskId)
