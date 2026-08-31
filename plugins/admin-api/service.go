@@ -2562,20 +2562,6 @@ func (s *Service) RefreshDeps() {
 	s.depsMu.Unlock()
 }
 
-// refreshDep 只刷新单个库的状态缓存（替换缓存中同名的旧记录），供安装完成后按库更新。
-// 比全量 RefreshDeps 更省：只跑这一个库的 npm 查询，其余库缓存不动。
-func (s *Service) refreshDep(name string) {
-	st := deps.Check(name)
-	s.depsMu.Lock()
-	for i := range s.depsCache {
-		if s.depsCache[i].Name == name {
-			s.depsCache[i] = st
-			break
-		}
-	}
-	s.depsMu.Unlock()
-}
-
 // handleDepsStatus 返回依赖检查缓存结果；缓存为空（未检查过）时立即触发一次。
 func (s *Service) handleDepsStatus(w http.ResponseWriter, r *http.Request) {
 	s.depsMu.Lock()
@@ -2634,11 +2620,11 @@ func (s *Service) handleDepsInstall(w http.ResponseWriter, r *http.Request) {
 	}
 	name := strings.TrimSpace(req.Name)
 	go func() {
+		// 安装/更新本身在 procreg 执行（id 关联前端 taskId），结束后由前端 settle 调
+		// /api/deps/refresh 单库刷新并更新缓存。这里不再额外 refreshDep，避免重复自检。
 		if err := deps.Install(name, req.ID, nil); err != nil {
 			s.lg.Warn("deps: 安装失败", "name", name, "err", err)
 		}
-		// 安装/更新结束后只刷新这个库的状态缓存，让前端读缓存即拿到最新结果。
-		s.refreshDep(name)
 	}()
 	writeJSON(w, http.StatusOK, map[string]any{"started": true, "id": req.ID})
 }
