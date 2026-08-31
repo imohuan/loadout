@@ -129,14 +129,21 @@ async function refreshDeps() {
   }
 }
 
-/** 手动触发重新检查 */
-async function checkDeps() {
+/** 手动触发重新检查；传 name 只刷新该库，不传全量刷新。 */
+async function checkDeps(name?: string) {
   if (depsChecking.value) return
   depsChecking.value = true
   try {
     // 后端同步查询，直接返回最新状态
-    const res = await api.depsRefresh()
-    depsItems.value = res.items || []
+    const res = await api.depsRefresh(name)
+    const items = res.items || []
+    // 单库刷新（name）只更新该库记录，保留其他库；全量刷新则整体替换。
+    if (name) {
+      const others = depsItems.value.filter((d) => d.name !== name)
+      depsItems.value = [...items, ...others]
+    } else {
+      depsItems.value = items
+    }
     depsChecking.value = res.checking
   } catch (e) {
     toast.error(e instanceof Error ? e.message : '检查失败')
@@ -159,7 +166,8 @@ async function installDep(name: string) {
     finished = true
     clearInterval(timer)
     depsBusy.value = null
-    void checkDeps()
+    // 只刷新刚安装/更新的这个库，避免全量查其他库。
+    void checkDeps(name)
     if (err) toast.error(`安装/更新 ${name} 失败`, { description: String(err) })
   }
   const timer = setInterval(() => {

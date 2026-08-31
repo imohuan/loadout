@@ -2561,14 +2561,35 @@ func (s *Service) handleDepsStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"items": cache, "checking": checking})
 }
 
-// handleDepsRefresh 手动触发重新检查依赖状态。
+// handleDepsRefresh 手动触发重新检查依赖状态。请求体可选 name：传了只刷新该库，
+// 不传则全量刷新所有库。安装完成后前端只传 name 刷新安装的库，避免全量查其他库。
 func (s *Service) handleDepsRefresh(w http.ResponseWriter, r *http.Request) {
-	// 同步查询：本次请求直接查完并返回最新状态，前端拿到即可展示，无需二次读取缓存。
-	statuses := deps.CheckAll(depNames())
-	s.depsMu.Lock()
-	s.depsCache = statuses
-	s.depsChecking = false
-	s.depsMu.Unlock()
+	var req struct {
+		Name string `json:"name"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	name := strings.TrimSpace(req.Name)
+
+	var statuses []deps.Status
+	if name != `` {
+		st := deps.Check(name)
+		statuses = []deps.Status{st}
+		// 同步刷新缓存中该库的记录。
+		s.depsMu.Lock()
+		for i := range s.depsCache {
+			if s.depsCache[i].Name == name {
+				s.depsCache[i] = st
+				break
+			}
+		}
+		s.depsMu.Unlock()
+	} else {
+		statuses = deps.CheckAll(depNames())
+		s.depsMu.Lock()
+		s.depsCache = statuses
+		s.depsChecking = false
+		s.depsMu.Unlock()
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": statuses, "checking": false})
 }
 

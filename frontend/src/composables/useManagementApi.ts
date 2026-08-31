@@ -70,8 +70,8 @@ export function useManagementApi() {
     request<void>('/api/change-password', 'POST', body)
   const depsStatus = () =>
     api<{ items: DepStatus[]; checking: boolean }>('/api/deps/status')
-  const depsRefresh = () =>
-    request<{ items: DepStatus[]; checking: boolean }>('/api/deps/refresh', 'POST')
+  const depsRefresh = (name?: string) =>
+    request<{ items: DepStatus[]; checking: boolean }>('/api/deps/refresh', 'POST', name ? { name } : undefined)
   const depsInstall = (name: string, id?: string) =>
     request<{ started: boolean }>('/api/deps/install', 'POST', { name, id })
   return {
