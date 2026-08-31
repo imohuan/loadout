@@ -531,7 +531,7 @@ async function restoreAllBackups() {
                         </div>
                       </TableHead>
                       <TableHead class="w-28">版本</TableHead>
-                      <TableHead class="w-28">更新时间</TableHead>
+                      <TableHead class="w-fit">更新时间</TableHead>
                       <TableHead class="w-12 text-right">操作</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -577,7 +577,7 @@ async function restoreAllBackups() {
                       </TableCell>
                       <TableCell class="w-48 font-mono text-xs truncate">{{ skill.source || '-' }}</TableCell>
                       <TableCell class="w-28">{{ skill.version || '-' }}</TableCell>
-                      <TableCell class="w-28">
+                      <TableCell class="w-fit">
                         <Tooltip :disabled="!skill.updated_at">
                           <TooltipTrigger as-child>
                             <span
@@ -745,7 +745,7 @@ async function restoreAllBackups() {
                                   <span v-else class="text-sm text-muted-foreground">—</span>
                                 </TableCell>
                                 <TableCell class="w-32">{{ skill.version || '-' }}</TableCell>
-                                <TableCell class="w-32">
+                                <TableCell class="w-fit">
                                   <Tooltip :disabled="!skill.updated_at">
                                     <TooltipTrigger as-child>
                                       <span
