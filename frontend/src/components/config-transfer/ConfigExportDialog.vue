@@ -11,6 +11,7 @@ import {
   Button,
 } from 'shadcn-vue-cdn'
 import { RiDownload2Line, RiLoaderLine, RiLockLine } from '@remixicon/vue'
+import BulkSelectButtons from '@/components/BulkSelectButtons.vue'
 import { toast } from 'vue-sonner'
 import {
   exportConfig,
@@ -40,8 +41,16 @@ function toggle(key: TransferSectionKey) {
 
 const allSelected = () => selected.value.length === transferSectionOptions.length
 
-function toggleAll() {
-  selected.value = allSelected() ? [] : transferSectionOptions.map((opt) => opt.key)
+function selectAll() {
+  selected.value = transferSectionOptions.map((opt) => opt.key)
+}
+function invertAll() {
+  const allKeys = transferSectionOptions.map((opt) => opt.key)
+  const current = new Set(selected.value)
+  selected.value = allKeys.filter((k) => !current.has(k))
+}
+function clearAll() {
+  selected.value = []
 }
 
 async function doExport() {
@@ -88,15 +97,14 @@ async function doExport() {
           <span class="text-xs text-muted-foreground"
             >已选 {{ selected.length }} / {{ transferSectionOptions.length }} 类</span
           >
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            class="h-6 px-2 text-xs"
-            @click="toggleAll"
-          >
-            {{ allSelected() ? '取消全选' : '全选' }}
-          </Button>
+          <BulkSelectButtons
+            :all-selected="allSelected()"
+            :can-operate="transferSectionOptions.length > 0"
+            :has-selection="selected.length > 0"
+            @select-all="selectAll"
+            @invert="invertAll"
+            @clear="clearAll"
+          />
         </div>
         <div class="divide-y divide-border rounded-md border border-border">
           <label

@@ -8,12 +8,11 @@ import {
   RiRestartLine,
   RiDeleteBinLine,
   RiToggleLine,
-  RiCheckboxMultipleLine,
   RiCloseLine,
-  RiCloseCircleLine,
 } from '@remixicon/vue'
 import type { ChannelStatus, ModelStatus } from '@/lib/types'
 import StatusBadge from '@/components/StatusBadge.vue'
+import BulkSelectButtons from '@/components/BulkSelectButtons.vue'
 import { formatDate } from '@/lib/format'
 
 const props = defineProps<{
@@ -255,32 +254,14 @@ function busy(action: string) {
               </Button>
             </template>
           </div>
-          <div class="flex shrink-0 items-center gap-0.5">
-            <Tooltip>
-              <TooltipTrigger as-child>
-                <Button size="sm" variant="ghost" @click="selectAll">
-                  <RiCheckboxMultipleLine size="16" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>全选</TooltipContent>
-            </Tooltip>
-            <Tooltip>
-              <TooltipTrigger as-child>
-                <Button size="sm" variant="ghost" @click="invertSelection">
-                  <RiCloseCircleLine size="16" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>反选</TooltipContent>
-            </Tooltip>
-            <Tooltip>
-              <TooltipTrigger as-child>
-                <Button size="sm" variant="ghost" @click="clearSelection">
-                  <RiCloseLine size="16" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>清空选择</TooltipContent>
-            </Tooltip>
-          </div>
+          <BulkSelectButtons
+            :all-selected="allSelected"
+            :can-operate="props.item.models.length > 0"
+            :has-selection="hasSelection"
+            @select-all="selectAll"
+            @invert="invertSelection"
+            @clear="clearSelection"
+          />
         </div>
         <div v-if="expanded" class="border-t border-border">
           <div v-if="mode === 'table'" class="overflow-x-auto">

@@ -22,6 +22,7 @@ import {
   RiUploadCloud2Line,
 } from '@remixicon/vue'
 import { toast } from 'vue-sonner'
+import BulkSelectButtons from '@/components/BulkSelectButtons.vue'
 import {
   importConfig,
   previewImport,
@@ -154,13 +155,16 @@ function toggleSelect(key: string) {
   selected.value = next
 }
 
-function toggleSelectAll() {
+function selectAll() {
+  selected.value = new Set(mainSections.value.map((s) => s.key))
+}
+function invertAll() {
   const keys = mainSections.value.map((s) => s.key)
-  if (selected.value.size === keys.length) {
-    selected.value = new Set()
-  } else {
-    selected.value = new Set(keys)
-  }
+  const current = selected.value
+  selected.value = new Set(keys.filter((k) => !current.has(k)))
+}
+function clearAll() {
+  selected.value = new Set()
 }
 
 const allSelected = computed(() => {
@@ -296,16 +300,14 @@ function onOpenChange(value: boolean) {
             <p class="text-xs font-medium text-muted-foreground">
               导入项（已选 {{ selectedMainSections.length }} / {{ mainSections.length }} 类）
             </p>
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              class="h-6 px-2 text-xs"
-              :disabled="!mainSections.length"
-              @click="toggleSelectAll"
-            >
-              {{ allSelected ? '取消全选' : '全选' }}
-            </Button>
+            <BulkSelectButtons
+              :all-selected="allSelected"
+              :can-operate="mainSections.length > 0"
+              :has-selection="selected.size > 0"
+              @select-all="selectAll"
+              @invert="invertAll"
+              @clear="clearAll"
+            />
           </div>
           <div
             v-for="section in mainSections"

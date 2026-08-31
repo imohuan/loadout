@@ -5,6 +5,7 @@ const props = withDefaults(defineProps<{ embedded?: boolean }>(), { embedded: fa
 import { toast } from 'vue-sonner'
 import { RiLoader4Line, RiRefreshLine, RiStopCircleLine, RiTranslate2 } from '@remixicon/vue'
 import PageHeader from '@/components/PageHeader.vue'
+import BulkSelectButtons from '@/components/BulkSelectButtons.vue'
 import LoadingBlock from '@/components/LoadingBlock.vue'
 import EmptyState from '@/components/EmptyState.vue'
 import TranslateText from '@/components/TranslateText.vue'
@@ -97,11 +98,8 @@ function typeAllSelected(type: string) {
   const keys = typeKeys(type)
   return keys.length > 0 && keys.every((k) => selected.value.includes(k))
 }
-function toggleTypeAll(type: string) {
-  const keys = typeKeys(type)
-  const allOn = keys.every((k) => selected.value.includes(k))
-  if (allOn) keys.forEach((k) => removeKey(k))
-  else keys.forEach((k) => addKey(k))
+function selectTypeAll(type: string) {
+  typeKeys(type).forEach((k) => addKey(k))
 }
 
 function invertType(type: string) {
@@ -409,15 +407,14 @@ defineExpose({ refresh: loadSources })
             </Badge>
             <span class="text-sm text-muted-foreground ml-2">{{ group.items.length }} 项</span>
             <div class="ml-auto flex items-center gap-1" @click.stop>
-              <Button variant="outline" size="sm" @click.stop="toggleTypeAll(group.type)">
-                {{ typeAllSelected(group.type) ? '取消全选' : '全选' }}
-              </Button>
-              <Button variant="outline" size="sm" @click.stop="invertType(group.type)">
-                反选
-              </Button>
-              <Button variant="outline" size="sm" @click.stop="clearType(group.type)">
-                清空
-              </Button>
+              <BulkSelectButtons
+                :all-selected="typeAllSelected(group.type)"
+                :can-operate="group.items.length > 0"
+                :has-selection="typeKeys(group.type).some((k) => selected.includes(k))"
+                @select-all="selectTypeAll(group.type)"
+                @invert="invertType(group.type)"
+                @clear="clearType(group.type)"
+              />
             </div>
             <template #icon><span class="hidden" /></template>
           </AccordionTrigger>
