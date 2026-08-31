@@ -139,6 +139,9 @@ func (s *Service) OpenCodexModels(enableVision bool) OpenCodexModelsResult {
 	if enableVision {
 		args = append(args, "--enable-vision")
 	}
+	if source := s.sourceFromSync(); source != "" {
+		args = append(args, "--source", source)
+	}
 	lines, err := runCollect(args)
 	if err != nil {
 		s.lg.Warn("unifyai: --list models 执行失败", "err", err)
@@ -293,7 +296,11 @@ type AllConfigResult struct {
 // CLI 不可用时返回空结构（前端回落内置默认），不报错。
 func (s *Service) ListAll() (AllConfigResult, error) {
 	var empty AllConfigResult
-	lines, err := runCollect([]string{"--list", "all", "--json"})
+	args := []string{"--list", "all", "--json"}
+	if source := s.sourceFromSync(); source != "" {
+		args = append(args, "--source", source)
+	}
+	lines, err := runCollect(args)
 	if err != nil {
 		s.lg.Warn("unifyai: --list all 执行失败", "err", err)
 		return empty, nil
@@ -307,7 +314,8 @@ func (s *Service) ListAll() (AllConfigResult, error) {
 }
 
 // syncConfigPath 返回同步配置文件路径（前端把当前 UI 状态落盘后以 --config 引用）。
-func syncConfigPath() string {
+// 做成 var 便于测试覆盖到临时目录，与 mcpConfigPath 同模式。
+var syncConfigPath = func() string {
 	return filepath.Join(osConfigHome(), "sync.json")
 }
 
@@ -335,6 +343,53 @@ func (s *Service) SaveSyncConfig(cfg []byte) (string, error) {
 // SyncConfigPath 返回同步配置文件路径（前端命令预览展示用）。
 func (s *Service) SyncConfigPath() string {
 	return syncConfigPath()
+}
+
+// SyncConfig 读取 ~/.unifyai/sync.json 的完整内容。文件不存在或解析失败时
+// 返回空 map（不报错），方便调用方安全地取字段（如 source）。
+func (s *Service) SyncConfig() (map[string]any, error) {
+	p := syncConfigPath()
+	raw, err := os.ReadFile(p)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return map[string]any{}, nil
+		}
+		return nil, err
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		s.lg.Warn("unifyai: 解析 sync.json 失败", "err", err)
+		return map[string]any{}, nil
+	}
+	return cfg, nil
+}
+
+// UpdateSource 只更新 sync.json 里的 source 字段（模型源配置路径），其余字段原样保留。
+// 文件不存在时以空配置起步新建。返回写入后的文件路径。
+func (s *Service) UpdateSource(source string) (string, error) {
+	cfg, err := s.SyncConfig()
+	if err != nil {
+		return "", err
+	}
+	cfg["source"] = source
+	raw, err := json.Marshal(cfg)
+	if err != nil {
+		return "", err
+	}
+	return s.SaveSyncConfig(raw)
+}
+
+// sourceFromSync 读取 sync.json 里持久化的 source（模型源配置路径）。
+// 返回空串表示未配置（调用方不拼 --source，让 CLI 用默认路径）。
+func (s *Service) sourceFromSync() string {
+	cfg, err := s.SyncConfig()
+	if err != nil {
+		return ""
+	}
+	if src, ok := cfg["source"].(string); ok {
+		return src
+	}
+	return ""
 }
 
 // ListMcpMatrix 解析 `unifyai --list mcp --json`，返回源 mcp.json + 各平台 MCP 开关状态，

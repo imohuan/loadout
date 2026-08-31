@@ -575,6 +575,36 @@ export async function saveSyncConfig(config: unknown): Promise<string> {
 }
 
 /**
+ * 读取 ~/.unifyai/sync.json 的完整内容（前端初始化读回持久化的 source 等）。
+ * 后端文件不存在时返回空对象，不报错。
+ */
+export async function fetchSyncConfig(): Promise<Record<string, unknown>> {
+  try {
+    const res = await fetch('/api/unifyai/sync-config')
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    return (await res.json()) as Record<string, unknown>
+  } catch (err) {
+    console.warn('[unifyai] 读取 sync.json 失败', err)
+    return {}
+  }
+}
+
+/**
+ * 只更新 sync.json 里的 source 字段（模型源配置路径），其余字段原样保留。
+ * 前端「模型源配置路径」输入框失焦时调用，实现路径持久化。
+ */
+export async function saveSourcePath(source: string): Promise<string> {
+  const res = await fetch('/api/unifyai/sync-config/source', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ source }),
+  })
+  if (!res.ok) throw new Error(`保存模型源路径失败：HTTP ${res.status}`)
+  const data = (await res.json()) as { path?: string }
+  return data.path || SYNC_CONFIG_PATH
+}
+
+/**
  * 构建 CLI 参数数组（纯前端逻辑，无需后端）。命令预览与真实执行共用。
  *
  * 统一走 --config：UI 状态先由 saveSyncConfig 落盘到 sync.json，执行/预览一律

@@ -40,9 +40,11 @@ import {
   fetchAllConfig,
   fetchManagedMcpServers,
   fetchModelSource,
+  fetchSyncConfig,
   fetchOpenCodexModels,
   importKindBadgeClass,
   saveMcpServers,
+  saveSourcePath,
   saveSyncConfig,
   type McpImportSource,
   type McpMatrixCell,
@@ -705,6 +707,18 @@ const mcpSourcePath = ref('./mcp.json（cwd 优先，回退 ~/.unifyai/mcp.json�
 // ---------- 高级选项 ----------
 const advancedOpen = ref(false)
 const sourcePath = ref(DEFAULT_SOURCE)
+
+/** 模型源配置路径输入框失焦时持久化到 sync.json（后端只改 source 字段）。 */
+async function handleSourceBlur() {
+  const v = sourcePath.value.trim()
+  if (!v) return
+  try {
+    await saveSourcePath(v)
+    toast.success('模型源路径已保存')
+  } catch (err) {
+    toast.error('保存模型源路径失败', { description: String(err) })
+  }
+}
 const verbose = ref(false)
 
 // ---------- 命令拼装 ----------
@@ -933,6 +947,13 @@ onMounted(async () => {
   // 一次拉全（--list all → platforms + models + mcp 矩阵 + metadata 缓存状态）
   // 骨架屏最小展示时长：all 接口可能很快返回，太短用户看不到加载效果。
   const startedAt = performance.now()
+  // 读回 sync.json 持久化的 source（模型源路径），避免每次进页面都重置为默认值
+  fetchSyncConfig()
+    .then((cfg) => {
+      const saved = cfg.source
+      if (typeof saved === 'string' && saved.trim()) sourcePath.value = saved.trim()
+    })
+    .catch(() => {})
   try {
   const all = await fetchAllConfig()
   applyPlatforms(all.platforms)
@@ -1112,7 +1133,7 @@ onMounted(async () => {
           <div v-show="advancedOpen" class="grid gap-3 border-t px-3 py-3 sm:grid-cols-2">
             <div class="space-y-1">
               <Label>模型源配置路径（--source）</Label>
-              <Input v-model="sourcePath" placeholder="~/.opencodex/config.json" />
+              <Input v-model="sourcePath" placeholder="~/.opencodex/config.json" @blur="handleSourceBlur" />
             </div>
             <!-- <div class="flex items-center gap-2 pt-5">
               <Switch id="verbose" v-model="verbose" />

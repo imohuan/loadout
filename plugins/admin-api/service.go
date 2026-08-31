@@ -198,6 +198,8 @@ func (s *Service) Routes() []plugin.RouteSpec {
 		{Method: http.MethodGet, Pattern: "GET /api/unifyai/mcp-matrix", Auth: plugin.AuthSession, Handler: s.session(s.handleUnifyaiMcpMatrix)},
 		{Method: http.MethodGet, Pattern: "GET /api/unifyai/all", Auth: plugin.AuthSession, Handler: s.session(s.handleUnifyaiAll)},
 		{Method: http.MethodPut, Pattern: "PUT /api/unifyai/sync-config", Auth: plugin.AuthSession, Handler: s.session(s.handleUnifyaiSyncConfigSave)},
+		{Method: http.MethodGet, Pattern: "GET /api/unifyai/sync-config", Auth: plugin.AuthSession, Handler: s.session(s.handleUnifyaiSyncConfigGet)},
+		{Method: http.MethodPut, Pattern: "PUT /api/unifyai/sync-config/source", Auth: plugin.AuthSession, Handler: s.session(s.handleUnifyaiSyncConfigSource)},
 
 		// 聚合模型
 		{Method: http.MethodGet, Pattern: "GET /api/aggregates", Auth: plugin.AuthSession, Handler: s.session(s.handleAggregatesList)},
@@ -2328,6 +2330,33 @@ func (s *Service) handleUnifyaiSyncConfigSave(w http.ResponseWriter, r *http.Req
 		return
 	}
 	path, err := s.unify.SaveSyncConfig(body)
+	if err != nil {
+		s.writeServerError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "path": path})
+}
+
+// handleUnifyaiSyncConfigGet 返回 ~/.unifyai/sync.json 的完整内容（前端初始化读回持久化的 source 等）。
+func (s *Service) handleUnifyaiSyncConfigGet(w http.ResponseWriter, r *http.Request) {
+	cfg, err := s.unify.SyncConfig()
+	if err != nil {
+		s.writeServerError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, cfg)
+}
+
+// handleUnifyaiSyncConfigSource 只更新 sync.json 里的 source 字段（模型源配置路径），
+// 其余字段原样保留。body: {"source": "path"}。前端「模型源配置路径」输入框失焦时调用。
+func (s *Service) handleUnifyaiSyncConfigSource(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Source string `json:"source"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	path, err := s.unify.UpdateSource(req.Source)
 	if err != nil {
 		s.writeServerError(w, err)
 		return
