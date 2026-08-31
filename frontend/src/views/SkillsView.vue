@@ -1085,39 +1085,6 @@ async function restoreAllBackups() {
                     详情
                   </Button>
                 </div>
-                <!-- 批量选择：全选/反选/清空，其中反选代表只选切换前的反（方便只有些部分着要转换场景的情况下）。点击会覆盖当前模式的全部显示技能。 -->
-                <div class="flex rounded-md border border-border p-0.5">
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="ghost"
-                    :disabled="!skills?.length"
-                    title="全选当前列表中的全部技能"
-                    @click="selectAllSkills"
-                  >
-                    全选
-                  </Button>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="ghost"
-                    :disabled="!skills?.length"
-                    title="反选（在当前已选中换未选）"
-                    @click="invertSkills"
-                  >
-                    反选
-                  </Button>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="ghost"
-                    :disabled="presetForm.selectedSkills.length === 0"
-                    title="清空已选的技能"
-                    @click="clearSkills"
-                  >
-                    清空
-                  </Button>
-                </div>
               </div>
             </div>
             <template v-if="skills?.length">
@@ -1231,9 +1198,44 @@ async function restoreAllBackups() {
             <p v-else class="text-sm text-muted-foreground">
               暂无可选技能，请先在「技能列表」中安装技能。
             </p>
-            <p class="text-xs text-muted-foreground">
-              点击切换选中，已选 {{ presetForm.selectedSkills.length }} 个
-            </p>
+            <!-- 已选数量 + 批量操作\uff08全选/反选/清空\uff09\uff0c在列表容器与提示文字之间\uff0c按需求可隐藏当前梢式的全部\uff0c不依赖显示模式 -->
+            <div class="flex items-center justify-between">
+              <p class="text-xs text-muted-foreground">
+                点击切换选中，已选 {{ presetForm.selectedSkills.length }} 个
+              </p>
+              <div class="flex rounded-md border border-border p-0.5">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  :disabled="!skills?.length"
+                  title="全选当前列表中的全部技能"
+                  @click="selectAllSkills"
+                >
+                  全选
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  :disabled="!skills?.length"
+                  title="反选\uff08在当前已选中换未选\uff09"
+                  @click="invertSkills"
+                >
+                  反选
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  :disabled="presetForm.selectedSkills.length === 0"
+                  title="清空已选的技能"
+                  @click="clearSkills"
+                >
+                  清空
+                </Button>
+              </div>
+            </div>
           </div>
           <div class="space-y-2">
             <Label>目标平台（可多选）</Label>
