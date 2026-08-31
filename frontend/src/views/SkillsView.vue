@@ -506,7 +506,7 @@ async function restoreAllBackups() {
             </CardHeader>
             <CardContent class="p-0">
               <div v-if="skills?.length" class="overflow-x-auto">
-                <Table class="table-fixed w-full">
+                <Table class="table-auto w-full">
                   <TableHeader v-if="!groupBySource">
                     <TableRow>
                       <TableHead class="w-48">名称</TableHead>
@@ -531,7 +531,7 @@ async function restoreAllBackups() {
                         </div>
                       </TableHead>
                       <TableHead class="w-28">版本</TableHead>
-                      <TableHead class="w-fit min-w-32">更新时间</TableHead>
+                      <TableHead>更新时间</TableHead>
                       <TableHead class="w-12 text-right">操作</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -577,7 +577,7 @@ async function restoreAllBackups() {
                       </TableCell>
                       <TableCell class="w-48 font-mono text-xs truncate">{{ skill.source || '-' }}</TableCell>
                       <TableCell class="w-28">{{ skill.version || '-' }}</TableCell>
-                      <TableCell class="w-fit min-w-32">
+                      <TableCell>
                         <Tooltip :disabled="!skill.updated_at">
                           <TooltipTrigger as-child>
                             <span
@@ -671,7 +671,8 @@ async function restoreAllBackups() {
                             </div>
                           </div>
                         </TableCell>
-                        <TableCell class="w-fit">
+                        <TableCell class="w-[28rem]">
+                          <div class="w-[28rem] min-w-0">
                           <Tooltip
                             v-if="group.firstDescription"
                             :delay-duration="150"
@@ -699,6 +700,7 @@ async function restoreAllBackups() {
                             </TooltipContent>
                           </Tooltip>
                           <span v-else class="text-sm text-muted-foreground">—</span>
+                          </div>
                         </TableCell>
                         <TableCell class="w-24">
                           <Badge variant="secondary">{{ group.skills.length }} 个</Badge>
@@ -710,7 +712,7 @@ async function restoreAllBackups() {
                         class="bg-muted/30 hover:bg-muted/30"
                       >
                         <TableCell :colspan="5" class="whitespace-normal p-0 w-full overflow-hidden">
-                          <Table class="table-fixed w-full">
+                          <Table class="table-auto w-full">
                             <TableBody>
                               <TableRow
                                 v-for="skill in group.skills"
@@ -718,7 +720,8 @@ async function restoreAllBackups() {
                                 class="hover:bg-transparent"
                               >
                                 <TableCell class="w-64 font-medium truncate">{{ skill.name }}</TableCell>
-                                <TableCell class="w-fit">
+                                <TableCell class="w-96">
+                                  <div class="w-96 min-w-0">
                                   <Tooltip v-if="skill.description" :delay-duration="150">
                                     <TooltipTrigger as-child>
                                       <p class="truncate text-sm text-muted-foreground">
@@ -743,9 +746,10 @@ async function restoreAllBackups() {
                                     </TooltipContent>
                                   </Tooltip>
                                   <span v-else class="text-sm text-muted-foreground">—</span>
+                                  </div>
                                 </TableCell>
                                 <TableCell class="w-32">{{ skill.version || '-' }}</TableCell>
-                                <TableCell class="w-fit min-w-32">
+                                <TableCell>
                                   <Tooltip :disabled="!skill.updated_at">
                                     <TooltipTrigger as-child>
                                       <span
