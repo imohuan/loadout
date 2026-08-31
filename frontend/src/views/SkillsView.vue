@@ -4,10 +4,13 @@ import {
   RiAddLine,
   RiArrowDownSLine,
   RiArrowRightSLine,
+  RiCheckboxBlankLine,
+  RiCheckboxLine,
   RiDeleteBinLine,
   RiEditLine,
   RiGroup2Line,
   RiLinksLine,
+  RiListCheck,
   RiListUnordered,
   RiLoader4Line,
   RiLoaderLine,
@@ -1207,32 +1210,37 @@ async function restoreAllBackups() {
                 <Button
                   type="button"
                   size="sm"
-                  variant="outline"
+                  variant="ghost"
+                  class="text-muted-foreground hover:text-foreground inline-flex items-center gap-1 text-xs"
                   :disabled="!skills?.length"
                   title="全选当前列表中的全部技能"
                   @click="selectAllSkills"
                 >
+                  <RiCheckboxLine size="14" />
                   全选
                 </Button>
                 <Button
                   type="button"
                   size="sm"
-                  variant="outline"
+                  variant="ghost"
+                  class="text-muted-foreground hover:text-foreground inline-flex items-center gap-1 text-xs"
                   :disabled="!skills?.length"
                   title="反选（在当前已选中换未选）"
                   @click="invertSkills"
                 >
+                  <RiListCheck size="14" />
                   反选
                 </Button>
                 <Button
                   type="button"
                   size="sm"
                   variant="ghost"
+                  class="text-muted-foreground hover:text-foreground inline-flex items-center gap-1 text-xs"
                   :disabled="presetForm.selectedSkills.length === 0"
                   title="清空已选的技能"
-                  class="text-destructive hover:text-destructive"
                   @click="clearSkills"
                 >
+                  <RiCheckboxBlankLine size="14" />
                   清空
                 </Button>
               </div>
