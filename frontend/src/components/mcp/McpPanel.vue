@@ -166,6 +166,11 @@ function invertAllServerTools(serverId: string) {
     mcp.toggleTool(serverId, tool.name)
   }
 }
+function clearAllServerTools(serverId: string) {
+  for (const tool of serverTools(serverId)) {
+    if (mcp.selected(serverId, tool.name)) mcp.toggleTool(serverId, tool.name)
+  }
+}
 
 function schemaProperties() {
   return Object.entries((toolSchema.value?.properties || {}) as Record<string, any>)
@@ -967,7 +972,7 @@ async function copyConfig(endpoint: {
                     :has-selection="selectedCountForServer(entry.id) > 0"
                     @select-all="toggleAllServerTools(entry.id)"
                     @invert="invertAllServerTools(entry.id)"
-                    @clear="toggleAllServerTools(entry.id)"
+                    @clear="clearAllServerTools(entry.id)"
                   />
                 </div>
                 <div v-if="isGroupServerExpanded(entry.id)" class="border-t">
