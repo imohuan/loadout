@@ -578,11 +578,15 @@ export async function saveSyncConfig(config: unknown): Promise<string> {
  * 读取 ~/.unifyai/sync.json 的完整内容（前端初始化读回持久化的 source 等）。
  * 后端文件不存在时返回空对象，不报错。
  */
-export async function fetchSyncConfig(): Promise<Record<string, unknown>> {
+export interface SyncConfigShape {
+  source?: string
+}
+
+export async function fetchSyncConfig(): Promise<SyncConfigShape> {
   try {
     const res = await fetch('/api/unifyai/sync-config')
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    return (await res.json()) as Record<string, unknown>
+    return (await res.json()) as SyncConfigShape
   } catch (err) {
     console.warn('[unifyai] 读取 sync.json 失败', err)
     return {}

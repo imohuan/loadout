@@ -708,10 +708,12 @@ const mcpSourcePath = ref('./mcp.json（cwd 优先，回退 ~/.unifyai/mcp.json�
 const advancedOpen = ref(false)
 const sourcePath = ref(DEFAULT_SOURCE)
 
-/** 模型源配置路径输入框失焦时持久化到 sync.json（后端只改 source 字段）。 */
+/** 模型源配置路径输入框失焦时持久化到 sync.json（后端只改 source 字段）。
+ * 空值也允许保存（清空 → 查询接口不拼 --source，回落 CLI 默认路径），
+ * 与「点同步整包写 sync.json 时 source 取自同一输入框」的行为保持一致，
+ * 避免两条写路径对空值处理分叉。 */
 async function handleSourceBlur() {
   const v = sourcePath.value.trim()
-  if (!v) return
   try {
     await saveSourcePath(v)
     toast.success('模型源路径已保存')
