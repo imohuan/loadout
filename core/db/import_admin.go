@@ -200,7 +200,7 @@ func importMCPServers(ctx context.Context, tx *sql.Tx, values []types.MCPServer)
 		args, _ := json.Marshal(srv.Args)
 		env, _ := json.Marshal(srv.Env)
 		headers, _ := json.Marshal(srv.Headers)
-		if _, err := tx.ExecContext(ctx, `INSERT INTO mcp_servers (id, position, name, description, transport, command, args_json, env_json, url, headers_json, enabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, srv.ID, i, srv.Name, srv.Description, srv.Transport, srv.Command, string(args), string(env), srv.URL, string(headers), boolInt(srv.Enabled)); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO mcp_servers (id, position, name, description, transport, command, args_json, env_json, url, headers_json, enabled, builtin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, srv.ID, i, srv.Name, srv.Description, srv.Transport, srv.Command, string(args), string(env), srv.URL, string(headers), boolInt(srv.Enabled), boolInt(srv.Builtin)); err != nil {
 			return fmt.Errorf("db: import mcp server %q: %w", srv.Name, err)
 		}
 	}

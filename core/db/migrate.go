@@ -584,6 +584,13 @@ ALTER TABLE settings ADD COLUMN use_global_cmd INTEGER NOT NULL DEFAULT 0;
 -- message_inject 能力插件：往请求 messages 注入自定义内容（夹装子内部分，与 via_options/replacements/field_rules 同模式）。
 ALTER TABLE capability_routes ADD COLUMN injections_json TEXT NOT NULL DEFAULT '[]';
 `,
+	}, {
+		version: 29,
+		name:    "mcp-servers-builtin",
+		sql: `
+-- 内置端点注册的自连 MCP server（如多模态 /mcp/multimodal）打内置标记，前端显示「内置」标签。
+ALTER TABLE mcp_servers ADD COLUMN builtin INTEGER NOT NULL DEFAULT 0;
+`,
 	}}
 
 // Migrate applies all pending schema migrations and rejects an incompatible

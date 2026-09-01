@@ -52,8 +52,8 @@ func TestMigrateIsIdempotent(t *testing.T) {
 	if err := database.QueryRow("SELECT count(*) FROM schema_migrations").Scan(&count); err != nil {
 		t.Fatal(err)
 	}
-	if count != 28 {
-		t.Fatalf("schema_migrations count = %d, want 28", count)
+	if count != 29 {
+		t.Fatalf("schema_migrations count = %d, want 29", count)
 	}
 }
 
@@ -65,8 +65,8 @@ func TestMigrateRejectsIncompatibleHistory(t *testing.T) {
 			}
 		},
 		"newer database": func(database *sql.DB) {
-			// 程序当前有 28 条迁移，插入 version 29 才能模拟"比程序更新"的库。
-			if _, err := database.Exec("INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (29, 'future', 'future', 'now')"); err != nil {				t.Fatal(err)
+			// 程序当前有 29 条迁移，插入 version 30 才能模拟"比程序更新"的库。
+			if _, err := database.Exec("INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (30, 'future', 'future', 'now')"); err != nil {				t.Fatal(err)
 			}
 		},
 	} {

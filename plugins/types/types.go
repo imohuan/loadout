@@ -475,6 +475,7 @@ type MCPServer struct {
 	URL         string            `json:"url"`                   // http / sse：服务地址
 	Headers     map[string]string `json:"headers,omitempty"`     // http / sse：附加请求头
 	Enabled     bool              `json:"enabled"`               // MCP 级开关
+	Builtin     bool              `json:"builtin,omitempty"`     // 是否为内置端点注册的自连 server（前端显示「内置」标签）
 }
 
 // ============ 5.7 单工具开关与分类 ============

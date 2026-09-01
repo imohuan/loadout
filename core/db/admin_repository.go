@@ -98,7 +98,7 @@ func (r *Repository) ReplaceCapabilityRoutes(ctx context.Context, routes []types
 
 // ListMCPServers 返回全部 MCP 服务器（按 position 排序）。
 func (r *Repository) ListMCPServers(ctx context.Context) ([]types.MCPServer, error) {
-	rows, err := r.database.QueryContext(ctx, `SELECT id, name, description, transport, command, args_json, env_json, url, headers_json, enabled FROM mcp_servers ORDER BY position, name`)
+	rows, err := r.database.QueryContext(ctx, `SELECT id, name, description, transport, command, args_json, env_json, url, headers_json, enabled, builtin FROM mcp_servers ORDER BY position, name`)
 	if err != nil {
 		return nil, fmt.Errorf("db: list mcp servers: %w", err)
 	}
@@ -107,9 +107,11 @@ func (r *Repository) ListMCPServers(ctx context.Context) ([]types.MCPServer, err
 	for rows.Next() {
 		var srv types.MCPServer
 		var argsJSON, envJSON, headersJSON string
-		if err := rows.Scan(&srv.ID, &srv.Name, &srv.Description, &srv.Transport, &srv.Command, &argsJSON, &envJSON, &srv.URL, &headersJSON, &srv.Enabled); err != nil {
+		var builtin int
+		if err := rows.Scan(&srv.ID, &srv.Name, &srv.Description, &srv.Transport, &srv.Command, &argsJSON, &envJSON, &srv.URL, &headersJSON, &srv.Enabled, &builtin); err != nil {
 			return nil, fmt.Errorf("db: scan mcp server: %w", err)
 		}
+		srv.Builtin = builtin != 0
 		if err := unmarshalEach(argsJSON, &srv.Args, envJSON, &srv.Env, headersJSON, &srv.Headers); err != nil {
 			return nil, fmt.Errorf("db: parse mcp server %q: %w", srv.Name, err)
 		}
@@ -141,7 +143,7 @@ func (r *Repository) ReplaceMCPServers(ctx context.Context, servers []types.MCPS
 			if err != nil {
 				return fmt.Errorf("db: marshal server headers: %w", err)
 			}
-			if _, err := tx.ExecContext(ctx, `INSERT INTO mcp_servers (id, position, name, description, transport, command, args_json, env_json, url, headers_json, enabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, srv.ID, i, srv.Name, srv.Description, srv.Transport, srv.Command, string(args), string(env), srv.URL, string(headers), boolInt(srv.Enabled)); err != nil {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO mcp_servers (id, position, name, description, transport, command, args_json, env_json, url, headers_json, enabled, builtin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, srv.ID, i, srv.Name, srv.Description, srv.Transport, srv.Command, string(args), string(env), srv.URL, string(headers), boolInt(srv.Enabled), boolInt(srv.Builtin)); err != nil {
 				return fmt.Errorf("db: insert mcp server %q: %w", srv.Name, err)
 			}
 		}
