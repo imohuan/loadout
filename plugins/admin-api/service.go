@@ -1500,8 +1500,10 @@ type mcpToolBrief struct {
 	Description string `json:"description"`
 }
 
-// mcpConnectTimeout 连接测试（handleMCPServerTest 临时连接）的超时上限。
-const mcpConnectTimeout = 20 * time.Second
+// mcpTestTimeout 管理后台「测试 MCP」的超时上限：既用于 handleMCPServerTest 的
+// 临时连接枚举工具，也用于 handleMCPToolCall 的工具调用（复用生产路由，供内置
+// server 如多模态识别这种跑大模型的调用留足时间）。
+const mcpTestTimeout = 300 * time.Second
 
 // handleMCPServerTest 按请求体里的完整配置测试上游连通性并列出工具（无需先保存）。
 // 注意：配置可能未保存，无法走 hub 索引——仍用临时连接（仅此一个入口保留）。
@@ -1526,7 +1528,7 @@ func (s *Service) testConnectionTools(r *http.Request, srv types.MCPServer) ([]m
 		Env: srv.Env, URL: srv.URL, Headers: srv.Headers,
 	})
 	defer up.Close()
-	ctx, cancel := context.WithTimeout(r.Context(), mcpConnectTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), mcpTestTimeout)
 	defer cancel()
 	infos, err := up.ListTools(ctx)
 	if err != nil {
@@ -1639,7 +1641,9 @@ func (s *Service) handleMCPToolCall(w http.ResponseWriter, r *http.Request) {
 	}
 	// 复用生产路由：连接池连接 + 索引路由 + 完整帧日志 + 埋点，与网关调用完全一致。
 	// 认证方式标记为 session（管理后台测试调用），供工具调用日志记录 auth_kind。
-	ctx, cancel := context.WithTimeout(plugin.WithAuthKind(r.Context(), plugin.AuthSession), mcpConnectTimeout)
+	// 超时用 mcpTestTimeout（300s）：视频/音频识别跑大模型耗时可能远超 20s，若沿用
+	// 太短的上限会导致识别中途被掐断。普通 MCP 工具也能在 300s 内完成，无副作用。
+	ctx, cancel := context.WithTimeout(plugin.WithAuthKind(r.Context(), plugin.AuthSession), mcpTestTimeout)
 	defer cancel()
 	result, err := s.hub.InvokeTool(ctx, req.ServerID, req.ToolName, req.Arguments)
 	if err != nil {
