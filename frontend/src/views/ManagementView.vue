@@ -5,11 +5,8 @@ import {
   RiAddLine,
   RiDeleteBinLine,
   RiDownload2Line,
-  RiKey2Line,
   RiLoader4Line,
   RiRefreshLine,
-  RiSettings3Line,
-  RiTranslate2,
   RiUpload2Line,
 } from '@remixicon/vue'
 import { useManagementApi } from '@/composables/useManagementApi'
