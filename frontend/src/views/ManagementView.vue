@@ -25,6 +25,7 @@ import VolcQuotaCard from '@/components/VolcQuotaCard.vue'
 import ConfigExportDialog from '@/components/config-transfer/ConfigExportDialog.vue'
 import ConfigImportDialog from '@/components/config-transfer/ConfigImportDialog.vue'
 import TranslateView from '@/views/TranslateView.vue'
+import MultimodalView from '@/views/MultimodalView.vue'
 
 const api = useManagementApi()
 const { data: keys, loading: keysLoading, refresh: refreshKeys } = useListLoader(api.keys)
@@ -248,6 +249,7 @@ onMounted(() => {
           <TabsTrigger value="credentials"> <RiKey2Line size="16" />模型密钥 </TabsTrigger>
           <TabsTrigger value="translations"> <RiTranslate2 size="16" />翻译 </TabsTrigger>
           <TabsTrigger value="plugins">插件</TabsTrigger>
+          <TabsTrigger value="multimodal">多模态</TabsTrigger>
         </TabsList>
         <TabsContent value="runtime" class="space-y-4">
           <VolcQuotaCard />
@@ -490,6 +492,9 @@ onMounted(() => {
               />
             </CardContent>
           </Card>
+        </TabsContent>
+        <TabsContent value="multimodal">
+          <MultimodalView />
         </TabsContent>
       </Tabs>
     </template>
