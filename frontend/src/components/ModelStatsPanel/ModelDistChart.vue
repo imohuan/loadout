@@ -82,12 +82,15 @@ const rows = computed(() => {
   }))
   const rest = props.items.slice(TOP_N)
   if (rest.length === 0) return out
-  const tokens = rest.reduce((sum, d) => sum + d.tokens, 0)
-  const calls = rest.reduce((sum, d) => sum + d.calls, 0)
+  const sum = (k: 'tokens' | 'prompt_tokens' | 'completion_tokens' | 'cached_tokens' | 'calls') =>
+    rest.reduce((acc, d) => acc + d[k], 0)
   out.push({
     model: `其他（${rest.length}）`,
-    calls,
-    tokens,
+    calls: sum('calls'),
+    tokens: sum('tokens'),
+    prompt_tokens: sum('prompt_tokens'),
+    completion_tokens: sum('completion_tokens'),
+    cached_tokens: sum('cached_tokens'),
     rank: TOP_N + 1,
     color: OTHERS_COLOR,
   })
