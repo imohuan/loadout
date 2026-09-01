@@ -86,9 +86,14 @@ async function load() {
   await run('load-multimodal', async () => {
     const cfg = await api<MultimodalConfig>('/api/multimodal/config')
     form.enabled = cfg.enabled
-    // 用后端返回的 tools 覆盖默认，确保字段真实一致；defaults 逐 kind 合并以防缺 key。
-    form.tools = cfg.tools?.length ? cfg.tools : form.tools
-    for (const t of form.tools) t.defaults = t.defaults || {}
+    // 按已知 kind 逐个补全：后端返回的覆盖对应工具，后端缺失的（如旧配置没有
+    // document）保留前端默认值——避免 toolOf(kind) 为 undefined 导致渲染崩溃。
+    const KINDS: ToolKind[] = ['image', 'video', 'audio', 'document']
+    form.tools = KINDS.map((kind) => {
+      const fromServer = (cfg.tools || []).find((t) => t.kind === kind)
+      if (fromServer) return { ...fromServer, defaults: fromServer.defaults || {} }
+      return { ...(form.tools.find((t) => t.kind === kind) || { kind, enabled: true, model: '', defaults: {} }), defaults: {} }
+    })
     loaded.value = true
   })
 }
