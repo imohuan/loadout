@@ -133,6 +133,11 @@ type recognizeFn func() recognitionResult
 //
 // action 为日志里的动作名（如「图片识别」），model 为内置识别模型名，meta 为附加展示字段
 // （如 tool/image/fps/task），toolName 用于区分工具（生成稳定 requestID 前缀）。
+//
+// 注意：route-log 的 Start/Attempt/Finish 一律用独立 ctx（routeLogCtx()，短超时，脱离
+// 主请求 ctx）——主 ctx 在识别超时（20s）后会被取消，那时再写日志会 context deadline
+// exceeded，导致 attempt/finish 落库失败，留下孤儿 request（前端 SelfHeal 兜底）。
+// 用独立 ctx 保证即使主请求超时，日志也能正常落地，路由追踪完整可查。
 func (s *Service) runRecognition(ctx context.Context, toolName, action, model string, meta map[string]any, recognize recognizeFn) (*mcpkit.ToolResult, error) {
 	start := time.Now()
 	// 生成独立 requestID：多模态是独立 MCP 调用（无主请求），route-log 里作为一条独立请求。
@@ -147,7 +152,7 @@ func (s *Service) runRecognition(ctx context.Context, toolName, action, model st
 		return textResult(res.text), nil
 	}
 
-	_ = s.route.Start(ctx, contracts.RouteRequest{
+	_ = s.route.Start(s.routeLogCtx(), contracts.RouteRequest{
 		RequestID:     reqID,
 		RequestedModel: model,
 		StartedAt:     start,
@@ -157,14 +162,22 @@ func (s *Service) runRecognition(ctx context.Context, toolName, action, model st
 	res := recognize()
 	dur := time.Since(start)
 
+	logCtx := s.routeLogCtx()
 	if res.err != nil {
-		s.routeLogAttempt(ctx, reqID, action, model, res, dur, "failed", res.err.Error(), meta)
-		s.routeLogFinish(ctx, reqID, model, res, dur, "failed", res.err.Error())
+		s.routeLogAttempt(logCtx, reqID, action, model, res, dur, "failed", res.err.Error(), meta)
+		s.routeLogFinish(logCtx, reqID, model, res, dur, "failed", res.err.Error())
 		return nil, res.err
 	}
-	s.routeLogAttempt(ctx, reqID, action, model, res, dur, "success", "", meta)
-	s.routeLogFinish(ctx, reqID, model, res, dur, "success", "")
+	s.routeLogAttempt(logCtx, reqID, action, model, res, dur, "success", "", meta)
+	s.routeLogFinish(logCtx, reqID, model, res, dur, "success", "")
 	return textResult(res.text), nil
+}
+
+// routeLogCtx 返回与主请求 ctx 隔离的 route-log 写入 ctx：3s 超时，
+// 足以把 Start/Attempt/Finish 写完；不会因主 ctx 超时/取消而失败。
+func (s *Service) routeLogCtx() context.Context {
+	ctx, _ := context.WithTimeout(context.Background(), 3*time.Second)
+	return ctx
 }
 
 // routeLogAttempt 写一条 route-log attempt（识别步骤）。

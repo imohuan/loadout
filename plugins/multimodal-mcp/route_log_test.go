@@ -14,17 +14,25 @@ type fakeRouteLog struct {
 	started  []contracts.RouteRequest
 	attempts []contracts.RouteAttempt
 	finished []contracts.RouteFinish
+	// lastStartCtxErr / lastAttemptCtxErr / lastFinishCtxErr 记录调用时刻 ctx 的错误，
+	// 用于断言 runRecognition 用了独立 ctx（不应受主 ctx 取消/超时影响）。
+	lastStartCtxErr   error
+	lastAttemptCtxErr error
+	lastFinishCtxErr  error
 }
 
-func (f *fakeRouteLog) Start(_ context.Context, req contracts.RouteRequest) error {
+func (f *fakeRouteLog) Start(ctx context.Context, req contracts.RouteRequest) error {
+	f.lastStartCtxErr = ctx.Err()
 	f.started = append(f.started, req)
 	return nil
 }
-func (f *fakeRouteLog) Attempt(_ context.Context, a contracts.RouteAttempt) (int64, error) {
+func (f *fakeRouteLog) Attempt(ctx context.Context, a contracts.RouteAttempt) (int64, error) {
+	f.lastAttemptCtxErr = ctx.Err()
 	f.attempts = append(f.attempts, a)
 	return int64(len(f.attempts)), nil
 }
-func (f *fakeRouteLog) Finish(_ context.Context, fin contracts.RouteFinish) error {
+func (f *fakeRouteLog) Finish(ctx context.Context, fin contracts.RouteFinish) error {
+	f.lastFinishCtxErr = ctx.Err()
 	f.finished = append(f.finished, fin)
 	return nil
 }
@@ -112,5 +120,43 @@ func TestUnderstandImageWritesRouteLogOnError(t *testing.T) {
 	}
 	if rl.finished[0].Result != "failed" {
 		t.Errorf("finish result = %q, want failed", rl.finished[0].Result)
+	}
+}
+
+// TestRouteLogIndependentOfParentCtx 验证：route-log 写入用独立 ctx，主 ctx 在识别阶段
+// 超时/取消也不应阻断 Attempt/Finish 落地（避免孤儿 request）。
+// 模拟场景：识别调用因超时失败 → 主 ctx 在 recognize() 返回时已 DeadlineExceeded，
+// 若写日志仍用主 ctx，db 调用会立刻 DeadlineExceeded 失败；用独立 ctx 才能正常写完。
+func TestRouteLogIndependentOfParentCtx(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Enabled = true
+	cfg.Tools[0].Enabled = true
+	cfg.Tools[0].Model = "qwen3-vl"
+	s := newConfigService(t, cfg)
+	fw := s.gw.(*fakeRecogForwarder)
+	fw.err = context.DeadlineExceeded // 识别走子请求时返回超时
+	rl := &fakeRouteLog{}
+	s.route = rl
+
+	// 模拟主 ctx 已死（识别超时后状态）。
+	parentCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, _ = s.understandImage(parentCtx, map[string]any{"image": "https://example.com/a.png"})
+
+	// 主 ctx 已取消 → 如果写日志仍用主 ctx，ctx.Err() != nil；
+	// 用独立 ctx 后写日志时的 ctx 应当仍有效（ctx.Err() == nil）。
+	if rl.lastStartCtxErr != nil {
+		t.Errorf("Start 写入 ctx 已死（%v）——主 ctx 被错误地传给 route-log", rl.lastStartCtxErr)
+	}
+	if rl.lastAttemptCtxErr != nil {
+		t.Errorf("Attempt 写入 ctx 已死（%v）——主 ctx 透传，识别超时后日志写不进去", rl.lastAttemptCtxErr)
+	}
+	if rl.lastFinishCtxErr != nil {
+		t.Errorf("Finish 写入 ctx 已死（%v）——主 ctx 透传，识别超时后日志写不进去", rl.lastFinishCtxErr)
+	}
+	// 关键：Attempt 和 Finish 都被调用了一次（日志没落空、没留孤儿）。
+	if len(rl.attempts) != 1 || len(rl.finished) != 1 {
+		t.Errorf("attempt=%d finish=%d, want 1/1", len(rl.attempts), len(rl.finished))
 	}
 }
