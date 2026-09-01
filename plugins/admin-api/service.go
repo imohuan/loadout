@@ -1221,10 +1221,15 @@ func (s *Service) withStatus(it types.MCPServer) mcpServerWithStatus {
 }
 
 func (s *Service) handleMCPServersList(w http.ResponseWriter, r *http.Request) {
+	// 数据库上游 MCP + 内存内置 server（如多模态）合并展示；内置 server 不落库。
 	items, err := s.readMCPServers(r.Context())
 	if err != nil {
 		s.writeServerError(w, err)
 		return
+	}
+	if s.hub != nil {
+		merged := append(items, s.hub.BuiltinServers()...)
+		items = merged
 	}
 	out := make([]mcpServerWithStatus, 0, len(items))
 	for _, it := range items {

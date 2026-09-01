@@ -18,14 +18,11 @@ func newHubForTest(t *testing.T) *mcphub.Service {
 	return mcphub.NewService(st, slog.Default(), nil)
 }
 
-// hubHasBuiltinServer 判断 hub 的 MCP 服务器列表里是否存在指定 ID 的内置 server。
+// hubHasBuiltinServer 判断 hub 的「内置 server」内存注册表里是否存在指定 ID 的内置 server
+// （内置 server 不落库，从 BuiltinServers() 查，而非 ListServers）。
 func hubHasBuiltinServer(t *testing.T, hub *mcphub.Service, id string) bool {
 	t.Helper()
-	servers, err := hub.ListServers(t.Context())
-	if err != nil {
-		t.Fatalf("hub.ListServers: %v", err)
-	}
-	for _, srv := range servers {
+	for _, srv := range hub.BuiltinServers() {
 		if srv.ID == id {
 			return true
 		}

@@ -81,6 +81,10 @@ type Service struct {
 	// 由内置端点插件（如 multimodal）经 RegisterBuiltinServer 注册；builtin server
 	// 的工具从这取（BuildIndex 不走 getUpstream 建上游连接），调用直调 BuiltinHandler。
 	builtinTools map[string]map[string]*ToolEntry
+	// builtinServers 内置 server 的内存注册表：server_id → 记录。与 builtinTools 成对，
+	// **不落数据库**（mcp_servers 表无记录，重启后由插件重新注册）。供 admin-api 合并
+	// 到上游 MCP 列表展示，以及 $smart 聚合/端点解析使用。
+	builtinServers map[string]types.MCPServer
 }
 
 // NewService 创建 MCP 聚合网关服务，技能仓库目录取 config.SkillsDir。
@@ -101,9 +105,10 @@ func NewService(st *store.Store, lg *slog.Logger, database *sql.DB) *Service {
 		db:           database,
 		repo:         repo,
 		repoDir:      config.SkillsDir,
-		upstreams:    map[string]*mcpkit.Upstream{},
-		logMgr:       NewLogManager(logsRoot),
-		builtinTools: map[string]map[string]*ToolEntry{},
+		upstreams:     map[string]*mcpkit.Upstream{},
+		logMgr:        NewLogManager(logsRoot),
+		builtinTools:  map[string]map[string]*ToolEntry{},
+		builtinServers: map[string]types.MCPServer{},
 	}
 }
 
@@ -119,6 +124,9 @@ func (s *Service) BuildIndex(ctx context.Context) (*Index, error) {
 	if err != nil {
 		return nil, err
 	}
+	// 合并内存里的内置 server（builtinServers，不落库）——这样 BuildIndex 能看到
+	// 内置 server，进而从 builtinTools 注册表取工具进聚合。
+	servers = append(servers, s.BuiltinServers()...)
 	states, err := s.readToolStates()
 	if err != nil {
 		return nil, err
@@ -762,8 +770,15 @@ func (s *Service) dropUpstream(id string) {
 	delete(s.upstreams, id)
 }
 
-// findServer 按 id 读服务器配置。
+// findServer 按 id 读服务器配置：先查内存里的内置 server（builtinServers，不落库），
+// 找不到再查数据库（或 mcp_servers.json）。
 func (s *Service) findServer(id string) (*types.MCPServer, error) {
+	s.mu.Lock()
+	if srv, ok := s.builtinServers[id]; ok {
+		s.mu.Unlock()
+		return &srv, nil
+	}
+	s.mu.Unlock()
 	servers, err := s.readServers()
 	if err != nil {
 		return nil, err
@@ -807,24 +822,12 @@ func (s *Service) SetServerEnabled(ctx context.Context, id string, enabled bool)
 	return s.getUpstream(*srv).Connect(ctx)
 }
 
-// writeServers 写 MCP 服务器清单（SQLite 优先，fallback mcp_servers.json）。
-func (s *Service) writeServers(ctx context.Context, servers []types.MCPServer) error {
-	if s.repo != nil {
-		if err := s.repo.ReplaceMCPServers(ctx, servers); err == nil {
-			return nil
-		} else {
-			s.warn("mcphub: 写 MCP 服务器到 SQLite 失败，回退 JSON", "err", err)
-		}
-	}
-	return s.st.Write(types.FileMCPServers, servers)
-}
-
 // RegisterBuiltinServer 注册一个内置端点 server（如多模态 /mcp/multimodal）：
-//   - 把 srv（MCPServer.Builtin=true）以固定 ID 幂等 upsert 进 MCP 服务器列表，
-//     使其出现在「上游 MCP」列表与「连接端点配置」；
+//   - 把 srv（MCPServer.Builtin=true）以固定 ID 存进**内存注册表**（不落 mcp_servers 库，
+//     重启后由插件重新注册），使其出现在「上游 MCP」列表与「连接端点配置」；
 //   - 把 tools 存进内置工具注册表，工具进入 $smart 聚合（BuildIndex 直接从注册表取，
 //     不建上游连接），调用时直调 tools 里的 BuiltinHandler。
-// 写入后刷新工具索引缓存。
+// 注册后刷新工具索引缓存。
 func (s *Service) RegisterBuiltinServer(ctx context.Context, srv types.MCPServer, tools []ToolEntry) error {
 	s.mu.Lock()
 	toolMap := map[string]*ToolEntry{}
@@ -837,59 +840,59 @@ func (s *Service) RegisterBuiltinServer(ctx context.Context, srv types.MCPServer
 		toolMap[t.Name] = &t
 	}
 	s.builtinTools[srv.ID] = toolMap
+	s.builtinServers[srv.ID] = srv
 	s.mu.Unlock()
-
-	servers, err := s.readServers()
-	if err != nil {
-		return err
-	}
-	replaced := false
-	for i := range servers {
-		if servers[i].ID == srv.ID {
-			servers[i] = srv
-			replaced = true
-			break
-		}
-	}
-	if !replaced {
-		servers = append(servers, srv)
-	}
-	if err := s.writeServers(ctx, servers); err != nil {
-		return err
-	}
 	s.Invalidate()
 	return nil
 }
 
-// UnregisterBuiltinServer 注销内置端点 server：从 MCP 服务器列表移除该 ID，清空其
-// 内置工具注册表并刷新索引；ID 不存在时返回 nil。
+// BuiltinServers 返回已注册的内置 server（内存注册表，不落库）。
+func (s *Service) BuiltinServers() []types.MCPServer {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]types.MCPServer, 0, len(s.builtinServers))
+	for _, srv := range s.builtinServers {
+		out = append(out, srv)
+	}
+	return out
+}
+
+// AllServers 返回数据库里的上游 MCP server 与内存里的内置 server 合并后的完整列表。
+func (s *Service) AllServers(ctx context.Context) ([]types.MCPServer, error) {
+	servers, err := s.readServers()
+	if err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]types.MCPServer, 0, len(servers)+len(s.builtinServers))
+	out = append(out, servers...)
+	for _, srv := range s.builtinServers {
+		// 避免与数据库里同 ID 的记录重复（理论上内置 server 不在库里）。
+		dup := false
+		for _, e := range out {
+			if e.ID == srv.ID {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			out = append(out, srv)
+		}
+	}
+	return out, nil
+}
+
+// UnregisterBuiltinServer 注销内置端点 server：清空其内存注册（内置工具 + 内置 server 记录）
+// 并刷新索引；该 ID 不存在时返回 nil。
 func (s *Service) UnregisterBuiltinServer(ctx context.Context, id string) error {
 	s.mu.Lock()
 	delete(s.builtinTools, id)
+	delete(s.builtinServers, id)
 	s.mu.Unlock()
-
-	servers, err := s.readServers()
-	if err != nil {
-		return err
-	}
-	kept := servers[:0]
-	found := false
-	for _, srv := range servers {
-		if srv.ID == id {
-			found = true
-			continue
-		}
-		kept = append(kept, srv)
-	}
-	if !found {
-		return nil
-	}
 	if up := s.getUpstreamByID(id); up != nil {
 		_ = up.Close()
 		s.dropUpstream(id)
-	}
-	if err := s.writeServers(ctx, kept); err != nil {
-		return err
 	}
 	s.Invalidate()
 	return nil

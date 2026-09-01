@@ -52,11 +52,8 @@ func TestRegisterBuiltinServer(t *testing.T) {
 		t.Errorf("Invoke 结果 = %q, 应包含 builtin:img", out)
 	}
 
-	// 内置 server 出现在上游列表。
-	servers, err := s.readServers()
-	if err != nil {
-		t.Fatal(err)
-	}
+	// 内置 server 出现在上游列表（仅内存注册表，不落库）。
+	servers := s.BuiltinServers()
 	found := false
 	for _, srv2 := range servers {
 		if srv2.ID == "builtin-mm" && srv2.Builtin {
@@ -65,6 +62,26 @@ func TestRegisterBuiltinServer(t *testing.T) {
 	}
 	if !found {
 		t.Error("内置 server 未出现在 MCP 服务器列表")
+	}
+
+	// 不应落库：readServers 只读数据库/JSON，不包含内置 server。
+	if dbServers, err := s.readServers(); err != nil {
+		t.Fatal(err)
+	} else {
+		for _, srv2 := range dbServers {
+			if srv2.ID == "builtin-mm" {
+				t.Error("内置 server 不应出现在数据库（不落库）")
+			}
+		}
+	}
+
+	// 状态查询能识别内存内置 server（不再因查库失败而误报 stopped）。
+	state, err := s.ServerStatus("builtin-mm")
+	if err != nil {
+		t.Fatalf("ServerStatus: %v", err)
+	}
+	if state != StateRunning {
+		t.Errorf("内置 server 状态 = %q, want %q", state, StateRunning)
 	}
 }
 
@@ -94,10 +111,7 @@ func TestUnregisterBuiltinServer(t *testing.T) {
 		t.Error("注销后内置工具不应再出现在索引")
 	}
 
-	servers, err := s.readServers()
-	if err != nil {
-		t.Fatal(err)
-	}
+	servers := s.BuiltinServers()
 	for _, srv2 := range servers {
 		if srv2.ID == "builtin-mm" {
 			t.Error("注销后内置 server 不应再出现在列表")
@@ -122,10 +136,7 @@ func TestRegisterBuiltinServerIdempotent(t *testing.T) {
 		}
 	}
 
-	servers, err := s.readServers()
-	if err != nil {
-		t.Fatal(err)
-	}
+	servers := s.BuiltinServers()
 	count := 0
 	for _, srv2 := range servers {
 		if srv2.ID == "builtin-mm" {
