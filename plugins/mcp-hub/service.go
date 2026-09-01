@@ -100,14 +100,14 @@ func NewService(st *store.Store, lg *slog.Logger, database *sql.DB) *Service {
 		logsRoot = filepath.Join(config.LogsDir, "mcp")
 	}
 	return &Service{
-		st:           st,
-		lg:           lg,
-		db:           database,
-		repo:         repo,
-		repoDir:      config.SkillsDir,
-		upstreams:     map[string]*mcpkit.Upstream{},
-		logMgr:        NewLogManager(logsRoot),
-		builtinTools:  map[string]map[string]*ToolEntry{},
+		st:             st,
+		lg:             lg,
+		db:             database,
+		repo:           repo,
+		repoDir:        config.SkillsDir,
+		upstreams:      map[string]*mcpkit.Upstream{},
+		logMgr:         NewLogManager(logsRoot),
+		builtinTools:   map[string]map[string]*ToolEntry{},
 		builtinServers: map[string]types.MCPServer{},
 	}
 }
@@ -827,6 +827,10 @@ func (s *Service) SetServerEnabled(ctx context.Context, id string, enabled bool)
 		}
 		return nil
 	}
+	// 每次拉起该 server 前先清空其会话日志，从空日志开始新一轮记录。
+	// 不能只依赖 LogHook 的 connect 事件：连接复用（连接池里已有存活连接）时
+	// mcpkit 不发 connect，旧日志会残留；这里在入口处显式清空保证行为稳定。
+	s.logMgr.RemoveServerLogs(srv.Name)
 	return s.getUpstream(*srv).Connect(ctx)
 }
 
@@ -835,6 +839,7 @@ func (s *Service) SetServerEnabled(ctx context.Context, id string, enabled bool)
 //     重启后由插件重新注册），使其出现在「上游 MCP」列表与「连接端点配置」；
 //   - 把 tools 存进内置工具注册表，工具进入 $smart 聚合（BuildIndex 直接从注册表取，
 //     不建上游连接），调用时直调 tools 里的 BuiltinHandler。
+//
 // 注册后刷新工具索引缓存。
 func (s *Service) RegisterBuiltinServer(ctx context.Context, srv types.MCPServer, tools []ToolEntry) error {
 	s.mu.Lock()
@@ -910,6 +915,14 @@ func (s *Service) UnregisterBuiltinServer(ctx context.Context, id string) error 
 // 并行 Connect（总耗时 = 最慢的一个，而非求和），单个失败只记日志不阻断
 // 整体启动——失败状态由前端经 ServerStatus 展示。成功/失败/汇总都会输出日志。
 func (s *Service) StartEnabled(ctx context.Context) {
+	// 启动即清空全部既有会话日志（mcp 日志根下每个 server 的日志目录），
+	// 从空日志开始新一轮会话记录。若后续单个 server 拉起时连接复用（不发
+	// connect 事件），也不会残留旧日志。各 server 的日志在 SetServerEnabled 拉起时
+	// 也会单独清空；此处兜底覆盖"整个应用启动"这一场景。
+	for _, name := range s.logMgr.ListServers() {
+		s.logMgr.RemoveServerLogs(name)
+	}
+
 	servers, err := s.readServers()
 	if err != nil {
 		s.warn("mcphub: 启动恢复：读服务器清单失败", "err", err)
