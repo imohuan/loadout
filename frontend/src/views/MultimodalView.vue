@@ -119,7 +119,7 @@ defineExpose({
       <CardHeader>
         <CardTitle class="text-base">多模态 MCP 端点</CardTitle>
         <CardDescription>
-          开启后暴露内置端点 <code class="rounded bg-muted px-1 py-0.5 font-mono text-xs">POST /mcp/multimodal</code>，导出 3 个工具。
+          开启后暴露内置端点 <code class="rounded bg-muted px-1 py-0.5 font-mono text-xs">POST /mcp/multimodal</code>，导出 4 个工具（图片 / 视频 / 音频 / 文档）。
         </CardDescription>
       </CardHeader>
       <CardContent>
