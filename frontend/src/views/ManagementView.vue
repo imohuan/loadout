@@ -245,11 +245,11 @@ onMounted(() => {
       </Alert>
       <Tabs v-model="activeTab" class="space-y-4">
         <TabsList class="inline-flex h-auto w-fit max-w-full flex-wrap justify-start gap-1">
-          <TabsTrigger value="runtime"> <RiSettings3Line size="16" />运行设置 </TabsTrigger>
-          <TabsTrigger value="credentials"> <RiKey2Line size="16" />模型密钥 </TabsTrigger>
-          <TabsTrigger value="translations"> <RiTranslate2 size="16" />翻译 </TabsTrigger>
-          <TabsTrigger value="plugins">插件</TabsTrigger>
+          <TabsTrigger value="runtime"> 运行设置 </TabsTrigger>
+          <TabsTrigger value="credentials"> 模型密钥 </TabsTrigger>
           <TabsTrigger value="multimodal">多模态</TabsTrigger>
+          <TabsTrigger value="translations"> 翻译 </TabsTrigger>
+          <TabsTrigger value="plugins">插件</TabsTrigger>
         </TabsList>
         <TabsContent value="runtime" class="space-y-4">
           <VolcQuotaCard />
