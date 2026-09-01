@@ -4,6 +4,7 @@ import {
   RiAddLine,
   RiArrowDownSLine,
   RiArrowRightSLine,
+  RiClipboardLine,
   RiDeleteBinLine,
   RiEditLine,
   RiGroup2Line,
@@ -80,6 +81,16 @@ function openDeleteDialog(name: string) {
   deleteTarget.value = name
   deleteLocal.value = false
   deleteDialog.value = true
+}
+// 复制技能目录绝对路径到剪贴板。优先用后端返回的 path 字段；缺 path 时回退本地拼接。
+async function copySkillPath(name: string, path?: string) {
+  const target = path && path.trim() ? path : name
+  try {
+    await navigator.clipboard.writeText(target)
+    toast.success('路径已复制', { description: target })
+  } catch (e) {
+    toast.error('复制失败', { description: e instanceof Error ? e.message : String(e) })
+  }
 }
 const skillFile = ref<File>()
 const skillForm = reactive({ name: '', source: '', version: '' })
@@ -616,6 +627,18 @@ async function restoreAllBackups() {
                               ><Button
                                 variant="ghost"
                                 size="icon"
+                                aria-label="复制技能路径"
+                                @click="copySkillPath(skill.name, skill.path)"
+                              >
+                                <RiClipboardLine class="size-4" /> </Button
+                            ></TooltipTrigger>
+                            <TooltipContent>复制技能路径</TooltipContent>
+                          </Tooltip>
+                          <Tooltip>
+                            <TooltipTrigger as-child
+                              ><Button
+                                variant="ghost"
+                                size="icon"
                                 class="text-destructive hover:text-destructive"
                                 aria-label="删除技能"
                                 :disabled="
@@ -770,6 +793,18 @@ async function restoreAllBackups() {
                                 </TableCell>
                                 <TableCell class="w-12 text-right">
                                   <div class="flex justify-end">
+                                    <Tooltip>
+                                      <TooltipTrigger as-child
+                                        ><Button
+                                          variant="ghost"
+                                          size="icon"
+                                          aria-label="复制技能路径"
+                                          @click="copySkillPath(skill.name, skill.path)"
+                                        >
+                                          <RiClipboardLine class="size-4" /> </Button
+                                      ></TooltipTrigger>
+                                      <TooltipContent>复制技能路径</TooltipContent>
+                                    </Tooltip>
                                     <Tooltip>
                                       <TooltipTrigger as-child
                                         ><Button

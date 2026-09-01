@@ -181,6 +181,7 @@ export interface Skill {
   source?: string
   version?: string
   updated_at?: string // 上次更新时间（RFC3339，来自 .skill-lock.json）
+  path?: string // 技能目录的绝对路径（~/.loadout/skills/<name>）
 }
 
 export interface Preset {

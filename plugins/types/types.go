@@ -512,6 +512,7 @@ type Skill struct {
 	InstalledAt string `json:"installed_at,omitempty"` // 安装时间（RFC3339，登记过才有）
 	Version     string `json:"version,omitempty"`      // 版本/分支，如 main（登记过才有）
 	UpdatedAt   string `json:"updated_at,omitempty"`   // 上次更新时间（RFC3339，来自 .skill-lock.json）
+	Path        string `json:"path,omitempty"`         // 技能目录的绝对路径（~/.loadout/skills/<name>）
 }
 
 // ============ 5.10 技能预设 ============
