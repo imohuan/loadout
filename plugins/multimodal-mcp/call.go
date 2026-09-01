@@ -58,16 +58,27 @@ func audioBlockResponses(url, fileID string) map[string]any {
 }
 
 // audioBlockChat 构造 chat/completions 协议的音频块（与图片/视频走同一条通道）：
-// {"type":"input_audio","input_audio":{"data":"<base64>","format":"mp3"}}。
-// url 是 base64 data URI（data:audio/wav;base64,...）；format 从 mime 提取（wav/mp3/m4a 等）。
-// chat 协议的 input_audio 只支持 data 内联，不支持 file_id；大音频若走了上传则返回错误。
+//   - 本地/小文件：resolveResource 返回 base64 data URI（data:audio/wav;base64,...）。
+//     方舟 Chat API 的 input_audio.data 要求纯 Base64（不含 data:...;base64, 前缀），
+//     format 单独传，故此处剥掉前缀只留纯 base64，格式 {"type":"input_audio","input_audio":{"data":"<b64>","format":"wav"}}。
+//   - 公网 URL：走 input_audio.url 字段（{"type":"input_audio","input_audio":{"url":"...","format":"wav"}}）。
+//   - chat 协议的 input_audio 不支持 file_id；大音频若走了上传则返回错误。
 func audioBlockChat(url, format string) map[string]any {
+	ia := map[string]any{"format": format}
+	if strings.HasPrefix(url, "http://") || strings.HasPrefix(url, "https://") {
+		// 公网 URL 用 url 字段。
+		ia["url"] = url
+	} else {
+		// data URI 或裸 base64：剥掉 data:...;base64, 前缀，只留纯 base64。
+		data := url
+		if idx := strings.Index(data, ";base64,"); idx >= 0 {
+			data = data[idx+len(";base64,"):]
+		}
+		ia["data"] = data
+	}
 	return map[string]any{
-		"type": "input_audio",
-		"input_audio": map[string]any{
-			"data":   url,
-			"format": format,
-		},
+		"type":        "input_audio",
+		"input_audio": ia,
 	}
 }
 

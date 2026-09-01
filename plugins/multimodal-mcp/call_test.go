@@ -67,10 +67,23 @@ func TestAudioBlockResponses(t *testing.T) {
 }
 
 func TestAudioBlockChat(t *testing.T) {
+	// data URI → 剥掉前缀，data 只留纯 base64。
 	raw, _ := json.Marshal(audioBlockChat("data:audio/wav;base64,zz", "wav"))
-	want := `{"input_audio":{"data":"data:audio/wav;base64,zz","format":"wav"},"type":"input_audio"}`
+	want := `{"input_audio":{"data":"zz","format":"wav"},"type":"input_audio"}`
 	if string(raw) != want {
-		t.Fatalf("audioBlockChat = %s, want %s", raw, want)
+		t.Fatalf("audioBlockChat data = %s, want %s", raw, want)
+	}
+	// 公网 URL → 走 url 字段。
+	raw2, _ := json.Marshal(audioBlockChat("https://x/a.mp3", "mp3"))
+	want2 := `{"input_audio":{"format":"mp3","url":"https://x/a.mp3"},"type":"input_audio"}`
+	if string(raw2) != want2 {
+		t.Fatalf("audioBlockChat url = %s, want %s", raw2, want2)
+	}
+	// 裸 base64 → 原样作为 data。
+	raw3, _ := json.Marshal(audioBlockChat("AAEC", "wav"))
+	want3 := `{"input_audio":{"data":"AAEC","format":"wav"},"type":"input_audio"}`
+	if string(raw3) != want3 {
+		t.Fatalf("audioBlockChat raw = %s, want %s", raw3, want3)
 	}
 }
 
