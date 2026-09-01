@@ -66,6 +66,28 @@ func TestAudioBlockResponses(t *testing.T) {
 	}
 }
 
+func TestAudioBlockChat(t *testing.T) {
+	raw, _ := json.Marshal(audioBlockChat("data:audio/wav;base64,zz", "wav"))
+	want := `{"input_audio":{"data":"data:audio/wav;base64,zz","format":"wav"},"type":"input_audio"}`
+	if string(raw) != want {
+		t.Fatalf("audioBlockChat = %s, want %s", raw, want)
+	}
+}
+
+func TestMimeToAudioFormat(t *testing.T) {
+	cases := map[string]string{
+		"audio/wav": "wav", "audio/mpeg": "mp3", "audio/mp3": "mp3",
+		"audio/mp4": "m4a", "audio/aac": "aac", "audio/ogg": "ogg",
+		"audio/flac": "flac", "audio/amr": "amr", "video/mp4": "mp3",
+		"": "mp3",
+	}
+	for mime, want := range cases {
+		if got := mimeToAudioFormat(mime); got != want {
+			t.Fatalf("mimeToAudioFormat(%q) = %q, want %q", mime, got, want)
+		}
+	}
+}
+
 func TestCallChatParsesContent(t *testing.T) {
 	resp := `{"choices":[{"message":{"content":"画面里是一只猫"}}]}`
 	fw := &fakeRecogForwarder{respBody: []byte(resp)}

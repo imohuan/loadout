@@ -57,6 +57,43 @@ func audioBlockResponses(url, fileID string) map[string]any {
 	return blk
 }
 
+// audioBlockChat 构造 chat/completions 协议的音频块（与图片/视频走同一条通道）：
+// {"type":"input_audio","input_audio":{"data":"<base64>","format":"mp3"}}。
+// url 是 base64 data URI（data:audio/wav;base64,...）；format 从 mime 提取（wav/mp3/m4a 等）。
+// chat 协议的 input_audio 只支持 data 内联，不支持 file_id；大音频若走了上传则返回错误。
+func audioBlockChat(url, format string) map[string]any {
+	return map[string]any{
+		"type": "input_audio",
+		"input_audio": map[string]any{
+			"data":   url,
+			"format": format,
+		},
+	}
+}
+
+// mimeToAudioFormat 把音频 mime 类型映射成 chat/completions 的 input_audio.format 取值。
+// 识别不到时回退 "mp3"（方舟文档默认示例格式）。
+func mimeToAudioFormat(mime string) string {
+	switch strings.ToLower(mime) {
+	case "audio/wav":
+		return "wav"
+	case "audio/mpeg", "audio/mp3":
+		return "mp3"
+	case "audio/mp4", "audio/m4a":
+		return "m4a"
+	case "audio/aac":
+		return "aac"
+	case "audio/ogg", "audio/oga":
+		return "ogg"
+	case "audio/flac":
+		return "flac"
+	case "audio/amr":
+		return "amr"
+	default:
+		return "mp3"
+	}
+}
+
 // inputTextBlockResponses 构造 responses 协议的文本块：{"type":"input_text","text":"..."}。
 func inputTextBlockResponses(text string) map[string]any {
 	return map[string]any{"type": "input_text", "text": text}
