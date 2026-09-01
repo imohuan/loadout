@@ -816,7 +816,9 @@ func (s *Service) StartEnabled(ctx context.Context) {
 
 // ServerStatus 返回指定 server 的进程运行状态。
 //   - enabled=false → stopped
-//   - HTTP/SSE（外部服务，无本地进程）→ enabled 即 running
+//   - HTTP/SSE（外部服务，进程不在我们这边）：
+//     池中 Upstream 有记录但最近一次 Connect 失败（lastErr 非空）→ failed；
+//     否则 enabled 即视为 running（避免每次 list 都去远程探活）。
 //   - stdio：池中无 Upstream 或进程未存活 → failed（启动失败 / 已崩溃，不自动重启）
 //   - stdio：进程存活 → running
 func (s *Service) ServerStatus(id string) (ServerRunState, error) {
@@ -828,6 +830,13 @@ func (s *Service) ServerStatus(id string) (ServerRunState, error) {
 		return StateStopped, nil
 	}
 	if srv.Transport != "stdio" {
+		// SetServerEnabled(true) 对 HTTP/SSE 也会走 ensureSession 主动握手一次；
+		// 失败时把 err 存入 up.lastErr，此时必须把状态报成 failed，否则前端
+		// 看不到失败信号、误判"已启动"。up 为 nil 通常是还没被拉起过（首次
+		// 查询），按乐观 running 处理，等真正调 SetServerEnabled 再探测。
+		if up := s.getUpstreamByID(id); up != nil && up.LastError() != "" {
+			return StateFailed, nil
+		}
 		return StateRunning, nil
 	}
 	up := s.getUpstreamByID(id)

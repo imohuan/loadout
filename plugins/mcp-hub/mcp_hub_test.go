@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -797,5 +798,68 @@ func TestBuildIndexToleratesDeadUpstream(t *testing.T) {
 	}
 	if hasTool(idx.Tools, "dead_tool") {
 		t.Fatal("坏上游的工具不应出现在索引中")
+	}
+}
+
+// TestServerStatusHTTPReportsFailedOnConnectError 回归：HTTP/SSE 上游 Connect 失败时
+// ServerStatus 应返回 failed（且 ServerError 透出错误原因），而不是盲目报 running。
+// 这条覆盖的是 SetServerEnabled(true) → Connect → go-sdk dial 失败的链路：
+// 之前 HTTP 一律返回 running，前端 toggle 后看不到失败信号、误弹"已启动"。
+func TestServerStatusHTTPReportsFailedOnConnectError(t *testing.T) {
+	env := newHubEnv(t)
+
+	// enabled HTTP server 指向不可能连接的端口（dial tcp 必失败）。
+	var list []types.MCPServer
+	if err := env.st.Read(types.FileMCPServers, &list); err != nil {
+		t.Fatalf("read servers: %v", err)
+	}
+	list = append(list, types.MCPServer{
+		ID:        "srv-dead",
+		Name:      "dead-http",
+		Transport: types.TransportHTTP,
+		URL:       "http://127.0.0.1:39999/mcp",
+		Enabled:   true,
+	})
+	if err := env.st.Write(types.FileMCPServers, list); err != nil {
+		t.Fatalf("write servers: %v", err)
+	}
+
+	// 主动建连：触发 Connect 失败路径，把 err 写入 upstream.lastErr。
+	// 短 ctx 加速 fail，go-sdk dial refused 几乎立即返回。
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := env.svc.SetServerEnabled(ctx, "srv-dead", true); err == nil {
+		// 期望这次 Connect 返回错误（dial refused），如果意外成功则测试没意义。
+		t.Log("注意：Connect 居然成功了；测试仍继续验证 happy path")
+	}
+
+	st, err := env.svc.ServerStatus("srv-dead")
+	if err != nil {
+		t.Fatalf("ServerStatus: %v", err)
+	}
+	if st != StateFailed {
+		t.Fatalf("Connect 失败后 HTTP server 状态应为 failed，实际 %s", st)
+	}
+	if msg := env.svc.ServerError("srv-dead"); msg == "" {
+		t.Fatalf("ServerError 应透出连接失败原因，实际为空")
+	}
+}
+
+// TestServerStatusHTTPRunningWhenNoError 配套 happy path：HTTP 上游 Connect 成功后
+// ServerStatus 报 running。
+func TestServerStatusHTTPRunningWhenNoError(t *testing.T) {
+	env := newHubEnv(t)
+	// github 这个 fake-mcp 在 newHubEnv 里已 enabled 且 URL 可用。
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := env.svc.SetServerEnabled(ctx, "srv-github", true); err != nil {
+		t.Fatalf("Connect 好的 HTTP server 应不报错：%v", err)
+	}
+	if st, err := env.svc.ServerStatus("srv-github"); err != nil || st != StateRunning {
+		t.Fatalf("HTTP 健康 server 状态应为 running，实际 %s / err=%v", st, err)
+	}
+	if err := env.svc.ServerError("srv-github"); err != "" {
+		t.Fatalf("Connect 成功后 ServerError 应为空，实际 %q", err)
 	}
 }
