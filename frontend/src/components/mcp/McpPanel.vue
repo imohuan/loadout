@@ -393,6 +393,7 @@ async function copyConfig(endpoint: {
                     <TableRow>
                       <TableCell class="px-0"
                         ><Button
+                          v-if="!server.builtin"
                           variant="ghost"
                           size="icon"
                           class="size-8"
@@ -436,7 +437,7 @@ async function copyConfig(endpoint: {
                         </TooltipProvider>
                       </TableCell>
                       <TableCell>
-                        <div class="flex justify-end gap-1">
+                        <div v-if="!server.builtin" class="flex justify-end gap-1">
                           <TooltipProvider>
                             <Tooltip>
                               <TooltipTrigger as-child
