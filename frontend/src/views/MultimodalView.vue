@@ -88,7 +88,7 @@ async function load() {
     form.tools = cfg.tools?.length ? cfg.tools : form.tools
     for (const t of form.tools) t.defaults = t.defaults || {}
     loaded.value = true
-  }, '已加载多模态配置')
+  })
 }
 
 async function save() {
