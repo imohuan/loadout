@@ -55,13 +55,21 @@ watch(
 )
 const loading = computed(() => keysLoading.value || pluginsLoading.value || settingsLoading.value)
 const translateRef = ref<InstanceType<typeof TranslateView> | null>(null)
+const multimodalRef = ref<InstanceType<typeof MultimodalView> | null>(null)
 async function refresh() {
-  // 翻译 Tab 激活时，顶部「刷新」按钮刷新的是翻译来源
-  if (activeTab.value === 'translations') {
-    await translateRef.value?.refresh()
-    return
-  }
-  await Promise.all([refreshKeys(), refreshPlugins(), refreshSettings()])
+  await run('refresh', async () => {
+    // 翻译 Tab 激活时，顶部「刷新」按钮刷新的是翻译来源
+    if (activeTab.value === 'translations') {
+      await translateRef.value?.refresh()
+      return
+    }
+    // 多模态 Tab 激活时，刷新的是多模态配置
+    if (activeTab.value === 'multimodal') {
+      await multimodalRef.value?.refresh()
+      return
+    }
+    await Promise.all([refreshKeys(), refreshPlugins(), refreshSettings()])
+  })
 }
 async function createSkKey() {
   await run(
@@ -491,7 +499,7 @@ onMounted(() => {
           </Card>
         </TabsContent>
         <TabsContent value="multimodal">
-          <MultimodalView />
+          <MultimodalView ref="multimodalRef" />
         </TabsContent>
       </Tabs>
     </template>

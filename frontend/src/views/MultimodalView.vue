@@ -104,6 +104,10 @@ onMounted(() => {
   void loadModels()
   void load()
 })
+
+defineExpose({
+  refresh: load,
+})
 </script>
 
 <template>
