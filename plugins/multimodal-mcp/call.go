@@ -65,7 +65,9 @@ func inputTextBlockResponses(text string) map[string]any {
 // callChat 走 chat/completions 协议识别（Path="chat/completions"）：
 // content 是块数组（image_url / video_url / text），返回识别文本
 // （解析 choices[0].message.content）。非流式（streamWriter=nil）拿完整 body。
-func (s *Service) callChat(ctx context.Context, model string, contentBlocks []map[string]any, opts callOpts) (string, error) {
+// 返回 (text, reqLogID, channelID, err)：reqLogID 为子请求在 request-log 的关联
+// UUID（供 route-log 关联），channelID 为成功渠道 id（供 route-log 展示）。
+func (s *Service) callChat(ctx context.Context, model string, contentBlocks []map[string]any, opts callOpts) (text, reqLogID, channelID string, err error) {
 	payload := map[string]any{
 		"model": model,
 		"messages": []any{map[string]any{
@@ -76,7 +78,7 @@ func (s *Service) callChat(ctx context.Context, model string, contentBlocks []ma
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return "", fmt.Errorf("multimodal-mcp: 序列化 chat 请求失败: %w", err)
+		return "", "", "", fmt.Errorf("multimodal-mcp: 序列化 chat 请求失败: %w", err)
 	}
 	pipe := &modelgateway.ProxyPipeline{
 		Request: &modelgateway.ProxyRequest{
@@ -91,10 +93,11 @@ func (s *Service) callChat(ctx context.Context, model string, contentBlocks []ma
 	}
 	applyOpts(pipe, opts)
 	final, respBody, err := s.gw.ForwardSubRequest(ctx, pipe, nil)
+	reqLogID = extractReqLogID(final)
+	channelID = extractLastChannel(final)
 	if err != nil {
-		return "", err
+		return "", reqLogID, channelID, err
 	}
-	_ = final
 	var parsed struct {
 		Choices []struct {
 			Message struct {
@@ -103,18 +106,18 @@ func (s *Service) callChat(ctx context.Context, model string, contentBlocks []ma
 		} `json:"choices"`
 	}
 	if err := json.Unmarshal(respBody, &parsed); err != nil {
-		return "", fmt.Errorf("multimodal-mcp: 解析 chat 识别响应失败: %w", err)
+		return "", reqLogID, channelID, fmt.Errorf("multimodal-mcp: 解析 chat 识别响应失败: %w", err)
 	}
 	if len(parsed.Choices) == 0 || strings.TrimSpace(parsed.Choices[0].Message.Content) == "" {
-		return "", errors.New("multimodal-mcp: 模型未返回识别文本")
+		return "", reqLogID, channelID, errors.New("multimodal-mcp: 模型未返回识别文本")
 	}
-	return parsed.Choices[0].Message.Content, nil
+	return parsed.Choices[0].Message.Content, reqLogID, channelID, nil
 }
 
 // callResponses 走 responses 协议识别（Path="responses"）：
 // content 是 input 里 user 消息的块数组（input_audio / input_text），
 // instructions 为顶层提示词（音频 task 模板）。返回识别文本（解析 output 的 output_text）。
-func (s *Service) callResponses(ctx context.Context, model string, contentBlocks []map[string]any, instructions string, opts callOpts) (string, error) {
+func (s *Service) callResponses(ctx context.Context, model string, contentBlocks []map[string]any, instructions string, opts callOpts) (text, reqLogID, channelID string, err error) {
 	payload := map[string]any{
 		"model": model,
 		"input": []any{map[string]any{
@@ -128,7 +131,7 @@ func (s *Service) callResponses(ctx context.Context, model string, contentBlocks
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return "", fmt.Errorf("multimodal-mcp: 序列化 responses 请求失败: %w", err)
+		return "", "", "", fmt.Errorf("multimodal-mcp: 序列化 responses 请求失败: %w", err)
 	}
 	pipe := &modelgateway.ProxyPipeline{
 		Request: &modelgateway.ProxyRequest{
@@ -143,10 +146,11 @@ func (s *Service) callResponses(ctx context.Context, model string, contentBlocks
 	}
 	applyOpts(pipe, opts)
 	final, respBody, err := s.gw.ForwardSubRequest(ctx, pipe, nil)
+	reqLogID = extractReqLogID(final)
+	channelID = extractLastChannel(final)
 	if err != nil {
-		return "", err
+		return "", reqLogID, channelID, err
 	}
-	_ = final
 	// responses 输出：output 数组里的 message.output_text 文本。
 	var parsed struct {
 		Output []struct {
@@ -157,16 +161,16 @@ func (s *Service) callResponses(ctx context.Context, model string, contentBlocks
 		} `json:"output"`
 	}
 	if err := json.Unmarshal(respBody, &parsed); err != nil {
-		return "", fmt.Errorf("multimodal-mcp: 解析 responses 识别响应失败: %w", err)
+		return "", reqLogID, channelID, fmt.Errorf("multimodal-mcp: 解析 responses 识别响应失败: %w", err)
 	}
 	for _, item := range parsed.Output {
 		for _, c := range item.Content {
 			if c.Type == "output_text" && strings.TrimSpace(c.Text) != "" {
-				return c.Text, nil
+				return c.Text, reqLogID, channelID, nil
 			}
 		}
 	}
-	return "", errors.New("multimodal-mcp: 模型未返回识别文本")
+	return "", reqLogID, channelID, errors.New("multimodal-mcp: 模型未返回识别文本")
 }
 
 // applyOpts 把 callOpts 落到子请求 pipe 的 metadata。
@@ -179,7 +183,45 @@ func applyOpts(pipe *modelgateway.ProxyPipeline, opts callOpts) {
 	}
 }
 
+// extractReqLogID 从子请求 final pipe 提取 request-log 关联 UUID（__request_log_attempt_id）。
+// final 为 nil 时返回空串。
+func extractReqLogID(final *modelgateway.ProxyPipeline) string {
+	if final == nil {
+		return ""
+	}
+	if v, _ := final.Metadata[modelgateway.MetadataRequestLogAttemptID].(string); v != "" {
+		return v
+	}
+	return ""
+}
+
+// extractLastChannel 从子请求 final pipe 提取最后尝试的渠道 id（__last_tried_channel）。
+func extractLastChannel(final *modelgateway.ProxyPipeline) string {
+	if final == nil {
+		return ""
+	}
+	if v, _ := final.Metadata["__last_tried_channel"].(string); v != "" {
+		return v
+	}
+	return ""
+}
+
 // ===== 资源三态处理（url / data URI / file:// 本地路径）=====
+
+// classifySource 判断资源引用的来源类型（供 route-log metadata 展示）：http/data/file/raw。
+func classifySource(ref string) string {
+	ref = strings.TrimSpace(ref)
+	switch {
+	case strings.HasPrefix(ref, "http://") || strings.HasPrefix(ref, "https://"):
+		return "url"
+	case strings.HasPrefix(ref, "data:"):
+		return "data"
+	case strings.HasPrefix(ref, "file://"):
+		return "file"
+	default:
+		return "raw"
+	}
+}
 
 // resolveResource 把资源的三种输入形态解析成请求可直接引用的形式：
 //   - http(s) URL：原样返回（url 使用，fileID 空）；

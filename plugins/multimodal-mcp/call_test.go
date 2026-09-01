@@ -70,7 +70,7 @@ func TestCallChatParsesContent(t *testing.T) {
 	resp := `{"choices":[{"message":{"content":"画面里是一只猫"}}]}`
 	fw := &fakeRecogForwarder{respBody: []byte(resp)}
 	s := newRecogService(fw)
-	text, err := s.callChat(context.Background(), "m1", []map[string]any{imageBlock("u", "high")}, callOpts{})
+	text, _, _, err := s.callChat(context.Background(), "m1", []map[string]any{imageBlock("u", "high")}, callOpts{})
 	if err != nil {
 		t.Fatalf("callChat err: %v", err)
 	}
@@ -97,7 +97,7 @@ func TestCallResponsesParsesOutputText(t *testing.T) {
 	resp := `{"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"转写结果"}]}]}`
 	fw := &fakeRecogForwarder{respBody: []byte(resp)}
 	s := newRecogService(fw)
-	text, err := s.callResponses(context.Background(), "m1", []map[string]any{audioBlockResponses("u", "")}, "instructions-x", callOpts{})
+	text, _, _, err := s.callResponses(context.Background(), "m1", []map[string]any{audioBlockResponses("u", "")}, "instructions-x", callOpts{})
 	if err != nil {
 		t.Fatalf("callResponses err: %v", err)
 	}

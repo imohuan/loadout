@@ -58,11 +58,14 @@ func (s *Service) understandImage(ctx context.Context, args map[string]any) (*mc
 		imageBlock(url, detail),
 		textBlock("识别方向: " + prompt),
 	}
-	text, err := s.callChat(ctx, model, blocks, callOpts{})
-	if err != nil {
-		return nil, err
-	}
-	return textResult(text), nil
+	return s.runRecognition(ctx, "understand_image", "图片识别", model, map[string]any{
+		"tool":   "understand_image",
+		"detail": detail,
+		"source": classifySource(imageRef),
+	}, func() recognitionResult {
+		text, reqLog, channel, err := s.callChat(ctx, model, blocks, callOpts{})
+		return recognitionResult{text: text, reqLog: reqLog, channel: channel, err: err}
+	})
 }
 
 // modelFor 取指定工具的内置模型名（配置里按 Kind 匹配；未配置则报错）。

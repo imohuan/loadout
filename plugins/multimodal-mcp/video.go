@@ -57,11 +57,14 @@ func (s *Service) understandVideo(ctx context.Context, args map[string]any) (*mc
 		videoBlock(url, fps),
 		textBlock("识别方向: " + prompt),
 	}
-	text, err := s.callChat(ctx, model, blocks, callOpts{})
-	if err != nil {
-		return nil, err
-	}
-	return textResult(text), nil
+	return s.runRecognition(ctx, "understand_video", "视频识别", model, map[string]any{
+		"tool":   "understand_video",
+		"fps":    fps,
+		"source": classifySource(videoRef),
+	}, func() recognitionResult {
+		text, reqLog, channel, err := s.callChat(ctx, model, blocks, callOpts{})
+		return recognitionResult{text: text, reqLog: reqLog, channel: channel, err: err}
+	})
 }
 
 // parseFloat 解析字符串为 float64。

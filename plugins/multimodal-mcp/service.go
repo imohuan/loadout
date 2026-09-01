@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 
 	"loadout/core/db"
 	"loadout/core/mcpkit"
@@ -114,6 +115,101 @@ func (s *Service) checkEndpointEnabled() error {
 	}
 	return nil
 }
+
+// recognitionResult 一次识别调用的结果（供 runRecognition 写 route-log）。
+type recognitionResult struct {
+	text    string
+	reqLog  string // request-log 关联 UUID（子请求）
+	channel string // 成功渠道 id
+	err     error
+}
+
+// recognizeFn 执行实际识别调用（构造请求 → 经 s.gw 子请求通道），返回结果。
+type recognizeFn func() recognitionResult
+
+// runRecognition 统一执行一次识别并记录 route-log（转发日志）：
+//   - routeLog 已注入时：Start（route_request）→ recognize → Attempt + Finish；
+//   - 未注入（单测/独立环境）时：直接 recognize，不写日志。
+//
+// action 为日志里的动作名（如「图片识别」），model 为内置识别模型名，meta 为附加展示字段
+// （如 tool/image/fps/task），toolName 用于区分工具（生成稳定 requestID 前缀）。
+func (s *Service) runRecognition(ctx context.Context, toolName, action, model string, meta map[string]any, recognize recognizeFn) (*mcpkit.ToolResult, error) {
+	start := time.Now()
+	// 生成独立 requestID：多模态是独立 MCP 调用（无主请求），route-log 里作为一条独立请求。
+	reqID := fmt.Sprintf("multimodal-%s-%d", toolName, start.UnixNano())
+
+	if s.route == nil {
+		// 未注入 route-log：直接识别，不写日志。
+		res := recognize()
+		if res.err != nil {
+			return nil, res.err
+		}
+		return textResult(res.text), nil
+	}
+
+	_ = s.route.Start(ctx, contracts.RouteRequest{
+		RequestID:     reqID,
+		RequestedModel: model,
+		StartedAt:     start,
+		VirtualModel:  "",
+	})
+
+	res := recognize()
+	dur := time.Since(start)
+
+	if res.err != nil {
+		s.routeLogAttempt(ctx, reqID, action, model, res, dur, "failed", res.err.Error(), meta)
+		s.routeLogFinish(ctx, reqID, model, res, dur, "failed", res.err.Error())
+		return nil, res.err
+	}
+	s.routeLogAttempt(ctx, reqID, action, model, res, dur, "success", "", meta)
+	s.routeLogFinish(ctx, reqID, model, res, dur, "success", "")
+	return textResult(res.text), nil
+}
+
+// routeLogAttempt 写一条 route-log attempt（识别步骤）。
+func (s *Service) routeLogAttempt(ctx context.Context, reqID, action, model string, res recognitionResult, dur time.Duration, result, errMsg string, meta map[string]any) {
+	start := time.Now().Add(-dur)
+	metaOut := map[string]any{"capability": "multimodal"}
+	for k, v := range meta {
+		metaOut[k] = v
+	}
+	if _, err := s.route.Attempt(ctx, contracts.RouteAttempt{
+		RequestID:     reqID,
+		StepNo:        "1",
+		Action:        action,
+		Model:         model,
+		ChannelID:     res.channel,
+		RequestLogID:  res.reqLog,
+		StartedAt:     start,
+		FinishedAt:    ptrTime(time.Now()),
+		Result:        result,
+		ErrorMessage:  errMsg,
+		Duration:      contracts.DurationMS(dur),
+		Stream:        false,
+		Metadata:      metaOut,
+	}); err != nil {
+		s.lg.Warn("multimodal-mcp: route-log attempt 写入失败", "err", err)
+	}
+}
+
+// routeLogFinish 写 route-log 的 request 完成状态。
+func (s *Service) routeLogFinish(ctx context.Context, reqID, model string, res recognitionResult, dur time.Duration, result, errMsg string) {
+	if err := s.route.Finish(ctx, contracts.RouteFinish{
+		RequestID:      reqID,
+		FinishedAt:     time.Now(),
+		Result:         result,
+		FinalModel:     model,
+		FinalChannelID: res.channel,
+		ErrorMessage:   errMsg,
+		Duration:       contracts.DurationMS(dur),
+	}); err != nil {
+		s.lg.Warn("multimodal-mcp: route-log finish 写入失败", "err", err)
+	}
+}
+
+// ptrTime 返回 time 指针。
+func ptrTime(t time.Time) *time.Time { return &t }
 
 // ===== 识别方法（由识别函数子代理实现）=====
 // 以下方法把工具 Handler 解析出的 args 转成对应资源的请求 payload，经 s.gw 走

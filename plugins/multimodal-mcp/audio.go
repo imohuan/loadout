@@ -57,9 +57,14 @@ func (s *Service) understandAudio(ctx context.Context, args map[string]any) (*mc
 		inputTextBlockResponses(audioUserPrompt(task, prompt, srcLang, tgtLang)),
 	}
 	instructions := audioInstructions(task, language, srcLang, tgtLang)
-	text, err := s.callResponses(ctx, model, blocks, instructions, callOpts{})
-	if err != nil {
-		return nil, err
-	}
-	return textResult(text), nil
+	return s.runRecognition(ctx, "understand_audio", "音频识别", model, map[string]any{
+		"tool":       "understand_audio",
+		"task":       task,
+		"source":     classifySource(audioRef),
+		"source_lang": srcLang,
+		"target_lang": tgtLang,
+	}, func() recognitionResult {
+		text, reqLog, channel, err := s.callResponses(ctx, model, blocks, instructions, callOpts{})
+		return recognitionResult{text: text, reqLog: reqLog, channel: channel, err: err}
+	})
 }
