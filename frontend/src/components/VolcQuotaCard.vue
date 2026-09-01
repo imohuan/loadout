@@ -397,6 +397,10 @@ async function remove(channelId: string) {
 }
 
 const displayName = (ch: Channel) => ch.channel_name || ch.name
+
+defineExpose({
+  refresh: refreshLocal,
+})
 </script>
 
 <template>

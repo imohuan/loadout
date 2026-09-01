@@ -56,19 +56,28 @@ watch(
 const loading = computed(() => keysLoading.value || pluginsLoading.value || settingsLoading.value)
 const translateRef = ref<InstanceType<typeof TranslateView> | null>(null)
 const multimodalRef = ref<InstanceType<typeof MultimodalView> | null>(null)
+const quotaCardRef = ref<InstanceType<typeof VolcQuotaCard> | null>(null)
 async function refresh() {
   await run('refresh', async () => {
-    // 翻译 Tab 激活时，顶部「刷新」按钮刷新的是翻译来源
-    if (activeTab.value === 'translations') {
-      await translateRef.value?.refresh()
-      return
+    // 顶部「刷新」按当前 Tab 只刷新对应内容
+    switch (activeTab.value) {
+      case 'runtime':
+        // 运行设置：刷新配额本地数据 + 依赖状态
+        await Promise.all([quotaCardRef.value?.refresh(), refreshDeps()])
+        return
+      case 'credentials':
+        await refreshKeys()
+        return
+      case 'multimodal':
+        await multimodalRef.value?.refresh()
+        return
+      case 'translations':
+        await translateRef.value?.refresh()
+        return
+      case 'plugins':
+        await refreshPlugins()
+        return
     }
-    // 多模态 Tab 激活时，刷新的是多模态配置
-    if (activeTab.value === 'multimodal') {
-      await multimodalRef.value?.refresh()
-      return
-    }
-    await Promise.all([refreshKeys(), refreshPlugins(), refreshSettings()])
   })
 }
 async function createSkKey() {
@@ -257,7 +266,7 @@ onMounted(() => {
           <TabsTrigger value="plugins">插件</TabsTrigger>
         </TabsList>
         <TabsContent value="runtime" class="space-y-4">
-          <VolcQuotaCard />
+          <VolcQuotaCard ref="quotaCardRef" />
           <div class="grid gap-4 lg:grid-cols-2">
             <Card class="rounded-md hidden" >
               <CardHeader>
