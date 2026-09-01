@@ -214,6 +214,30 @@ func TestResolveResourceLocalFileBase64(t *testing.T) {
 	}
 }
 
+func TestResolveResourceLocalFileDetectsRealMime(t *testing.T) {
+	// 扩展名是 .png 但文件内容实为 JPEG（带 JPEG magic 头 FF D8 FF）——
+	// 方舟若收到 image/png 会报「specified image/png but appears to be image/jpeg」。
+	// 验证按内容探测到 image/jpeg，而非盲信扩展名标 image/png。
+	dir := t.TempDir()
+	path := dir + "/trick.png"
+	jpegHeader := []byte{0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46}
+	if err := os.WriteFile(path, jpegHeader, 0o600); err != nil {
+		t.Fatalf("write temp file: %v", err)
+	}
+	s := &Service{}
+	u, fid, err := s.resolveResource(context.Background(), "file://"+path, "image/png", imageSizeLimit)
+	if err != nil {
+		t.Fatalf("resolveResource err: %v", err)
+	}
+	if fid != "" {
+		t.Fatalf("small file should not upload, fid=%q", fid)
+	}
+	want := "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(jpegHeader)
+	if u != want {
+		t.Fatalf("扩展名 .png 实为 jpeg：uri = %q, want %q（应探测真实 mime 而非盲信扩展名）", u, want)
+	}
+}
+
 func TestResolveResourceLocalFileOversizeUpload(t *testing.T) {
 	// 构造一个大文件（> 阈值），file:// 应走上传（uploadAndGetID 占位/实现由子代理C负责）。
 	// 这里用一个无 repo 的 Service 调用，验证走上传分支并返回明确错误（非 base64 静默）。

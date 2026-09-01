@@ -314,9 +314,15 @@ func (s *Service) resolveResource(ctx context.Context, ref, defaultMime string, 
 	if readErr != nil {
 		return "", "", fmt.Errorf("multimodal-mcp: 读取本地资源失败: %w", readErr)
 	}
-	mime := defaultMime
-	if strings.TrimSpace(mime) == "" {
-		mime = http.DetectContentType(raw)
+	// 本地文件：优先按文件内容探测真实媒体类型（http.DetectContentType 依据文件头
+	// magic bytes，扩展名可能骗人——例如 .png 文件实际是 jpeg，若按扩展名标 image/png
+	// 方舟会报「specified image/png but appears to be image/jpeg」）。
+	// 只采信 DetectContentType 明确识别出的媒体类型（image/video/audio/*）；
+	// 其余（text/plain、application/octet-stream 等非媒体结果）说明内容探测不可靠
+	// （如极小或伪造文件），回退到调用方按扩展名推断的 defaultMime。
+	mime := http.DetectContentType(raw)
+	if !isMediaMime(mime) && defaultMime != "" {
+		mime = defaultMime
 	}
 	// 大文件走上传（file_id），小文件 base64 内联。
 	if info.Size() > sizeLimit {
@@ -329,6 +335,13 @@ func (s *Service) resolveResource(ctx context.Context, ref, defaultMime string, 
 		return "", fid, nil
 	}
 	return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(raw), "", nil
+}
+
+// isMediaMime 判断某 mime 是否为真正的媒体类型（image/video/audio），
+// 用于决定内容探测结果是否可信（text/plain、octet-stream 等不算）。
+func isMediaMime(mime string) bool {
+	m := strings.ToLower(strings.TrimSpace(mime))
+	return strings.HasPrefix(m, "image/") || strings.HasPrefix(m, "video/") || strings.HasPrefix(m, "audio/")
 }
 
 // mimeByExt 按扩展名推断媒体类型（图片/视频/音频），用于本地文件 base64 data URI。
