@@ -3,6 +3,9 @@ import { onMounted, reactive, ref } from 'vue'
 import { RiLoader4Line, RiSave3Line } from '@remixicon/vue'
 import { api, request } from '@/lib/api'
 import { useAsyncTask } from '@/composables/useAsyncTask'
+import { useChannels } from '@/composables/useChannels'
+import { useAggregates } from '@/composables/useAggregates'
+import TargetModelPicker from '@/components/TargetModelPicker.vue'
 
 // 与后端 plugins/multimodal-mcp/config.go 的 ToolConfig / MultimodalConfig 对应。
 type ToolKind = 'image' | 'video' | 'audio'
@@ -57,6 +60,26 @@ function toolOf(kind: ToolKind) {
   return form.tools.find((t) => t.kind === kind)
 }
 
+// 模型列表（渠道模型 + 聚合虚拟模型合并），与 TranslateView 一致。
+const channels = useChannels()
+const aggregates = useAggregates()
+const modelOptions = ref<string[]>([])
+const modelsLoading = ref(false)
+async function loadModels() {
+  modelsLoading.value = true
+  try {
+    const [chs, aggs] = await Promise.all([channels.list(), aggregates.list()])
+    const set = new Set<string>()
+    for (const ch of chs) {
+      for (const m of ch.models || []) set.add(m)
+    }
+    for (const a of aggs) set.add(a.name)
+    modelOptions.value = [...set].sort()
+  } finally {
+    modelsLoading.value = false
+  }
+}
+
 async function load() {
   await run('load-multimodal', async () => {
     const cfg = await api<MultimodalConfig>('/api/multimodal/config')
@@ -77,7 +100,10 @@ async function save() {
   }, '多模态配置已保存')
 }
 
-onMounted(load)
+onMounted(() => {
+  void loadModels()
+  void load()
+})
 </script>
 
 <template>
@@ -114,10 +140,12 @@ onMounted(load)
         <!-- 内置模型名 -->
         <div class="space-y-1">
           <Label :for="`tool-model-${kind}`">内置模型名</Label>
-          <Input
-            :id="`tool-model-${kind}`"
+          <TargetModelPicker
             v-model="toolOf(kind)!.model"
-            placeholder="如 doubao-seed-1-6-pro-250915"
+            :models="modelOptions"
+            :multiple="false"
+            :allow-custom="false"
+            :loading="modelsLoading"
           />
         </div>
 
