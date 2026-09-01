@@ -22,10 +22,6 @@ type callOpts struct {
 	channelCandidates []string
 }
 
-// chatBlock 一张 content 块（chat/completions 的 content 数组元素）。
-// 用 map 构造而非结构体，方便承载 image_url / video_url / text 等多种形态。
-func chatBlock(v map[string]any) map[string]any { return v }
-
 // imageBlock 构造图片块：{"type":"image_url","image_url":{"url":"...","detail":"..."}}。
 func imageBlock(url, detail string) map[string]any {
 	iu := map[string]any{"url": url}

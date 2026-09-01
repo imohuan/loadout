@@ -17,6 +17,9 @@ import (
 // 走 chat/completions 协议：video_url 块（含 fps）+ text 块。
 // 视频 >50MB 走 file_id（上传 TODO），否则 base64/URL。
 func (s *Service) understandVideo(ctx context.Context, args map[string]any) (*mcpkit.ToolResult, error) {
+	if err := s.checkEndpointEnabled(); err != nil {
+		return nil, err
+	}
 	videoRef := strArg(args, "video")
 	if strings.TrimSpace(videoRef) == "" {
 		return nil, errors.New("multimodal-mcp: understand_video 缺少 video 参数")
@@ -45,7 +48,11 @@ func (s *Service) understandVideo(ctx context.Context, args map[string]any) (*mc
 	if err != nil {
 		return nil, err
 	}
-	_ = fileID // 视频走 chat/completions 的 video_url，file_id 协议（responses input_video）后续再定
+	// chat/completions 的 video_url 只支持 url，不支持 file_id。若大视频走了上传
+	// 拿到 fileID，此处无法在 video_url 里表达，返回明确错误提示改用 URL 或减小文件。
+	if fileID != "" {
+		return nil, errors.New("multimodal-mcp: 视频超过 base64 上限且当前协议的 video_url 不支持 file_id，请改用公网 URL 或压缩视频")
+	}
 	blocks := []map[string]any{
 		videoBlock(url, fps),
 		textBlock("识别方向: " + prompt),

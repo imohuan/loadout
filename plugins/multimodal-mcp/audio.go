@@ -18,6 +18,9 @@ import (
 // 走 responses 协议：input_audio 块 + input_text 块，顶层 instructions 由 audioInstructions
 // 按 task 选择。音频 >25MB 走 file_id（上传 TODO），否则 base64/URL。
 func (s *Service) understandAudio(ctx context.Context, args map[string]any) (*mcpkit.ToolResult, error) {
+	if err := s.checkEndpointEnabled(); err != nil {
+		return nil, err
+	}
 	audioRef := strArg(args, "audio")
 	if strings.TrimSpace(audioRef) == "" {
 		return nil, errors.New("multimodal-mcp: understand_audio 缺少 audio 参数")

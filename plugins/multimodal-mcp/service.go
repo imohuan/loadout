@@ -2,6 +2,8 @@ package multimodalmcp
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 
@@ -39,6 +41,19 @@ func (s *Service) SetGateway(gw SubRequestForwarder) { s.gw = gw }
 
 // SetRouteLog 注入路由日志服务。
 func (s *Service) SetRouteLog(rl contracts.RouteLog) { s.route = rl }
+
+// checkEndpointEnabled 校验端点总开关（cfg.Enabled）。端点被关闭时，
+// 工具调用直接报错，前端「多模态」总开关在后端生效。
+func (s *Service) checkEndpointEnabled() error {
+	cfg, err := s.loadConfig()
+	if err != nil {
+		return fmt.Errorf("multimodal-mcp: 读取配置失败: %w", err)
+	}
+	if !cfg.Enabled {
+		return errors.New("multimodal-mcp: 多模态端点未启用，请在设置页开启「多模态」")
+	}
+	return nil
+}
 
 // ===== 识别方法（由识别函数子代理实现）=====
 // 以下方法把工具 Handler 解析出的 args 转成对应资源的请求 payload，经 s.gw 走

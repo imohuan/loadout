@@ -19,6 +19,9 @@ import (
 // 资源三态由 resolveResource 处理：http URL / data URI 直传，file:// 小文件转 base64
 // data URI、大文件走上传拿 file_id（首版图片若上传未实现则报错）。
 func (s *Service) understandImage(ctx context.Context, args map[string]any) (*mcpkit.ToolResult, error) {
+	if err := s.checkEndpointEnabled(); err != nil {
+		return nil, err
+	}
 	imageRef := strArg(args, "image")
 	if strings.TrimSpace(imageRef) == "" {
 		return nil, errors.New("multimodal-mcp: understand_image 缺少 image 参数")
@@ -46,7 +49,11 @@ func (s *Service) understandImage(ctx context.Context, args map[string]any) (*mc
 	if err != nil {
 		return nil, err
 	}
-	_ = fileID // 图片走 chat/completions 的 image_url，不用 responses 的 input_image file_id（后续协议再定）
+	// chat/completions 的 image_url 只支持 url，不支持 file_id。若大文件走了上传
+	// 拿到 fileID，此处无法在 image_url 里表达，返回明确错误提示改用 URL 或减小文件。
+	if fileID != "" {
+		return nil, errors.New("multimodal-mcp: 图片超过 base64 上限且当前协议的 image_url 不支持 file_id，请改用公网 URL 或压缩图片")
+	}
 	blocks := []map[string]any{
 		imageBlock(url, detail),
 		textBlock("识别方向: " + prompt),
