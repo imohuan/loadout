@@ -38,6 +38,9 @@ type ToolEntry struct {
 	ServerID    string         `json:"-"`           // 上游 server id（invoke 用）
 	RawName     string         `json:"-"`           // 未加前缀的原始工具名（invoke 用）
 	IsSkill     bool           `json:"-"`           // 是否为技能条目
+	// BuiltinHandler 非 nil 表示这是一个内置工具（如多模态识别），调用时直接回调该
+	// handler，不经过上游连接。builtin server（MCPServer.Builtin=true）的工具都走这里。
+	BuiltinHandler func(ctx context.Context, args map[string]any) (*mcpkit.ToolResult, error) `json:"-"`
 }
 
 // Index 工具索引。
@@ -74,6 +77,10 @@ type Service struct {
 	tools []ToolEntry
 	// version index_version 计数器（每次成功重建 +1）。
 	version int
+	// builtinTools 内置工具注册表：server_id → (tool 原始名 → 工具)。
+	// 由内置端点插件（如 multimodal）经 RegisterBuiltinServer 注册；builtin server
+	// 的工具从这取（BuildIndex 不走 getUpstream 建上游连接），调用直调 BuiltinHandler。
+	builtinTools map[string]map[string]*ToolEntry
 }
 
 // NewService 创建 MCP 聚合网关服务，技能仓库目录取 config.SkillsDir。
@@ -89,13 +96,14 @@ func NewService(st *store.Store, lg *slog.Logger, database *sql.DB) *Service {
 		logsRoot = filepath.Join(config.LogsDir, "mcp")
 	}
 	return &Service{
-		st:        st,
-		lg:        lg,
-		db:        database,
-		repo:      repo,
-		repoDir:   config.SkillsDir,
-		upstreams: map[string]*mcpkit.Upstream{},
-		logMgr:    NewLogManager(logsRoot),
+		st:           st,
+		lg:           lg,
+		db:           database,
+		repo:         repo,
+		repoDir:      config.SkillsDir,
+		upstreams:    map[string]*mcpkit.Upstream{},
+		logMgr:       NewLogManager(logsRoot),
+		builtinTools: map[string]map[string]*ToolEntry{},
 	}
 }
 
@@ -119,6 +127,26 @@ func (s *Service) BuildIndex(ctx context.Context) (*Index, error) {
 	tools := make([]ToolEntry, 0)
 	for _, srv := range servers {
 		if !srv.Enabled {
+			continue
+		}
+		// 内置 server（如多模态）：工具从注册表取，不走 getUpstream 建上游连接。
+		if srv.Builtin {
+			s.mu.Lock()
+			toolMap := s.builtinTools[srv.ID]
+			s.mu.Unlock()
+			for _, t := range toolMap {
+				state := findToolState(states, srv.ID, t.Name)
+				if state != nil && !state.Enabled {
+					continue // 工具级开关关掉 → 从索引消失
+				}
+				entry := *t
+				category := srv.Name // 默认分类 = 来源 MCP 名
+				if state != nil && state.Category != "" {
+					category = state.Category
+				}
+				entry.Category = category
+				tools = append(tools, entry)
+			}
 			continue
 		}
 		up := s.getUpstream(srv)
@@ -445,6 +473,10 @@ func (s *Service) callEntryInner(ctx context.Context, t ToolEntry, args map[stri
 			Content: []mcpkit.ContentPart{{Type: "text", Text: s.skillBody(t)}},
 		}, nil
 	}
+	// 内置工具（如多模态识别）：直接回调内置 handler，不经上游连接。
+	if t.BuiltinHandler != nil {
+		return t.BuiltinHandler(ctx, args)
+	}
 	up := s.getUpstreamByID(t.ServerID)
 	if up == nil {
 		return nil, fmt.Errorf("mcphub: 上游 %q 不存在", t.ServerID)
@@ -768,6 +800,94 @@ func (s *Service) SetServerEnabled(ctx context.Context, id string, enabled bool)
 		return nil
 	}
 	return s.getUpstream(*srv).Connect(ctx)
+}
+
+// writeServers 写 MCP 服务器清单（SQLite 优先，fallback mcp_servers.json）。
+func (s *Service) writeServers(ctx context.Context, servers []types.MCPServer) error {
+	if s.repo != nil {
+		if err := s.repo.ReplaceMCPServers(ctx, servers); err == nil {
+			return nil
+		} else {
+			s.warn("mcphub: 写 MCP 服务器到 SQLite 失败，回退 JSON", "err", err)
+		}
+	}
+	return s.st.Write(types.FileMCPServers, servers)
+}
+
+// RegisterBuiltinServer 注册一个内置端点 server（如多模态 /mcp/multimodal）：
+//   - 把 srv（MCPServer.Builtin=true）以固定 ID 幂等 upsert 进 MCP 服务器列表，
+//     使其出现在「上游 MCP」列表与「连接端点配置」；
+//   - 把 tools 存进内置工具注册表，工具进入 $smart 聚合（BuildIndex 直接从注册表取，
+//     不建上游连接），调用时直调 tools 里的 BuiltinHandler。
+// 写入后刷新工具索引缓存。
+func (s *Service) RegisterBuiltinServer(ctx context.Context, srv types.MCPServer, tools []ToolEntry) error {
+	s.mu.Lock()
+	toolMap := map[string]*ToolEntry{}
+	for i := range tools {
+		t := tools[i]
+		t.ServerID = srv.ID
+		t.Source = srv.Name
+		t.Category = srv.Name
+		t.RawName = t.Name
+		toolMap[t.Name] = &t
+	}
+	s.builtinTools[srv.ID] = toolMap
+	s.mu.Unlock()
+
+	servers, err := s.readServers()
+	if err != nil {
+		return err
+	}
+	replaced := false
+	for i := range servers {
+		if servers[i].ID == srv.ID {
+			servers[i] = srv
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		servers = append(servers, srv)
+	}
+	if err := s.writeServers(ctx, servers); err != nil {
+		return err
+	}
+	s.Invalidate()
+	return nil
+}
+
+// UnregisterBuiltinServer 注销内置端点 server：从 MCP 服务器列表移除该 ID，清空其
+// 内置工具注册表并刷新索引；ID 不存在时返回 nil。
+func (s *Service) UnregisterBuiltinServer(ctx context.Context, id string) error {
+	s.mu.Lock()
+	delete(s.builtinTools, id)
+	s.mu.Unlock()
+
+	servers, err := s.readServers()
+	if err != nil {
+		return err
+	}
+	kept := servers[:0]
+	found := false
+	for _, srv := range servers {
+		if srv.ID == id {
+			found = true
+			continue
+		}
+		kept = append(kept, srv)
+	}
+	if !found {
+		return nil
+	}
+	if up := s.getUpstreamByID(id); up != nil {
+		_ = up.Close()
+		s.dropUpstream(id)
+	}
+	if err := s.writeServers(ctx, kept); err != nil {
+		return err
+	}
+	s.Invalidate()
+	return nil
 }
 
 // StartEnabled 启动时自动拉起所有 enabled 的上游（stdio 常驻进程）。
