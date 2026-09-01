@@ -70,11 +70,18 @@ function toggleRow(id: number) {
 }
 
 // ---- 展示 helper ----
-const KIND_LABEL: Record<string, string> = { single: '单 MCP', group: '分组', $smart: '聚合' }
+const KIND_LABEL: Record<string, string> = {
+  single: '单 MCP',
+  group: '分组',
+  $smart: '聚合',
+  builtin: '内置',
+}
 const KIND_CLASS: Record<string, string> = {
   single: 'border-blue-500/20 bg-blue-500/15 text-blue-700 dark:text-blue-300',
   group: 'border-violet-500/20 bg-violet-500/15 text-violet-700 dark:text-violet-300',
   $smart: 'border-amber-500/20 bg-amber-500/15 text-amber-700 dark:text-amber-300',
+  // 内置 server（如多模态 /mcp/multimodal）：端点插件注册，工具直调内置 handler，不经外部上游。
+  builtin: 'border-teal-500/20 bg-teal-500/15 text-teal-700 dark:text-teal-300',
 }
 const AUTH_LABEL: Record<string, string> = {
   session: 'session',
@@ -145,6 +152,7 @@ onMounted(load)
               <SelectItem value="single">单 MCP</SelectItem>
               <SelectItem value="group">分组</SelectItem>
               <SelectItem value="$smart">聚合</SelectItem>
+              <SelectItem value="builtin">内置</SelectItem>
             </SelectGroup>
           </SelectContent>
         </Select>

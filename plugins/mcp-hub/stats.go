@@ -219,7 +219,8 @@ func classifyResult(err error) string {
 func ptrStr(s string) *string { return &s }
 
 // parseAggregate 从端点路径解析聚合路由信息：/mcp/$smart → ("$smart","")，
-// /mcp/{mcp名} → ("single", 名)，/mcp/{分组名} → ("group", 名)；未知/解析失败给空 kind。
+// /mcp/{mcp名} → ("single", 名) / 内置 server → ("builtin", 名)，/mcp/{分组名} → ("group", 名)；
+// 未知/解析失败给空 kind。
 func (s *Service) parseAggregate(endpoint string) (kind, target string) {
 	key := strings.TrimPrefix(endpoint, "/mcp/")
 	if key == "$smart" {
@@ -233,6 +234,13 @@ func (s *Service) parseAggregate(endpoint string) (kind, target string) {
 			if srv.Name == key {
 				return "single", key
 			}
+		}
+	}
+	// 内存里的内置 server（builtinServers，不落库）也算单 MCP，端点路由走 builtin。
+	// 否则内置工具调用记录里 aggregate_kind 为空，前端类型列显示「—」。
+	for _, srv := range s.BuiltinServers() {
+		if srv.Name == key {
+			return "builtin", key
 		}
 	}
 	if groups, err := s.readGroups(); err == nil {

@@ -49,7 +49,14 @@ func newTraceTestService(t *testing.T) *Service {
 	}
 
 	lg := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return &Service{st: st, lg: lg, db: db, repoDir: t.TempDir()}
+	return &Service{
+		st:             st,
+		lg:             lg,
+		db:             db,
+		repoDir:        t.TempDir(),
+		builtinTools:   map[string]map[string]*ToolEntry{},
+		builtinServers: map[string]types.MCPServer{},
+	}
 }
 
 // invocationRow 是 mcp_invocations 落库后读取的最小字段集。
@@ -179,6 +186,21 @@ func TestParseAggregate(t *testing.T) {
 		if kind != c.wantKind || target != c.wantTarget {
 			t.Fatalf("parseAggregate(%q) = (%q, %q)，期望 (%q, %q)", c.endpoint, kind, target, c.wantKind, c.wantTarget)
 		}
+	}
+}
+
+// TestParseAggregateBuiltin 验证：内置 server 端点（如 /mcp/multimodal）被识别为
+// "builtin" 而非空 kind，否则前端 MCP 工具调用类型列显示「—」。
+func TestParseAggregateBuiltin(t *testing.T) {
+	s := newTraceTestService(t)
+	if err := s.RegisterBuiltinServer(context.Background(),
+		types.MCPServer{ID: "builtin-mm", Name: "multimodal", Transport: types.TransportHTTP, Enabled: true, Builtin: true},
+		nil); err != nil {
+		t.Fatalf("RegisterBuiltinServer: %v", err)
+	}
+	kind, target := s.parseAggregate("/mcp/multimodal")
+	if kind != "builtin" || target != "multimodal" {
+		t.Fatalf("parseAggregate(/mcp/multimodal) = (%q, %q)，期望 (builtin, multimodal)", kind, target)
 	}
 }
 
