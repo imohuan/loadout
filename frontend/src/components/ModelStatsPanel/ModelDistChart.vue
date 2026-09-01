@@ -22,6 +22,30 @@ const palette = [
   '#84cc16', // lime
 ]
 
+// 饼图与列表都只显示前 5 名；超出部分在饼图中合并成「其他」一项（灰色），
+// 避免长尾挤成一团看不清，token 占比信息不丢。
+const TOP_N = 5
+const OTHERS_COLOR = '#94a3b8' // slate-400
+
+const chartData = computed(() => {
+  const top = props.items.slice(0, TOP_N)
+  const rest = props.items.slice(TOP_N)
+  const othersTokens = rest.reduce((sum, d) => sum + d.tokens, 0)
+  const slices = top.map((d, i) => ({
+    name: d.model,
+    value: d.tokens,
+    itemStyle: { color: palette[i % palette.length] },
+  }))
+  if (othersTokens > 0) {
+    slices.push({
+      name: `其他（${rest.length}）`,
+      value: othersTokens,
+      itemStyle: { color: OTHERS_COLOR },
+    })
+  }
+  return slices
+})
+
 const option = computed(() => ({
   tooltip: {
     trigger: 'item' as const,
@@ -44,21 +68,31 @@ const option = computed(() => ({
         borderColor: '#fff',
         borderWidth: 2,
       },
-      data: props.items.map((d, i) => ({
-        name: d.model,
-        value: d.tokens,
-        itemStyle: { color: palette[i % palette.length] },
-      })),
+      data: chartData.value,
     },
   ],
 }))
 
-// 列表只展示前 5 名（按 token 降序，后端 sortModelDist 已排好），
-// 饼图保持全量以体现完整分布。
-const TOP_N = 5
-const rows = computed(() =>
-  props.items.slice(0, TOP_N).map((d, i) => ({ ...d, rank: i + 1, color: palette[i % palette.length] })),
-)
+// 前 5 名行；如存在「其他」切片，则追加一行汇总项。
+const rows = computed(() => {
+  const out = props.items.slice(0, TOP_N).map((d, i) => ({
+    ...d,
+    rank: i + 1,
+    color: palette[i % palette.length],
+  }))
+  const rest = props.items.slice(TOP_N)
+  if (rest.length === 0) return out
+  const tokens = rest.reduce((sum, d) => sum + d.tokens, 0)
+  const calls = rest.reduce((sum, d) => sum + d.calls, 0)
+  out.push({
+    model: `其他（${rest.length}）`,
+    calls,
+    tokens,
+    rank: TOP_N + 1,
+    color: OTHERS_COLOR,
+  })
+  return out
+})
 </script>
 
 <template>
