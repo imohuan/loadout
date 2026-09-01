@@ -17,6 +17,8 @@ export interface McpServer {
   headers?: Record<string, string>
   env?: Record<string, string>
   enabled?: boolean
+  // 是否为内置端点注册的 server（如多模态），前端显示「内置」标签。
+  builtin?: boolean
   // 进程运行状态（后端 /api/mcp-servers 返回）：running / stopped / failed。
   status?: 'running' | 'stopped' | 'failed'
   // 失败原因（status=failed 时）。
@@ -44,6 +46,8 @@ export interface McpEndpoint {
   label: string
   transport: string
   count: number
+  // 是否为内置端点（如多模态），前端显示「内置」标签。
+  builtin?: boolean
 }
 
 export function useMcpManagement() {
@@ -101,6 +105,7 @@ export function useMcpManagement() {
         label: server.name,
         transport: server.transport || 'http',
         count: tools.value.find((item) => item.id === server.id)?.tools.length || 0,
+        builtin: server.builtin,
       }))
     result.push(
       ...groups.value.map((group) => ({

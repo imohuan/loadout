@@ -404,7 +404,10 @@ async function copyConfig(endpoint: {
                           <RiArrowRightSLine v-else size="16" /> </Button
                       ></TableCell>
                       <TableCell>
-                        <div class="font-medium">{{ server.name }}</div>
+                        <div class="font-medium flex items-center gap-2">
+                          <span>{{ server.name }}</span>
+                          <Badge v-if="server.builtin" variant="secondary">内置</Badge>
+                        </div>
                         <div class="w-full truncate text-xs text-muted-foreground">
                           {{ server.url || server.command }}
                         </div>
@@ -692,7 +695,10 @@ async function copyConfig(endpoint: {
                       </Button>
                     </TableCell>
                     <TableCell>
-                      <Badge variant="secondary">{{ endpoint.kind }}</Badge>
+                      <div class="flex items-center gap-1.5">
+                        <Badge variant="secondary">{{ endpoint.kind }}</Badge>
+                        <Badge v-if="endpoint.builtin" variant="outline">内置</Badge>
+                      </div>
                     </TableCell>
                     <TableCell class="font-mono text-xs">{{ endpoint.path }}</TableCell>
                     <TableCell>{{ endpoint.count }}</TableCell>
