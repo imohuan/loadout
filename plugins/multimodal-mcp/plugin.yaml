@@ -1,0 +1,13 @@
+# 多模态 MCP 插件清单。
+# 与 core/plugin.Manifest 对应（plugins/*/plugin.yaml 的 name/version/inject/provide）。
+# 运行时装配以 plugin.go 的 Manifest() 为准，本文件供生成器/自检/校验场景使用。
+name: multimodal-mcp
+version: 0.1.0
+inject:
+  - store
+  - db
+  - logger
+  - model-gateway
+  - route-log
+provide:
+  - multimodal-mcp
