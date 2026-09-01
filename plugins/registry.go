@@ -14,6 +14,7 @@ import (
 	gatewaykeys "loadout/plugins/gateway-keys"
 	mcphub "loadout/plugins/mcp-hub"
 	messageinject "loadout/plugins/message-inject"
+	multimodalmcp "loadout/plugins/multimodal-mcp"
 	modelgateway "loadout/plugins/model-gateway"
 	modelhealth "loadout/plugins/model-health"
 	requestlog "loadout/plugins/request-log"
@@ -44,6 +45,7 @@ func All() []plugin.Plugin {
 		visionv2.New(),
 		sensitivefilter.New(),
 		fieldfilter.New(),
+		multimodalmcp.New(),
 		mcphub.New(),
 		adminapi.New(),
 		volcfreequota.New(),
