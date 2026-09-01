@@ -6,7 +6,7 @@ import (
 	"loadout/core/mcpkit"
 )
 
-// tools 返回多模态 MCP 暴露的 3 个识别工具（schema + Handler 分发）。
+// tools 返回多模态 MCP 暴露的 4 个识别工具（schema + Handler 分发）。
 // schema 参数严格按计划 2.1；Handler 把 args 分发到 Service 上的识别方法
 // （识别函数由识别子代理实现，此处仅定义签名并留 TODO）。
 func tools(s *Service) []mcpkit.ServerTool {
@@ -33,6 +33,14 @@ func tools(s *Service) []mcpkit.ServerTool {
 			InputSchema: understandAudioSchema(),
 			Handler: func(ctx context.Context, args map[string]any) (*mcpkit.ToolResult, error) {
 				return s.understandAudio(ctx, args)
+			},
+		},
+		{
+			Name:        "understand_document",
+			Description: "理解一份文档/PDF：模型把文档分页处理成多图后理解其中的文字、图片等信息（走视觉能力）。document 接受 url、data URI（data:application/pdf;base64,...）或 file://本地路径；prompt 为可选的自由描述提示。",
+			InputSchema: understandDocumentSchema(),
+			Handler: func(ctx context.Context, args map[string]any) (*mcpkit.ToolResult, error) {
+				return s.understandDocument(ctx, args)
 			},
 		},
 	}
@@ -116,5 +124,20 @@ func understandAudioSchema() map[string]any {
 			},
 		},
 		"required": []any{"audio"},
+	}
+}
+
+// understandDocumentSchema understand_document 工具参数：document/prompt。
+func understandDocumentSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"document": resourceRefSchema("文档资源"),
+			"prompt": map[string]any{
+				"type":        "string",
+				"description": "可选的自由描述提示，告诉模型关注文档的哪些内容",
+			},
+		},
+		"required": []any{"document"},
 	}
 }

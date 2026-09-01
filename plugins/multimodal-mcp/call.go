@@ -57,6 +57,25 @@ func audioBlockResponses(url, fileID string) map[string]any {
 	return blk
 }
 
+// inputFileBlockResponses 构造 responses 协议的文档块（PDF 等，见火山「文档理解」）：
+//   - fileID != "" → {"type":"input_file","file_id":...}（Files API 上传，≤512MB，推荐）
+//   - 否则 url 以 http(s) 开头 → {"type":"input_file","file_url":...}（公网 URL，≤50MB）
+//   - 否则视为 base64 data URI → 剥前缀拼 {"type":"input_file","file_data":"data:...;base64,...","filename":"..."}
+//
+// 文档理解走 responses 协议（chat 协议不支持 input_file），故放这里与 audioBlockResponses 并列。
+func inputFileBlockResponses(url, fileID, filename string) map[string]any {
+	if fileID != "" {
+		return map[string]any{"type": "input_file", "file_id": fileID}
+	}
+	if strings.HasPrefix(url, "http://") || strings.HasPrefix(url, "https://") {
+		return map[string]any{"type": "input_file", "file_url": url}
+	}
+	if filename == "" {
+		filename = "document.pdf"
+	}
+	return map[string]any{"type": "input_file", "file_data": url, "filename": filename}
+}
+
 // audioBlockChat 构造 chat/completions 协议的音频块（与图片/视频走同一条通道）：
 //   - 本地/小文件：resolveResource 返回 base64 data URI（data:audio/wav;base64,...）。
 //     方舟 Chat API 的 input_audio.data 要求纯 Base64（不含 data:...;base64, 前缀），
@@ -358,6 +377,8 @@ func mimeByExt(path string) string {
 		return "image/webp"
 	case ".bmp":
 		return "image/bmp"
+	case ".pdf":
+		return "application/pdf"
 	case ".mp4", ".m4v":
 		return "video/mp4"
 	case ".webm":
@@ -387,9 +408,11 @@ func mimeByExt(path string) string {
 	}
 }
 
-// sizeThresholds 各资源 base64 内联上限（图片 10MB / 视频 50MB / 音频 25MB，方舟文档）。
+// sizeThresholds 各资源 base64 内联上限（图片 10MB / 视频 50MB / 音频 25MB / 文档 50MB，方舟文档）。
+// 文档 >50MB 走 Files API 上传（≤512MB）拿 file_id，responses 的 input_file 支持 file_id。
 const (
-	imageSizeLimit = 10 << 20 // 10MB
-	videoSizeLimit = 50 << 20 // 50MB
-	audioSizeLimit = 25 << 20 // 25MB
+	imageSizeLimit    = 10 << 20 // 10MB
+	videoSizeLimit    = 50 << 20 // 50MB
+	audioSizeLimit    = 25 << 20 // 25MB
+	documentSizeLimit = 50 << 20 // 50MB
 )

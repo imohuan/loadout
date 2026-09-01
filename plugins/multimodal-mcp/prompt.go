@@ -31,6 +31,9 @@ const defaultImagePrompt = `你是视觉解析引擎，为纯文本模型把图�
 // defaultVideoPrompt 视频识别的内置兜底提示词：抽帧 + 时序感知。
 const defaultVideoPrompt = `你是视频理解引擎，请按时间顺序感知并描述这段视频的关键内容。重点关注：画面中发生了什么、主要物体与人物、动作与场景变化、以及视频想表达的主题或信息。如果有多段画面，按时间先后组织输出。对看不清楚或不确定的细节，明确标注【不确定】，不要编造。`
 
+// defaultDocumentPrompt 文档理解的内置兜底提示词：按段落提取并结构化输出（照火山文档示例）。
+const defaultDocumentPrompt = `按段落给出文档中的文字内容，以JSON格式输出，包括段落类型（type）、文字内容（content）信息。`
+
 // ===== 音频 task 的 instructions 模板库（严格照方舟音频理解文档）=====
 
 // audioInstructions 按 task 返回对应的 instructions 提示词模板。

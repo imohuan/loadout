@@ -39,8 +39,8 @@ func TestHandlerConfigGetDefault(t *testing.T) {
 	if got.Enabled {
 		t.Error("默认配置端点应关闭")
 	}
-	if len(got.Tools) != 3 {
-		t.Errorf("默认工具数 = %d, want 3", len(got.Tools))
+	if len(got.Tools) != 4 {
+		t.Errorf("默认工具数 = %d, want 4", len(got.Tools))
 	}
 }
 

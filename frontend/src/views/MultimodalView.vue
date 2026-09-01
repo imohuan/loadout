@@ -8,7 +8,7 @@ import { useAggregates } from '@/composables/useAggregates'
 import TargetModelPicker from '@/components/TargetModelPicker.vue'
 
 // 与后端 plugins/multimodal-mcp/config.go 的 ToolConfig / MultimodalConfig 对应。
-type ToolKind = 'image' | 'video' | 'audio'
+type ToolKind = 'image' | 'video' | 'audio' | 'document'
 
 interface ToolConfig {
   kind: ToolKind
@@ -41,6 +41,7 @@ const toolMeta: Record<ToolKind, { title: string; desc: string }> = {
   image: { title: '图片理解', desc: 'understand_image · detail 控制精细度' },
   video: { title: '视频理解', desc: 'understand_video · fps 控制抽帧频率（0.2~5）' },
   audio: { title: '音频理解', desc: 'understand_audio · task 决定识别模式' },
+  document: { title: '文档理解', desc: 'understand_document · 支持 PDF（分页视觉理解）' },
 }
 
 const { run, isPending } = useAsyncTask()
@@ -53,6 +54,7 @@ const form = reactive<MultimodalConfig>({
     { kind: 'image', enabled: true, model: '', defaults: { detail: 'high' } },
     { kind: 'video', enabled: true, model: '', defaults: { fps: 1 } },
     { kind: 'audio', enabled: true, model: '', defaults: { task: 'asr', language: '', source_lang: '', target_lang: '' } },
+    { kind: 'document', enabled: true, model: '', defaults: {} },
   ],
 })
 
@@ -128,8 +130,8 @@ defineExpose({
       </CardContent>
     </Card>
 
-    <!-- 3 个工具配置 -->
-    <Card v-for="kind in ['image', 'video', 'audio'] as ToolKind[]" :key="kind" class="rounded-md">
+    <!-- 4 个工具配置 -->
+    <Card v-for="kind in ['image', 'video', 'audio', 'document'] as ToolKind[]" :key="kind" class="rounded-md">
       <CardHeader class="flex flex-row items-start justify-between gap-3 space-y-0">
         <div>
           <CardTitle class="text-base">{{ toolMeta[kind].title }}</CardTitle>

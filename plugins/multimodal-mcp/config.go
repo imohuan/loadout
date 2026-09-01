@@ -11,13 +11,14 @@ import (
 // FileMultimodalConfig 多模态配置落盘的 JSON 文件名（自定义常量，types 包暂无此文件）。
 const FileMultimodalConfig = "multimodal_config.json"
 
-// ToolKind 工具类型：图片 / 视频 / 音频。
+// ToolKind 工具类型：图片 / 视频 / 音频 / 文档。
 type ToolKind string
 
 const (
-	ToolImage ToolKind = "image"
-	ToolVideo ToolKind = "video"
-	ToolAudio ToolKind = "audio"
+	ToolImage    ToolKind = "image"
+	ToolVideo    ToolKind = "video"
+	ToolAudio    ToolKind = "audio"
+	ToolDocument ToolKind = "document"
 )
 
 // ToolConfig 单个工具的配置：启用 + 内置模型名 + 默认参数。
@@ -31,11 +32,11 @@ type ToolConfig struct {
 // MultimodalConfig 多模态插件整体配置（store JSON 落盘）。
 type MultimodalConfig struct {
 	Enabled bool         `json:"enabled"` // 端点总开关
-	Tools   []ToolConfig `json:"tools"`   // 3 个工具配置
+	Tools   []ToolConfig `json:"tools"`   // 4 个工具配置
 	// 音频 task 的 instructions 模板内置在 prompt.go，不存配置（除非需要用户覆盖）。
 }
 
-// DefaultConfig 返回多模态配置的默认值（端点关闭、3 个工具默认启用且带默认参数）。
+// DefaultConfig 返回多模态配置的默认值（端点关闭、4 个工具默认启用且带默认参数）。
 func DefaultConfig() *MultimodalConfig {
 	return &MultimodalConfig{
 		Enabled: false,
@@ -43,6 +44,7 @@ func DefaultConfig() *MultimodalConfig {
 			{Kind: ToolImage, Enabled: true, Defaults: map[string]any{"detail": "high"}},
 			{Kind: ToolVideo, Enabled: true, Defaults: map[string]any{"fps": 1}},
 			{Kind: ToolAudio, Enabled: true, Defaults: map[string]any{"task": "asr", "language": ""}},
+			{Kind: ToolDocument, Enabled: true, Defaults: map[string]any{}},
 		},
 	}
 }
