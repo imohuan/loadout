@@ -1179,6 +1179,18 @@ func (s *Service) proxyBeginLog(r *http.Request, pipe *ProxyPipeline) {
 //
 // 前端 RouteLogTable 由此渲染 "@ 渠道名(Key1, Key2)" 而非空 channel_id。
 func (s *Service) proxyAttemptLog(r *http.Request, pipe *ProxyPipeline, model, channelID, channelName string, channelIDs []string, channelBaseURL string, started time.Time, result, failureClass string, statusCode int, stream bool, usage contracts.TokenUsage, err error, errorBody string) {
+	// 单次渠道尝试失败 → 纯通知事件（request-log 订阅，即时收尾失败 attempt 的半条）。
+	// 【P0 修复】必须在 route-log 早退（子请求不写 route_requests/attempts）之前 emit：
+	// 子请求（multimodal-mcp 语音识别/视觉续流）失败同样需要 request-log 收尾，
+	// 否则 request_logs 行永远卡 running、上游 400/5xx 错误详情永久丢失。
+	// 用 Emit（非 Waterfall）避免订阅者改写 pipe 影响 failover；与 ProxyUpstreamFailed
+	// （聚合全败专用）互补——普通模型失败、聚合模型中间失败 attempt 都能收到。
+	if result == "failed" {
+		s.ctx.Emit(ProxyAttemptFailed, &ProxyFailurePayload{
+			Pipe: pipe, Model: model, ChannelID: channelID, Error: err,
+			StatusCode: statusCode, ErrorBody: errorBody,
+		})
+	}
 	if s.routeLog == nil || isSubRequest(pipe) {
 		return
 	}
@@ -1231,15 +1243,6 @@ func (s *Service) proxyAttemptLog(r *http.Request, pipe *ProxyPipeline, model, c
 		RequestLogID:     requestLogID,
 	}); logErr != nil {
 		s.lg.Warn("route log attempt failed", "err", logErr)
-	}
-	// 单次渠道尝试失败 → 纯通知事件（request-log 订阅，即时收尾失败 attempt 的半条）。
-	// 用 Emit（非 Waterfall）避免订阅者改写 pipe 影响 failover；与 ProxyUpstreamFailed
-	// （聚合全败专用）互补——普通模型失败、聚合模型中间失败 attempt 都能收到。
-	if result == "failed" {
-		s.ctx.Emit(ProxyAttemptFailed, &ProxyFailurePayload{
-			Pipe: pipe, Model: model, ChannelID: channelID, Error: err,
-			StatusCode: statusCode, ErrorBody: errorBody,
-		})
 	}
 }
 

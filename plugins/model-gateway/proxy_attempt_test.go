@@ -390,3 +390,58 @@ func TestProxyAttemptLogEmitsAttemptFailed(t *testing.T) {
 		t.Fatalf("payload model/channel = %q/%q, 期望 gpt-5/ch-a", got.Model, got.ChannelID)
 	}
 }
+
+// TestProxyAttemptLogEmitsAttemptFailedForSubRequest 回归：子请求（__sub_request=true，
+// multimodal-mcp 语音识别/视觉续流）渠道尝试失败时也必须 emit proxy:attempt-failed，
+// 让 request-log 即时收尾失败 attempt 的半条日志——修复「子请求失败时 proxyAttemptLog
+// 提前 return，ProxyAttemptFailed 不发，request_logs 永远卡 running、上游错误丢失」。
+// 同时断言子请求仍不写 route-log attempt（isSubRequest 语义不变）。
+func TestProxyAttemptLogEmitsAttemptFailedForSubRequest(t *testing.T) {
+	svc, _ := newTestService(t)
+	log := &mockRouteLog{}
+	svc.SetRoutingServices(nil, nil, log)
+	echo, _ := newEchoServer(t, `{"error":{"message":"quota exhausted"}}`, 429, nil)
+	defer echo.Close()
+	if err := svc.st.Write(types.FileChannels, []types.Channel{
+		{ID: "ch-a", Name: "渠道A", BaseURL: echo.URL, Enabled: true},
+	}); err != nil {
+		t.Fatalf("写渠道表失败: %v", err)
+	}
+
+	// 标记为子请求（ForwardSubRequest 在转发前设置 __sub_request=true）。
+	svc.ctx.On(ProxyBeforeUpstream, func(payload any) (any, error) {
+		pipe, ok := payload.(*ProxyPipeline)
+		if ok && pipe != nil {
+			pipe.Metadata["__sub_request"] = true
+			pipe.Metadata["__sub_request_skip_security"] = true
+		}
+		return payload, nil
+	})
+
+	var got *ProxyFailurePayload
+	svc.ctx.On(ProxyAttemptFailed, func(payload any) (any, error) {
+		if fp, ok := payload.(*ProxyFailurePayload); ok {
+			got = fp
+		}
+		return payload, nil
+	})
+
+	body := `{"model":"gpt-5","input":[{"role":"user","content":"hi"}]}`
+	req := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(body))
+	rr := httptest.NewRecorder()
+	svc.HandleProxy(rr, req)
+
+	if rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("状态码 = %d, 期望 429", rr.Code)
+	}
+	if got == nil {
+		t.Fatal("子请求失败也必须 emit ProxyAttemptFailed（P0 修复后应触发）")
+	}
+	if got.StatusCode != 429 || !strings.Contains(got.ErrorBody, "quota exhausted") {
+		t.Fatalf("payload StatusCode/ErrorBody = %d/%q, 期望 429/quota exhausted", got.StatusCode, got.ErrorBody)
+	}
+	// 子请求仍不应写 route-log attempt（route_requests 由调用方独立折叠），语义不变。
+	if len(log.attempts) != 0 {
+		t.Fatalf("子请求不应写 route-log attempt, got %d", len(log.attempts))
+	}
+}
