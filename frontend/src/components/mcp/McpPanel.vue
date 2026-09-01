@@ -393,7 +393,6 @@ async function copyConfig(endpoint: {
                     <TableRow>
                       <TableCell class="px-0"
                         ><Button
-                          v-if="!server.builtin"
                           variant="ghost"
                           size="icon"
                           class="size-8"
