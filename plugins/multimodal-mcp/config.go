@@ -85,6 +85,10 @@ func (s *Service) HandlerConfig() http.Handler {
 				writeError(w, http.StatusInternalServerError, err.Error())
 				return
 			}
+			// 保存后同步 mcp-hub 的内置 server 注册（启用 → 工具进聚合；关闭 → 注销）。
+			if err := s.syncHubRegistration(); err != nil {
+				s.lg.Warn("multimodal-mcp: 同步内置 server 注册失败", "err", err)
+			}
 			writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 		default:
 			writeError(w, http.StatusMethodNotAllowed, "不支持的请求方法")

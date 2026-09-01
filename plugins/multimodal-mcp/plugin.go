@@ -12,6 +12,7 @@ import (
 	"loadout/core/plugin"
 	"loadout/core/store"
 	"loadout/plugins/contracts"
+	mcphub "loadout/plugins/mcp-hub"
 	modelgateway "loadout/plugins/model-gateway"
 )
 
@@ -21,12 +22,12 @@ type multimodalPlugin struct{}
 // New 创建多模态 MCP 插件（符合插件约定：导出 func New() plugin.Plugin）。
 func New() plugin.Plugin { return &multimodalPlugin{} }
 
-// Manifest 声明插件元数据：依赖 store/db/logger/model-gateway/route-log，提供 "multimodal-mcp" 服务。
+// Manifest 声明插件元数据：依赖 store/db/logger/model-gateway/route-log/mcp-hub，提供 "multimodal-mcp" 服务。
 func (p *multimodalPlugin) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		Name:    "multimodal-mcp",
 		Version: "0.1.0",
-		Inject:  []string{"store", "db", "logger", "model-gateway", "route-log"},
+		Inject:  []string{"store", "db", "logger", "model-gateway", "route-log", "mcp-hub"},
 		Provide: []string{"multimodal-mcp"},
 	}
 }
@@ -48,6 +49,10 @@ func (p *multimodalPlugin) Apply(ctx plugin.Context) error {
 	if !ok || gw == nil {
 		return fmt.Errorf("multimodal-mcp: missing model-gateway service")
 	}
+	hub, ok := ctx.Get("mcp-hub").(*mcphub.Service)
+	if !ok || hub == nil {
+		return fmt.Errorf("multimodal-mcp: missing mcp-hub service")
+	}
 	repo, err := db.NewRepository(database)
 	if err != nil {
 		return fmt.Errorf("multimodal-mcp: 初始化仓储失败: %w", err)
@@ -55,6 +60,7 @@ func (p *multimodalPlugin) Apply(ctx plugin.Context) error {
 	svc := NewService(st, repo, lg)
 	svc.SetRouteLog(routeLog)
 	svc.SetGateway(gw)
+	svc.SetMcpHub(hub)
 	ctx.Set("multimodal-mcp", svc)
 
 	// MCP 端点：精确路径 POST /mcp/multimodal 优先于 servercore 的 /mcp/ 前缀分发器，
@@ -79,5 +85,9 @@ func (p *multimodalPlugin) Apply(ctx plugin.Context) error {
 		Auth:    plugin.AuthSession,
 		Handler: svc.HandlerConfig(),
 	})
+	// 启动时按当前配置注册/注销内置 server（工具进 $smart 聚合）。失败不阻断启动。
+	if err := svc.syncHubRegistration(); err != nil {
+		lg.Warn("multimodal-mcp: 启动时同步内置 server 注册失败", "err", err)
+	}
 	return nil
 }

@@ -631,6 +631,11 @@ func (s *Service) SmartEndpointServer(group string) *mcp.Server {
 
 // ===== 内部辅助 =====
 
+// ListServers 返回当前 MCP 服务器清单（含内置 server）。
+func (s *Service) ListServers(ctx context.Context) ([]types.MCPServer, error) {
+	return s.readServers()
+}
+
 // readServers 读 MCP 服务器清单（SQLite 优先，fallback mcp_servers.json）。
 func (s *Service) readServers() ([]types.MCPServer, error) {
 	if s.repo != nil {
