@@ -200,7 +200,7 @@ func (s *Service) List() ([]types.Skill, error) {
 			sk.UpdatedAt = e.UpdatedAt
 		}
 		// 仓库根目录 + 技能目录 = 技能所在绝对路径，前端可一键复制。
-		sk.Path = filepath.Join(s.repoDir, sk.Name)
+		sk.Path = filepath.Join(s.targetDir, sk.Name)
 	}
 	return skills, nil
 }
