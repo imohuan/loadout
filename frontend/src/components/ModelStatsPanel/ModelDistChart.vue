@@ -53,8 +53,11 @@ const option = computed(() => ({
   ],
 }))
 
+// 列表只展示前 5 名（按 token 降序，后端 sortModelDist 已排好），
+// 饼图保持全量以体现完整分布。
+const TOP_N = 5
 const rows = computed(() =>
-  props.items.map((d, i) => ({ ...d, rank: i + 1, color: palette[i % palette.length] })),
+  props.items.slice(0, TOP_N).map((d, i) => ({ ...d, rank: i + 1, color: palette[i % palette.length] })),
 )
 </script>
 
