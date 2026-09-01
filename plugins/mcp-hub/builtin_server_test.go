@@ -163,6 +163,53 @@ func TestRegisterBuiltinServerIdempotent(t *testing.T) {
 	}
 }
 
+// TestInvokeToolBuiltinServer 验证：经 /api/mcp-tools/call 的 InvokeTool(serverID, toolName)
+// 能路由到内置 server（/mcp/{name} 端点）并直调内置 handler，而不是报「未知端点」。
+func TestInvokeToolBuiltinServer(t *testing.T) {
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	s := NewService(st, slog.Default(), nil)
+
+	srv := types.MCPServer{ID: "builtin-mm", Name: "multimodal", Transport: types.TransportHTTP, Enabled: true, Builtin: true}
+	if err := s.RegisterBuiltinServer(context.Background(), srv, []ToolEntry{
+		{Name: "understand_audio", Description: "音频", InputSchema: map[string]any{"type": "object"}, BuiltinHandler: builtinTestHandler("audio")},
+	}); err != nil {
+		t.Fatalf("RegisterBuiltinServer: %v", err)
+	}
+
+	// 按 name 匹配的内置端点应可见。
+	tv, err := s.ToolView("/mcp/multimodal")
+	if err != nil {
+		t.Fatalf("ToolView(/mcp/multimodal): %v", err)
+	}
+	if !hasTool(tv, "understand_audio") {
+		t.Errorf("内置端点 /mcp/multimodal 应列出 understand_audio，got %v", toolNames(tv))
+	}
+
+	// InvokeTool 直调内置 handler。
+	out, err := s.InvokeTool(context.Background(), "builtin-mm", "understand_audio", map[string]any{})
+	if err != nil {
+		t.Fatalf("InvokeTool builtin: %v", err)
+	}
+	if !strings.Contains(outText(out), "builtin:audio") {
+		t.Errorf("InvokeTool 结果应包含 builtin:audio，got %q", outText(out))
+	}
+}
+
+func outText(res *mcpkit.ToolResult) string {
+	if res == nil {
+		return ""
+	}
+	for _, c := range res.Content {
+		if c.Text != "" {
+			return c.Text
+		}
+	}
+	return ""
+}
+
 // TestBuiltinServerDisabled 验证：内置 server 被禁用（enabled=false）时工具不进索引。
 func TestBuiltinServerDisabled(t *testing.T) {
 	st, err := store.New(t.TempDir())

@@ -244,10 +244,12 @@ func (s *Service) resolveTools(endpoint, group string) ([]ToolEntry, error) {
 	}
 
 	// 匹配某上游 MCP 的 name → 仅该上游工具。
+	// 含内存里的内置 server（builtinServers，不落库）——否则内置端点的 /mcp/{name} 路由不到。
 	servers, err := s.readServers()
 	if err != nil {
 		return nil, err
 	}
+	servers = append(servers, s.BuiltinServers()...)
 	for _, srv := range servers {
 		if srv.Name == key {
 			var out []ToolEntry
@@ -283,6 +285,12 @@ func (s *Service) Endpoints() ([]string, error) {
 		return nil, err
 	}
 	for _, srv := range servers {
+		if srv.Enabled {
+			out = append(out, "/mcp/"+srv.Name)
+		}
+	}
+	// 内存内置 server 也是独立端点（如 /mcp/multimodal）。
+	for _, srv := range s.BuiltinServers() {
 		if srv.Enabled {
 			out = append(out, "/mcp/"+srv.Name)
 		}
