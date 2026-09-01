@@ -1547,6 +1547,9 @@ func (s *Service) handleMCPToolsList(w http.ResponseWriter, r *http.Request) {
 		s.writeServerError(w, err)
 		return
 	}
+	if s.hub != nil {
+		servers = append(servers, s.hub.BuiltinServers()...)
+	}
 	type serverTools struct {
 		ID        string         `json:"id"`
 		Name      string         `json:"name"`
