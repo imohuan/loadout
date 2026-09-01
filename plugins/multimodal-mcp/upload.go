@@ -20,12 +20,11 @@ var (
 	uploadPollInterval = time.Second
 	// uploadPollTimeout 从上传成功到文件状态变 active 的总等待上限。
 	uploadPollTimeout = 60 * time.Second
+	// arkHTTPClient 方舟 Files API 的 HTTP 客户端（测试可替换以重定向到 mock server）。
+	arkHTTPClient = http.DefaultClient
 )
 
-// defaultArkAPIBase 方舟平台 API 标准根地址（channel BaseURL 无法解析时兜底）。
-const defaultArkAPIBase = "https://ark.cn-beijing.volces.com/api/v3"
-
-// arkFileStatus 文件上传响应里的状态字段。
+// arkFileStatus 文件上传/检索响应里的状态字段。
 type arkFileStatus string
 
 const (
@@ -46,13 +45,15 @@ type arkRetrieveResp struct {
 }
 
 // uploadAndGetID 把大文件上传到火山方舟 Files API，返回 file_id。
+// 识别层在本地文件超过 base64 阈值时调用本方法（已读取文件字节并带上媒体类型与文件名）：
 // 从渠道列表按 Base URL 识别方舟平台取 key，调 POST /v3/files 上传（multipart，
 // purpose=user_data），随后轮询文件状态到 active。多个方舟 key 依次尝试（failover）。
-// 识别层在拿到错误后决定降级（base64 或直接报错）。
-func (s *Service) uploadAndGetID(ctx context.Context, mediaType, data []byte, filename string) (string, error) {
+// 识别层在收到错误后决定降级（base64 或直接报错）。
+func (s *Service) uploadAndGetID(ctx context.Context, mediaType string, data []byte, filename string) (string, error) {
 	if len(data) == 0 {
-		return "", errors.New("multimodal-mcp: 上传文件内容为空")
+		return "", errors.New("multimodal-mcp: 待上传文件内容为空")
 	}
+
 	// 1. 渠道识别：按 Base URL 找启用的方舟平台渠道（含解密后的 key 与 API 地址）。
 	arks, err := s.arkChannels(ctx)
 	if err != nil {
@@ -65,7 +66,7 @@ func (s *Service) uploadAndGetID(ctx context.Context, mediaType, data []byte, fi
 	// 2. 逐个方舟 key 尝试上传 + 轮询（failover）。
 	var lastErr error
 	for _, a := range arks {
-		fileID, err := s.uploadAndPoll(ctx, a, data, filename)
+		fileID, err := s.uploadAndPoll(ctx, a, data, mediaType, filename)
 		if err == nil {
 			return fileID, nil
 		}
@@ -130,15 +131,14 @@ func arkAPIBase(baseURL string) (string, bool) {
 	if scheme == "" {
 		scheme = "https"
 	}
-	// 若 channel BaseURL 已带 /api/v3 则复用其 host，否则按标准 host 拼 /api/v3。
 	apiBase := scheme + "://" + u.Host + "/api/v3"
-	// 去掉可能重复的 /api/v3（如 BaseURL 本身就是 https://ark.../api/v3）。
+	// 若 BaseURL 本身就是完整 /api/v3 地址，去掉可能的重复拼接。
 	return strings.TrimSuffix(apiBase, "/api/v3/api/v3"), true
 }
 
 // uploadAndPoll 用单个方舟渠道完成：上传拿 file_id → 轮询状态到 active。
-func (s *Service) uploadAndPoll(ctx context.Context, a arkChannel, data []byte, filename string) (string, error) {
-	fileID, err := s.uploadFile(ctx, a, data, filename)
+func (s *Service) uploadAndPoll(ctx context.Context, a arkChannel, data []byte, mediaType, filename string) (string, error) {
+	fileID, err := s.uploadFile(ctx, a, data, mediaType, filename)
 	if err != nil {
 		return "", err
 	}
@@ -149,7 +149,7 @@ func (s *Service) uploadAndPoll(ctx context.Context, a arkChannel, data []byte, 
 }
 
 // uploadFile 调 POST {apiBase}/files 上传文件，返回响应里的 file_id。
-func (s *Service) uploadFile(ctx context.Context, a arkChannel, data []byte, filename string) (string, error) {
+func (s *Service) uploadFile(ctx context.Context, a arkChannel, data []byte, mediaType, filename string) (string, error) {
 	if filename == "" {
 		filename = "upload.bin"
 	}
@@ -163,6 +163,10 @@ func (s *Service) uploadFile(ctx context.Context, a arkChannel, data []byte, fil
 	if err != nil {
 		return "", fmt.Errorf("multimodal-mcp: 创建 file 字段失败: %w", err)
 	}
+	// mediaType（识别层传入的 MIME）暂不参与 multipart 头改写——CreateFormFile 固定
+	// application/octet-stream，文件名扩展名即可让方舟识别类型；此处保留参数用于
+	// 潜在扩展（如后续需要显式 Content-Type 时）。
+	_ = mediaType
 	if _, err := part.Write(data); err != nil {
 		return "", fmt.Errorf("multimodal-mcp: 写文件字节失败: %w", err)
 	}
@@ -170,15 +174,15 @@ func (s *Service) uploadFile(ctx context.Context, a arkChannel, data []byte, fil
 		return "", fmt.Errorf("multimodal-mcp: 关闭 multipart 失败: %w", err)
 	}
 
-	url := strings.TrimRight(a.apiBase, "/") + "/files"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, &body)
+	uploadURL := strings.TrimRight(a.apiBase, "/") + "/files"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, uploadURL, &body)
 	if err != nil {
 		return "", fmt.Errorf("multimodal-mcp: 构造上传请求失败: %w", err)
 	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	req.Header.Set("Authorization", "Bearer "+a.apiKey)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := arkHTTPClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("multimodal-mcp: 上传请求失败: %w", err)
 	}
@@ -199,18 +203,18 @@ func (s *Service) uploadFile(ctx context.Context, a arkChannel, data []byte, fil
 
 // waitActive 轮询 GET {apiBase}/files/{file_id}，直到状态 active；超时返回错误。
 func (s *Service) waitActive(ctx context.Context, a arkChannel, fileID string) error {
-	url := strings.TrimRight(a.apiBase, "/") + "/files/" + url.PathEscape(fileID)
+	retrieveURL := strings.TrimRight(a.apiBase, "/") + "/files/" + url.PathEscape(fileID)
 	deadline := time.Now().Add(uploadPollTimeout)
 	for {
 		if time.Now().After(deadline) {
 			return fmt.Errorf("multimodal-mcp: 轮询文件 %s 状态超时（%s）", fileID, uploadPollTimeout)
 		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, retrieveURL, nil)
 		if err != nil {
 			return fmt.Errorf("multimodal-mcp: 构造轮询请求失败: %w", err)
 		}
 		req.Header.Set("Authorization", "Bearer "+a.apiKey)
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := arkHTTPClient.Do(req)
 		if err != nil {
 			return fmt.Errorf("multimodal-mcp: 轮询请求失败: %w", err)
 		}
