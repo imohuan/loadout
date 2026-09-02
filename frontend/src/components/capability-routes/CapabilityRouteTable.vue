@@ -197,6 +197,9 @@ function channelScopeLabel(channels: Channel[], ids?: string[], baseURLs?: strin
                         <template v-else-if="route.capability === 'request_log'">
                           记录完整请求/响应
                         </template>
+                        <template v-else-if="route.capability === 'force_stream'">
+                          强制流式，整包非流式返回
+                        </template>
                         <template v-else-if="route.capability === 'message_inject'">
                           {{ messageInjectLabel(route) || '—' }}
                         </template>
@@ -226,6 +229,11 @@ function channelScopeLabel(channels: Channel[], ids?: string[], baseURLs?: strin
                       </template>
                       <template v-else-if="route.capability === 'message_inject'">
                         <span class="whitespace-pre-wrap">{{ messageInjectLabel(route) || '—' }}</span>
+                      </template>
+                      <template v-else-if="route.capability === 'force_stream'">
+                        <span class="whitespace-pre-wrap"
+                          >非流式客户端请求在此转流式请求上游，缓冲完整段后整包按非流式返回</span
+                        >
                       </template>
                       <template v-else>
                         <div class="flex flex-col items-start gap-1">

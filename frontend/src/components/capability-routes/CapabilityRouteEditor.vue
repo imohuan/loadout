@@ -52,6 +52,7 @@ const CAP_SENSITIVE = 'sensitive_filter'
 const CAP_FIELD_FILTER = 'field_filter'
 const CAP_MESSAGE_INJECT = 'message_inject'
 const CAP_REQUEST_LOG = 'request_log'
+const CAP_FORCE_STREAM = 'force_stream'
 
 // 字段过滤规则编辑态：模板用 v-model 绑定原始文本（每行一个字段路径），
 // 提交时才 split/trim 解析为数组——避免输入时受控转换吞字符/丢空格。
@@ -248,6 +249,7 @@ const capabilityOptions = [
   { value: CAP_FIELD_FILTER, label: 'field_filter（字段过滤）' },
   { value: CAP_MESSAGE_INJECT, label: 'message_inject（消息注入）' },
   { value: CAP_REQUEST_LOG, label: 'request_log（完整请求日志）' },
+  { value: CAP_FORCE_STREAM, label: 'force_stream（强制流式·非流式客户端兼容）' },
 ]
 // 路由方式选项：sensitive_filter 三态里 error（命中拒绝）已废弃移除——
 // 「不支持就不管他」：命中敏感词不再直接拒绝，只能替换（proxy）或透传（native）。
@@ -285,6 +287,13 @@ const routeHint = computed(() => {
       native: '不记录完整请求日志（请求体/响应体均不落库）。',
     }[form.route]
   }
+  if (form.capability === CAP_FORCE_STREAM) {
+    return {
+      proxy:
+        '该渠道/模型只接受流式时使用：客户端发非流式(stream:false)请求，网关内部转流式请求、缓冲完整段后整包按非流式 JSON 返回，客户端无感知。',
+      native: '按原始方式透传，不做强制流式转换（适合已原生支持非流式的模型）。',
+    }[form.route]
+  }
   if (form.capability === CAP_MESSAGE_INJECT) {
     return {
       proxy:
@@ -315,6 +324,8 @@ function submit() {
       if (!form.injections.some((i) => i.content.trim())) return
     } else if (form.capability === CAP_REQUEST_LOG) {
       // request_log 无额外配置（脱敏开关在独立 config 表），直接放行
+    } else if (form.capability === CAP_FORCE_STREAM) {
+      // force_stream 无额外配置（纯 on/off 能力），直接放行
     } else if (!form.viaOptions.some((o) => o.model.trim())) {
       return
     }
