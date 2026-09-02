@@ -763,7 +763,8 @@ onBeforeUnmount(() => {
             <CardDescription>从已有渠道快速导入，或直接填入临时配置。</CardDescription>
           </CardHeader>
           <CardContent class="space-y-4">
-            <div class="grid gap-3 md:grid-cols-2 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,0.5fr)]">
+            <!-- <div class="grid gap-3 md:grid-cols-2 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,0.5fr)]"> -->
+            <div class="flex gap-3">
               <div class="space-y-2">
                 <Label for="test-channel">预设</Label>
                 <Popover v-model:open="presetOpen">
@@ -850,7 +851,7 @@ onBeforeUnmount(() => {
               <div class="space-y-2">
                 <Label for="test-stream">是否开启流</Label>
                 <!-- Switch 放 Label 下方（与其它字段一样 label 在控件上方），值开在接口后缀右侧。 -->
-                <div class="flex h-10 items-center">
+                <div class="flex h-8 items-center">
                   <Switch
                     id="test-stream"
                     :model-value="streamEnabled"
