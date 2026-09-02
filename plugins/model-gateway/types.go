@@ -61,11 +61,11 @@ type Pipeline struct {
 
 // ResolvedChannel 解析后的转发渠道（APIKey 已解密）。
 type ResolvedChannel struct {
-	ID           string
-	Name         string // Key 名称（展示用）
-	ChannelName  string // 渠道名称（base_url 组级，v2 前缀路由用；空 = 不参与前缀匹配）
-	BaseURL      string
-	APIKey       string
+	ID          string
+	Name        string // Key 名称（展示用）
+	ChannelName string // 渠道名称（base_url 组级，v2 前缀路由用；空 = 不参与前缀匹配）
+	BaseURL     string
+	APIKey      string
 }
 
 // GatewayError 携带 OpenAI 标准错误信息（type 与 HTTP 状态码）的网关错误。
@@ -213,6 +213,15 @@ const MetadataRequestLogID = "__request_log_id"
 // 供收尾事件反查），model-gateway 写 route_attempts 行时读取落 request_log_id 列
 // （per-attempt 独立日志，区别于 pipe 级 MetadataRequestLogID 的原始语义）。
 const MetadataRequestLogAttemptID = "__request_log_attempt_id"
+
+// MetadataForceStream 标记：请求命中 force_stream 能力路由（force-stream 插件在
+// proxy:before-attempt 写入）。语义：客户端发的是非流式请求（Request.Stream=false），
+// 但渠道/平台只支持流式——网关应把上游请求体 stream 改成 true 走流式，缓冲整段 SSE
+// 后拼成一份完整非流式 JSON 整包返回客户端。
+//
+// 注意：此标记**不代表** Request.Stream 变为 true（那会误伤日志 stream 列、client 超时
+// 选择、分流），只是告诉核心「本请求的转发要按强制流式处理」。
+const MetadataForceStream = "__force_stream"
 
 // ProxyAttemptFailed 单次渠道尝试失败的纯通知事件（proxy:attempt-failed）。
 // 与 ProxyUpstreamFailed（聚合全败后 failover 专用，仅聚合路径触发）的区别：

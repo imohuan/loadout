@@ -362,8 +362,15 @@ func (s *Service) proxyAttempt(w http.ResponseWriter, r *http.Request, pipe *Pro
 	if ch.APIKey != "" {
 		upReq.Header.Set("Authorization", "Bearer "+ch.APIKey)
 	}
+	// forceStream 命中（force-stream 插件在 proxy:before-attempt 打标记）：本请求虽是
+	// 客户端非流式，但上游要按强制流式缓冲整段 SSE——长流可能远超 UpstreamTimeout，
+	// 必须与流式请求一样用无超时 client，否则缓冲到一半被 timeout 切断。
+	forceStream := !pipe.Request.Stream && pipe.Metadata != nil
+	if fs, _ := pipe.Metadata[MetadataForceStream].(bool); !fs {
+		forceStream = false
+	}
 	client := &http.Client{Timeout: config.UpstreamTimeout}
-	if pipe.Request.Stream {
+	if pipe.Request.Stream || forceStream {
 		client = &http.Client{}
 	}
 	resp, err := client.Do(upReq)
@@ -424,19 +431,42 @@ func (s *Service) proxyAttempt(w http.ResponseWriter, r *http.Request, pipe *Pro
 
 	// 命中：非流式读完整 body → 输出 hook → 写回；流式逐块透传。
 	if !pipe.Request.Stream {
-		respBody, rerr := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if rerr != nil {
-			res.err = rerr
-			res.channelID = ch.ID
-			s.proxyAttemptLog(r, pipe, model, ch.ID, ch.ChannelName, nil, "", attemptStarted, "failed", "network", resp.StatusCode, false, contracts.TokenUsage{}, rerr, truncateErrorBody(rerr.Error()))
-			return pipe, false
+		// force_stream 命中：上游实际返回的是 SSE 流，需缓冲整段并拼成一份
+		// 完整非流式 JSON（readBufferedSSE 返回拼好的 body 与已提取的 usage）。
+		// 未命中 → 保持现状：io.ReadAll 直读 + extractUsageNonStream 提 usage。
+		var respBody []byte
+		var usage contracts.TokenUsage
+		var proxyRespHeader http.Header
+		if forceStream {
+			var rerr error
+			respBody, usage, rerr = s.readBufferedSSE(resp, pipe)
+			resp.Body.Close()
+			if rerr != nil {
+				res.err = rerr
+				res.channelID = ch.ID
+				s.proxyAttemptLog(r, pipe, model, ch.ID, ch.ChannelName, nil, "", attemptStarted, "failed", "stream", resp.StatusCode, false, contracts.TokenUsage{}, rerr, truncateErrorBody(rerr.Error()))
+				return pipe, false
+			}
+			// 上游返回 text/event-stream：须换成干净 application/json，
+			// 不 clone 上游 SSE header（否则 Content-Type 被污染成 text/event-stream）。
+			proxyRespHeader = http.Header{"Content-Type": []string{"application/json"}}
+		} else {
+			var rerr error
+			respBody, rerr = io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if rerr != nil {
+				res.err = rerr
+				res.channelID = ch.ID
+				s.proxyAttemptLog(r, pipe, model, ch.ID, ch.ChannelName, nil, "", attemptStarted, "failed", "network", resp.StatusCode, false, contracts.TokenUsage{}, rerr, truncateErrorBody(rerr.Error()))
+				return pipe, false
+			}
+			proxyRespHeader = resp.Header.Clone()
+			// token 计量基于上游原始响应体，必须在输出 hook 之前提取：
+			// 输出 hook（如 field-filter 剔除 usage 字段）会改写 Body，事后提取会得到全 0，
+			// 导致 volc-free-quota 不扣减、route_log token 列恒 0。
+			usage = extractUsageNonStream(respBody)
 		}
-		proxyResp := &ProxyResponse{StatusCode: resp.StatusCode, Header: resp.Header.Clone(), Body: respBody}
-		// token 计量基于上游原始响应体，必须在输出 hook 之前提取：
-		// 输出 hook（如 field-filter 剔除 usage 字段）会改写 Body，事后提取会得到全 0，
-		// 导致 volc-free-quota 不扣减、route_log token 列恒 0。
-		usage := extractUsageNonStream(respBody)
+		proxyResp := &ProxyResponse{StatusCode: resp.StatusCode, Header: proxyRespHeader, Body: respBody}
 		// 主 attempt 两阶段（与流式 proxyStreamAttempt 同语义）：after-hook 前写 running
 		// 占位并分配 step=1，after-hook 返回后同 step UPSERT 覆盖为 success——非流式下
 		// 视觉插件在 after-hook 内基于 __main_step 拼子段，得到 主=1、视觉识别=1.1、续流=1.2 的顺序
@@ -466,8 +496,8 @@ func (s *Service) proxyAttempt(w http.ResponseWriter, r *http.Request, pipe *Pro
 					Model: model, ChannelID: ch.ID, ChannelName: ch.ChannelName,
 					StartedAt: attemptStarted, FinishedAt: &fin, Result: "failed",
 					StatusCode: resp.StatusCode, ErrorMessage: herr.Error(),
-					ErrorBody: truncateErrorBody(herr.Error()),
-					Duration:  contracts.DurationMS(time.Since(attemptStarted)),
+					ErrorBody:    truncateErrorBody(herr.Error()),
+					Duration:     contracts.DurationMS(time.Since(attemptStarted)),
 					RequestLogID: rejectLogID,
 				})
 			}
@@ -740,8 +770,8 @@ type subRequestStreamWriter struct {
 	status int
 }
 
-func (w *subRequestStreamWriter) Header() http.Header         { return w.header }
-func (w *subRequestStreamWriter) WriteHeader(status int)      { w.status = status }
+func (w *subRequestStreamWriter) Header() http.Header    { return w.header }
+func (w *subRequestStreamWriter) WriteHeader(status int) { w.status = status }
 func (w *subRequestStreamWriter) Write(p []byte) (int, error) {
 	if err := w.write(p); err != nil {
 		return 0, err
@@ -853,6 +883,230 @@ func (s *Service) proxyStream(w http.ResponseWriter, resp *http.Response, pipe *
 			return usage
 		}
 	}
+}
+
+// readBufferedSSE 缓冲读取上游 SSE 流并还原成一份完整的非流式 chat.completion JSON。
+//
+// 用途：force_stream 能力——客户端发的是非流式请求，但渠道/平台只支持流式，网关被迫
+// 以上游流式请求。本函数读完整段 SSE（**不向客户端写任何字节**），把所有 delta 按 choice
+// 累积（content / reasoning_content / tool_calls 的 name+arguments 增量 / finish_reason），
+// 到 data: [DONE] 后拼成一份标准 OpenAI chat.completion 响应体返回。
+//
+// 只在成功分流（非 2xx 已排除）的 force_stream 分支调用；上游返回 text/event-stream。
+// 返回：拼好的完整响应体 + 从流末提取的 usage（读不到时为零值）。
+// 上游在 [DONE] 前 EOF 中断 / 流为空 / 客户端断开 → 返回 error，调用方按渠道失败处理
+// （不吐半包，且可触发 failover 换下一个渠道）。
+func (s *Service) readBufferedSSE(resp *http.Response, pipe *ProxyPipeline) ([]byte, contracts.TokenUsage, error) {
+	clientCtx := pipe.HTTPRequest.Context()
+	reader := bufio.NewReader(resp.Body)
+
+	// 单个 tool_call 的累积器：id/name 只在首块给出，arguments 是跨块字符串增量必须顺序拼接。
+	type toolAcc struct {
+		id        string
+		name      string
+		arguments strings.Builder
+	}
+	// 单个 choice 的累积器。
+	type choiceAcc struct {
+		role          string
+		content       strings.Builder
+		reasoning     strings.Builder
+		toolCalls     map[int]*toolAcc
+		toolCallOrder []int
+		finishReason  string
+	}
+	newChoice := func() *choiceAcc { return &choiceAcc{toolCalls: map[int]*toolAcc{}} }
+
+	accs := map[int]*choiceAcc{} // choice index → 累积器
+	order := []int{}             // choice 出现的顺序（用于最后按序输出）
+	var topID, topModel string
+	var topCreated int64
+	var usage contracts.TokenUsage
+	var sawUsage, sawAny bool
+
+	// accumulate 处理一行 data: 载荷（已去 data: 前缀与行尾）。
+	accumulate := func(data string) {
+		var block struct {
+			ID      string `json:"id"`
+			Created int64  `json:"created"`
+			Model   string `json:"model"`
+			Choices []struct {
+				Index        int    `json:"index"`
+				FinishReason string `json:"finish_reason"`
+				Delta        struct {
+					Role      string `json:"role"`
+					Content   string `json:"content"`
+					Reasoning string `json:"reasoning_content"`
+					ToolCalls []struct {
+						Index    int    `json:"index"`
+						ID       string `json:"id"`
+						Type     string `json:"type"`
+						Function struct {
+							Name      string `json:"name"`
+							Arguments string `json:"arguments"`
+						} `json:"function"`
+					} `json:"tool_calls"`
+				} `json:"delta"`
+			} `json:"choices"`
+		}
+		if err := json.Unmarshal([]byte(data), &block); err != nil {
+			// 非标准块（如仅含 usage/系统字段）不致命，跳过（usage 已在 parseUsageLine 处理）。
+			return
+		}
+		if block.ID != "" && topID == "" {
+			topID = block.ID
+		}
+		if block.Created != 0 && topCreated == 0 {
+			topCreated = block.Created
+		}
+		if block.Model != "" && topModel == "" {
+			topModel = block.Model
+		}
+		for _, c := range block.Choices {
+			acc, ok := accs[c.Index]
+			if !ok {
+				acc = newChoice()
+				accs[c.Index] = acc
+				order = append(order, c.Index)
+			}
+			if c.Delta.Role != "" {
+				acc.role = c.Delta.Role
+			}
+			if c.Delta.Content != "" {
+				acc.content.WriteString(c.Delta.Content)
+			}
+			if c.Delta.Reasoning != "" {
+				acc.reasoning.WriteString(c.Delta.Reasoning)
+			}
+			for _, tc := range c.Delta.ToolCalls {
+				ta, ok := acc.toolCalls[tc.Index]
+				if !ok {
+					ta = &toolAcc{}
+					acc.toolCalls[tc.Index] = ta
+					acc.toolCallOrder = append(acc.toolCallOrder, tc.Index)
+				}
+				if tc.ID != "" {
+					ta.id = tc.ID
+				}
+				if tc.Function.Name != "" {
+					ta.name = tc.Function.Name
+				}
+				ta.arguments.WriteString(tc.Function.Arguments) // 关键：跨块增量顺序拼接
+			}
+			if c.FinishReason != "" {
+				acc.finishReason = c.FinishReason
+			}
+		}
+	}
+
+	for {
+		select {
+		case <-clientCtx.Done():
+			return nil, contracts.TokenUsage{}, fmt.Errorf("force-stream: 缓冲上游流时客户端断开")
+		default:
+		}
+		line, err := reader.ReadString('\n')
+		if len(line) > 0 {
+			if isSSEDone(line) {
+				break
+			}
+			if payload := trimSSEDataPrefix(line); payload != "" {
+				sawAny = true
+				accumulate(payload)
+			}
+			// usage 提取（幂等：只在拿到 completion_tokens 时锁定真实 usage，
+			// 避免首块仅带 prompt_tokens 的 usage 提前抑制后续真实 usage）。
+			if u := parseUsageLine(line); u.PromptTokens > 0 || u.CompletionTokens > 0 || u.CachedTokens > 0 {
+				usage = u
+				if u.CompletionTokens > 0 {
+					sawUsage = true
+				}
+			}
+		}
+		if err != nil {
+			if err == io.EOF {
+				// 读到 EOF 但没见到 [DONE]：上游连接在流中途关闭。
+				if sawAny {
+					return nil, contracts.TokenUsage{}, fmt.Errorf("force-stream: 上游流式响应在 [DONE] 前中断")
+				}
+				return nil, contracts.TokenUsage{}, fmt.Errorf("force-stream: 上游流式响应为空")
+			}
+			return nil, contracts.TokenUsage{}, fmt.Errorf("force-stream: 读取上游流式响应失败: %w", err)
+		}
+	}
+
+	// [DONE] 已到（或上游已发完）：拼装完整 chat.completion。
+	model := pipe.Request.Model
+	if model == "" {
+		model = topModel
+	}
+	created := topCreated
+	if created == 0 {
+		created = time.Now().Unix()
+	}
+	choices := make([]any, 0, len(order))
+	for _, idx := range order {
+		acc := accs[idx]
+		if acc == nil {
+			continue
+		}
+		message := map[string]any{"role": "assistant"}
+		if acc.content.Len() > 0 {
+			message["content"] = acc.content.String()
+		}
+		if acc.reasoning.Len() > 0 {
+			message["reasoning_content"] = acc.reasoning.String()
+		}
+		if len(acc.toolCallOrder) > 0 {
+			tcs := make([]any, 0, len(acc.toolCallOrder))
+			for _, tIdx := range acc.toolCallOrder {
+				ta := acc.toolCalls[tIdx]
+				if ta == nil {
+					continue
+				}
+				fn := map[string]any{"arguments": ta.arguments.String()}
+				if ta.name != "" {
+					fn["name"] = ta.name
+				}
+				tc := map[string]any{"type": "function", "function": fn}
+				if ta.id != "" {
+					tc["id"] = ta.id
+				}
+				tcs = append(tcs, tc)
+			}
+			if len(tcs) > 0 {
+				message["tool_calls"] = tcs
+			}
+		}
+		choice := map[string]any{"index": idx, "message": message}
+		if acc.finishReason != "" {
+			choice["finish_reason"] = acc.finishReason
+		}
+		choices = append(choices, choice)
+	}
+	root := map[string]any{
+		"id":      topID,
+		"object":  "chat.completion",
+		"created": created,
+		"model":   model,
+		"choices": choices,
+	}
+	if sawUsage {
+		root["usage"] = map[string]any{
+			"prompt_tokens":     usage.PromptTokens,
+			"completion_tokens": usage.CompletionTokens,
+			"total_tokens":      usage.TotalTokens,
+		}
+	}
+	// 无任何 choice 却仍成功读到 [DONE]：返回空 choices 的合法对象（上游可能返回了纯 usage）。
+	out, err := json.Marshal(root)
+	if err != nil {
+		return nil, contracts.TokenUsage{}, fmt.Errorf("force-stream: 序列化拼装结果失败: %w", err)
+	}
+	if !sawUsage {
+		usage = contracts.TokenUsage{}
+	}
+	return out, usage, nil
 }
 
 // isSSEDone 判断一条 SSE 行是否为流结束标记 data: [DONE]（允许 data:[DONE] 无空格写法）。
