@@ -11,12 +11,13 @@ import (
 	adminauth "loadout/plugins/admin-auth"
 	aggregate "loadout/plugins/aggregate"
 	fieldfilter "loadout/plugins/field-filter"
+	forcestream "loadout/plugins/force-stream"
 	gatewaykeys "loadout/plugins/gateway-keys"
 	mcphub "loadout/plugins/mcp-hub"
 	messageinject "loadout/plugins/message-inject"
-	multimodalmcp "loadout/plugins/multimodal-mcp"
 	modelgateway "loadout/plugins/model-gateway"
 	modelhealth "loadout/plugins/model-health"
+	multimodalmcp "loadout/plugins/multimodal-mcp"
 	requestlog "loadout/plugins/request-log"
 	routelog "loadout/plugins/route-log"
 	sensitivefilter "loadout/plugins/sensitive-filter"
@@ -45,6 +46,7 @@ func All() []plugin.Plugin {
 		visionv2.New(),
 		sensitivefilter.New(),
 		fieldfilter.New(),
+		forcestream.New(),
 		multimodalmcp.New(),
 		mcphub.New(),
 		adminapi.New(),
