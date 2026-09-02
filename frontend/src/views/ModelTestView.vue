@@ -156,6 +156,12 @@ const suffixMode = ref<'gpt' | 'claude' | 'chat'>('chat')
 function setSuffixMode(value: string) {
   if (value === 'gpt' || value === 'claude' || value === 'chat') suffixMode.value = value
 }
+// 是否开启流：决定本次测试请求的 stream 字段（true → 后台 SSE 流式返回、逐字输出；
+// false → 整包非流式返回）。与页面「正在生成/停止」的 streaming（在途请求标记）是两回事。
+const streamEnabled = ref(true)
+function toggleStream(v: boolean) {
+  streamEnabled.value = v
+}
 
 // 只放真实消息与用户主动添加的可编辑行；空消息不会发送到接口。
 // 输入区由右侧「用户输入」卡片承担（绑定 draft）。
@@ -202,7 +208,10 @@ const filteredModels = computed(() => {
 // 「Loadout 自带」时带 base_url + sk_key_hash（后端按哈希解析自建 Key 明文）。
 // 手动输入的 key 优先于渠道存储的 key；suffix_mode 决定上游路径后缀。未选渠道时用临时配置。
 function buildTarget() {
-  const target: Record<string, string> = { suffix_mode: suffixMode.value }
+  const target: Record<string, string | boolean> = {
+    suffix_mode: suffixMode.value,
+    stream: streamEnabled.value,
+  }
   if (config.channelId === BUILTIN_CHANNEL) {
     if (config.skKeyHash.trim()) target.sk_key_hash = config.skKeyHash.trim()
     // base_url：相对路径（/v1）由后端按请求 Host 补全；完整 URL（http(s)://...）直接使用。
@@ -421,6 +430,7 @@ async function send() {
     request_id: `${Date.now()}`,
     meta: {
       suffix_mode: suffixMode.value,
+      stream: streamEnabled.value,
       channel_id: config.channelId,
       base_url: config.baseUrl,
       api_key: config.apiKey,
@@ -712,6 +722,7 @@ function loadFromLogMeta(meta: RouteLog['meta']) {
   if (meta.sk_key_hash !== undefined) config.skKeyHash = meta.sk_key_hash
   if (meta.model !== undefined) config.model = meta.model
   if (meta.suffix_mode !== undefined) setSuffixMode(meta.suffix_mode)
+  if (meta.stream !== undefined) streamEnabled.value = !!meta.stream
   if (meta.messages?.length) {
     messages.value = meta.messages.map((m) => ({
       id: nextMessageId.value++,
@@ -752,7 +763,7 @@ onBeforeUnmount(() => {
             <CardDescription>从已有渠道快速导入，或直接填入临时配置。</CardDescription>
           </CardHeader>
           <CardContent class="space-y-4">
-            <div class="grid gap-3 md:grid-cols-2">
+            <div class="grid gap-3 md:grid-cols-2 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,0.5fr)]">
               <div class="space-y-2">
                 <Label for="test-channel">预设</Label>
                 <Popover v-model:open="presetOpen">
@@ -835,6 +846,17 @@ onBeforeUnmount(() => {
                     </SelectGroup>
                   </SelectContent>
                 </Select>
+              </div>
+              <div class="space-y-2">
+                <Label for="test-stream">是否开启流</Label>
+                <!-- Switch 放 Label 下方（与其它字段一样 label 在控件上方），值开在接口后缀右侧。 -->
+                <div class="flex h-10 items-center">
+                  <Switch
+                    id="test-stream"
+                    :model-value="streamEnabled"
+                    @update:model-value="toggleStream"
+                  />
+                </div>
               </div>
             </div>
             <div class="space-y-2">

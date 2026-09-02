@@ -12,6 +12,8 @@ export interface TestTarget {
   api_key?: string
   sk_key_hash?: string
   suffix_mode?: string
+  // 是否流式请求上游（决定 /api/test/chat 走 SSE 还是整包返回）。
+  stream?: boolean
 }
 
 export interface TestMessage {
@@ -94,11 +96,13 @@ export function useModelTest() {
     options: TestChatOptions,
   ): Promise<TestChatResult> => {
     const { onDelta, onSummary, signal } = options
+    // stream 由调用方（buildTarget）决定，默认流式；非流式时后端整包返回 JSON。
+    const stream = target.stream !== false
     const response = await fetch('/api/test/chat', {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...target, model, messages, stream: true }),
+      body: JSON.stringify({ ...target, stream, model, messages }),
       signal,
     })
     const requestId = response.headers.get('X-Request-Id') || ''
@@ -113,6 +117,14 @@ export function useModelTest() {
         body.error?.message || body.message || `请求失败（${response.status}）`,
         response.status,
       )
+    }
+
+    // 非流式：整段 JSON 一次读完，取完整文本回调一次（extractTestDelta 兼容 message.content）。
+    if (!stream) {
+      const data = await response.json().catch(() => ({}))
+      const delta = extractTestDelta(data, target.suffix_mode)
+      if (delta) onDelta(delta)
+      return { request_id: requestId, status: response.status }
     }
 
     const reader = response.body?.getReader()

@@ -102,6 +102,8 @@ export interface RouteAttempt {
  */
 export interface TestLogMeta {
   suffix_mode?: string
+  /** 本次测试请求是否流式（决定加载记录时回填"是否开启流"开关） */
+  stream?: boolean
   channel_id?: string
   base_url?: string
   api_key?: string
