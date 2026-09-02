@@ -1,6 +1,6 @@
 # 流桥接能力实施计划（修订版·源码核实后）
 
-> 状态：已实现（feat: force_stream，commit 39db705 / 76e3f4c / d883550）
+> 状态：已实现（feat: force_stream，commit 39db705 / 76e3f4c / d883550）+ code review 修订 2f1a76d
 > 目标：新增一个能力，让「客户端发非流式请求（stream:false/省略）、但渠道/平台只支持（或只接受）流式」的渠道+模型组合可用：网关以上游流式请求 → 缓冲整段 SSE → 还原成一份完整非流式 OpenAI JSON → 一次性写回客户端。
 >
 > 本文档所有「现状」均逐行核对过源码（proxy.go / service.go / types.go / plugins/types/types.go / sensitive-filter / field-filter / message-inject / request-log / admin-api / frontend CapabilityRouteEditor.vue），不再依据原计划的二手说法。
