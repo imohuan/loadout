@@ -135,9 +135,18 @@ func toTypesChannels(channels []db.Channel) []types.Channel {
 	return out
 }
 
+// origBodyMetaKey 记录「客户端原始 body 快照」的 metadata 键。跨渠道尝试（failover）时
+// 从快照重改写/还原，避免基于已被上一渠道改过的 body 再操作（message-inject 同款思路）。
+const origBodyMetaKey = "__force_stream_orig_body"
+
 // HandleProxyBeforeUpstream 每次渠道尝试安检 hook（proxy:before-attempt）：
-// 命中 force_stream proxy 路由且为非流式 chat/completions 时，改 body stream:true + 打标记。
-// 未命中/native/本来流式/其它 path → 原样透传，绝不拒绝请求、绝不误伤。
+// 对**当前渠道**按能力路由重新匹配；命中 proxy 路由且为非流式 chat/completions 时，
+// 从原始 body 快照改 stream:true + 打标记，交由核心缓冲拼装；未命中则还原原始 body、
+// 清标记（该渠道按原生非流式透传，不强加 force_stream）。
+//
+// 每次渠道尝试都重跑 decideRoutes（对标 sensitive-filter 的逐渠道重匹配）：failover 切到
+// 未配 force_stream 的渠道时，该渠道不被强制转流式、按它原生支持的方式透传，不误伤。
+// 未命中/native/本来流式/其它 path → 原样透传，绝不拒绝请求。
 func (s *Service) HandleProxyBeforeUpstream(payload any) (any, error) {
 	pipe, ok := payload.(*modelgateway.ProxyPipeline)
 	if !ok || pipe == nil || pipe.Request == nil || len(pipe.Request.Body) == 0 {
@@ -162,39 +171,42 @@ func (s *Service) HandleProxyBeforeUpstream(payload any) (any, error) {
 	if !json.Valid(pipe.Request.Body) {
 		return payload, nil
 	}
-
-	routes, err := s.decideRoutes(pipe, types.VirtualModelFromMetadata(pipe.Metadata))
-	if err != nil || len(routes) == 0 {
-		return payload, nil
-	}
-	// native / 历史 error 降级：原样透传（豁免优先）。
-	if routes[0].Route != types.RouteProxy {
-		s.lg.Debug("force-stream: 非 proxy 路由，原样透传", "model", pipe.Request.Model, "route", routes[0].Route)
-		return payload, nil
-	}
-
-	// failover 幂等：命中标记已在（同 pipe 前次渠道尝试已打），且 body 已改 stream:true，
-	// 直接返回，避免重复处理/重复改写（改写虽幂等，但省一次无谓的 JSON 重排）。
-	if pipe.Metadata != nil {
-		if v, _ := pipe.Metadata[modelgateway.MetadataForceStream].(bool); v {
-			return payload, nil
-		}
-	}
-	channelID, _ := pipe.Metadata["__current_channel"].(string)
-
-	rewritten, err := setStreamTrue(pipe.Request.Body)
-	if err != nil {
-		// 改写失败（理论不会，json.Valid 已过）：fail-open 原样透传，不拒绝请求。
-		s.lg.Warn("force-stream: body 改写失败，按透传处理", "model", pipe.Request.Model, "channel_id", channelID, "err", err)
-		return payload, nil
-	}
 	if pipe.Metadata == nil {
 		pipe.Metadata = map[string]any{}
 	}
-	pipe.Request.Body = rewritten
-	pipe.Metadata[modelgateway.MetadataForceStream] = true
-	s.lg.Info("force-stream: 命中路由，上游转流式 + 打标记（缓冲后整包非流式返回）",
-		"model", pipe.Request.Model, "channel_id", channelID, "path", pipe.Request.Path)
+
+	// 首次尝试时快照客户端原始 body；后续渠道尝试（failover，同 pipe）从快照重改写/还原，
+	// 保证不基于已被上一渠道改过的 body 操作、也不叠加。快照一旦建立即保持不变。
+	orig, ok := pipe.Metadata[origBodyMetaKey].(string)
+	if !ok || orig == "" {
+		orig = string(pipe.Request.Body)
+		pipe.Metadata[origBodyMetaKey] = orig
+	}
+	channelID, _ := pipe.Metadata["__current_channel"].(string)
+
+	routes, err := s.decideRoutes(pipe, types.VirtualModelFromMetadata(pipe.Metadata))
+	// 命中 force_stream proxy 路由 → 从快照转流式 + 打标记。
+	if err == nil && len(routes) > 0 && routes[0].Route == types.RouteProxy {
+		rewritten, rerr := setStreamTrue([]byte(orig))
+		if rerr != nil {
+			// 改写失败（理论不会，json.Valid 已过）：fail-open 原样透传，不拒绝请求。
+			s.lg.Warn("force-stream: body 改写失败，按透传处理", "model", pipe.Request.Model, "channel_id", channelID, "err", rerr)
+			return payload, nil
+		}
+		pipe.Request.Body = rewritten
+		pipe.Metadata[modelgateway.MetadataForceStream] = true
+		s.lg.Info("force-stream: 命中路由，上游转流式 + 打标记（缓冲后整包非流式返回）",
+			"model", pipe.Request.Model, "channel_id", channelID, "path", pipe.Request.Path)
+		return pipe, nil
+	}
+
+	// 未命中 / native（历史 error 降级）等：**还原**客户端原始 body 并清标记——
+	// 若上一渠道已转流式，切到未配本能力的渠道时应复原为原生非流式透传，不强加缓冲。
+	if pipe.Request.Body != nil && string(pipe.Request.Body) != orig {
+		pipe.Request.Body = []byte(orig)
+		s.lg.Debug("force-stream: 当前渠道未命中，还原原始 body", "model", pipe.Request.Model, "channel_id", channelID, "path", pipe.Request.Path)
+	}
+	delete(pipe.Metadata, modelgateway.MetadataForceStream)
 	return pipe, nil
 }
 

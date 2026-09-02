@@ -267,3 +267,31 @@ func TestReadBufferedSSE_NoUsage(t *testing.T) {
 		t.Fatalf("model 应为 pipe.Request.Model: %v", out["model"])
 	}
 }
+
+// TestReadBufferedSSE_NoUpstreamID 上游整流都不带 id → 自生成兜底，id 恒非空。
+func TestReadBufferedSSE_NoUpstreamID(t *testing.T) {
+	svc := NewService(nil, slog.Default(), newMockCtx())
+	pipe := ssePipe(t, "deepseek-chat")
+	lines := []string{
+		// 各块都不带 id 字段
+		"data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}\n",
+		"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"},\"finish_reason\":\"stop\"}]}\n",
+		"data: [DONE]\n",
+	}
+	body, _, err := svc.readBufferedSSE(syntheticSSEResponse(t, lines), pipe)
+	if err != nil {
+		t.Fatalf("readBufferedSSE 出错: %v", err)
+	}
+	var out struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		t.Fatalf("非法 JSON: %v", err)
+	}
+	if out.ID == "" {
+		t.Fatalf("上游无 id 时响应 id 不应为空")
+	}
+	if len(out.ID) < len("chatcmpl-") {
+		t.Fatalf("自生成 id 格式异常: %q", out.ID)
+	}
+}

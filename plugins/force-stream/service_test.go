@@ -151,8 +151,46 @@ func TestHandle_NativeRoute(t *testing.T) {
 	}
 }
 
-// TestHandle_IdempotentRetry 二次触发（failover）不应重复处理：标记已在则早退。
-func TestHandle_IdempotentRetry(t *testing.T) {
+// TestHandle_ChannelReDecide failover 逐渠道重匹配：命中渠道转流式后，切到「未配本能力」的
+// 渠道应还原原始 body 并清标记（该渠道按原生非流式透传，不强加 force_stream）。
+func TestHandle_ChannelReDecide(t *testing.T) {
+	svc, st := newTestService(t)
+	// 渠道级约束：仅 channel "ch-a" 命中；其它渠道不命中。
+	writeForceRoute(t, st, types.CapabilityRoute{Models: []string{"deepseek-chat"}, ChannelIDs: []string{"ch-a"}})
+
+	body := map[string]any{"model": "deepseek-chat", "stream": false, "messages": []any{}}
+	origRaw, _ := json.Marshal(body)
+
+	// 首次：渠道 ch-a（命中）→ 转流式 + 打标记。
+	pipe := proxyPipe(t, "chat/completions", body)
+	pipe.Metadata["__current_channel"] = "ch-a"
+	out, _ := svc.HandleProxyBeforeUpstream(pipe)
+	got1, _ := out.(*modelgateway.ProxyPipeline)
+	if s, _ := getStream(t, got1); !s {
+		t.Fatalf("命中渠道应转 stream=true")
+	}
+	if v, _ := got1.Metadata[modelgateway.MetadataForceStream].(bool); !v {
+		t.Fatalf("命中渠道应打标记")
+	}
+
+	// 二次：同 pipe 切到未命中渠道 ch-b（failover）→ 应还原原始 body（stream 恢复 false）并清标记。
+	pipe.Metadata["__current_channel"] = "ch-b"
+	out2, _ := svc.HandleProxyBeforeUpstream(got1)
+	got2, _ := out2.(*modelgateway.ProxyPipeline)
+	if v, _ := got2.Metadata[modelgateway.MetadataForceStream].(bool); v {
+		t.Fatalf("未命中渠道不应保留标记")
+	}
+	if string(got2.Request.Body) != string(origRaw) {
+		t.Fatalf("未命中渠道应还原原始 body:\n还原: %s\n期望: %s", got2.Request.Body, origRaw)
+	}
+	if s, present := getStream(t, got2); !present || s {
+		t.Fatalf("未命中渠道 body 的 stream 应还原为 false")
+	}
+}
+
+// TestHandle_IdempotentSameChannel 同渠道再次触发（重复 attempt）幂等：body 保持 stream:true，
+// 不因快照机制抖动。
+func TestHandle_IdempotentSameChannel(t *testing.T) {
 	svc, st := newTestService(t)
 	writeForceRoute(t, st, types.CapabilityRoute{Models: []string{"deepseek-chat"}})
 
@@ -165,12 +203,14 @@ func TestHandle_IdempotentRetry(t *testing.T) {
 		t.Fatalf("首次应改 stream=true")
 	}
 	bodyAfterFirst := append([]byte(nil), got1.Request.Body...)
-	// 二次（模拟 failover 同 pipe 再触发）
+	// 同渠道二次（模拟同渠道重复 attempt）：从快照重改写，结果应与首次一致（不叠加/不抖动）
 	out2, _ := svc.HandleProxyBeforeUpstream(got1)
 	got2, _ := out2.(*modelgateway.ProxyPipeline)
-	// 二次应早退，body 字节保持不变（不再 JSON 重排）
 	if string(got2.Request.Body) != string(bodyAfterFirst) {
-		t.Fatalf("二次触发不应再改 body")
+		t.Fatalf("同渠道二次触发 body 应保持与首次一致: %s", got2.Request.Body)
+	}
+	if v, _ := got2.Metadata[modelgateway.MetadataForceStream].(bool); !v {
+		t.Fatalf("同渠道二次触发应保留标记")
 	}
 }
 

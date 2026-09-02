@@ -1084,8 +1084,14 @@ func (s *Service) readBufferedSSE(resp *http.Response, pipe *ProxyPipeline) ([]b
 		}
 		choices = append(choices, choice)
 	}
+	// id 自生成兜底：上游整流都不带 id 时，自生成一个（对齐 OpenAI chatcmpl- 前缀），
+	// 保证响应 id 恒非空（spec §7.7「用首块 id 或自生成」）。
+	id := topID
+	if id == "" {
+		id = "chatcmpl-" + newRequestID()
+	}
 	root := map[string]any{
-		"id":      topID,
+		"id":      id,
 		"object":  "chat.completion",
 		"created": created,
 		"model":   model,
