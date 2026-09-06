@@ -81,3 +81,18 @@ func lookupOpenRouterContext(meta map[string]int64, model string) int64 {
 	}
 	return 0
 }
+
+// openrouterContextResolver 按需补上下文：仅当确有模型缺 context（首个 miss）时才读
+// openrouter 元数据缓存文件，避免每个 /v1/models 请求都无条件做一次磁盘 I/O。
+// 同一次请求里多次 miss 复用同一份已解析映射；映射解析一次后在本 resolver 上复用。
+type openrouterContextResolver struct {
+	meta map[string]int64
+}
+
+// contextOf 返回 model 的 openrouter 兜底上下文；model 为空或缓存缺失时返回 0。
+func (r *openrouterContextResolver) contextOf(model string) int64 {
+	if r.meta == nil {
+		r.meta = loadOpenRouterContext()
+	}
+	return lookupOpenRouterContext(r.meta, model)
+}

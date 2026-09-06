@@ -317,7 +317,8 @@ type channelModelInput struct {
 // handleChannelModelsReplaceDB 全量编辑渠道模型清单（添加/删除/禁用/启用一接口搞定）。
 // 语义：渠道中「设置的模型」= 提交清单里 enabled=true 的模型；enabled=false 的
 // 视为删除（不再写入 channel_models，同时清理其历史状态），保证模型状态
-// 严格以模型渠道为数据源。现有模型的 source 保留（探测的仍为 probe），新增模型默认 source=manual。
+// 严格以模型渠道为数据源。现有模型的 source 与探测到的 context 保留（探测的仍为 probe），
+// 新增模型默认 source=manual。
 func (s *Service) handleChannelModelsReplaceDB(w http.ResponseWriter, r *http.Request) {
 	var input []channelModelInput
 	if !decodeJSON(w, r, &input) {
@@ -332,9 +333,11 @@ func (s *Service) handleChannelModelsReplaceDB(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusNotFound, "渠道不存在")
 		return
 	}
-	existing := make(map[string]string, len(channel.Models))
+	// existing 存现有整行，便于在重建时透传探测得到的 Context 与首次出现时间，
+	// 避免一次手动编辑（增/排序/勾选）就把已持久化的上下文窗口清 0。
+	existing := make(map[string]db.ChannelModel, len(channel.Models))
 	for _, m := range channel.Models {
-		existing[m.Model] = m.Source
+		existing[m.Model] = m
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	values := make([]db.ChannelModel, 0, len(input))
@@ -352,11 +355,20 @@ func (s *Service) handleChannelModelsReplaceDB(w http.ResponseWriter, r *http.Re
 			// 未勾选 = 从渠道删除（不写入目录），无需保留 enabled=0 的残行。
 			continue
 		}
-		source := existing[in.Model]
+		cur := existing[in.Model]
+		source := cur.Source
 		if source == "" {
 			source = "manual"
 		}
-		values = append(values, db.ChannelModel{Model: in.Model, Source: source, Enabled: true, FirstSeenAt: now, LastSeenAt: now})
+		firstSeen := cur.FirstSeenAt
+		if firstSeen == "" {
+			firstSeen = now
+		}
+		values = append(values, db.ChannelModel{
+			Model: in.Model, Source: source, Enabled: true,
+			Context:     cur.Context, // 保留探测到的上下文；全新模型为 0（输出时由 openrouter 兜底）。
+			FirstSeenAt: firstSeen, LastSeenAt: now,
+		})
 		enabledModels = append(enabledModels, in.Model)
 	}
 	if err := s.routing.ReplaceChannelModels(r.Context(), channel.ID, values); err != nil {

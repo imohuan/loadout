@@ -250,7 +250,7 @@ func (s *Service) HandleModels(w http.ResponseWriter, r *http.Request) {
 
 	// 1. 渠道模型（探测 + 手动，channel_models 注册表）。
 	entries := s.collectChannelModels(r.Context())
-	orCtx := loadOpenRouterContext() // 探测没带 context 时用 openrouter 缓存补（懒加载，仅当有需要时）
+	orCtx := &openrouterContextResolver{} // 仅当有模型缺 context 时才读 openrouter 缓存补
 	for _, e := range entries {
 		if modelChannels[e.Model] == nil {
 			modelChannels[e.Model] = map[string]bool{}
@@ -258,7 +258,7 @@ func (s *Service) HandleModels(w http.ResponseWriter, r *http.Request) {
 		modelChannels[e.Model][e.ChannelID] = true
 		ctx := e.Context
 		if ctx <= 0 {
-			ctx = lookupOpenRouterContext(orCtx, e.Model)
+			ctx = orCtx.contextOf(e.Model)
 		}
 		if ctx > 0 {
 			if known, ok := modelContext[e.Model]; !ok || known <= 0 {
@@ -336,7 +336,7 @@ func (s *Service) HandleModelsV2(w http.ResponseWriter, r *http.Request) {
 	seen := map[string]bool{}
 
 	entries := s.collectChannelModels(r.Context())
-	orCtx := loadOpenRouterContext()
+	orCtx := &openrouterContextResolver{} // 仅当有模型缺 context 时才读 openrouter 缓存补
 	for _, e := range entries {
 		// ChannelName 为空/纯空白：v2 无前缀可显式定位，跳过该模型
 		//（不输出 `/gpt-4o` 这种脏名；v1 仍可正常使用裸名）。
@@ -350,7 +350,7 @@ func (s *Service) HandleModelsV2(w http.ResponseWriter, r *http.Request) {
 		modelChannels[display][e.ChannelID] = true
 		ctx := e.Context
 		if ctx <= 0 {
-			ctx = lookupOpenRouterContext(orCtx, e.Model)
+			ctx = orCtx.contextOf(e.Model)
 		}
 		if ctx > 0 {
 			if known, ok := modelContext[display]; !ok || known <= 0 {
@@ -870,6 +870,7 @@ func upstreamErrorSummary(status int, msg string) string {
 // 也有些网关标记了 gzip 但 body 实际是明文）：
 //  1. Content-Encoding 头包含 gzip；
 //  2. body 头 2 字节是 gzip magic (0x1f 0x8b)。
+//
 // 命中则 gzip.NewReader 解压；解压失败/无 gzip 则用原字节。压缩输入上限 4MB（覆盖
 // 99% 错误体；超出截断避免无限读取），解压后上限 maxBytes（默认 8KB，防止解压出
 // 几百 MB 把 route_log 单行 DB 字段撑爆）。

@@ -502,9 +502,9 @@ func (s *Service) handleChannelsList(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, items)
 }
 
-// fetchChannelModels 请求渠道的 /v1/models，返回模型 id 列表；失败返回 error。
-// 兼容 OpenAI 标准 {"data":[{"id":"..."}]} 与字符串数组 {"data":["..."]}。
-func fetchChannelModels(ctx context.Context, baseURL, apiKey string, timeout time.Duration) ([]string, error) {
+// fetchModelsEnvelope 请求渠道 /v1/models，返回 data 里每个条目（对象或字符串）的 raw。
+// 只负责一次 HTTP 往返 + 信封解析；条目语义由调用方各自投影。
+func fetchModelsEnvelope(ctx context.Context, baseURL, apiKey string, timeout time.Duration) ([]json.RawMessage, error) {
 	url := strings.TrimRight(baseURL, "/") + "/models"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -531,8 +531,18 @@ func fetchChannelModels(ctx context.Context, baseURL, apiKey string, timeout tim
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		return nil, err
 	}
+	return parsed.Data, nil
+}
+
+// fetchChannelModels 请求渠道的 /v1/models，返回模型 id 列表；失败返回 error。
+// 兼容 OpenAI 标准 {"data":[{"id":"..."}]} 与字符串数组 {"data":["..."]}。
+func fetchChannelModels(ctx context.Context, baseURL, apiKey string, timeout time.Duration) ([]string, error) {
+	data, err := fetchModelsEnvelope(ctx, baseURL, apiKey, timeout)
+	if err != nil {
+		return nil, err
+	}
 	var ids []string
-	for _, raw := range parsed.Data {
+	for _, raw := range data {
 		var s string
 		if err := json.Unmarshal(raw, &s); err == nil {
 			ids = append(ids, s)
@@ -559,34 +569,12 @@ type ProbedChannelModel struct {
 // context 兼容常见非标字段：context_length / context_window / max_model_len /
 // max_context_length / meta.n_ctx（参考 unifyai metadata-fetcher 与 opencodex 的认知字段）。
 func fetchChannelModelDetails(ctx context.Context, baseURL, apiKey string, timeout time.Duration) ([]ProbedChannelModel, error) {
-	url := strings.TrimRight(baseURL, "/") + "/models"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	data, err := fetchModelsEnvelope(ctx, baseURL, apiKey, timeout)
 	if err != nil {
 		return nil, err
 	}
-	if apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+apiKey)
-	}
-	resp, err := (&http.Client{Timeout: timeout}).Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("models 接口返回 %d", resp.StatusCode)
-	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
-	if err != nil {
-		return nil, err
-	}
-	var parsed struct {
-		Data []json.RawMessage `json:"data"`
-	}
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		return nil, err
-	}
-	out := make([]ProbedChannelModel, 0, len(parsed.Data))
-	for _, raw := range parsed.Data {
+	out := make([]ProbedChannelModel, 0, len(data))
+	for _, raw := range data {
 		// 字符串数组形式 {"data":["gpt-4o"]}：无上下文信息。
 		var s string
 		if err := json.Unmarshal(raw, &s); err == nil {
@@ -597,12 +585,12 @@ func fetchChannelModelDetails(ctx context.Context, baseURL, apiKey string, timeo
 		}
 		// 对象形式：尽量解析嵌套结构（保持 raw 以读任意位置的 context 字段）。
 		var obj struct {
-			ID           string `json:"id"`
-			Context      any    `json:"context_length"`
-			ContextW     any    `json:"context_window"`
-			MaxModelLen  any    `json:"max_model_len"`
-			MaxCtxLen    any    `json:"max_context_length"`
-			Meta         struct {
+			ID          string `json:"id"`
+			Context     any    `json:"context_length"`
+			ContextW    any    `json:"context_window"`
+			MaxModelLen any    `json:"max_model_len"`
+			MaxCtxLen   any    `json:"max_context_length"`
+			Meta        struct {
 				NCtx any `json:"n_ctx"`
 			} `json:"meta"`
 		}
