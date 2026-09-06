@@ -25,6 +25,9 @@
 6. `collectChannelModels` / `channelModelEntry` 增加 Context 透传；DB 路径的 `ListChannels`/模型读取已带 context。
 
 ## 验证
-- `go build ./...`
-- 写单测：探测解析 context、HandleModels 输出含 context_length、迁移后列存在。
-- 手动：加一个 openrouter 渠道，`curl /v1/models` 看是否带 context_length。
+- `go build ./...` ✓
+- 单测全绿：探测解析 context、缓存查找/解析、DB 端到端 HandleModels 输出含 context_length、迁移后列存在/计数更新。
+- 手动验证方式：加一个 openrouter 渠道（或任意会返回 context_length 的上游），`curl /v1/models` 看是否带 context_length。
+
+## 状态：已实现并提交（commit 825f467 + 8173775）
+
