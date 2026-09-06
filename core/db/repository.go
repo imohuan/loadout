@@ -29,6 +29,7 @@ type ChannelModel struct {
 	Model       string `json:"model"`
 	Source      string `json:"source"`
 	Enabled     bool   `json:"enabled"`
+	Context     int64  `json:"context,omitempty"` // /v1/models 返回的上下文窗口 token 数；0 = 未知
 	FirstSeenAt string `json:"first_seen_at"`
 	LastSeenAt  string `json:"last_seen_at"`
 }
@@ -112,7 +113,7 @@ func (r *Repository) ListChannels(ctx context.Context) ([]Channel, error) {
 		return nil, fmt.Errorf("db: iterate channels: %w", err)
 	}
 
-	modelRows, err := r.database.QueryContext(ctx, `SELECT channel_id, model, source, enabled, first_seen_at, last_seen_at FROM channel_models ORDER BY channel_id, model`)
+	modelRows, err := r.database.QueryContext(ctx, `SELECT channel_id, model, source, enabled, context, first_seen_at, last_seen_at FROM channel_models ORDER BY channel_id, model`)
 	if err != nil {
 		return nil, fmt.Errorf("db: list channel models: %w", err)
 	}
@@ -120,7 +121,7 @@ func (r *Repository) ListChannels(ctx context.Context) ([]Channel, error) {
 	for modelRows.Next() {
 		var channelID string
 		var model ChannelModel
-		if err := modelRows.Scan(&channelID, &model.Model, &model.Source, &model.Enabled, &model.FirstSeenAt, &model.LastSeenAt); err != nil {
+		if err := modelRows.Scan(&channelID, &model.Model, &model.Source, &model.Enabled, &model.Context, &model.FirstSeenAt, &model.LastSeenAt); err != nil {
 			return nil, fmt.Errorf("db: scan channel model: %w", err)
 		}
 		channels[byID[channelID]].Models = append(channels[byID[channelID]].Models, model)
@@ -183,7 +184,7 @@ func (r *Repository) ReplaceChannels(ctx context.Context, channels []Channel) er
 
 // ListChannelModels returns a channel's catalog.
 func (r *Repository) ListChannelModels(ctx context.Context, channelID string) ([]ChannelModel, error) {
-	rows, err := r.database.QueryContext(ctx, `SELECT model, source, enabled, first_seen_at, last_seen_at FROM channel_models WHERE channel_id = ? ORDER BY model`, channelID)
+	rows, err := r.database.QueryContext(ctx, `SELECT model, source, enabled, context, first_seen_at, last_seen_at FROM channel_models WHERE channel_id = ? ORDER BY model`, channelID)
 	if err != nil {
 		return nil, fmt.Errorf("db: list channel models: %w", err)
 	}
@@ -191,7 +192,7 @@ func (r *Repository) ListChannelModels(ctx context.Context, channelID string) ([
 	models := []ChannelModel{}
 	for rows.Next() {
 		var model ChannelModel
-		if err := rows.Scan(&model.Model, &model.Source, &model.Enabled, &model.FirstSeenAt, &model.LastSeenAt); err != nil {
+		if err := rows.Scan(&model.Model, &model.Source, &model.Enabled, &model.Context, &model.FirstSeenAt, &model.LastSeenAt); err != nil {
 			return nil, fmt.Errorf("db: scan channel model: %w", err)
 		}
 		models = append(models, model)
@@ -220,7 +221,7 @@ func replaceChannelModels(ctx context.Context, tx *sql.Tx, channelID string, mod
 	}
 	// Prepared statement 复用：渠道模型可能上百个，逐条 Exec 会反复 prepare，
 	// 复用一个 statement 显著降低保存延迟。
-	stmt, err := tx.PrepareContext(ctx, `INSERT INTO channel_models (channel_id, model, source, enabled, first_seen_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?)`)
+	stmt, err := tx.PrepareContext(ctx, `INSERT INTO channel_models (channel_id, model, source, enabled, context, first_seen_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("db: prepare channel model insert: %w", err)
 	}
@@ -245,7 +246,7 @@ func replaceChannelModels(ctx context.Context, tx *sql.Tx, channelID string, mod
 		if model.LastSeenAt == "" {
 			model.LastSeenAt = now
 		}
-		if _, err := stmt.ExecContext(ctx, channelID, model.Model, model.Source, model.Enabled, model.FirstSeenAt, model.LastSeenAt); err != nil {
+		if _, err := stmt.ExecContext(ctx, channelID, model.Model, model.Source, model.Enabled, model.Context, model.FirstSeenAt, model.LastSeenAt); err != nil {
 			return fmt.Errorf("db: replace channel %q model %q: %w", channelID, model.Model, err)
 		}
 	}

@@ -195,6 +195,7 @@ type channelModelEntry struct {
 	ChannelID   string
 	ChannelName string // 空 = 未配置渠道名（v2 不输出该模型或输出裸名）
 	Model       string
+	Context     int64 // 渠道 /v1/models 上报的上下文窗口 token 数；0 = 未知
 }
 
 // collectChannelModels 聚合渠道模型（探测 + 手动配置）：SQLite 优先，
@@ -215,7 +216,7 @@ func (s *Service) collectChannelModels(ctx context.Context) []channelModelEntry 
 				if !m.Enabled {
 					continue
 				}
-				out = append(out, channelModelEntry{ChannelID: ch.ID, ChannelName: ch.ChannelName, Model: m.Model})
+				out = append(out, channelModelEntry{ChannelID: ch.ID, ChannelName: ch.ChannelName, Model: m.Model, Context: m.Context})
 			}
 		}
 		return out
@@ -242,6 +243,8 @@ func (s *Service) collectChannelModels(ctx context.Context) []channelModelEntry 
 func (s *Service) HandleModels(w http.ResponseWriter, r *http.Request) {
 	// model → 支持它的启用渠道集合（同名模型跨渠道：任一渠道可用即保留）。
 	modelChannels := map[string]map[string]bool{}
+	// model → 该模型在任一渠道上报的上下文窗口（token）；0 = 无渠道上报。
+	modelContext := map[string]int64{}
 	var virtualModels []string
 	seen := map[string]bool{}
 
@@ -252,6 +255,11 @@ func (s *Service) HandleModels(w http.ResponseWriter, r *http.Request) {
 			modelChannels[e.Model] = map[string]bool{}
 		}
 		modelChannels[e.Model][e.ChannelID] = true
+		if e.Context > 0 {
+			if known, ok := modelContext[e.Model]; !ok || known <= 0 {
+				modelContext[e.Model] = e.Context
+			}
+		}
 	}
 
 	// 2. 虚拟（聚合）模型名：收集但先不标记 seen，追加时统一去重
@@ -297,7 +305,11 @@ func (s *Service) HandleModels(w http.ResponseWriter, r *http.Request) {
 
 	data := make([]map[string]any, 0, len(models))
 	for _, m := range models {
-		data = append(data, map[string]any{"id": m, "object": "model"})
+		item := map[string]any{"id": m, "object": "model"}
+		if ctx, ok := modelContext[m]; ok && ctx > 0 {
+			item["context_length"] = ctx
+		}
+		data = append(data, item)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"object": "list", "data": data})
@@ -313,6 +325,8 @@ func (s *Service) HandleModels(w http.ResponseWriter, r *http.Request) {
 func (s *Service) HandleModelsV2(w http.ResponseWriter, r *http.Request) {
 	// displayName → 支持它的启用 Key 集合（v2 维度：ChannelName/model）。
 	modelChannels := map[string]map[string]bool{}
+	// displayName → 上下文窗口（token）；0 = 无渠道上报。
+	modelContext := map[string]int64{}
 	var virtualModels []string
 	seen := map[string]bool{}
 
@@ -328,6 +342,11 @@ func (s *Service) HandleModelsV2(w http.ResponseWriter, r *http.Request) {
 			modelChannels[display] = map[string]bool{}
 		}
 		modelChannels[display][e.ChannelID] = true
+		if e.Context > 0 {
+			if known, ok := modelContext[display]; !ok || known <= 0 {
+				modelContext[display] = e.Context
+			}
+		}
 	}
 
 	for _, name := range s.aggregateNames(r.Context()) {
@@ -383,7 +402,11 @@ func (s *Service) HandleModelsV2(w http.ResponseWriter, r *http.Request) {
 
 	data := make([]map[string]any, 0, len(models))
 	for _, m := range models {
-		data = append(data, map[string]any{"id": m, "object": "model"})
+		item := map[string]any{"id": m, "object": "model"}
+		if ctx, ok := modelContext[m]; ok && ctx > 0 {
+			item["context_length"] = ctx
+		}
+		data = append(data, item)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"object": "list", "data": data})

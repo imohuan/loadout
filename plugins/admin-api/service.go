@@ -548,9 +548,131 @@ func fetchChannelModels(ctx context.Context, baseURL, apiKey string, timeout tim
 	return ids, nil
 }
 
+// ProbedChannelModel 渠道探测返回的单个模型：id + 上游 /v1/models 上报的上下文窗口。
+// Context 为 0 表示上游没给（兼容 OpenAI 标准 {data:[{id}]}，很多网关不返回 context）。
+type ProbedChannelModel struct {
+	Model   string
+	Context int64
+}
+
+// fetchChannelModelDetails 请求渠道 /v1/models，返回每个模型的 id 与其上报的上下文窗口。
+// context 兼容常见非标字段：context_length / context_window / max_model_len /
+// max_context_length / meta.n_ctx（参考 unifyai metadata-fetcher 与 opencodex 的认知字段）。
+func fetchChannelModelDetails(ctx context.Context, baseURL, apiKey string, timeout time.Duration) ([]ProbedChannelModel, error) {
+	url := strings.TrimRight(baseURL, "/") + "/models"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+	resp, err := (&http.Client{Timeout: timeout}).Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("models 接口返回 %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if err != nil {
+		return nil, err
+	}
+	var parsed struct {
+		Data []json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return nil, err
+	}
+	out := make([]ProbedChannelModel, 0, len(parsed.Data))
+	for _, raw := range parsed.Data {
+		// 字符串数组形式 {"data":["gpt-4o"]}：无上下文信息。
+		var s string
+		if err := json.Unmarshal(raw, &s); err == nil {
+			if strings.TrimSpace(s) != "" {
+				out = append(out, ProbedChannelModel{Model: s})
+			}
+			continue
+		}
+		// 对象形式：尽量解析嵌套结构（保持 raw 以读任意位置的 context 字段）。
+		var obj struct {
+			ID           string `json:"id"`
+			Context      any    `json:"context_length"`
+			ContextW     any    `json:"context_window"`
+			MaxModelLen  any    `json:"max_model_len"`
+			MaxCtxLen    any    `json:"max_context_length"`
+			Meta         struct {
+				NCtx any `json:"n_ctx"`
+			} `json:"meta"`
+		}
+		if err := json.Unmarshal(raw, &obj); err == nil && obj.ID != "" {
+			ctx := firstPositiveInt64(obj.Context, obj.ContextW, obj.MaxModelLen, obj.MaxCtxLen, obj.Meta.NCtx)
+			out = append(out, ProbedChannelModel{Model: obj.ID, Context: ctx})
+		}
+	}
+	return out, nil
+}
+
+// firstPositiveInt64 取第一个可解析为 >0 的整数值；都没有返回 0。
+func firstPositiveInt64(vals ...any) int64 {
+	for _, v := range vals {
+		switch t := v.(type) {
+		case float64:
+			if t > 0 && t == float64(int64(t)) {
+				return int64(t)
+			}
+		case string:
+			if n := parseLeadingInt64(t); n > 0 {
+				return n
+			}
+		case json.Number:
+			if n, err := t.Int64(); err == nil && n > 0 {
+				return n
+			}
+		}
+	}
+	return 0
+}
+
+// parseLeadingInt64 解析字符串里的前导整数（如 "131072" 或 "128000 (输入)"），失败返回 0。
+func parseLeadingInt64(s string) int64 {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0
+	}
+	var n int64
+	i := 0
+	if s[0] == '-' {
+		return 0 // 负值不是合法上下文
+	}
+	for ; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			break
+		}
+		n = n*10 + int64(s[i]-'0')
+		if n < 0 { // 溢出
+			return 0
+		}
+	}
+	if i == 0 {
+		return 0
+	}
+	return n
+}
+
 // probeChannelModels 探测渠道 /v1/models，返回模型列表与错误文本（错误文本空 = 成功）。
 func probeChannelModels(baseURL, apiKey string) (models []string, modelsErr string) {
 	m, err := fetchChannelModels(context.Background(), baseURL, apiKey, 8*time.Second)
+	if err != nil {
+		return nil, err.Error()
+	}
+	return m, ""
+}
+
+// probeChannelModelDetails 探测渠道 /v1/models 并返回每个模型的上下文（DB 持久化用）。
+func probeChannelModelDetails(baseURL, apiKey string) (models []ProbedChannelModel, modelsErr string) {
+	m, err := fetchChannelModelDetails(context.Background(), baseURL, apiKey, 8*time.Second)
 	if err != nil {
 		return nil, err.Error()
 	}

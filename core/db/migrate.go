@@ -591,6 +591,14 @@ ALTER TABLE capability_routes ADD COLUMN injections_json TEXT NOT NULL DEFAULT '
 -- 内置端点注册的自连 MCP server（如多模态 /mcp/multimodal）打内置标记，前端显示「内置」标签。
 ALTER TABLE mcp_servers ADD COLUMN builtin INTEGER NOT NULL DEFAULT 0;
 `,
+	}, {
+		version: 30,
+		name:    "channel-models-context",
+		sql: `
+-- /v1/models 输出需要每模型上下文：渠道探测 /v1/models 时读到的 context_length
+-- 落本列，HandleModels 据此给每个模型带 context_length（0 = 未探测到，输出时不写该字段）。
+ALTER TABLE channel_models ADD COLUMN context INTEGER NOT NULL DEFAULT 0;
+`,
 	}}
 
 // Migrate applies all pending schema migrations and rejects an incompatible

@@ -130,10 +130,10 @@ func (s *Service) handleChannelCreateDB(w http.ResponseWriter, r *http.Request) 
 			channel.Models = append(channel.Models, db.ChannelModel{Model: model, Source: "manual", Enabled: true, FirstSeenAt: now, LastSeenAt: now})
 		}
 	} else {
-		models, modelsError := probeChannelModels(input.BaseURL, input.APIKey)
+		probed, modelsError := probeChannelModelDetails(input.BaseURL, input.APIKey)
 		channel.ModelsError = modelsError
-		for _, model := range models {
-			channel.Models = append(channel.Models, db.ChannelModel{Model: model, Source: "probe", Enabled: true, FirstSeenAt: now, LastSeenAt: now})
+		for _, pm := range probed {
+			channel.Models = append(channel.Models, db.ChannelModel{Model: pm.Model, Source: "probe", Enabled: true, Context: pm.Context, FirstSeenAt: now, LastSeenAt: now})
 		}
 	}
 	channels, err := s.listDBChannels(r.Context())
@@ -239,13 +239,13 @@ func (s *Service) handleChannelUpdateDB(w http.ResponseWriter, r *http.Request) 
 		channel.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 		_ = plain
 	} else {
-		models, modelsError := probeChannelModels(channel.BaseURL, plain)
+		probed, modelsError := probeChannelModelDetails(channel.BaseURL, plain)
 		channel.ModelsError = modelsError
 		now := time.Now().UTC().Format(time.RFC3339Nano)
 		channel.UpdatedAt = now
-		values := make([]db.ChannelModel, 0, len(models))
-		for _, model := range models {
-			values = append(values, db.ChannelModel{Model: model, Source: "probe", Enabled: true, FirstSeenAt: now, LastSeenAt: now})
+		values := make([]db.ChannelModel, 0, len(probed))
+		for _, pm := range probed {
+			values = append(values, db.ChannelModel{Model: pm.Model, Source: "probe", Enabled: true, Context: pm.Context, FirstSeenAt: now, LastSeenAt: now})
 		}
 		// 合并保留手动配置的模型（探测结果只替换 probe 来源，manual 不丢）。
 		channel.Models = mergeManualModels(channel.Models, values, now)
@@ -291,11 +291,13 @@ func (s *Service) handleChannelRefreshModelsDB(w http.ResponseWriter, r *http.Re
 		return
 	}
 	key, _ := s.st.Decrypt(channel.APIKeyCipher)
-	models, modelsError := probeChannelModels(channel.BaseURL, key)
+	probed, modelsError := probeChannelModelDetails(channel.BaseURL, key)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	values := make([]db.ChannelModel, 0, len(models))
-	for _, model := range models {
-		values = append(values, db.ChannelModel{Model: model, Source: "probe", Enabled: true, FirstSeenAt: now, LastSeenAt: now})
+	values := make([]db.ChannelModel, 0, len(probed))
+	models := make([]string, 0, len(probed))
+	for _, pm := range probed {
+		models = append(models, pm.Model)
+		values = append(values, db.ChannelModel{Model: pm.Model, Source: "probe", Enabled: true, Context: pm.Context, FirstSeenAt: now, LastSeenAt: now})
 	}
 	// 合并保留手动配置的模型（探测结果只替换 probe 来源，manual 不丢）。
 	values = mergeManualModels(channel.Models, values, now)
@@ -370,11 +372,11 @@ func (s *Service) handleChannelModelsReplaceDB(w http.ResponseWriter, r *http.Re
 				key = k
 			}
 		}
-		probed, modelsError := probeChannelModels(channel.BaseURL, key)
+		probed, modelsError := probeChannelModelDetails(channel.BaseURL, key)
 		now = time.Now().UTC().Format(time.RFC3339Nano)
 		values = make([]db.ChannelModel, 0, len(probed))
-		for _, model := range probed {
-			values = append(values, db.ChannelModel{Model: model, Source: "probe", Enabled: true, FirstSeenAt: now, LastSeenAt: now})
+		for _, pm := range probed {
+			values = append(values, db.ChannelModel{Model: pm.Model, Source: "probe", Enabled: true, Context: pm.Context, FirstSeenAt: now, LastSeenAt: now})
 		}
 		// 探测失败也落库 error，UI 显示「探测失败」而非「0 个」。
 		if err := s.routing.ReplaceChannelModels(r.Context(), channel.ID, values); err != nil {
@@ -385,8 +387,8 @@ func (s *Service) handleChannelModelsReplaceDB(w http.ResponseWriter, r *http.Re
 			s.lg.Warn("更新渠道模型探测错误失败", "channel_id", channel.ID, "err", err)
 		}
 		enabledModels = enabledModels[:0]
-		for _, model := range probed {
-			enabledModels = append(enabledModels, model)
+		for _, pm := range probed {
+			enabledModels = append(enabledModels, pm.Model)
 		}
 	}
 	// 清理被删除模型的历史状态（幽灵），模型状态与渠道目录立即一致；
