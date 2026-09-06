@@ -250,14 +250,19 @@ func (s *Service) HandleModels(w http.ResponseWriter, r *http.Request) {
 
 	// 1. 渠道模型（探测 + 手动，channel_models 注册表）。
 	entries := s.collectChannelModels(r.Context())
+	orCtx := loadOpenRouterContext() // 探测没带 context 时用 openrouter 缓存补（懒加载，仅当有需要时）
 	for _, e := range entries {
 		if modelChannels[e.Model] == nil {
 			modelChannels[e.Model] = map[string]bool{}
 		}
 		modelChannels[e.Model][e.ChannelID] = true
-		if e.Context > 0 {
+		ctx := e.Context
+		if ctx <= 0 {
+			ctx = lookupOpenRouterContext(orCtx, e.Model)
+		}
+		if ctx > 0 {
 			if known, ok := modelContext[e.Model]; !ok || known <= 0 {
-				modelContext[e.Model] = e.Context
+				modelContext[e.Model] = ctx
 			}
 		}
 	}
@@ -331,6 +336,7 @@ func (s *Service) HandleModelsV2(w http.ResponseWriter, r *http.Request) {
 	seen := map[string]bool{}
 
 	entries := s.collectChannelModels(r.Context())
+	orCtx := loadOpenRouterContext()
 	for _, e := range entries {
 		// ChannelName 为空/纯空白：v2 无前缀可显式定位，跳过该模型
 		//（不输出 `/gpt-4o` 这种脏名；v1 仍可正常使用裸名）。
@@ -342,9 +348,13 @@ func (s *Service) HandleModelsV2(w http.ResponseWriter, r *http.Request) {
 			modelChannels[display] = map[string]bool{}
 		}
 		modelChannels[display][e.ChannelID] = true
-		if e.Context > 0 {
+		ctx := e.Context
+		if ctx <= 0 {
+			ctx = lookupOpenRouterContext(orCtx, e.Model)
+		}
+		if ctx > 0 {
 			if known, ok := modelContext[display]; !ok || known <= 0 {
-				modelContext[display] = e.Context
+				modelContext[display] = ctx
 			}
 		}
 	}
