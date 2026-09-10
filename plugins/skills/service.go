@@ -305,6 +305,198 @@ func resolveSkillDir(dir, skillName string) string {
 	return ""
 }
 
+// ===== 技能文件浏览（只读：目录树 + 单文件内容）=====
+
+// 文件浏览上限：防止超大技能目录撑爆响应与前端渲染。
+const (
+	maxTreeEntries     = 5000       // 树条目数上限
+	maxTreeDepth       = 12         // 递归深度上限
+	maxSkillFileBytes  = 512 << 10  // 单文件预览读取上限 512 KiB
+	skillFileSniffSize = 8 << 10    // 二进制嗅探窗口 8 KiB
+)
+
+// treeSkipDirs 文件树里忽略的目录名（体积大且与技能内容无关）。
+var treeSkipDirs = map[string]bool{
+	".git":         true,
+	"node_modules": true,
+}
+
+// treeSkipFiles 文件树里忽略的文件名（系统噪声）。
+var treeSkipFiles = map[string]bool{
+	".DS_Store": true,
+	"Thumbs.db": true,
+}
+
+// SkillRoot 返回技能名对应的技能库目录绝对路径（找不到返回空串）。
+// 只读浏览类接口用它定位目录；不信任前端传来的路径。
+func (s *Service) SkillRoot(name string) string {
+	if validSkillName(name) != nil {
+		return ""
+	}
+	return resolveSkillDir(s.repoDir, name)
+}
+
+// SkillTree 返回技能目录的扁平条目清单（目录在前，同级按名称排序）。
+// 技能不存在/非法时返回 error；条目数或深度超限时截断并置 Truncated。
+func (s *Service) SkillTree(name string) (types.SkillTree, error) {
+	root := s.SkillRoot(name)
+	if root == "" {
+		return types.SkillTree{}, fmt.Errorf("skills: 技能不存在: %s", name)
+	}
+	out := types.SkillTree{Name: name, Root: root, Entries: []types.SkillTreeEntry{}}
+	st := treeState{entries: &out.Entries}
+	walkSkillTree(root, "", 0, &st)
+	out.Truncated = st.truncated
+	sortSkillEntries(out.Entries)
+	return out, nil
+}
+
+// treeState 遍历过程中的截断标记。
+type treeState struct {
+	entries   *[]types.SkillTreeEntry
+	truncated bool
+}
+
+// walkSkillTree 递归收集相对路径条目；rel 为空表示技能根目录本身（不入条目）。
+func walkSkillTree(dir, rel string, depth int, st *treeState) {
+	if st.truncated || depth > maxTreeDepth {
+		if depth > maxTreeDepth {
+			st.truncated = true
+		}
+		return
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if len(*st.entries) >= maxTreeEntries {
+			st.truncated = true
+			return
+		}
+		name := e.Name()
+		if e.IsDir() {
+			if treeSkipDirs[name] {
+				continue
+			}
+			childRel := joinRel(rel, name)
+			*st.entries = append(*st.entries, types.SkillTreeEntry{Path: childRel, Name: name, Dir: true})
+			walkSkillTree(filepath.Join(dir, name), childRel, depth+1, st)
+			continue
+		}
+		if treeSkipFiles[name] {
+			continue
+		}
+		var size int64
+		if info, err := e.Info(); err == nil {
+			size = info.Size()
+		}
+		*st.entries = append(*st.entries, types.SkillTreeEntry{Path: joinRel(rel, name), Name: name, Size: size})
+	}
+}
+
+// joinRel 拼接斜杠分隔的相对路径（跨平台一致，前端按 "/" 还原层级）。
+func joinRel(parent, name string) string {
+	if parent == "" {
+		return name
+	}
+	return parent + "/" + name
+}
+
+// sortSkillEntries 排序：目录优先，同级按名称（不区分大小写）稳定排序。
+func sortSkillEntries(entries []types.SkillTreeEntry) {
+	sort.SliceStable(entries, func(i, j int) bool {
+		if entries[i].Dir != entries[j].Dir {
+			return entries[i].Dir
+		}
+		li, lj := strings.ToLower(entries[i].Name), strings.ToLower(entries[j].Name)
+		if li != lj {
+			return li < lj
+		}
+		return entries[i].Name < entries[j].Name
+	})
+}
+
+// SkillFile 读取技能目录里某个文本文件的内容（只读预览）。
+// rel 为相对技能根目录的斜杠路径；越界（绝对路径/..）或指向目录时报错；
+// 超过 maxSkillFileBytes 截断并置 Truncated；二进制文件不回内容只置 Binary。
+func (s *Service) SkillFile(name, rel string) (types.SkillFile, error) {
+	root := s.SkillRoot(name)
+	if root == "" {
+		return types.SkillFile{}, fmt.Errorf("skills: 技能不存在: %s", name)
+	}
+	clean := strings.TrimSpace(strings.ReplaceAll(rel, `\`, "/"))
+	clean = strings.TrimPrefix(clean, "/")
+	if clean == "" || clean == "." {
+		return types.SkillFile{}, errors.New("skills: 缺少文件路径")
+	}
+	// 防路径穿越：拒绝 ".." 段与 Windows 盘符/UNC 形式。
+	for _, seg := range strings.Split(clean, "/") {
+		if seg == ".." {
+			return types.SkillFile{}, fmt.Errorf("skills: 非法文件路径: %s", rel)
+		}
+	}
+	if filepath.IsAbs(clean) || filepath.VolumeName(clean) != "" {
+		return types.SkillFile{}, fmt.Errorf("skills: 非法文件路径: %s", rel)
+	}
+	target := filepath.Join(root, filepath.FromSlash(clean))
+	// 二次防御：确保目标仍落在技能目录内（照抄 Zip Slip 防御范式）。
+	if target != root && !strings.HasPrefix(target, root+string(filepath.Separator)) {
+		return types.SkillFile{}, fmt.Errorf("skills: 非法文件路径: %s", rel)
+	}
+	info, err := os.Stat(target)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return types.SkillFile{}, fmt.Errorf("skills: 文件不存在: %s", clean)
+		}
+		return types.SkillFile{}, fmt.Errorf("skills: 读取文件信息失败: %w", err)
+	}
+	if info.IsDir() {
+		return types.SkillFile{}, fmt.Errorf("skills: 目标是目录，不是文件: %s", clean)
+	}
+
+	out := types.SkillFile{Path: clean, Size: info.Size()}
+	f, err := os.Open(target)
+	if err != nil {
+		return types.SkillFile{}, fmt.Errorf("skills: 打开文件失败: %w", err)
+	}
+	defer f.Close()
+
+	buf := make([]byte, maxSkillFileBytes)
+	n, err := io.ReadFull(f, buf)
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+		return types.SkillFile{}, fmt.Errorf("skills: 读取文件失败: %w", err)
+	}
+	data := buf[:n]
+	if isBinaryData(data) {
+		out.Binary = true
+		out.Truncated = info.Size() > int64(n)
+		return out, nil
+	}
+	out.Content = string(data)
+	out.Truncated = info.Size() > int64(n)
+	return out, nil
+}
+
+// isBinaryData 嗅探内容是否二进制：含 NUL 字节，或前缀内出现过多不可打印控制字符。
+func isBinaryData(data []byte) bool {
+	limit := len(data)
+	if limit > skillFileSniffSize {
+		limit = skillFileSniffSize
+	}
+	controls := 0
+	for i := 0; i < limit; i++ {
+		b := data[i]
+		if b == 0 {
+			return true
+		}
+		if b < 0x09 || (b > 0x0d && b < 0x20) {
+			controls++
+		}
+	}
+	return limit > 0 && controls*100/limit > 30
+}
+
 // Unregister 删除技能源：移除技能库（repoDir，~/.loadout/skills）里对应目录，
 // 即技能源实际所在的文件夹（同时从登记清单移除）。目录不存在时仅移除登记，静默成功。
 func (s *Service) Unregister(name string) error {

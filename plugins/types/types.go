@@ -516,6 +516,32 @@ type Skill struct {
 	Path        string `json:"path,omitempty"`         // 技能目录的绝对路径（~/.loadout/skills/<name>）
 }
 
+// SkillTreeEntry 技能目录里的一个条目（文件或子目录），path 为相对技能根目录的
+// 斜杠分隔路径。树形层级由前端按 path 前缀还原，后端只给扁平清单。
+type SkillTreeEntry struct {
+	Path string `json:"path"` // 相对技能根目录的路径，如 scripts/build.sh
+	Name string `json:"name"` // 条目名，如 build.sh
+	Dir  bool   `json:"dir"`  // 是否目录
+	Size int64  `json:"size"` // 文件字节数；目录为 0
+}
+
+// SkillTree 技能目录清单，供前端渲染文件树。
+type SkillTree struct {
+	Name      string           `json:"name"`      // 技能名（入参）
+	Root      string           `json:"root"`      // 技能目录绝对路径（供「复制路径」用）
+	Entries   []SkillTreeEntry `json:"entries"`   // 扁平条目清单（目录在前，同级按名称排序）
+	Truncated bool             `json:"truncated"` // 条目数或深度超限被截断
+}
+
+// SkillFile 技能内单个文件的内容（只读预览用）。二进制文件不回内容，只回元信息。
+type SkillFile struct {
+	Path      string `json:"path"`      // 相对技能根目录的路径（与请求一致）
+	Size      int64  `json:"size"`      // 文件总字节数
+	Truncated bool   `json:"truncated"` // 内容是否被截断（超过大小上限）
+	Binary    bool   `json:"binary"`    // 是否二进制（此时 content 为空）
+	Content   string `json:"content"`   // 文件文本内容（UTF-8）
+}
+
 // ============ 5.10 技能预设 ============
 
 // Preset 技能预设（名称 + 技能清单 + 目标平台）。

@@ -171,6 +171,9 @@ func (s *Service) Routes() []plugin.RouteSpec {
 		{Method: http.MethodPost, Pattern: "POST /api/skills/import-zip", Auth: plugin.AuthSession, Handler: s.session(s.handleSkillImportZip)},
 		{Method: http.MethodDelete, Pattern: "DELETE /api/skills/{name}", Auth: plugin.AuthSession, Handler: s.session(s.handleSkillDelete)},
 		{Method: http.MethodDelete, Pattern: "DELETE /api/skills/{name}/source", Auth: plugin.AuthSession, Handler: s.session(s.handleSkillUnregister)},
+		// 技能文件浏览（只读预览）：先拿扁平目录清单，再按相对路径取单个文件内容。
+		{Method: http.MethodGet, Pattern: "GET /api/skills/{name}/tree", Auth: plugin.AuthSession, Handler: s.session(s.handleSkillTree)},
+		{Method: http.MethodGet, Pattern: "GET /api/skills/{name}/file", Auth: plugin.AuthSession, Handler: s.session(s.handleSkillFile)},
 		{Method: http.MethodGet, Pattern: "GET /api/skills/status", Auth: plugin.AuthSession, Handler: s.session(s.handleSkillsStatus)},
 		{Method: http.MethodPost, Pattern: "POST /api/skills/sync", Auth: plugin.AuthSession, Handler: s.session(s.handleSkillSync)},
 		{Method: http.MethodPost, Pattern: "POST /api/skills/check-updates", Auth: plugin.AuthSession, Handler: s.session(s.handleSkillCheckUpdates)},
@@ -2058,6 +2061,28 @@ func (s *Service) handleSkillUnregister(w http.ResponseWriter, r *http.Request) 
 	}
 	s.invalidateHub()
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// handleSkillTree 返回技能目录的扁平条目清单（前端据此渲染文件树）。
+// 响应 {name, root, entries:[{path,name,dir,size}], truncated}。
+func (s *Service) handleSkillTree(w http.ResponseWriter, r *http.Request) {
+	tree, err := s.skill.SkillTree(r.PathValue("name"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, tree)
+}
+
+// handleSkillFile 返回技能目录内单个文件的内容：?path=<相对技能根目录的路径>。
+// 响应 {path, size, truncated, binary, content}。
+func (s *Service) handleSkillFile(w http.ResponseWriter, r *http.Request) {
+	file, err := s.skill.SkillFile(r.PathValue("name"), r.URL.Query().Get("path"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, file)
 }
 
 // handleSkillInstall 下载安装一个技能（按 SkillInstallMode 用 git / npx 落到仓库并登记）。

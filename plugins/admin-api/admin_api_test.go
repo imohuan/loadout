@@ -10,6 +10,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -864,6 +865,115 @@ func TestSkillImportZipHandler(t *testing.T) {
 	_, data = apiReq(t, ts, http.MethodGet, "/api/skills", nil, cookie)
 	if !strings.Contains(string(data), "from-zip") {
 		t.Fatalf("技能列表应含 from-zip，实际 %s", data)
+	}
+}
+
+// TestSkillTreeAndFileHandlers 验证技能文件浏览接口：树清单 + 按相对路径读文件 + 越界拦截。
+func TestSkillTreeAndFileHandlers(t *testing.T) {
+	ts, _, pw := newTestServer(t)
+	cookie := login(t, ts, pw)
+
+	// 用 zip 导入造一个含子目录的技能，避免依赖真实 home 目录。
+	var zbuf bytes.Buffer
+	zw := zip.NewWriter(&zbuf)
+	for name, body := range map[string]string{
+		"SKILL.md":      "# browse-demo\nbody\n",
+		"scripts/x.sh":  "echo hi\n",
+		"docs/note.txt": "hello\n",
+	} {
+		w, err := zw.Create(name)
+		if err != nil {
+			t.Fatalf("zip.Create(%s): %v", name, err)
+		}
+		if _, err := w.Write([]byte(body)); err != nil {
+			t.Fatalf("zip 写入 %s: %v", name, err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("zip.Close: %v", err)
+	}
+
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	fw, err := mw.CreateFormFile("file", "browse-demo.zip")
+	if err != nil {
+		t.Fatalf("CreateFormFile: %v", err)
+	}
+	if _, err := fw.Write(zbuf.Bytes()); err != nil {
+		t.Fatalf("写文件字段: %v", err)
+	}
+	if err := mw.WriteField("name", "browse-demo"); err != nil {
+		t.Fatalf("写 name 字段: %v", err)
+	}
+	if err := mw.Close(); err != nil {
+		t.Fatalf("multipart 关闭: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, ts.URL+"/api/skills/import-zip", &body)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.AddCookie(cookie)
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatalf("上传请求: %v", err)
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("import-zip 期望 200，实际 %d: %s", resp.StatusCode, data)
+	}
+
+	// 1) 目录树：应含 SKILL.md 与子目录条目。
+	resp, data = apiReq(t, ts, http.MethodGet, "/api/skills/browse-demo/tree", nil, cookie)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("tree 期望 200，实际 %d: %s", resp.StatusCode, data)
+	}
+	var tree types.SkillTree
+	if err := json.Unmarshal(data, &tree); err != nil {
+		t.Fatalf("解析 tree: %v (%s)", err, data)
+	}
+	if tree.Name != "browse-demo" || tree.Root == "" {
+		t.Fatalf("tree 元信息不符: %+v", tree)
+	}
+	paths := make([]string, 0, len(tree.Entries))
+	for _, e := range tree.Entries {
+		paths = append(paths, e.Path)
+	}
+	for _, want := range []string{"SKILL.md", "scripts", "scripts/x.sh", "docs", "docs/note.txt"} {
+		found := false
+		for _, p := range paths {
+			if p == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("树缺少 %q: %v", want, paths)
+		}
+	}
+
+	// 2) 读文件内容。
+	resp, data = apiReq(t, ts, http.MethodGet, "/api/skills/browse-demo/file?path="+url.QueryEscape("scripts/x.sh"), nil, cookie)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("file 期望 200，实际 %d: %s", resp.StatusCode, data)
+	}
+	var file types.SkillFile
+	if err := json.Unmarshal(data, &file); err != nil {
+		t.Fatalf("解析 file: %v (%s)", err, data)
+	}
+	if file.Content != "echo hi\n" || file.Binary || file.Truncated {
+		t.Fatalf("文件内容不符: %+v", file)
+	}
+
+	// 3) 越界路径 → 400。
+	resp, _ = apiReq(t, ts, http.MethodGet, "/api/skills/browse-demo/file?path=../../secret", nil, cookie)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("越界路径期望 400，实际 %d", resp.StatusCode)
+	}
+	// 4) 未知技能 → 400。
+	resp, _ = apiReq(t, ts, http.MethodGet, "/api/skills/nope/tree", nil, cookie)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("未知技能期望 400，实际 %d", resp.StatusCode)
 	}
 }
 

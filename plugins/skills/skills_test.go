@@ -1073,6 +1073,8 @@ func TestInstallNpx(t *testing.T) {
 // from its SKILL.md frontmatter name, Remove/Unregister still find and delete the
 // real directory by matching the frontmatter name (regression: ask-matt copy dir
 // declares ask-matt-v2, previously os.RemoveAll(repoDir/name) missed the dir).
+// TestRemoveUnregisterDirNameMismatch 验证「目录名与 frontmatter name 不一致」时
+// Remove/Unregister 仍能按 frontmatter name 找到并删除真实目录。
 func TestRemoveUnregisterDirNameMismatch(t *testing.T) {
 	svc, repoDir, targetDir := newTestService(t)
 
@@ -1118,5 +1120,169 @@ func TestRemoveUnregisterDirNameMismatch(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(repoDir, "dir-a")); !os.IsNotExist(err) {
 		t.Fatalf("repo dir-a should be removed, Stat=%v", err)
+	}
+}
+
+// TestSkillTree 验证技能目录树：相对斜杠路径、目录/文件标记、大小、排序与噪声过滤。
+func TestSkillTree(t *testing.T) {
+	svc, repoDir, _ := newTestService(t)
+	mkSkill(t, repoDir, "demo") // 内含 SKILL.md
+
+	dir := filepath.Join(repoDir, "demo")
+	if err := os.MkdirAll(filepath.Join(dir, "scripts"), 0o755); err != nil {
+		t.Fatalf("mkdir scripts: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "scripts", "run.sh"), []byte("#!/bin/sh\n"), 0o644); err != nil {
+		t.Fatalf("write run.sh: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("hello"), 0o644); err != nil {
+		t.Fatalf("write notes.txt: %v", err)
+	}
+	// 噪声：.git 目录与 .DS_Store 文件都不应出现在树里。
+	if err := os.MkdirAll(filepath.Join(dir, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir .git: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".DS_Store"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write .DS_Store: %v", err)
+	}
+
+	tree, err := svc.SkillTree("demo")
+	if err != nil {
+		t.Fatalf("SkillTree 失败: %v", err)
+	}
+	if tree.Name != "demo" || tree.Root != dir {
+		t.Fatalf("tree 元信息不符: %+v", tree)
+	}
+	if tree.Truncated {
+		t.Fatalf("小目录不应截断: %+v", tree)
+	}
+	if len(tree.Entries) != 4 {
+		t.Fatalf("条目数 = %d，期望 4（scripts、notes.txt、scripts/run.sh、SKILL.md）: %+v", len(tree.Entries), tree.Entries)
+	}
+	// 目录优先：scripts 排第一。
+	if !tree.Entries[0].Dir || tree.Entries[0].Path != "scripts" {
+		t.Fatalf("首条应为目录 scripts: %+v", tree.Entries[0])
+	}
+	// 子文件用斜杠相对路径。
+	found := false
+	for _, e := range tree.Entries {
+		if e.Path == "scripts/run.sh" {
+			found = true
+			if e.Dir || e.Name != "run.sh" || e.Size != int64(len("#!/bin/sh\n")) {
+				t.Fatalf("scripts/run.sh 条目不符: %+v", e)
+			}
+		}
+		if e.Path == ".git" || e.Path == ".DS_Store" {
+			t.Fatalf("噪声条目不应出现: %+v", e)
+		}
+	}
+	if !found {
+		t.Fatalf("缺少 scripts/run.sh 条目: %+v", tree.Entries)
+	}
+}
+
+// TestSkillTreeUnknown 验证未知/非法技能名的树查询返回错误。
+func TestSkillTreeUnknown(t *testing.T) {
+	svc, _, _ := newTestService(t)
+	if _, err := svc.SkillTree("nope"); err == nil {
+		t.Fatal("未知技能应返回错误")
+	}
+	if _, err := svc.SkillTree("../evil"); err == nil {
+		t.Fatal("非法技能名应返回错误")
+	}
+}
+
+// TestSkillTreeDirNameMismatch 验证目录名与 frontmatter name 不一致时仍能按技能名定位目录。
+func TestSkillTreeDirNameMismatch(t *testing.T) {
+	svc, repoDir, _ := newTestService(t)
+	dir := filepath.Join(repoDir, "dir-a")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	md := "---\nname: alias-a\ndescription: d\n---\n# body"
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(md), 0o644); err != nil {
+		t.Fatalf("write SKILL.md: %v", err)
+	}
+
+	tree, err := svc.SkillTree("alias-a")
+	if err != nil {
+		t.Fatalf("SkillTree(alias-a) 失败: %v", err)
+	}
+	if tree.Root != dir || len(tree.Entries) != 1 || tree.Entries[0].Path != "SKILL.md" {
+		t.Fatalf("按 frontmatter name 定位目录不符: %+v", tree)
+	}
+}
+
+// TestSkillFile 验证读文件内容、缺参、越界拦截、目录与不存在文件。
+func TestSkillFile(t *testing.T) {
+	svc, repoDir, _ := newTestService(t)
+	mkSkill(t, repoDir, "demo")
+	dir := filepath.Join(repoDir, "demo")
+	if err := os.MkdirAll(filepath.Join(dir, "scripts"), 0o755); err != nil {
+		t.Fatalf("mkdir scripts: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "scripts", "run.sh"), []byte("echo hi\n"), 0o644); err != nil {
+		t.Fatalf("write run.sh: %v", err)
+	}
+
+	got, err := svc.SkillFile("demo", "scripts/run.sh")
+	if err != nil {
+		t.Fatalf("SkillFile 失败: %v", err)
+	}
+	if got.Content != "echo hi\n" || got.Size != int64(len("echo hi\n")) || got.Truncated || got.Binary {
+		t.Fatalf("文件内容不符: %+v", got)
+	}
+
+	// 反斜杠路径同样可用（前端/Windows 场景）。
+	if got, err := svc.SkillFile("demo", `scripts\run.sh`); err != nil || got.Content != "echo hi\n" {
+		t.Fatalf("反斜杠路径读取失败: %+v err=%v", got, err)
+	}
+
+	// 越界与非法入参一律拒绝。
+	for _, rel := range []string{"", "  ", "..", "../secret", "scripts/../../secret", "/etc/passwd", `C:\Windows\win.ini`} {
+		if _, err := svc.SkillFile("demo", rel); err == nil {
+			t.Fatalf("路径 %q 应被拒绝", rel)
+		}
+	}
+	// 目录不是文件；不存在的文件报错。
+	if _, err := svc.SkillFile("demo", "scripts"); err == nil {
+		t.Fatal("目录应被拒绝")
+	}
+	if _, err := svc.SkillFile("demo", "missing.txt"); err == nil {
+		t.Fatal("不存在的文件应报错")
+	}
+	if _, err := svc.SkillFile("nope", "SKILL.md"); err == nil {
+		t.Fatal("未知技能应报错")
+	}
+}
+
+// TestSkillFileTruncateAndBinary 验证大文件截断与二进制文件判定。
+func TestSkillFileTruncateAndBinary(t *testing.T) {
+	svc, repoDir, _ := newTestService(t)
+	mkSkill(t, repoDir, "demo")
+	dir := filepath.Join(repoDir, "demo")
+
+	big := bytes.Repeat([]byte("a"), maxSkillFileBytes+1024)
+	if err := os.WriteFile(filepath.Join(dir, "big.txt"), big, 0o644); err != nil {
+		t.Fatalf("write big.txt: %v", err)
+	}
+	got, err := svc.SkillFile("demo", "big.txt")
+	if err != nil {
+		t.Fatalf("SkillFile(big.txt) 失败: %v", err)
+	}
+	if !got.Truncated || len(got.Content) != maxSkillFileBytes || got.Size != int64(len(big)) {
+		t.Fatalf("大文件截断不符: size=%d contentLen=%d truncated=%v", got.Size, len(got.Content), got.Truncated)
+	}
+
+	bin := []byte{0x50, 0x4b, 0x03, 0x04, 0x00, 0x01, 0x02, 0x03}
+	if err := os.WriteFile(filepath.Join(dir, "pic.bin"), bin, 0o644); err != nil {
+		t.Fatalf("write pic.bin: %v", err)
+	}
+	got, err = svc.SkillFile("demo", "pic.bin")
+	if err != nil {
+		t.Fatalf("SkillFile(pic.bin) 失败: %v", err)
+	}
+	if !got.Binary || got.Content != "" {
+		t.Fatalf("二进制文件应只回元信息: %+v", got)
 	}
 }
