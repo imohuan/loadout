@@ -25,6 +25,7 @@ import BulkSelectButtons from '@/components/BulkSelectButtons.vue'
 import PageHeader from '@/components/PageHeader.vue'
 import LoadingBlock from '@/components/LoadingBlock.vue'
 import EmptyState from '@/components/EmptyState.vue'
+import SkillPreviewDialog from '@/components/SkillPreviewDialog.vue'
 import TranslateText from '@/components/TranslateText.vue'
 import { useTranslateStore } from '@/stores/translate'
 const api = useManagementApi()
@@ -91,6 +92,13 @@ async function copySkillPath(name: string, path?: string) {
   } catch (e) {
     toast.error('复制失败', { description: e instanceof Error ? e.message : String(e) })
   }
+}
+// 技能文件预览弹窗：点击技能名打开，左侧目录树 + 右侧文件内容。
+const previewDialog = ref(false)
+const previewSkill = ref<{ name: string; path?: string; description?: string } | null>(null)
+function openPreview(skill: { name: string; path?: string; description?: string }) {
+  previewSkill.value = { name: skill.name, path: skill.path, description: skill.description }
+  previewDialog.value = true
 }
 const skillFile = ref<File>()
 const skillForm = reactive({ name: '', source: '', version: '' })
@@ -589,7 +597,16 @@ async function restoreAllBackups() {
                   </TableHeader>
                   <TableBody v-if="!groupBySource">
                     <TableRow v-for="skill in skills" :key="skill.name">
-                      <TableCell class="w-48 font-medium truncate">{{ skill.name }}</TableCell>
+                      <TableCell class="w-48 font-medium truncate">
+                        <button
+                          type="button"
+                          class="max-w-full truncate rounded-sm text-left underline-offset-2 hover:text-primary hover:underline"
+                          :title="'查看 ' + skill.name + ' 的文件'"
+                          @click="openPreview(skill)"
+                        >
+                          {{ skill.name }}
+                        </button>
+                      </TableCell>
                       <TableCell class="min-w-72" :class="wrapDescription ? 'break-words whitespace-normal' : 'truncate'">
                         <TranslateText
                           v-if="skill.description"
@@ -741,7 +758,16 @@ async function restoreAllBackups() {
                                 :key="skill.name"
                                 class="hover:bg-transparent"
                               >
-                                <TableCell class="w-48 font-medium truncate">{{ skill.name }}</TableCell>
+                                <TableCell class="w-48 font-medium truncate">
+                                  <button
+                                    type="button"
+                                    class="max-w-full truncate rounded-sm text-left underline-offset-2 hover:text-primary hover:underline"
+                                    :title="'查看 ' + skill.name + ' 的文件'"
+                                    @click="openPreview(skill)"
+                                  >
+                                    {{ skill.name }}
+                                  </button>
+                                </TableCell>
                                 <TableCell class="min-w-72">
                                   <div class="min-w-0">
                                   <Tooltip v-if="skill.description" :delay-duration="150">
@@ -1196,6 +1222,11 @@ async function restoreAllBackups() {
                   </span>
                   <span class="min-w-0">
                     <span class="block font-medium">{{ skill.name }}</span>
+                    <span
+                      class="mt-0.5 inline-block text-xs text-muted-foreground underline-offset-2 hover:text-primary hover:underline"
+                      @click.stop="openPreview(skill)"
+                      >查看文件</span
+                    >
                     <Tooltip v-if="skill.description" :delay-duration="150">
                       <TooltipTrigger as-child>
                         <span class="block truncate text-xs text-muted-foreground">
@@ -1269,6 +1300,7 @@ async function restoreAllBackups() {
         </form>
       </DialogContent>
     </Dialog>
+    <SkillPreviewDialog v-model:open="previewDialog" :skill="previewSkill" />
     <Dialog v-model:open="deleteDialog">
       <DialogContent class="sm:max-w-md!">
         <DialogHeader>

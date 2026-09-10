@@ -194,6 +194,31 @@ export interface Preset {
   targets?: string[] // 目标平台列表（空=通用），可同时部署多个平台
 }
 
+/** 技能目录树里的一个条目：path 为相对技能根目录的斜杠路径 */
+export interface SkillTreeEntry {
+  path: string
+  name: string
+  dir: boolean
+  size: number
+}
+
+/** 技能目录清单（后端返回扁平 entries，前端按 path 前缀还原层级） */
+export interface SkillTree {
+  name: string
+  root: string
+  entries: SkillTreeEntry[]
+  truncated: boolean
+}
+
+/** 技能内单个文件的只读预览内容；二进制文件 content 为空 */
+export interface SkillFileContent {
+  path: string
+  size: number
+  truncated: boolean
+  binary: boolean
+  content: string
+}
+
 // 单个目标（通用或平台）的技能数量与备份状态。
 export interface SkillPlatformStatus {
   name: string // 平台名：""=通用

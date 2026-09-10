@@ -1,5 +1,13 @@
 import { api, request } from '@/lib/api'
-import type { ApiKey, DepStatus, Preset, Skill, SkillPlatformStatus } from '@/lib/types'
+import type {
+  ApiKey,
+  DepStatus,
+  Preset,
+  Skill,
+  SkillFileContent,
+  SkillPlatformStatus,
+  SkillTree,
+} from '@/lib/types'
 
 export function useManagementApi() {
   type PluginResult = {
@@ -31,6 +39,13 @@ export function useManagementApi() {
     request<void>(`/api/skills/${encodeURIComponent(name)}`, 'DELETE')
   const unregisterSkill = (name: string) =>
     request<void>(`/api/skills/${encodeURIComponent(name)}/source`, 'DELETE')
+  // 技能文件浏览（只读预览）：先取目录清单，再按相对路径取单个文件内容。
+  const skillTree = (name: string) =>
+    api<SkillTree>(`/api/skills/${encodeURIComponent(name)}/tree`)
+  const skillFile = (name: string, path: string) =>
+    api<SkillFileContent>(
+      `/api/skills/${encodeURIComponent(name)}/file?path=${encodeURIComponent(path)}`,
+    )
   const createPreset = (body: { name: string; skills: string[]; targets: string[] }) =>
     request<void>('/api/presets', 'POST', body)
   const applyPreset = (name: string) => request<void>('/api/presets/apply', 'POST', { name })
@@ -88,6 +103,8 @@ export function useManagementApi() {
     importSkillZip,
     deleteSkill,
     unregisterSkill,
+    skillTree,
+    skillFile,
     createPreset,
     applyPreset,
     deletePreset,
