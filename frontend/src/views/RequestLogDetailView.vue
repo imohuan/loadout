@@ -4,7 +4,8 @@ import { useRoute, useRouter } from 'vue-router'
 import { useRequestLogs } from '@/composables/useRequestLogs'
 import type { RequestLogDetail } from '@/lib/types'
 import { formatDate, formatDuration } from '@/lib/format'
-import { RiArrowLeftLine, RiArrowRightUpLine, RiErrorWarningLine, RiArrowRightSLine, RiClipboardLine, RiCheckLine } from '@remixicon/vue'
+import { getLoadoutBase } from '@/lib/base'
+import { RiArrowLeftLine, RiArrowRightUpLine, RiErrorWarningLine, RiArrowRightSLine, RiClipboardLine, RiCheckLine, RiLink } from '@remixicon/vue'
 import { toast } from 'vue-sonner'
 import AxJsonViewer from '@/components/ui/AxJsonViewer.vue'
 import EmptyState from '@/components/EmptyState.vue'
@@ -131,6 +132,25 @@ async function copyAllJson() {
     toast.error('复制失败，请检查浏览器剪贴板权限')
   }
 }
+
+// 复制当前日志的后台 API 链接（/api/request-logs/<id>，带后端真实地址，
+// 桌面壳下也是外部可达的 127.0.0.1:<port>）
+const linkCopied = ref(false)
+let linkCopyTimer: ReturnType<typeof setTimeout> | undefined
+async function copyLink() {
+  if (!log.value) return
+  try {
+    const base = (await getLoadoutBase()).replace(/\/+$/, '')
+    const url = `${base}/api/request-logs/${encodeURIComponent(log.value.id)}`
+    await navigator.clipboard.writeText(url)
+    linkCopied.value = true
+    toast.success('已复制日志链接')
+    clearTimeout(linkCopyTimer)
+    linkCopyTimer = setTimeout(() => (linkCopied.value = false), 2000)
+  } catch {
+    toast.error('复制失败，请检查浏览器剪贴板权限')
+  }
+}
 </script>
 
 <template>
@@ -180,10 +200,16 @@ async function copyAllJson() {
         <CardHeader>
           <div class="flex items-center justify-between gap-2">
             <CardTitle class="text-base">请求概要</CardTitle>
-            <Button variant="outline" size="sm" class="gap-1.5" :disabled="!log" @click="copyAllJson">
-              <component :is="copied ? RiCheckLine : RiClipboardLine" size="14" />
-              {{ copied ? '已复制' : '复制完整 JSON' }}
-            </Button>
+            <div class="flex items-center gap-2">
+              <Button variant="outline" size="sm" class="gap-1.5" :disabled="!log" @click="copyLink">
+                <component :is="linkCopied ? RiCheckLine : RiLink" size="14" />
+                {{ linkCopied ? '已复制' : '复制链接' }}
+              </Button>
+              <Button variant="outline" size="sm" class="gap-1.5" :disabled="!log" @click="copyAllJson">
+                <component :is="copied ? RiCheckLine : RiClipboardLine" size="14" />
+                {{ copied ? '已复制' : '复制完整 JSON' }}
+              </Button>
+            </div>
           </div>
         </CardHeader>
         <CardContent class="space-y-3">
