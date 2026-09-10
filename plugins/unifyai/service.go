@@ -136,7 +136,58 @@ type OpenCodexModelsResult struct {
 // enableVision=true 时追加 --enable-vision（强制所有模型标记为支持视觉）。
 // CLI 不可用/代理不可达时返回 Degraded=true + 原因（不报错），保证页面可用。
 func (s *Service) OpenCodexModels(enableVision bool) OpenCodexModelsResult {
-	args := []string{"--list", "models", "--json"}
+	res, err := s.queryModels("models", enableVision)
+	if err != nil {
+		return OpenCodexModelsResult{Degraded: true, DegradedReason: err.Error()}
+	}
+	// 代理不可达（没有模型列表）时补一次 OpenRouter 名称匹配，见 enrichFromOpenRouter。
+	enrichFromOpenRouter(&res)
+	return res
+}
+
+// queryModels 执行 `--list <what> --json` 并解析出 models 对象。
+// what = "models"（只查模型）或 "all"（平台 + 模型 + MCP + 元数据一起查）。
+//
+// enableVision 是**每次调用显式传入**的开关，绝不从 sync.json 读：
+// sync.json 里那份可能停在某次同步留下的旧值（例如 enableVision:true），
+// 而 CLI 的代理探测是「--enable-vision 才生效」的——旧值一旦被沿用，
+// 代理关着时模型列表就恒为空，页面显示 0 个模型，且和 UI 开关状态对不上。
+//
+// 另外：CLI 请求 OpenCodex 代理只等 3 秒（config-loader.mjs 里的硬编码超时），
+// 而代理「冷启动」——第一次被调用、或换个进程/连接来问——实测要 10 秒以上，
+// 于是第一次查询必然超时、报「代理服务不可用」、模型列表为空，
+// 紧接着的第二次查询因为代理已热就秒回。这正是「刚进页面是 0，点一下刷新就有了」的由来。
+// 这里在判定失败且「一个模型都没拿到」时退避重试一次，把冷启动那一下吃掉。
+func (s *Service) queryModels(what string, enableVision bool) (OpenCodexModelsResult, error) {
+	var last OpenCodexModelsResult
+	for attempt := 0; attempt < queryModelsAttempts; attempt++ {
+		if attempt > 0 {
+			time.Sleep(queryModelsRetryDelay)
+		}
+		res, retryable, err := s.queryModelsOnce(what, enableVision)
+		if err != nil {
+			return OpenCodexModelsResult{}, err
+		}
+		last = res
+		// 代理不可用且没拿到任何模型 → 大概率是冷启动超时，退避后再试一次。
+		if !retryable {
+			return res, nil
+		}
+		s.lg.Info("unifyai: 代理疑似冷启动超时，重试查询", "what", what, "attempt", attempt+1, "reason", res.DegradedReason)
+	}
+	return last, nil
+}
+
+// 查询重试策略：代理冷启动比 CLI 的 3 秒超时长，给一次退避重试即可（热了之后秒回）。
+// 做成 var 便于测试缩短等待。
+var (
+	queryModelsAttempts   = 2
+	queryModelsRetryDelay = 500 * time.Millisecond
+)
+
+// queryModelsOnce 执行一次查询；返回值 retryable 表示「代理疑似冷启动、值得重试」。
+func (s *Service) queryModelsOnce(what string, enableVision bool) (res OpenCodexModelsResult, retryable bool, err error) {
+	args := []string{"--list", what, "--json"}
 	if enableVision {
 		args = append(args, "--enable-vision")
 	}
@@ -145,24 +196,24 @@ func (s *Service) OpenCodexModels(enableVision bool) OpenCodexModelsResult {
 	}
 	lines, err := runCollect(args)
 	if err != nil {
-		s.lg.Warn("unifyai: --list models 执行失败", "err", err)
-		return OpenCodexModelsResult{Degraded: true, DegradedReason: err.Error()}
+		s.lg.Warn("unifyai: --list "+what+" 执行失败", "err", err)
+		return OpenCodexModelsResult{}, false, err
 	}
 	var wrapped struct {
 		Models OpenCodexModelsResult `json:"models"`
 	}
 	if err := json.Unmarshal([]byte(strings.Join(lines, "\n")), &wrapped); err != nil {
-		s.lg.Warn("unifyai: 解析 --list models JSON 失败", "err", err)
-		return OpenCodexModelsResult{Degraded: true, DegradedReason: "解析 --list models 输出失败"}
+		s.lg.Warn("unifyai: 解析 --list "+what+" JSON 失败", "err", err)
+		return OpenCodexModelsResult{}, false, fmt.Errorf("解析 --list %s 输出失败", what)
 	}
-	res := wrapped.Models
+	res = wrapped.Models
 	if res.Error != "" {
 		res.Degraded = true
 		res.DegradedReason = res.Error
 	}
-	// 代理不可达（没有模型列表）时补一次 OpenRouter 名称匹配，见 enrichFromOpenRouter。
-	enrichFromOpenRouter(&res)
-	return res
+	// 退化成「代理不可用」且一个模型都没拿到 = 冷启动超时的典型特征。
+	retryable = res.Degraded && len(res.Models) == 0
+	return res, retryable, nil
 }
 
 // enrichFromOpenRouter 在 OpenCodex 代理拿不到模型时，用本地 OpenRouter 元数据缓存
@@ -453,24 +504,56 @@ type AllConfigResult struct {
 
 // ListAll 解析 `unifyai --list all --json`，返回平台 + 模型 + MCP 矩阵 + 元数据缓存状态，
 // 前端初始化一次拉全（替代分别调 platforms / opencodex-models / mcp-matrix）。
+// enableVision 由页面传入（不再从 sync.json 读旧值，见 queryModels 注释）。
+// 与 queryModels 同样对「代理冷启动超时」退避重试，见该函数注释。
 // CLI 不可用时返回空结构（前端回落内置默认），不报错。
-func (s *Service) ListAll() (AllConfigResult, error) {
-	var empty AllConfigResult
+func (s *Service) ListAll(enableVision bool) (AllConfigResult, error) {
+	var last AllConfigResult
+	for attempt := 0; attempt < queryModelsAttempts; attempt++ {
+		if attempt > 0 {
+			time.Sleep(queryModelsRetryDelay)
+		}
+		res, retryable := s.listAllOnce(enableVision)
+		last = res
+		if !retryable {
+			return res, nil
+		}
+		s.lg.Info("unifyai: --list all 疑似代理冷启动超时，重试", "attempt", attempt+1)
+	}
+	return last, nil
+}
+
+// listAllOnce 执行一次 `--list all --json`；retryable 表示「代理疑似冷启动、值得重试」。
+func (s *Service) listAllOnce(enableVision bool) (res AllConfigResult, retryable bool) {
 	args := []string{"--list", "all", "--json"}
+	if enableVision {
+		args = append(args, "--enable-vision")
+	}
 	if source := s.sourceFromSync(); source != "" {
 		args = append(args, "--source", source)
 	}
 	lines, err := runCollect(args)
 	if err != nil {
 		s.lg.Warn("unifyai: --list all 执行失败", "err", err)
-		return empty, nil
+		return AllConfigResult{}, false
 	}
-	var res AllConfigResult
 	if err := json.Unmarshal([]byte(strings.Join(lines, "\n")), &res); err != nil {
 		s.lg.Warn("unifyai: 解析 --list all JSON 失败", "err", err)
-		return empty, nil
+		return AllConfigResult{}, false
 	}
-	return res, nil
+	// 代理不可达且一个模型都没拿到 → 只会是冷启动超时，重试可救。
+	var models OpenCodexModelsResult
+	if len(res.Models) > 0 {
+		if err := json.Unmarshal(res.Models, &models); err == nil {
+			retryable = models.Degraded && len(models.Models) == 0
+			// 代理不可达时用本地 OpenRouter 缓存补模型上下文，与 OpenCodexModels 同款兜底。
+			enrichFromOpenRouter(&models)
+			if raw, err := json.Marshal(models); err == nil {
+				res.Models = raw
+			}
+		}
+	}
+	return res, retryable
 }
 
 // syncConfigPath 返回同步配置文件路径（前端把当前 UI 状态落盘后以 --config 引用）。
@@ -552,6 +635,11 @@ func (s *Service) sourceFromSync() string {
 	if !ok || src == "" {
 		return ""
 	}
+	return expandHome(src)
+}
+
+// expandHome 把开头的 ~ 展开为当前用户主目录；其余原样返回。
+func expandHome(src string) string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return src

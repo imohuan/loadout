@@ -661,7 +661,7 @@ function applyMatrix(res: McpMatrixResult) {
 }
 
 async function reloadMatrix() {
-  const all = await fetchAllConfig()
+  const all = await fetchAllConfig(enableVision.value)
   applyMatrix(all.mcp)
 }
 
@@ -958,7 +958,7 @@ onMounted(async () => {
     })
     .catch(() => {})
   try {
-  const all = await fetchAllConfig()
+  const all = await fetchAllConfig(enableVision.value)
   applyPlatforms(all.platforms)
   applyMatrix(all.mcp)
   // models 有值而 count 缺失时归一化，避免「数据预览」显示 0 个模型

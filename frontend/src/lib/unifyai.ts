@@ -549,11 +549,13 @@ export interface AllConfigResult {
 /**
  * 一次获取全部配置（后端调 unifyai --list all --json）：
  * 平台能力 + 模型列表 + MCP 矩阵 + 元数据缓存状态。
+ * enableVision 与「强制视觉」开关保持一致（后端不再从 sync.json 读可能过期的旧值）。
  * 失败回落内置默认，保证页面可用。
  */
-export async function fetchAllConfig(): Promise<AllConfigResult> {
+export async function fetchAllConfig(enableVision = false): Promise<AllConfigResult> {
   try {
-    const res = await fetch('/api/unifyai/all')
+    const qs = enableVision ? '?enableVision=1' : ''
+    const res = await fetch(`/api/unifyai/all${qs}`)
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const data = (await res.json()) as AllConfigResult
     return {

@@ -48,7 +48,7 @@ func setupSourceTest(t *testing.T) (svc *Service, argsOut string) {
 // TestListAllPassesSourceToCLI 验证 ListAll 把 sync.json 里持久化的 source 以 --source 传给 CLI。
 func TestListAllPassesSourceToCLI(t *testing.T) {
 	svc, argsOut := setupSourceTest(t)
-	if _, err := svc.ListAll(); err != nil {
+	if _, err := svc.ListAll(false); err != nil {
 		t.Fatalf("ListAll: %v", err)
 	}
 

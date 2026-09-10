@@ -108,6 +108,27 @@ func EnvWithPathPrefix(dir string) []string {
 // 经 procreg 让命令出现在全局进程面板。env 可为空（继承环境）；需补全提供子进程环境。
 // 注意：输出按行切分，JSON 结果需用 strings.Join(lines, "\n") 拼回后再解析。
 func RunCollect(name, kind, cmd string, args, env []string) ([]string, error) {
+	return runCollectFn(Get(), name, kind, cmd, args, env)
+}
+
+// runCollectFn 是 RunCollect 的底层可替换 seam（测试可替换为 fake：
+// 既避免真实执行命令，也能断言调用方到底传了哪些参数、被调了几次）。
+var runCollectFn = defaultRunCollect
+
+// SetRunCollectFn 替换 RunCollect 的实现（仅供测试使用）。返回旧实现，便于 Cleanup 恢复。
+// 传 nil 恢复默认实现。
+func SetRunCollectFn(fn func(r *Registry, name, kind, cmd string, args, env []string) ([]string, error)) func(*Registry, string, string, string, []string, []string) ([]string, error) {
+	old := runCollectFn
+	if fn == nil {
+		runCollectFn = defaultRunCollect
+	} else {
+		runCollectFn = fn
+	}
+	return old
+}
+
+// defaultRunCollect 是 RunCollect 的默认实现（真实执行命令并收集输出）。
+func defaultRunCollect(_ *Registry, name, kind, cmd string, args, env []string) ([]string, error) {
 	var mu sync.Mutex
 	var lines []string
 	h, err := Get().Run(Options{

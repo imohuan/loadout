@@ -2469,8 +2469,11 @@ func (s *Service) handleUnifyaiOpenCodexModelsLive(w http.ResponseWriter, r *htt
 
 // handleUnifyaiAll 返回全部配置（调 unifyai --list all --json）：
 // 平台能力 + 模型列表 + MCP 矩阵 + 元数据缓存状态，前端初始化一次拉全。
+// 支持 ?enableVision=1：与「强制视觉」开关保持一致（不从 sync.json 读旧值）。
 func (s *Service) handleUnifyaiAll(w http.ResponseWriter, r *http.Request) {
-	res, err := s.unify.ListAll()
+	enableVision := r.URL.Query().Get("enableVision") == "1" ||
+		r.URL.Query().Get("enableVision") == "true"
+	res, err := s.unify.ListAll(enableVision)
 	if err != nil {
 		s.writeServerError(w, err)
 		return

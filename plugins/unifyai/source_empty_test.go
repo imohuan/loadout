@@ -56,7 +56,7 @@ func TestEmptySourceNotPassedToCLI(t *testing.T) {
 	t.Cleanup(func() { config.UnifyaiCmd = oldCmd })
 
 	svc := NewService(slog.Default())
-	if _, err := svc.ListAll(); err != nil {
+	if _, err := svc.ListAll(false); err != nil {
 		t.Fatalf("ListAll(空 source): %v", err)
 	}
 	raw, err := os.ReadFile(argsOut)
