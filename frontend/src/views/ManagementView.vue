@@ -131,17 +131,21 @@ async function saveSettings() {
     '设置已保存',
   )
 }
-/** 保存日志保留策略，并立即按新策略清理一次（用户改完上限通常期望马上看到效果）。 */
+/**
+ * 保存日志保留策略。只保存，不顺手清理——清理是「立即清理」按钮的事。
+ *
+ * 两个动作分开是有意的：保存只是改设置，清理会真的删日志。合成一个按钮的话，
+ * 用户想改个数字也会顺带触发一次删除，代价不可控（大库上清理要跑一会儿）。
+ */
 async function saveLogRetention() {
   await run(
     'save-log-retention',
     async () => {
       await api.saveSettings({ ...settingsForm })
-      const stats = await requestLogApi.applyRetention()
-      logRetentionRef.value?.setStats(stats)
       await refreshSettings()
+      await logRetentionRef.value?.refresh()
     },
-    '日志保留设置已保存并清理',
+    '日志保留设置已保存',
   )
 }
 

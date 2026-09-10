@@ -121,7 +121,7 @@ const unlimited = computed(() => !props.maxAgeDays && !props.maxSizeMb)
       </div>
       <div class="flex flex-wrap items-center gap-2">
         <Button type="button" :disabled="saving || cleaning" @click="emit('save')">
-          <RiLoader4Line v-if="saving" class="animate-spin" size="16" />保存并立即清理
+          <RiLoader4Line v-if="saving" class="animate-spin" size="16" />保存
         </Button>
         <Button
           type="button"
@@ -137,8 +137,8 @@ const unlimited = computed(() => !props.maxAgeDays && !props.maxSizeMb)
         </Button>
       </div>
       <p class="text-xs text-muted-foreground">
-        自动清理发生在「写入新日志」时；改了上限想马上见效（比如库里已经堆了十几
-        GB），用「立即清理」手动触发一次。
+        「保存」只写设置，不动日志；想让新设置马上生效（比如刚把上限改小、库里还堆着
+        十几 GB），点「立即清理」按当前设置跑一次。
       </p>
     </CardContent>
   </Card>

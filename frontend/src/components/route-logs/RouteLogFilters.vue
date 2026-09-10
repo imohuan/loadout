@@ -3,8 +3,20 @@ import { reactive, watch } from 'vue'
 import { RiFilter3Line, RiLoader4Line, RiRefreshLine } from '@remixicon/vue'
 import type { RouteLogFilters } from '@/composables/useRouteLogs'
 
-const props = defineProps<{ channels: { name: string }[]; isPending?: (key: string) => boolean }>()
-const emit = defineEmits<{ apply: [filters: RouteLogFilters]; reset: [] }>()
+const props = withDefaults(
+  defineProps<{
+    channels: { name: string }[]
+    isPending?: (key: string) => boolean
+    /** 列表自动刷新开关（只在第 1 页生效）。由页面持有并持久化，这里只做受控展示。 */
+    autoRefresh?: boolean
+  }>(),
+  { autoRefresh: true },
+)
+const emit = defineEmits<{
+  apply: [filters: RouteLogFilters]
+  reset: []
+  'update:autoRefresh': [value: boolean]
+}>()
 const form = reactive<RouteLogFilters>({})
 watch(
   () => props.channels,
@@ -97,5 +109,30 @@ function reset() {
         </Tooltip>
       </TooltipProvider>
     </div>
+    <!-- 自动刷新开关放在筛选行里：它是「这块列表怎么动」的显示偏好，
+         和筛选一样属于看图方式，放这里最顺手；同样的开关在设置页也有一份。 -->
+    <TooltipProvider>
+      <Tooltip>
+        <TooltipTrigger as-child>
+          <label
+            class="flex cursor-pointer items-center gap-2 self-center text-sm whitespace-nowrap"
+          >
+            <Switch
+              :model-value="props.autoRefresh"
+              aria-label="自动刷新"
+              @update:model-value="emit('update:autoRefresh', $event)"
+            />
+            自动刷新
+          </label>
+        </TooltipTrigger>
+        <TooltipContent>
+          {{
+            props.autoRefresh
+              ? '第 1 页每 3 秒自动刷新；翻到其他页会自动停'
+              : '已关闭：列表只在手动刷新、筛选、翻页时更新'
+          }}
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
   </form>
 </template>

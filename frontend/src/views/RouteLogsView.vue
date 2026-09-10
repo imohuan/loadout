@@ -1,11 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, onScopeDispose, reactive, ref } from 'vue'
-import {
-  RiDatabase2Line,
-  RiDeleteBinLine,
-  RiLoader4Line,
-  RiRefreshLine,
-} from '@remixicon/vue'
+import { computed, onMounted, onScopeDispose, reactive, ref, watch } from 'vue'
+import { RiDatabase2Line, RiDeleteBinLine, RiLoader4Line, RiRefreshLine } from '@remixicon/vue'
 import { useRouteLogs, routeLogValidity } from '@/composables/useRouteLogs'
 import type { RouteLogFilters } from '@/composables/useRouteLogs'
 import { useRequestLogs } from '@/composables/useRequestLogs'
@@ -14,7 +9,7 @@ import { groupChannelNames } from '@/composables/useChannels'
 import { useListLoader } from '@/composables/useListLoader'
 import { useAsyncTask } from '@/composables/useAsyncTask'
 import { useConfirm } from '@/composables/useConfirm'
-import { toast } from 'vue-sonner'
+import { readAutoRefreshEnabled, writeAutoRefreshEnabled } from '@/lib/autoRefresh'
 import { formatBytes, formatDate } from '@/lib/format'
 import type { RouteLog, RequestLogStats } from '@/lib/types'
 import PageHeader from '@/components/PageHeader.vue'
@@ -40,11 +35,17 @@ const total = computed(() => logsData.value?.total ?? 0)
 /** 完整日志存活性：表格据此隐藏已被保留策略/清空删掉的「进入日志」入口。
  *  undefined = 后端未提供可信集合，表格退化为只判空。 */
 const validRequestLogIds = computed(() => routeLogValidity(logsData.value))
-// 翻页/改每页条数：更新分页状态后重新拉取当前页（3s 定时刷新同样带当前 page/pageSize）。
+// 翻页/改每页条数：更新分页状态后重新拉取当前页。
+// 定时刷新不是一直跑：只有处在第 1 页才开（见下方 AUTO_REFRESH_INTERVAL 段），
+// 所以这里额外挂一次「回落到第 1 页立刻刷一次」（reloadOnFirstPage）。
 // 分页状态受控传入 RouteLogTable（:page/:page-size），保证过滤/清空重置 page=1 时表格同步。
 function onPageChange(nextPage: number) {
   page.value = nextPage
   void refresh()
+}
+async function refreshPage() {
+  await refresh()
+  await refreshActiveDetails()
 }
 function onPageSizeChange(nextSize: number) {
   pageSize.value = nextSize
@@ -165,40 +166,86 @@ async function refreshActiveDetails() {
   }
 }
 
-// 手动刷新（先拉列表，再后台同步展开中的进行中详情）
+// 手动刷新：先拉列表，再后台同步展开中的进行中详情，顺带把日志库大小也重取。
 function manualRefresh() {
   void run('refresh', async () => {
-    await refresh()
-    await refreshActiveDetails()
+    await refreshPage()
+    refreshLogStats()
   })
 }
 
-// 3 秒定时刷新。
-// timer 用模块级变量 + 启动前先清旧 + onScopeDispose 清理：
-// 防止 Vite HMR 重跑 setup 时旧 interval 引用丢失导致定时器叠加（开发模式改代码后越叠越多）。
+// ===== 自动刷新（只在第 1 页跑）=====
+// 规则：定时刷新只在「第 1 页 + 开关开启」时存在。
+//   - 第 1 页是最新请求的落点：盯在这里才有「数字自己在跳」的价值；
+//   - 翻到第 2 页及以后，列表本就是历史快照，每 3 秒重取一次既没用、又会把用户
+//     正在看的行整表换掉（展开态靠 detailsMap 兜着，但列表对象每轮都是新的）；
+//   - 因此翻页离开第 1 页即停表，回到第 1 页再立刻刷一次并重新开始计时。
+// 开关持久化在 localStorage，设置页 / 筛选行都能改（见 readAutoRefreshEnabled）。
 const AUTO_REFRESH_INTERVAL = 3_000
+const autoRefreshEnabled = ref(readAutoRefreshEnabled())
 let autoTimer: ReturnType<typeof setInterval> | undefined
+
+/** 当前是否应该跑定时刷新：第 1 页 + 开关开启。 */
+function autoRefreshActive() {
+  return autoRefreshEnabled.value && page.value === 1
+}
+
 function stopAutoRefresh() {
   if (autoTimer) {
     clearInterval(autoTimer)
     autoTimer = undefined
   }
 }
+
+/** 开表；已在跑则先停掉再重建，避免 HMR 重跑 setup 时定时器叠加。 */
 function startAutoRefresh() {
-  stopAutoRefresh() // 防重：确保同一时刻只有一个定时器
+  stopAutoRefresh()
+  if (!autoRefreshActive()) return
   autoTimer = setInterval(() => {
     void (async () => {
       await refresh({ silentError: true })
       await refreshActiveDetails()
       await selfHealStuckLogs()
-      // 日志库大小同频刷新：写日志会撑大文件，保留策略也会削回去，按钮上的数字要跟上。
-      await refreshLogStats()
     })()
   }, AUTO_REFRESH_INTERVAL)
 }
-onMounted(startAutoRefresh)
-// 首次进入立刻取一次大小（别等 3 秒后第一个 tick，按钮会先显示占位符再跳数字）
-onMounted(refreshLogStats)
+
+/** 按当前页码/开关同步定时器状态：该跑就开、不该跑就停。 */
+function syncAutoRefresh() {
+  if (autoRefreshActive()) {
+    if (!autoTimer) startAutoRefresh()
+    return
+  }
+  stopAutoRefresh()
+}
+
+function setAutoRefreshEnabled(enabled: boolean) {
+  autoRefreshEnabled.value = enabled
+  writeAutoRefreshEnabled(enabled)
+  syncAutoRefresh()
+}
+
+// 页码变化（flush: 'post'，等页码更新渲染完再回调）：
+//   1. 从后面某页回落到第 1 页 → 立刻刷一次，否则要干等下一次 tick；
+//      同一页内的刷新页码没变，不重复触发。
+//   2. 同步定时器：在第 1 页开、离开第 1 页停。
+watch(
+  page,
+  (next, prev) => {
+    if (next === 1 && prev !== 1) {
+      void refreshPage()
+      refreshLogStats()
+    }
+    syncAutoRefresh()
+  },
+  { flush: 'post' },
+)
+
+onMounted(() => {
+  startAutoRefresh()
+  // 首次进入立刻取一次大小（别等 3 秒后第一个 tick，按钮会先显示占位符再跳数字）
+  void refreshLogStats()
+})
 // 组件卸载与 HMR reload 都会触发 scope dispose，比 onUnmounted 覆盖更全
 onScopeDispose(stopAutoRefresh)
 
@@ -252,12 +299,12 @@ async function clear() {
 
 // ===== 完整请求日志库（request-log.db）=====
 // 与上面「转发日志」（loadout.db 的 route_requests）是两个库：前者是路由决策记录，
-// 后者是逐次渠道尝试的完整请求/响应正文（体积大得多）。这个按钮和确认框处理的是后者。
+// 后者是逐次渠道尝试的完整请求/响应正文（体积大得多）。
 
-/** 日志库占用统计；null = 尚未取到（按钮显示占位符、描述退化为无数字版本）。 */
+/** 完整请求日志（request-log.db）占用统计；null = 尚未取到。 */
 const logStats = ref<RequestLogStats | null>(null)
 
-/** 拉取日志库大小。定时刷新/清空后都要重新拉，否则按钮上的数字会一直停在旧值。 */
+/** 拉取完整请求日志占用统计（体积 + 条数 + 保留策略）。 */
 async function refreshLogStats() {
   try {
     logStats.value = await requestLogService.stats()
@@ -268,11 +315,48 @@ async function refreshLogStats() {
 }
 
 /**
- * 按钮文案：显示日志库占用大小。
+ * 点「日志大小」按钮：确认后清空完整请求日志库（request-log.db）。
  *
- * 取数中 / 取数失败时显示「…」而不是「日志大小」这类文字：这个按钮的职责就是显示
- * 一个数字，文字占位会让用户以为它是个普通按钮、甚至以为功能就是这样。
- * 「…」明确表达「马上就有数字」，且不会像「0 B」那样谎报。
+ * 为什么按钮既显示大小又能点：它是这个库唯一的视图入口，用户看到「690 MB」的
+ * 第一反应就是「这能清掉吗」。同尺寸的操作入口在设置页，但用户不会为了清日志
+ * 专门跑一趟设置。
+ *
+ * 必须确认：库可能很大且删了不可恢复。确认框里把条数、占用、最早一条都摆出来，
+ * 让用户明确知道要删掉多少。
+ */
+const clearLogDescription = computed(() => {
+  const stats = logStats.value
+  if (!stats) return '将删除全部完整请求日志，此操作不可恢复。'
+  const parts = [`共 ${stats.count} 条、占用 ${formatBytes(stats.size)}`]
+  if (stats.oldest_started_at) parts.push(`最早一条为 ${formatDate(stats.oldest_started_at)}`)
+  return `${parts.join('，')}。删除后不可恢复。`
+})
+
+async function clearRequestLogs() {
+  const confirmed = await confirmDialog({
+    title: '清空完整请求日志？',
+    description: clearLogDescription.value,
+    confirmText: '清空',
+    destructive: true,
+  })
+  if (!confirmed) return
+  await run(
+    'clear-request-logs',
+    async () => {
+      const result = await requestLogService.clear()
+      // 关联列已被后端一并清空，列表刷新后「进入日志」入口自动消失。
+      await Promise.all([refreshPage(), refreshLogStats()])
+      return result
+    },
+    '完整请求日志已清空',
+  )
+}
+
+/**
+ * 日志大小按钮文案：显示完整请求日志库（request-log.db）的占用。
+ *
+ * 取数中 / 取数失败时显示「…」而不是「请求日志」这类文字：这个入口的职责就是显示
+ * 一个数字，文字占位会让用户以为它只是个普通按钮。
  */
 const logSizeLabel = computed(() => {
   const stats = logStats.value
@@ -292,41 +376,9 @@ const logSizeTitle = computed(() => {
   if (stats.max_age_days > 0) limits.push(`只留最近 ${stats.max_age_days} 天`)
   if (stats.max_size_mb > 0) limits.push(`最多 ${stats.max_size_mb} MB`)
   lines.push(limits.length ? `保留策略：${limits.join('、')}` : '保留策略：未设置（日志会一直增长）')
-  lines.push('点击可清空该日志库')
+  lines.push('点击可清空该日志库；保留策略在「设置 → 日志保留」')
   return lines.join('\n')
 })
-
-/** 确认框描述：把大小和条数都摆出来，让用户知道删掉的是多少东西。 */
-const clearLogDescription = computed(() => {
-  const stats = logStats.value
-  if (!stats) return '将删除全部完整请求日志，此操作不可恢复。'
-  const parts = [`共 ${stats.count} 条、占用 ${formatBytes(stats.size)}`]
-  if (stats.oldest_started_at) {
-    parts.push(`最早一条为 ${formatDate(stats.oldest_started_at)}`)
-  }
-  return `${parts.join('，')}。删除后不可恢复。`
-})
-
-/** 点「日志大小」：先确认（库可能很大，误删代价高），确认后清空完整请求日志库并刷新大小。 */
-async function clearRequestLogs() {
-  const confirmed = await confirmDialog({
-    title: '清空完整请求日志？',
-    description: clearLogDescription.value,
-    confirmText: '清空',
-    destructive: true,
-  })
-  if (!confirmed) return
-  await run(
-    'clear-request-logs',
-    async () => {
-      const result = await requestLogService.clear()
-      // 关联列已被后端一并清空，列表刷新后「进入日志」入口自动消失。
-      detailsMap.clear()
-      await Promise.all([refresh(), refreshLogStats()])
-      toast.success(`已清空 ${result.affected} 条完整请求日志`)
-    },
-  )
-}
 </script>
 
 <template>
@@ -351,6 +403,7 @@ async function clearRequestLogs() {
           />清空日志
         </Button><Button
           variant="outline"
+          class="font-mono tabular-nums"
           :disabled="isPending('clear-request-logs')"
           :title="logSizeTitle"
           @click="clearRequestLogs"
@@ -366,9 +419,15 @@ async function clearRequestLogs() {
     <RouteLogFiltersForm
       :channels="channelOptions"
       :is-pending="isPending"
+      :auto-refresh="autoRefreshEnabled"
       @apply="apply"
       @reset="apply({})"
+      @update:auto-refresh="setAutoRefreshEnabled"
     />
+    <!-- 自动刷新只在第 1 页跑：翻到其他页时用一句话明说，避免用户把不动的列表当成卡死。 -->
+    <p v-if="!autoRefreshActive()" class="text-sm text-muted-foreground">
+      已暂停自动刷新（仅第 1 页自动刷新）；回到第 1 页会自动继续，也可点右上角「刷新」。
+    </p>
     <LoadingBlock v-if="loading" />
     <RouteLogTable
       v-else
