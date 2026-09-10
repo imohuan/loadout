@@ -18,8 +18,8 @@ import BulkSelectButtons from '@/components/BulkSelectButtons.vue'
 const props = defineProps<{
   /** 全部渠道（Key）列表 */
   channels: Channel[]
-  /** 打开时默认定位到的 Key（按钮所在的那一行），会预选为唯一的同步目标 */
-  channel?: Channel
+  /** 触发按钮所在的渠道组（base_url）：载入源与同步目标都只在这个平台内选 */
+  baseUrl?: string
   pending?: boolean
 }>()
 const emit = defineEmits<{
@@ -36,11 +36,11 @@ const modelSearch = ref('')
 const sourceId = ref('')
 
 // 当前平台 = 同 Base URL 的渠道组。同步、载入源、模型候选全部限定在这个组内。
-// 以「载入源」为准；源为空时退回按钮所在的那个 Key。
+// 以「载入源」为准；源未选时退回按钮所在的渠道组。
 const currentGroupUrl = computed(() => {
   const source = sourceId.value ? findChannel(sourceId.value) : undefined
-  const channel = source || props.channel
-  return channel ? normalizeBaseURL(channel.base_url) : ''
+  if (source) return normalizeBaseURL(source.base_url)
+  return props.baseUrl ? normalizeBaseURL(props.baseUrl) : ''
 })
 
 // 目标 Key：勾选顺序即写入顺序。
@@ -156,7 +156,7 @@ function sourcePreview(models?: string[]) {
 // 目标限定在同一渠道组（同 Base URL = 同一平台）内，并排除「载入源」本身：
 //   - 跨平台同步没有意义（不同上游的模型名不通用），所以只列同组。
 //   - 源只提供清单，同步回源 Key 属误操作，排除掉。
-// 源为空时（尚未载入）退化为「所有渠道组」，但默认打开会带上按钮所在的那个 Key。
+// 组标识由按钮所在渠道组给出，所以即使尚未选源也不会跨平台。
 const targetGroups = computed(() => {
   const target = currentGroupUrl.value
   const groups = target
@@ -202,32 +202,23 @@ function clearTargets() {
   selectedIds.value = []
 }
 
-// 每次打开重置：预选按钮所在的 Key（源 = 它，目标默认全选其余 Key），载入其模型清单。
+// 每次打开重置：不预设载入源（按钮属于整组、不跟某个 Key），模型清单留空由用户
+// 自己载入或直接编辑；目标默认全选本平台（同 Base URL）的全部 Key。
 watch(
   () => open.value,
   (isOpen) => {
     if (!isOpen) return
-    const current = props.channel
+    const groupUrl = props.baseUrl ? normalizeBaseURL(props.baseUrl) : ''
     sourceId.value = ''
     form.models = []
     form.candidates = []
     modelSearch.value = ''
     displayMode.value = 'list'
-    if (current) {
-      sourceId.value = current.id
-      const models = (current.models || []).slice()
-      form.models = models
-      form.candidates = models.slice()
-      // 默认选中同组其余 Key，跨组默认不勾（避免误把模型灌给别的上游）。
-      const sameGroup = (props.channels || []).filter(
-        (ch) =>
-          ch.id !== current.id &&
-          normalizeBaseURL(ch.base_url) === normalizeBaseURL(current.base_url),
-      )
-      selectedIds.value = sameGroup.map((ch) => ch.id)
-    } else {
-      selectedIds.value = []
-    }
+    selectedIds.value = groupUrl
+      ? (props.channels || [])
+          .filter((ch) => !!ch.id && normalizeBaseURL(ch.base_url) === groupUrl)
+          .map((ch) => ch.id)
+      : []
   },
   { immediate: true },
 )

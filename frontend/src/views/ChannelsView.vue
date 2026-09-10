@@ -19,8 +19,8 @@ const { run, isPending } = useAsyncTask()
 const { confirmDialog } = useConfirm()
 const editing = ref<Channel>()
 const editorOpen = ref(false)
-/** 模型同步弹窗：记录触发它的那个 Key，弹窗用它作默认载入源 */
-const syncSource = ref<Channel>()
+/** 模型同步弹窗：记录触发它的那个渠道组（base_url），弹窗只在组内选源和目标 */
+const syncBaseUrl = ref('')
 const syncOpen = ref(false)
 /** 非空 = "添加 Key" 模式，base_url 锁定为该组地址 */
 const lockBaseUrl = ref('')
@@ -110,8 +110,8 @@ async function refreshKey(channel: Channel) {
     '模型列表已刷新',
   )
 }
-function openSync(channel: Channel) {
-  syncSource.value = channel
+function openSync(baseUrl: string) {
+  syncBaseUrl.value = normalizeBaseURL(baseUrl)
   syncOpen.value = true
 }
 // 同步模型：把弹窗里编辑好的模型清单全量写进选中的 Key。
@@ -223,7 +223,7 @@ async function moveKey(channel: Channel, direction: 'up' | 'down') {
     /><ChannelModelSyncDialog
       v-model:open="syncOpen"
       :channels="data || []"
-      :channel="syncSource"
+      :base-url="syncBaseUrl"
       :pending="isPending('sync-models')"
       @sync="syncModels"
     /><LoadingBlock v-if="loading" /><ChannelTable

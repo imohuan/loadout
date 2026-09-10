@@ -22,7 +22,8 @@ const emit = defineEmits<{
   toggleKey: [channel: Channel]
   refreshKey: [channel: Channel]
   editKey: [channel: Channel]
-  syncModels: [channel: Channel]
+  /** 同步模型是「整组通用」操作：只带该组标识（base_url），不绑定单个 Key */
+  syncModels: [baseUrl: string]
   moveKey: [channel: Channel, direction: 'up' | 'down']
   removeKey: [channel: Channel]
   refreshGroup: [baseUrl: string]
@@ -265,7 +266,20 @@ function groupTitle(group: ChannelGroup) {
                             每个 Key 是一个独立账号：独立模型目录、独立健康状态、独立开关。
                           </div>
                         </div>
-                        <div class="shrink-0">
+                        <div class="flex shrink-0 items-center gap-2">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            :disabled="busy(groupKey(group.baseUrl, 'sync-models'))"
+                            title="把一份模型列表同步到本平台的其他 Key"
+                            @click="emit('syncModels', group.baseUrl)"
+                          >
+                            <RiLoader4Line
+                              v-if="busy(groupKey(group.baseUrl, 'sync-models'))"
+                              class="animate-spin"
+                              size="16"
+                            /><RiExchangeLine v-else size="16" />同步模型
+                          </Button>
                           <Badge variant="outline">{{ group.keys.length }} 个 Key</Badge>
                         </div>
                       </div>
@@ -325,19 +339,6 @@ function groupTitle(group: ChannelGroup) {
                                 class="animate-spin"
                                 size="16"
                               /><RiRefreshLine v-else size="16" />刷新模型
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              :disabled="modelCount(key) <= 0"
-                              :title="
-                                modelCount(key) > 0
-                                  ? `把「${key.name}」的模型同步到本平台其他 Key`
-                                  : '该 Key 没有可同步的模型'
-                              "
-                              @click="emit('syncModels', key)"
-                            >
-                              <RiExchangeLine size="16" />同步模型
                             </Button>
                             <Button variant="ghost" size="sm" @click="emit('editKey', key)">
                               <RiEditLine size="16" />编辑
