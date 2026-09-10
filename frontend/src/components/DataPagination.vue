@@ -114,13 +114,24 @@ function submitJump() {
             </Button>
           </PaginationPrevious>
           <template v-for="(item, index) in items" :key="index">
-            <PaginationItem
+            <!-- 页码按钮：直接用 Button，不用 shadcn 的 PaginationItem。
+                 PaginationItem 把 size 硬编码成 "icon"（size-8 → width:2rem 写死），
+                 我传的 class 只是被拼接到后面，调色板级的 "size-8" 依然留着，
+                 所以 min-w-8 撑不开，四位数页码会溢出成竖排。
+                 这里自己拼同等的视觉外观：小时不传 size（落到 default 的 h-8 px-2.5），
+                 宽度就由内容决定，只有个位数页码时才刚好是正方形。 -->
+            <Button
               v-if="item.type === 'page'"
-              :value="item.value"
-              :is-active="item.value === page"
+              :variant="item.value === page ? 'outline' : 'ghost'"
+              class="h-8 min-w-8 gap-0 px-2.5 tabular-nums"
+              :class="item.value === page ? 'border-border' : ''"
+              :disabled="disabled"
+              :aria-current="item.value === page ? 'page' : undefined"
+              :aria-label="`第 ${item.value} 页`"
+              @click="goTo(item.value)"
             >
               {{ item.value }}
-            </PaginationItem>
+            </Button>
             <PaginationEllipsis v-else />
           </template>
           <PaginationNext as-child>
