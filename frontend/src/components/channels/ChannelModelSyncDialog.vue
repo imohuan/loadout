@@ -498,13 +498,16 @@ function submit() {
                     </Button>
                   </TooltipTrigger>
                   <TooltipContent side="bottom" class="max-w-md whitespace-normal break-words">
+                    <!-- 弹窗内容是深底（bg-foreground）白字，这里的模型 tag 不能再套
+                         bg-muted（浅色模式下接近白色），否则白字压白底看不见。
+                         统一用当前文字色的低透明度底，明暗两套主题都清晰。 -->
                     <div class="text-xs">
-                      <div class="mb-1 font-mono text-muted-foreground">{{ key.base_url }}</div>
+                      <div class="mb-1 font-mono opacity-70">{{ key.base_url }}</div>
                       <div v-if="keyModels(key).length" class="flex flex-wrap gap-1">
                         <span
                           v-for="m in keyModels(key).slice(0, 40)"
                           :key="m"
-                          class="rounded bg-muted px-1 font-mono"
+                          class="rounded bg-current/15 px-1 font-mono"
                           >{{ m }}</span
                         >
                         <span v-if="keyModels(key).length > 40" class="opacity-70"
