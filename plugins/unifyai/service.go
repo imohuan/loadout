@@ -6,9 +6,12 @@ package unifyai
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -159,6 +162,8 @@ func (s *Service) OpenCodexModels(enableVision bool) OpenCodexModelsResult {
 // 紧接着的第二次查询因为代理已热就秒回。这正是「刚进页面是 0，点一下刷新就有了」的由来。
 // 这里在判定失败且「一个模型都没拿到」时退避重试一次，把冷启动那一下吃掉。
 func (s *Service) queryModels(what string, enableVision bool) (OpenCodexModelsResult, error) {
+	// 先把代理问热，避免 CLI 内部 3 秒超时把冷启动掐断（见 warmOpenCodexProxy）。
+	s.warmOpenCodexProxy()
 	var last OpenCodexModelsResult
 	for attempt := 0; attempt < queryModelsAttempts; attempt++ {
 		if attempt > 0 {
@@ -178,12 +183,71 @@ func (s *Service) queryModels(what string, enableVision bool) (OpenCodexModelsRe
 	return last, nil
 }
 
-// 查询重试策略：代理冷启动比 CLI 的 3 秒超时长，给一次退避重试即可（热了之后秒回）。
+// 查询重试策略：代理冷启动比 CLI 的 3 秒超时长，多给几次退避重试（热了之后秒回）。
 // 做成 var 便于测试缩短等待。
 var (
-	queryModelsAttempts   = 2
+	queryModelsAttempts   = 3
 	queryModelsRetryDelay = 500 * time.Millisecond
 )
+
+// warmProxyTimeout 是「预热代理」单次请求的等待上限。
+// 比 CLI 内部的 3 秒超时宽裕得多，确保冷启动能真正跑完。
+var warmProxyTimeout = 25 * time.Second
+
+// warmOpenCodexProxy 先自己请求一次 OpenCodex 代理，把它的冷启动吃掉。
+//
+// 为什么需要：unifyai CLI 请求代理只等 3 秒（config-loader.mjs 硬编码），而代理
+// 「冷启动」——第一次被问、或换个进程来问——实测要 10 秒以上。于是 CLI 那 3 秒必然
+// 被掐断，报「代理服务不可用」、模型列表为空，页面「数据预览 → OpenCodex 模型」
+// 就显示 0 个；紧接着再点一次代理已经热了，才正常显示。这就是用户看到的
+// 「必须点刷新元数据才有数据」。
+//
+// 与其依赖 CLI 放宽超时（那份代码在 npm 包里，本仓库管不着），不如在调用 CLI 之前
+// 由后端自己先把代理问热：预热请求不设 3 秒限制，冷启动多久就等多久；热了之后
+// CLI 的 3 秒绰绰有余。CLI 不可用/代理不可达时静默跳过，不影响原有降级行为。
+//
+// proxyURL 为代理地址（与 CLI 用的同一个）；失败只记日志，不返回错误。
+func (s *Service) warmOpenCodexProxy() {
+	cfg, err := s.SyncConfig()
+	if err != nil {
+		return
+	}
+	// 从源配置里读代理地址与 API Key（与 CLI 的 tryFetchFromProxy 同源）。
+	base := ""
+	if src, ok := cfg["source"].(string); ok && src != "" {
+		if data, err := os.ReadFile(expandHome(src)); err == nil {
+			var oc struct {
+				ProxyURL string `json:"proxyUrl"`
+				Port     int    `json:"port"`
+			}
+			if json.Unmarshal(data, &oc) == nil {
+				base = oc.ProxyURL
+				if base == "" && oc.Port > 0 {
+					base = fmt.Sprintf("http://localhost:%d/v1/models", oc.Port)
+				}
+			}
+		}
+	}
+	if base == "" {
+		base = "http://localhost:10100/v1/models"
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), warmProxyTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base, nil)
+	if err != nil {
+		return
+	}
+	start := time.Now()
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		s.lg.Debug("unifyai: 预热 OpenCodex 代理失败（忽略）", "url", base, "err", err)
+		return
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	s.lg.Info("unifyai: 已预热 OpenCodex 代理", "url", base, "status", resp.StatusCode, "elapsed_ms", time.Since(start).Milliseconds())
+}
 
 // queryModelsOnce 执行一次查询；返回值 retryable 表示「代理疑似冷启动、值得重试」。
 func (s *Service) queryModelsOnce(what string, enableVision bool) (res OpenCodexModelsResult, retryable bool, err error) {
@@ -508,6 +572,8 @@ type AllConfigResult struct {
 // 与 queryModels 同样对「代理冷启动超时」退避重试，见该函数注释。
 // CLI 不可用时返回空结构（前端回落内置默认），不报错。
 func (s *Service) ListAll(enableVision bool) (AllConfigResult, error) {
+	// 先把代理问热，避免 CLI 内部 3 秒超时把冷启动掐断（见 warmOpenCodexProxy）。
+	s.warmOpenCodexProxy()
 	var last AllConfigResult
 	for attempt := 0; attempt < queryModelsAttempts; attempt++ {
 		if attempt > 0 {
