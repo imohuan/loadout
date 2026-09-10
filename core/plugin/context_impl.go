@@ -1,6 +1,7 @@
 package plugin
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -24,6 +25,10 @@ type contextImpl struct {
 	checksOrder []string
 	checkOwner  map[string]string // 检查项名 → 注册它的插件名（供插件自检页分组）
 	routes      []RouteSpec
+
+	// routeLogPresenceInstall 由 route-log 装配时登记，request-log 装配完成后调用它
+	// 回填存在性查询函数（见 Context.SetRouteLogPresenceHook 的说明）。
+	routeLogPresenceInstall func(fn func(ctx context.Context, ids []string) (map[string]bool, error))
 
 	logger      *slog.Logger // 基础日志器（无插件名）
 	currentName string       // 当前正在 Apply 的插件名
@@ -56,6 +61,27 @@ func (c *contextImpl) Get(name string) any {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.services[name]
+}
+
+// SetRouteLogPresenceHook 登记存在性查询安装器。若安装器已被登记过（重复装配），
+// 后来的覆盖先前的，与 Set 的「后装配覆盖」语义一致。
+func (c *contextImpl) SetRouteLogPresenceHook(install func(fn func(ctx context.Context, ids []string) (map[string]bool, error))) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.routeLogPresenceInstall = install
+}
+
+// InstallRouteLogPresence 调用 route-log 登记的安装器回填查询函数。
+// 未登记过（route-log 未装配）时 no-op，返回 false。
+func (c *contextImpl) InstallRouteLogPresence(fn func(ctx context.Context, ids []string) (map[string]bool, error)) bool {
+	c.mu.RLock()
+	install := c.routeLogPresenceInstall
+	c.mu.RUnlock()
+	if install == nil {
+		return false
+	}
+	install(fn)
+	return true
 }
 
 func (c *contextImpl) Set(name string, svc any) Disposer {

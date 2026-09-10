@@ -202,6 +202,11 @@ func (a *Assembly) Get(name string) any {
 // ctx 暴露给同包测试与上层复用（包内访问）。
 func (a *Assembly) context() *contextImpl { return a.ctx }
 
+// OrderOf 返回本次装配的应用顺序（插件名），供测试断言插件间的先后约束。
+// 有些插件通过「前一个登记安装器、后一个回填」的方式协作，顺序错了会静默失效，
+// 断言顺序是这类约束唯一可靠的守卫。
+func OrderOf(a *Assembly) []string { return append([]string{}, a.order...) }
+
 // nonEmptyRoutes 过滤掉已注销（被清空）的路由。
 func nonEmptyRoutes(in []RouteSpec) []RouteSpec {
 	out := make([]RouteSpec, 0, len(in))

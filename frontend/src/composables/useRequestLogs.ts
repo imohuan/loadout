@@ -1,5 +1,5 @@
-import { api } from '@/lib/api'
-import type { RequestLogPage, RequestLogDetail } from '@/lib/types'
+import { api, request } from '@/lib/api'
+import type { RequestLogPage, RequestLogDetail, RequestLogStats } from '@/lib/types'
 
 export interface RequestLogFilters {
   model?: string
@@ -30,5 +30,10 @@ export function useRequestLogs() {
     return api<RequestLogPage>(`/api/request-logs${search.size ? `?${search}` : ''}`)
   }
   const detail = (id: string) => api<RequestLogDetail>(`/api/request-logs/${id}`)
-  return { list, detail }
+  /** stats：日志库占用（文件大小/行数/时间范围）+ 当前保留配置。「日志大小」按钮用它。 */
+  const stats = () => api<RequestLogStats>('/api/request-logs/stats')
+  /** clear：清空全部完整请求日志；返回删掉的行数。调用前必须先让用户确认。 */
+  const clear = () =>
+    request<{ ok: boolean; affected: number }>('/api/request-logs', 'DELETE')
+  return { list, detail, stats, clear }
 }

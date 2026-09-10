@@ -573,6 +573,10 @@ type Settings struct {
 	ActivePresetTargets []string `json:"active_preset_targets,omitempty"` // 当前预设的目标平台列表（空=通用）
 	DefaultModel        string   `json:"default_model"`                   // 默认模型
 	UseGlobalCmd        bool     `json:"use_global_cmd"`                  // 依赖执行优先用全局指令（true），否则用 npx（false）
+	// RequestLogMaxAgeDays 完整请求日志只保留最近多少天（<=0 = 不限）。
+	RequestLogMaxAgeDays int `json:"request_log_max_age_days"`
+	// RequestLogMaxSizeMB 完整请求日志库最大占用（MB，<=0 = 不限）；超限按时间从旧到新删除。
+	RequestLogMaxSizeMB int `json:"request_log_max_size_mb"`
 }
 
 // ============ 5.12 模型健康状态（aggregate 插件） ============

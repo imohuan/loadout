@@ -28,6 +28,9 @@ const props = withDefaults(
      *  缺省时内部自管理（模型测试页兼容，配合无 total 的本地切片）。 */
     page?: number
     pageSize?: number
+    /** 当前日志库里真实存在的 request-log id 集合。用于判断 request_log_id 关联是否
+     *  还有效（日志被保留策略清掉后，入口不能还显示）。undefined = 未提供，退化为只判空。 */
+    validRequestLogIds?: Set<string>
   }>(),
   { collapsible: true, liveProgress: true, showFullLog: true, showLoadAction: false },
 )
@@ -261,6 +264,24 @@ function cacheRatio(x: { prompt_tokens?: number; cached_tokens?: number }) {
 function isFailureResult(result?: string) {
   return result === 'failed' || result === 'stream_interrupted'
 }
+
+/**
+ * 「进入日志」入口是否可点。
+ *
+ * request_log_id 是写在日志上的历史关联（request-log 插件在请求发出前 UPDATE 写入），
+ * 而完整请求日志库会被保留策略（按天/按容量 FIFO）或手动清空删除。删掉之后这条关联就
+ * 指向一条不存在的记录，入口还在、点进去 404。所以这里做存在性校验：
+ *   - 关联列为空 → 本来就没记录，不显示；
+ *   - 关联列非空但该 id 不在当前日志库的有效 id 集合里 → 已被清理，不显示。
+ *
+ * validRequestLogIds 为 undefined 表示「后端没提供有效集合」，此时退化为只判空
+ * （保持旧行为：宁可显示入口也不要误藏，避免接口降级时入口整列消失）。
+ */
+function hasRequestLog(requestLogId?: string) {
+  if (!requestLogId) return false
+  if (!props.validRequestLogIds) return true
+  return props.validRequestLogIds.has(requestLogId)
+}
 </script>
 
 <template>
@@ -350,7 +371,7 @@ function isFailureResult(result?: string) {
                   formatDuration(log.duration_ms)
                 }}</TableCell>
                 <TableCell v-if="props.showFullLog" class="whitespace-nowrap">
-                  <router-link v-if="log.request_log_id"
+                  <router-link v-if="hasRequestLog(log.request_log_id)"
                     :to="`/request-logs/${log.request_log_id}`"
                     class="text-xs text-primary hover:underline" @click.stop>进入日志</router-link>
                   <span v-else class="text-xs text-muted-foreground">-</span>
@@ -421,7 +442,7 @@ function isFailureResult(result?: string) {
                           <span class="text-xs text-muted-foreground font-mono font-bold">{{
                             formatDuration(attempt.duration_ms)
                           }}</span>
-                          <router-link v-if="attempt.request_log_id"
+                          <router-link v-if="hasRequestLog(attempt.request_log_id)"
                             :to="`/request-logs/${attempt.request_log_id}`"
                             class="text-xs text-primary hover:underline" @click.stop>进入日志</router-link>
                         </div>

@@ -75,6 +75,13 @@ func newTestService(t *testing.T) (*Service, *store.Store) {
 	return NewService(st, slog.Default(), newMockCtx()), st
 }
 
+func (m *mockCtx) SetRouteLogPresenceHook(install func(fn func(ctx context.Context, ids []string) (map[string]bool, error))) {
+}
+
+func (m *mockCtx) InstallRouteLogPresence(fn func(ctx context.Context, ids []string) (map[string]bool, error)) bool {
+	return false
+}
+
 // writeTestChannel 写入一条指向 fake-llm 的渠道记录。
 func writeTestChannel(t *testing.T, st *store.Store, baseURL string) {
 	t.Helper()
@@ -485,10 +492,10 @@ func TestUnavailableReasonReadsModelStates(t *testing.T) {
 	svc.SetRoutingServices(database, nil, nil)
 
 	cases := []struct {
-		name        string
-		model       string
-		channelIDs  []string
-		want        string
+		name       string
+		model      string
+		channelIDs []string
+		want       string
 	}{
 		{name: "额度耗尽带 last_error", model: "model-x", channelIDs: []string{"ch-x"}, want: "模型免费额度用完"},
 		{name: "无 last_error 落 cooling", model: "model-y", channelIDs: []string{"ch-y"}, want: "冷却中"},
@@ -610,11 +617,11 @@ func TestHandleModelsV2(t *testing.T) {
 		ids[d.ID] = true
 	}
 	want := map[string]bool{
-		"newapi/gpt-4o":      true,
+		"newapi/gpt-4o":        true,
 		"newapi/deepseek-chat": true,
-		"bailian/gpt-4o":     true,
-		"bailian/qwen-max":   true,
-		"auto":               true,
+		"bailian/gpt-4o":       true,
+		"bailian/qwen-max":     true,
+		"auto":                 true,
 	}
 	for w := range want {
 		if !ids[w] {

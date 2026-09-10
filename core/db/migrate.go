@@ -599,6 +599,17 @@ ALTER TABLE mcp_servers ADD COLUMN builtin INTEGER NOT NULL DEFAULT 0;
 -- 落本列，HandleModels 据此给每个模型带 context_length（0 = 未探测到，输出时不写该字段）。
 ALTER TABLE channel_models ADD COLUMN context INTEGER NOT NULL DEFAULT 0;
 `,
+	}, {
+		version: 31,
+		name:    "settings-request-log-retention",
+		sql: `
+-- 日志保留策略（转发日志页「日志大小」按钮旁的设置项）：
+--   request_log_max_age_days 只保留最近多少天的完整请求日志（0 = 不限）；
+--   request_log_max_size_mb  完整请求日志库最大占用 MB（0 = 不限），超限按时间从旧到新删（FIFO）。
+-- 两列都归 0 时行为与改造前一致：日志无限增长，只能手动清空。
+ALTER TABLE settings ADD COLUMN request_log_max_age_days INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE settings ADD COLUMN request_log_max_size_mb INTEGER NOT NULL DEFAULT 0;
+`,
 	}}
 
 // Migrate applies all pending schema migrations and rejects an incompatible

@@ -13,9 +13,9 @@ import (
 	"loadout/core/db"
 	"loadout/core/plugin"
 	"loadout/core/store"
+	"loadout/plugins/contracts"
 	modelgateway "loadout/plugins/model-gateway"
 	routelog "loadout/plugins/route-log"
-	"loadout/plugins/contracts"
 	"loadout/plugins/types"
 )
 
@@ -115,7 +115,7 @@ type mockGatewayCtx struct {
 	handlers map[string][]plugin.Handler
 }
 
-func (m *mockGatewayCtx) Get(name string) any            { return nil }
+func (m *mockGatewayCtx) Get(name string) any                      { return nil }
 func (m *mockGatewayCtx) Set(name string, svc any) plugin.Disposer { return func() {} }
 func (m *mockGatewayCtx) On(event string, h plugin.Handler) plugin.Disposer {
 	m.handlers[event] = append(m.handlers[event], h)
@@ -136,11 +136,18 @@ func (m *mockGatewayCtx) Waterfall(event string, payload any) (any, error) {
 	}
 	return payload, nil
 }
-func (m *mockGatewayCtx) Effect(fn func()) plugin.Disposer { return func() {} }
-func (m *mockGatewayCtx) Logger() *slog.Logger            { return slog.Default() }
+func (m *mockGatewayCtx) Effect(fn func()) plugin.Disposer                    { return func() {} }
+func (m *mockGatewayCtx) Logger() *slog.Logger                                { return slog.Default() }
 func (m *mockGatewayCtx) RegisterCheck(name string, fn func() []plugin.Issue) {}
 func (m *mockGatewayCtx) RegisterRoute(spec plugin.RouteSpec) plugin.Disposer {
 	return func() {}
+}
+
+func (m *mockGatewayCtx) SetRouteLogPresenceHook(install func(fn func(ctx context.Context, ids []string) (map[string]bool, error))) {
+}
+
+func (m *mockGatewayCtx) InstallRouteLogPresence(fn func(ctx context.Context, ids []string) (map[string]bool, error)) bool {
+	return false
 }
 
 // TestIntegrationSubRequestFailureRecorded 端到端：子请求（__sub_request=true，

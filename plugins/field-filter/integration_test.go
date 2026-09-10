@@ -1,6 +1,7 @@
 package fieldfilter
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"net/http"
@@ -21,8 +22,8 @@ type mockCtx struct {
 
 func newMockCtx() *mockCtx { return &mockCtx{handlers: map[string][]plugin.Handler{}} }
 
-func (m *mockCtx) Get(name string) any                            { return nil }
-func (m *mockCtx) Set(name string, svc any) plugin.Disposer       { return func() {} }
+func (m *mockCtx) Get(name string) any                      { return nil }
+func (m *mockCtx) Set(name string, svc any) plugin.Disposer { return func() {} }
 func (m *mockCtx) On(event string, h plugin.Handler) plugin.Disposer {
 	m.handlers[event] = append(m.handlers[event], h)
 	return func() {}
@@ -43,8 +44,8 @@ func (m *mockCtx) Waterfall(event string, payload any) (any, error) {
 	}
 	return cur, nil
 }
-func (m *mockCtx) Effect(fn func()) plugin.Disposer                  { return func() {} }
-func (m *mockCtx) Logger() *slog.Logger                              { return slog.Default() }
+func (m *mockCtx) Effect(fn func()) plugin.Disposer                    { return func() {} }
+func (m *mockCtx) Logger() *slog.Logger                                { return slog.Default() }
 func (m *mockCtx) RegisterCheck(name string, fn func() []plugin.Issue) {}
 func (m *mockCtx) RegisterRoute(spec plugin.RouteSpec) plugin.Disposer { return func() {} }
 
@@ -75,9 +76,9 @@ func TestFieldFilterE2E(t *testing.T) {
 		Capability: capabilityName,
 		Route:      types.RouteProxy,
 		FieldRules: &types.FieldRules{
-			RequestStrip:  []string{"client_metadata"},
-			ResponseStrip: []string{"usage"},
-			ResponseHeaderStrip:   []string{"X-Server-Extra"},
+			RequestStrip:        []string{"client_metadata"},
+			ResponseStrip:       []string{"usage"},
+			ResponseHeaderStrip: []string{"X-Server-Extra"},
 		},
 	}}); err != nil {
 		t.Fatal(err)
@@ -114,6 +115,13 @@ func TestFieldFilterE2E(t *testing.T) {
 	if !strings.Contains(rr.Body.String(), "ok") {
 		t.Fatalf("响应内容缺失: %s", rr.Body.String())
 	}
+}
+
+func (m *mockCtx) SetRouteLogPresenceHook(install func(fn func(ctx context.Context, ids []string) (map[string]bool, error))) {
+}
+
+func (m *mockCtx) InstallRouteLogPresence(fn func(ctx context.Context, ids []string) (map[string]bool, error)) bool {
+	return false
 }
 
 // TestFieldFilterE2ENoRoute 未配置 field_filter 路由的模型：全程原样透传，

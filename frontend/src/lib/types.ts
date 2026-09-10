@@ -151,6 +151,11 @@ export interface RouteLog {
 export interface RouteLogPage {
   items: RouteLog[]
   total: number
+  /** 本页关联的完整日志里，当前仍然存在于日志库的 id（已删的不在其中）。 */
+  request_log_ids?: string[]
+  /** request_log_ids 是否可信（true = 后端成功查过日志库）。
+   *  false 时前端退化为只判空显示「进入日志」入口，不做存在性校验。 */
+  request_log_resolved?: boolean
 }
 
 /** request-log 插件：完整请求日志列表行（不含 request_json/response_json） */
@@ -176,6 +181,22 @@ export interface RequestLogPage {
 export interface RequestLogDetail extends RequestLogItem {
   request_json: unknown
   response_json?: unknown
+}
+
+/** request-log 插件：日志库占用统计（转发日志页「日志大小」按钮） */
+export interface RequestLogStats {
+  /** 独立库文件占用字节数（request-log.db + WAL/SHM） */
+  size: number
+  /** request_logs 行数 */
+  count: number
+  /** 最早一条日志的 started_at（空库为空串） */
+  oldest_started_at?: string
+  /** 最新一条日志的 started_at（空库为空串） */
+  newest_started_at?: string
+  /** 当前生效的保留天数（0 = 不限） */
+  max_age_days: number
+  /** 当前生效的最大占用 MB（0 = 不限） */
+  max_size_mb: number
 }
 
 export interface Skill {

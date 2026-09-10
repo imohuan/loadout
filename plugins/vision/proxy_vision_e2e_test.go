@@ -26,13 +26,20 @@ type e2eCtx struct {
 
 func newE2ECtx() *e2eCtx { return &e2eCtx{handlers: map[string][]plugin.Handler{}} }
 
-func (m *e2eCtx) Get(name string) any                          { return nil }
-func (m *e2eCtx) Set(name string, svc any) plugin.Disposer     { return func() {} }
-func (m *e2eCtx) Effect(fn func()) plugin.Disposer             { return func() {} }
-func (m *e2eCtx) Logger() *slog.Logger                         { return slog.Default() }
+func (m *e2eCtx) Get(name string) any                                 { return nil }
+func (m *e2eCtx) Set(name string, svc any) plugin.Disposer            { return func() {} }
+func (m *e2eCtx) Effect(fn func()) plugin.Disposer                    { return func() {} }
+func (m *e2eCtx) Logger() *slog.Logger                                { return slog.Default() }
 func (m *e2eCtx) RegisterCheck(name string, fn func() []plugin.Issue) {}
 func (m *e2eCtx) RegisterRoute(spec plugin.RouteSpec) plugin.Disposer {
 	return func() {}
+}
+
+func (m *e2eCtx) SetRouteLogPresenceHook(install func(fn func(ctx context.Context, ids []string) (map[string]bool, error))) {
+}
+
+func (m *e2eCtx) InstallRouteLogPresence(fn func(ctx context.Context, ids []string) (map[string]bool, error)) bool {
+	return false
 }
 func (m *e2eCtx) Emit(event string, payload any) {}
 func (m *e2eCtx) On(event string, h plugin.Handler) plugin.Disposer {
@@ -65,12 +72,12 @@ func (e2eHealth) SetModelEnabled(context.Context, string, string, bool) error {
 	return nil
 }
 func (e2eHealth) SetModelsEnabled(context.Context, string, []string, bool) error { return nil }
-func (e2eHealth) DeleteModel(context.Context, string, string) error          { return nil }
-func (e2eHealth) DeleteModels(context.Context, string, []string) error       { return nil }
-func (e2eHealth) RecoverChannel(context.Context, string) error              { return nil }
-func (e2eHealth) RecoverModel(context.Context, string, string) error        { return nil }
-func (e2eHealth) RecoverModels(context.Context, string, []string) error     { return nil }
-func (e2eHealth) RecoverAllModels(context.Context) (int64, error)           { return 0, nil }
+func (e2eHealth) DeleteModel(context.Context, string, string) error              { return nil }
+func (e2eHealth) DeleteModels(context.Context, string, []string) error           { return nil }
+func (e2eHealth) RecoverChannel(context.Context, string) error                   { return nil }
+func (e2eHealth) RecoverModel(context.Context, string, string) error             { return nil }
+func (e2eHealth) RecoverModels(context.Context, string, []string) error          { return nil }
+func (e2eHealth) RecoverAllModels(context.Context) (int64, error)                { return 0, nil }
 func (e2eHealth) RecoverAllModelsByChannel(context.Context, string) (int64, error) {
 	return 0, nil
 }
@@ -78,7 +85,7 @@ func (e2eHealth) RecoverAllChannels(context.Context) (int64, error) { return 0, 
 func (e2eHealth) List(context.Context) ([]contracts.ChannelStatus, error) {
 	return nil, nil
 }
-func (e2eHealth) CheckNow(context.Context, bool) error { return nil }
+func (e2eHealth) CheckNow(context.Context, bool) error                       { return nil }
 func (e2eHealth) PurgeChannelStates(context.Context, string, []string) error { return nil }
 
 // newE2EGateway 构造完整链路：model-gateway + 真实 vision hook + 真实 route-log。

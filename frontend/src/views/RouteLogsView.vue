@@ -1,20 +1,29 @@
 <script setup lang="ts">
 import { computed, onMounted, onScopeDispose, reactive, ref } from 'vue'
-import { RiDeleteBinLine, RiLoader4Line, RiRefreshLine } from '@remixicon/vue'
-import { useRouteLogs } from '@/composables/useRouteLogs'
+import {
+  RiDatabase2Line,
+  RiDeleteBinLine,
+  RiLoader4Line,
+  RiRefreshLine,
+} from '@remixicon/vue'
+import { useRouteLogs, routeLogValidity } from '@/composables/useRouteLogs'
 import type { RouteLogFilters } from '@/composables/useRouteLogs'
+import { useRequestLogs } from '@/composables/useRequestLogs'
 import { useChannels } from '@/composables/useChannels'
 import { groupChannelNames } from '@/composables/useChannels'
 import { useListLoader } from '@/composables/useListLoader'
 import { useAsyncTask } from '@/composables/useAsyncTask'
 import { useConfirm } from '@/composables/useConfirm'
-import type { RouteLog } from '@/lib/types'
+import { toast } from 'vue-sonner'
+import { formatBytes, formatDate } from '@/lib/format'
+import type { RouteLog, RequestLogStats } from '@/lib/types'
 import PageHeader from '@/components/PageHeader.vue'
 import LoadingBlock from '@/components/LoadingBlock.vue'
 import RouteLogFiltersForm from '@/components/route-logs/RouteLogFilters.vue'
 import RouteLogTable from '@/components/route-logs/RouteLogTable.vue'
 
 const service = useRouteLogs()
+const requestLogService = useRequestLogs()
 const channelService = useChannels()
 const filters = ref<RouteLogFilters>({})
 const page = ref(1)
@@ -28,6 +37,9 @@ const {
 // 后端真分页：logs 为当前页记录，total 为满足过滤条件的全量条数
 const logs = computed(() => logsData.value?.items ?? [])
 const total = computed(() => logsData.value?.total ?? 0)
+/** 完整日志存活性：表格据此隐藏已被保留策略/清空删掉的「进入日志」入口。
+ *  undefined = 后端未提供可信集合，表格退化为只判空。 */
+const validRequestLogIds = computed(() => routeLogValidity(logsData.value))
 // 翻页/改每页条数：更新分页状态后重新拉取当前页（3s 定时刷新同样带当前 page/pageSize）。
 // 分页状态受控传入 RouteLogTable（:page/:page-size），保证过滤/清空重置 page=1 时表格同步。
 function onPageChange(nextPage: number) {
@@ -179,10 +191,14 @@ function startAutoRefresh() {
       await refresh({ silentError: true })
       await refreshActiveDetails()
       await selfHealStuckLogs()
+      // 日志库大小同频刷新：写日志会撑大文件，保留策略也会削回去，按钮上的数字要跟上。
+      await refreshLogStats()
     })()
   }, AUTO_REFRESH_INTERVAL)
 }
 onMounted(startAutoRefresh)
+// 首次进入立刻取一次大小（别等 3 秒后第一个 tick，按钮会先显示占位符再跳数字）
+onMounted(refreshLogStats)
 // 组件卸载与 HMR reload 都会触发 scope dispose，比 onUnmounted 覆盖更全
 onScopeDispose(stopAutoRefresh)
 
@@ -233,6 +249,63 @@ async function clear() {
     '转发日志已清理',
   )
 }
+
+// ===== 完整请求日志库（request-log.db）=====
+// 与上面「转发日志」（loadout.db 的 route_requests）是两个库：前者是路由决策记录，
+// 后者是逐次渠道尝试的完整请求/响应正文（体积大得多）。这个按钮和确认框处理的是后者。
+
+/** 日志库占用统计；null = 尚未取到（按钮显示占位符、描述退化为无数字版本）。 */
+const logStats = ref<RequestLogStats | null>(null)
+
+/** 拉取日志库大小。定时刷新/清空后都要重新拉，否则按钮上的数字会一直停在旧值。 */
+async function refreshLogStats() {
+  try {
+    logStats.value = await requestLogService.stats()
+  } catch {
+    // 静默：统计失败不该打扰用户，按钮回落为占位符即可。
+    // 定时刷新已在 silentError 模式，这里再弹一次错误会和列表错误重复。
+  }
+}
+
+/**
+ * 按钮文案：显示日志库占用大小。
+ * 未取到时显示「日志大小」而不是「0 B」——0 B 是个断言，取不到时不该假装知道。
+ */
+const logSizeLabel = computed(() =>
+  logStats.value ? formatBytes(logStats.value.size) : '日志大小',
+)
+
+/** 确认框描述：把大小和条数都摆出来，让用户知道删掉的是多少东西。 */
+const clearLogDescription = computed(() => {
+  const stats = logStats.value
+  if (!stats) return '将删除全部完整请求日志，此操作不可恢复。'
+  const parts = [`共 ${stats.count} 条、占用 ${formatBytes(stats.size)}`]
+  if (stats.oldest_started_at) {
+    parts.push(`最早一条为 ${formatDate(stats.oldest_started_at)}`)
+  }
+  return `${parts.join('，')}。删除后不可恢复。`
+})
+
+/** 点「日志大小」：先确认（库可能很大，误删代价高），确认后清空完整请求日志库并刷新大小。 */
+async function clearRequestLogs() {
+  const confirmed = await confirmDialog({
+    title: '清空完整请求日志？',
+    description: clearLogDescription.value,
+    confirmText: '清空',
+    destructive: true,
+  })
+  if (!confirmed) return
+  await run(
+    'clear-request-logs',
+    async () => {
+      const result = await requestLogService.clear()
+      // 关联列已被后端一并清空，列表刷新后「进入日志」入口自动消失。
+      detailsMap.clear()
+      await Promise.all([refresh(), refreshLogStats()])
+      toast.success(`已清空 ${result.affected} 条完整请求日志`)
+    },
+  )
+}
 </script>
 
 <template>
@@ -255,6 +328,17 @@ async function clear() {
             v-else
             size="16"
           />清空日志
+        </Button><Button
+          variant="outline"
+          :disabled="isPending('clear-request-logs')"
+          :title="`完整请求日志库占用；点击可清空`"
+          @click="clearRequestLogs"
+        >
+          <RiLoader4Line
+            v-if="isPending('clear-request-logs')"
+            class="animate-spin"
+            size="16"
+          /><RiDatabase2Line v-else size="16" />{{ logSizeLabel }}
         </Button></template
       >
     </PageHeader>
@@ -270,6 +354,7 @@ async function clear() {
       :logs="displayLogs"
       :channels="channels || []"
       :loading-detail="loadingDetail"
+      :valid-request-log-ids="validRequestLogIds"
       :total="total"
       :page="page"
       :page-size="pageSize"

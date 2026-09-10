@@ -15,6 +15,19 @@ function toISOString(value?: string) {
   return Number.isNaN(parsed.getTime()) ? undefined : parsed.toISOString()
 }
 
+/**
+ * 本页记录里仍然存在于完整日志库的 request-log id 集合。
+ *
+ * 后端只回「还存在的那些」（request_log_ids）+ request_log_resolved 标记：
+ *   - resolved=false（能力未装配/查询失败）→ 返回 undefined，表格退化为只判空；
+ *   - resolved=true  → 返回 Set，表格据此隐藏已被保留策略清理掉的「进入日志」入口。
+ *     「查到了但一条都没有」（空集合）也要返回 Set，那代表所有入口都该藏起来。
+ */
+export function routeLogValidity(page?: RouteLogPage): Set<string> | undefined {
+  if (!page?.request_log_resolved) return undefined
+  return new Set(page.request_log_ids ?? [])
+}
+
 export function useRouteLogs() {
   function list(
     filters: RouteLogFilters,

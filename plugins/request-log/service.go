@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -67,12 +68,224 @@ type Service struct {
 	reqDB   *sql.DB        // 独立库 request-log.db（request_logs / request_log_config）
 	loadout *sql.DB        // loadout.db：UPDATE route_requests.request_log_id 关联列
 	repo    *db.Repository // SQLite 能力路由数据源（装配后注入；nil 时回退 JSON）
+	// dbPath 独立库文件路径：Stats 报「日志占用空间」要的是文件大小（含 WAL），
+	// 不能只算表大小（表和实际磁盘占用差得多）。空路径时 Stats 回落为 0。
+	dbPath string
 }
 
 // NewService 创建完整请求日志适配器。
 // database 为 loadout.db（写关联列用，测试可传 nil 跳过 UPDATE）。
 func NewService(st *store.Store, lg *slog.Logger, reqDB, database *sql.DB) *Service {
 	return &Service{st: st, lg: lg, reqDB: reqDB, loadout: database}
+}
+
+// SetDBPath 记录独立库文件路径（装配层开库后调用），供 Stats 报文件大小。
+func (s *Service) SetDBPath(path string) { s.dbPath = path }
+
+// RetentionConfig 日志保留策略（来自全局运行时设置，0 值表示不限制）。
+type RetentionConfig struct {
+	// MaxAgeDays 只保留最近多少天的日志（按 started_at 判定）；<=0 表示不限。
+	MaxAgeDays int
+	// MaxSizeMB 日志库最大占用（MB）；超限时按时间从旧到新删除，直到低于阈值。
+	// <=0 表示不限。
+	MaxSizeMB int
+}
+
+// retentionTimeFormat 与写入时一致的 RFC3339Nano：字符串比较即时间比较（SQLite TEXT 列）。
+const retentionTimeFormat = time.RFC3339Nano
+
+// retentionMinKeep 容量清理的下限保护：无论阈值多小，至少保留最近这么多条，
+// 避免用户把 MaxSizeMB 设成 1 时把库清得只剩 0 条（前端也设了下限，这里是后端兜底）。
+const retentionMinKeep = 100
+
+// RequestLogStats 日志库统计：前端「日志大小」按钮显示的就是 Size。
+type RequestLogStats struct {
+	// Size 独立库文件占用字节数（request-log.db + WAL 边车，不含固定的 -shm 索引）；
+	// 找不到文件时回落为 0。
+	Size int64 `json:"size"`
+	// Count request_logs 行数（顺序可能因分页取不到；仅作展示）。
+	Count int64 `json:"count"`
+	// OldestStartedAt / NewestStartedAt 最早/最新一条日志的 started_at（RFC3339，空库为空串）。
+	OldestStartedAt string `json:"oldest_started_at,omitempty"`
+	NewestStartedAt string `json:"newest_started_at,omitempty"`
+	// MaxAgeDays / MaxSizeMB 当前生效的保留配置（回显给前端设置页）。
+	MaxAgeDays int `json:"max_age_days"`
+	MaxSizeMB  int `json:"max_size_mb"`
+}
+
+// Stats 汇总日志库占用：文件大小（含 WAL）+ 行数 + 时间范围 + 当前保留配置。
+// 只读，永不改数据；任一子查询失败按缺省值返回，不报错（前端展示用，不值得打断）。
+func (s *Service) Stats(ctx context.Context) RequestLogStats {
+	stats := RequestLogStats{}
+	if s.reqDB == nil {
+		return stats
+	}
+	stats.Size = s.diskSize()
+	var oldest, newest sql.NullString
+	if err := s.reqDB.QueryRowContext(ctx, `SELECT COUNT(*), MIN(started_at), MAX(started_at) FROM request_logs`).
+		Scan(&stats.Count, &oldest, &newest); err != nil {
+		s.lg.Warn("request-log: 统计日志库失败", "err", err)
+	}
+	stats.OldestStartedAt = oldest.String
+	stats.NewestStartedAt = newest.String
+	if s.repo != nil {
+		if settings, err := s.repo.GetSettings(ctx); err == nil {
+			stats.MaxAgeDays = settings.RequestLogMaxAgeDays
+			stats.MaxSizeMB = settings.RequestLogMaxSizeMB
+		}
+	}
+	return stats
+}
+
+// diskSize 独立库的实际磁盘占用：request-log.db 与 WAL 边车文件之和。
+//
+// 为什么算 -wal：WAL 模式下新写入的日志可能还在 WAL 里没合并进主文件，
+// 只算主文件会明显偏小（刚写完大量日志时尤其明显）。
+// 为什么不算 -shm：它只是共享内存索引（32KB 固定块），不随数据量变化，
+// 计入会让「清空后大小」看起来没降下去，误导用户以为没删干净。
+// 文件不存在视为 0。
+func (s *Service) diskSize() int64 {
+	if s.dbPath == "" {
+		return 0
+	}
+	var total int64
+	for _, suffix := range []string{"", "-wal"} {
+		if info, err := os.Stat(s.dbPath + suffix); err == nil {
+			total += info.Size()
+		}
+	}
+	return total
+}
+
+// Clear 清空全部完整请求日志。同时把 loadout.db 里残留的关联列 request_log_id 清空：
+// 关联行没了但 route_requests.request_log_id 还留着，前端会一直显示「进入日志」按钮，
+// 点进去 404。清列后列表刷新即不再显示入口。
+// 返回删除的行数。
+func (s *Service) Clear(ctx context.Context) (int64, error) {
+	if s.reqDB == nil {
+		return 0, fmt.Errorf("request-log: 独立库未装配")
+	}
+	result, err := s.reqDB.ExecContext(ctx, `DELETE FROM request_logs`)
+	if err != nil {
+		return 0, err
+	}
+	affected, _ := result.RowsAffected()
+	// 删完必须把空间真正还回去，否则用户点「清空」后看到大小几乎没变，会以为没生效：
+	//   - DELETE 只是把页标记为空闲，文件不会自动收缩；
+	//   - VACUUM 重建库文件、把空闲页还给操作系统（这是唯一真正缩小文件的办法）；
+	//   - 顺序要紧：先 checkpoint 把 WAL 内容并回主文件，VACUUM 才能看到全部空闲页，
+	//     否则 WAL 里未合并的部分会在 VACUUM 后又被写回来。
+	s.compactedSize(ctx)
+	if s.loadout != nil {
+		if _, err := s.loadout.ExecContext(ctx, `UPDATE route_requests SET request_log_id = NULL WHERE COALESCE(request_log_id, '') <> ''`); err != nil {
+			s.lg.Warn("request-log: 清空关联列失败", "err", err)
+		}
+	}
+	return affected, nil
+}
+
+// ApplyRetention 按保留策略清理旧日志（FIFO：先删最旧的）。
+//
+// 双通道，任意一个开启即生效：
+//   - 时间：删除 started_at 早于 now-MaxAgeDays 的行；
+//   - 容量：删除后如果文件仍超过 MaxSizeMB，按 started_at 升序继续删最旧的行，
+//     直到降到阈值以下（或只剩 retentionMinKeep 条）。
+//
+// 容量通道按「文件大小」而不是「行大小求和」判断：日志主体是 request_json/
+// response_json 大文本，行数无法反映真实占用。删除后 SQLite 不会自动归还磁盘，
+// 循环里按估算的已删字节推算，收尾再 checkpoint 一次拿真实值。
+//
+// 调用点：写日志后（HandleBeforeAttempt 末尾，best-effort）+ 服务启动时一次。
+// 出错只记日志，绝不阻塞请求。
+func (s *Service) ApplyRetention(ctx context.Context, cfg RetentionConfig) {
+	if s.reqDB == nil || (cfg.MaxAgeDays <= 0 && cfg.MaxSizeMB <= 0) {
+		return
+	}
+	if cfg.MaxAgeDays > 0 {
+		cutoff := time.Now().UTC().AddDate(0, 0, -cfg.MaxAgeDays).Format(retentionTimeFormat)
+		if _, err := s.reqDB.ExecContext(ctx, `DELETE FROM request_logs WHERE started_at < ?`, cutoff); err != nil {
+			s.lg.Warn("request-log: 按天数清理日志失败", "err", err)
+		}
+	}
+	if cfg.MaxSizeMB > 0 {
+		s.trimBySize(ctx, int64(cfg.MaxSizeMB)*1024*1024)
+	}
+}
+
+// trimBySize 容量通道：文件超过 limit 时从最旧的行开始删（FIFO），直到低于 limit
+// 或触及 retentionMinKeep 下限。
+//
+// 为什么按「行数比例」估算而不是逐条测大小：request_json/response_json 是大文本，
+// 单行可达几十 KB 到几 MB，逐批测量要不停 checkpoint+VACUUM（很贵）。这里按平均
+// 行长推算本批该删多少行，删完统一 VACUUM 一次拿真实大小；仍超限就再循环一轮。
+// 最多循环 maxRounds 轮，避免极端情况下（如单行就超过 limit）无限打转。
+func (s *Service) trimBySize(ctx context.Context, limit int64) {
+	if limit <= 0 {
+		return
+	}
+	const (
+		batch     = 200
+		maxRounds = 5
+	)
+	for round := 0; round < maxRounds; round++ {
+		size := s.compactedSize(ctx)
+		if size <= limit {
+			return
+		}
+		var total int64
+		if err := s.reqDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM request_logs`).Scan(&total); err != nil {
+			s.lg.Warn("request-log: 清理前统计行数失败", "err", err)
+			return
+		}
+		if total <= retentionMinKeep {
+			s.lg.Info("request-log: 已触及保留下限，停止容量清理",
+				"size", size, "limit", limit, "remaining", total, "min_keep", retentionMinKeep)
+			return
+		}
+		// 按平均行长估算：要释放 (size-limit) 字节需要删多少行，最少 1、最多一批。
+		rows := min64(max64((size-limit)/(size/max64(total, 1))+1, 1), batch)
+		result, err := s.reqDB.ExecContext(ctx, `DELETE FROM request_logs WHERE id IN (SELECT id FROM request_logs ORDER BY started_at ASC LIMIT ?)`, rows)
+		if err != nil {
+			s.lg.Warn("request-log: 按容量清理日志失败", "err", err)
+			return
+		}
+		affected, _ := result.RowsAffected()
+		if affected == 0 {
+			return // 已无可删（或并发删空）
+		}
+	}
+	s.lg.Warn("request-log: 容量清理达到最大轮次仍未降到阈值以下", "limit", limit)
+}
+
+// compactedSize 当前的实时占用：先 checkpoint 把 WAL 并回主文件，再 VACUUM 收缩，
+// 最后返回真实文件大小。
+//
+// VACUUM 不能省：删除只是把页标记为空闲，文件不会自动变小；不收缩的话容量判断
+// 会一直看到「超限」，清理就陷进「删到保留下限也停不下来」的窘境。
+//
+// VACUUM 之后必须再 checkpoint 一次（TRUNCATE）：VACUUM 自身的写入会先落在 WAL 里，
+// 不合并回去的话主文件仍是旧尺寸，读到的还是「没收缩」的假象。
+func (s *Service) compactedSize(ctx context.Context) int64 {
+	_, _ = s.reqDB.ExecContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`)
+	if _, err := s.reqDB.ExecContext(ctx, `VACUUM`); err != nil {
+		s.lg.Warn("request-log: VACUUM 回收空间失败，文件暂不收缩", "err", err)
+	}
+	_, _ = s.reqDB.ExecContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`)
+	return s.diskSize()
+}
+
+func max64(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func min64(a, b int64) int64 {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // SetRepository 注入 SQLite 仓储（由装配层在 db 就绪后调用；测试可省略）。
@@ -227,7 +440,23 @@ func (s *Service) HandleBeforeAttempt(payload any) (any, error) {
 		s.lg.Warn("request-log: 写 request_logs 半条失败", "request_id", pipe.RequestID, "err", err)
 		return payload, nil
 	}
+	// 保留策略：新日志写入后顺带清理一次旧数据（best-effort，同步执行但只删少量行）。
+	// 放在这里而不是定时器：库只会被请求撑大，写日志的时刻就是最该检查容量的时刻。
+	s.ApplyRetention(context.Background(), s.currentRetention())
 	return payload, nil
+}
+
+// currentRetention 读全局运行时设置里的日志保留配置；读不到返回零值（= 不清理）。
+// 独立库没装 repo 时（测试）返回零值。
+func (s *Service) currentRetention() RetentionConfig {
+	if s.repo == nil {
+		return RetentionConfig{}
+	}
+	settings, err := s.repo.GetSettings(context.Background())
+	if err != nil {
+		return RetentionConfig{}
+	}
+	return RetentionConfig{MaxAgeDays: settings.RequestLogMaxAgeDays, MaxSizeMB: settings.RequestLogMaxSizeMB}
 }
 
 // ---- 输出方向：非流式收尾（2xx 走 after-upstream，失败走 upstream-failed） ----
@@ -287,10 +516,10 @@ func (s *Service) HandleUpstreamFailed(payload any) (any, error) {
 
 // responseSnapshot request_logs.response_json 的结构。
 type responseSnapshot struct {
-	StatusCode int             `json:"status_code"`
-	Headers    headerSnapshot  `json:"headers,omitempty"`
-	Body       string          `json:"body,omitempty"`
-	Truncated  bool            `json:"truncated,omitempty"` // 流式缓冲触顶截断标记
+	StatusCode int            `json:"status_code"`
+	Headers    headerSnapshot `json:"headers,omitempty"`
+	Body       string         `json:"body,omitempty"`
+	Truncated  bool           `json:"truncated,omitempty"` // 流式缓冲触顶截断标记
 }
 
 // pipeRequestLogID 取本次请求的 UUID：metadata 优先（同 pipe），丢失则按
@@ -714,6 +943,66 @@ func (s *Service) handleList(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, page)
 }
 
+// ExistingIDs 返回 candidates 里仍然存在于本库的 id 集合。
+//
+// route-log 列表用它判断「进入日志」入口是否还有效：关联列是历史快照，日志行可能
+// 已被保留策略或手动清空删除。按每批 500 个分段查询，避免一次性拼出超长 IN 子句
+// （SQLite 默认变量上限 999）。
+func (s *Service) ExistingIDs(ctx context.Context, candidates []string) (map[string]bool, error) {
+	found := make(map[string]bool, len(candidates))
+	if s.reqDB == nil || len(candidates) == 0 {
+		return found, nil
+	}
+	const chunk = 500
+	for start := 0; start < len(candidates); start += chunk {
+		end := start + chunk
+		if end > len(candidates) {
+			end = len(candidates)
+		}
+		batch := candidates[start:end]
+		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(batch)), ",")
+		args := make([]any, len(batch))
+		for i, id := range batch {
+			args[i] = id
+		}
+		rows, err := s.reqDB.QueryContext(ctx, `SELECT id FROM request_logs WHERE id IN (`+placeholders+`)`, args...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			found[id] = true
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		rows.Close()
+	}
+	return found, nil
+}
+
+// handleStats GET /api/request-logs/stats
+// 「日志大小」按钮的数据源：文件占用 + 行数 + 时间范围 + 当前保留配置。
+func (s *Service) handleStats(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.Stats(r.Context()))
+}
+
+// handleClear DELETE /api/request-logs
+// 清空完整请求日志（用户确认后才调；库可能很大，前端会先弹确认框）。
+func (s *Service) handleClear(w http.ResponseWriter, r *http.Request) {
+	affected, err := s.Clear(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": map[string]any{"message": err.Error()}})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "affected": affected})
+}
+
 // handleDetail GET /api/request-logs/{id}
 func (s *Service) handleDetail(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
@@ -878,4 +1167,3 @@ func boolToInt(b bool) int {
 	}
 	return 0
 }
-

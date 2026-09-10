@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -32,7 +33,6 @@ func testService(t *testing.T, routes []types.CapabilityRoute) *Service {
 	}
 	return NewService(st, slog.New(slog.DiscardHandler), nil, nil)
 }
-
 
 // scopeFor 构造单渠道 scope（复用共享 routetest.ScopeWithChannelID）。
 func scopeFor(svc *Service, channelID string) types.ChannelRequestScope {
@@ -318,8 +318,8 @@ func TestHandleBeforeAttemptVirtualModelMatchesPhysical(t *testing.T) {
 	svc.reqDB = reqDB
 
 	pipe := testPipe("req-virtual")
-	pipe.Request.Model = "hy3"                              // 聚合已改写为真实模型
-	pipe.Metadata["__virtual_model"] = "volcengine_auto"    // 虚拟名仅保留在 metadata
+	pipe.Request.Model = "hy3"                           // 聚合已改写为真实模型
+	pipe.Metadata["__virtual_model"] = "volcengine_auto" // 虚拟名仅保留在 metadata
 	if _, err := svc.HandleBeforeAttempt(pipe); err != nil {
 		t.Fatal(err)
 	}
@@ -923,5 +923,280 @@ func TestBeforeAttemptMissClearsAttemptKeys(t *testing.T) {
 	// 收尾事件（pipeRequestLogID）在哨兵下必须返回空，不反查旧行
 	if id := svc.pipeRequestLogID(pipe); id != "" {
 		t.Fatalf("pipeRequestLogID = %q, want empty under skipped sentinel", id)
+	}
+}
+
+// ---- 保留策略 / 统计 / 清空 / 存在性 ----
+
+// seedLogRow 直接插一行日志（绕过 handler，便于精确控制 started_at 与体积）。
+func seedLogRow(t *testing.T, reqDB *sql.DB, id, startedAt string, bodySize int) {
+	t.Helper()
+	body := strings.Repeat("x", bodySize)
+	if _, err := reqDB.Exec(`INSERT INTO request_logs(id, request_id, model, channel, stream, started_at, result, request_json, created_at) VALUES (?, ?, 'm', 'c', 0, ?, 'success', ?, ?)`,
+		id, id, startedAt, body, startedAt); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestApplyRetentionByAge 按天数清理：只删早于阈值的行，最近的行必须留下。
+func TestApplyRetentionByAge(t *testing.T) {
+	reqDB, err := openRequestLogDB(t.TempDir() + "/request-log.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reqDB.Close()
+	svc := NewService(nil, slog.New(slog.DiscardHandler), reqDB, nil)
+
+	now := time.Now().UTC()
+	seedLogRow(t, reqDB, "old", now.AddDate(0, 0, -30).Format(time.RFC3339Nano), 10)
+	seedLogRow(t, reqDB, "recent", now.AddDate(0, 0, -1).Format(time.RFC3339Nano), 10)
+
+	svc.ApplyRetention(context.Background(), RetentionConfig{MaxAgeDays: 7})
+
+	var count int
+	if err := reqDB.QueryRow(`SELECT count(*) FROM request_logs`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("rows after age cleanup = %d, want 1", count)
+	}
+	var id string
+	if err := reqDB.QueryRow(`SELECT id FROM request_logs`).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	if id != "recent" {
+		t.Fatalf("kept row = %q, want recent", id)
+	}
+}
+
+// TestApplyRetentionNoLimitIsNoop 两个阈值都为 0 时不得删任何东西（默认行为不变）。
+func TestApplyRetentionNoLimitIsNoop(t *testing.T) {
+	reqDB, err := openRequestLogDB(t.TempDir() + "/request-log.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reqDB.Close()
+	svc := NewService(nil, slog.New(slog.DiscardHandler), reqDB, nil)
+
+	now := time.Now().UTC()
+	for _, id := range []string{"a", "b", "c"} {
+		seedLogRow(t, reqDB, id, now.Format(time.RFC3339Nano), 10)
+	}
+	svc.ApplyRetention(context.Background(), RetentionConfig{})
+
+	var count int
+	if err := reqDB.QueryRow(`SELECT count(*) FROM request_logs`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 3 {
+		t.Fatalf("rows = %d, want 3 (no limit must not delete)", count)
+	}
+}
+
+// TestClearRemovesRowsAndResetsSize 清空后行数为 0，且文件大小回落
+// （验证 wal_checkpoint 确实让磁盘占用跟着掉，否则用户点完清空会以为没生效）。
+func TestClearRemovesRowsAndResetsSize(t *testing.T) {
+	path := t.TempDir() + "/request-log.db"
+	reqDB, err := openRequestLogDB(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reqDB.Close()
+	svc := NewService(nil, slog.New(slog.DiscardHandler), reqDB, nil)
+	svc.SetDBPath(path)
+
+	now := time.Now().UTC()
+	for i := 0; i < 20; i++ {
+		seedLogRow(t, reqDB, fmt.Sprintf("row-%d", i), now.Format(time.RFC3339Nano), 64*1024)
+	}
+	// 用 compactedSize 取 before：它先 checkpoint 把 WAL 并回主文件再量，
+	// 否则 before 会少算还在 WAL 里的部分、after 反而"变大"（清空后 VACUUM 把
+	// 数据从 WAL 搬进主文件，两个文件加起来才是真实占用）。
+	before := svc.compactedSize(context.Background())
+	if before <= 0 {
+		t.Fatalf("diskSize before clear = %d, want > 0", before)
+	}
+
+	affected, err := svc.Clear(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if affected != 20 {
+		t.Fatalf("affected = %d, want 20", affected)
+	}
+	var count int
+	if err := reqDB.QueryRow(`SELECT count(*) FROM request_logs`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("rows after clear = %d, want 0", count)
+	}
+	// 必须真正收缩：只删行不 VACUUM 的话文件几乎不变，用户会以为清空没生效。
+	if after := svc.diskSize(); after > before/4 {
+		t.Fatalf("diskSize after clear = %d, want well under a quarter of %d (VACUUM must reclaim space)", after, before)
+	}
+}
+
+// TestClearResetsRouteRequestLink 清空后必须把 loadout.db 的关联列一起清掉，
+// 否则前端列表会一直显示指向已删日志的「进入日志」入口。
+func TestClearResetsRouteRequestLink(t *testing.T) {
+	dir := t.TempDir()
+	loadoutDB, err := sql.Open("sqlite", dir+"/loadout.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer loadoutDB.Close()
+	if _, err := loadoutDB.Exec(`CREATE TABLE route_requests (request_id TEXT PRIMARY KEY, request_log_id TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadoutDB.Exec(`INSERT INTO route_requests(request_id, request_log_id) VALUES ('r1', 'uuid-1'), ('r2', NULL)`); err != nil {
+		t.Fatal(err)
+	}
+
+	reqDB, err := openRequestLogDB(dir + "/request-log.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reqDB.Close()
+	svc := NewService(nil, slog.New(slog.DiscardHandler), reqDB, loadoutDB)
+	seedLogRow(t, reqDB, "uuid-1", time.Now().UTC().Format(time.RFC3339Nano), 10)
+
+	if _, err := svc.Clear(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var link sql.NullString
+	if err := loadoutDB.QueryRow(`SELECT request_log_id FROM route_requests WHERE request_id = 'r1'`).Scan(&link); err != nil {
+		t.Fatal(err)
+	}
+	if link.Valid && link.String != "" {
+		t.Fatalf("request_log_id = %q, want empty after clear", link.String)
+	}
+}
+
+// TestExistingIDs 存在性查询：只回仍然在库里的 id，且能跨过 500 个一批的分段边界。
+func TestExistingIDs(t *testing.T) {
+	reqDB, err := openRequestLogDB(t.TempDir() + "/request-log.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reqDB.Close()
+	svc := NewService(nil, slog.New(slog.DiscardHandler), reqDB, nil)
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	seedLogRow(t, reqDB, "alive-1", now, 10)
+	seedLogRow(t, reqDB, "alive-2", now, 10)
+
+	// 候选里混入 600 个不存在的 id，跨过 500 的分段边界，最后再放两个真实存在的
+	candidates := []string{"gone-0"}
+	for i := 0; i < 600; i++ {
+		candidates = append(candidates, fmt.Sprintf("gone-%d", i+1))
+	}
+	candidates = append(candidates, "alive-1", "alive-2")
+
+	found, err := svc.ExistingIDs(context.Background(), candidates)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(found) != 2 || !found["alive-1"] || !found["alive-2"] {
+		t.Fatalf("found = %v, want exactly alive-1/alive-2", found)
+	}
+}
+
+// TestStatsDiskSizeAndConfig Stats 要报出文件占用与行数。
+func TestStatsDiskSizeAndConfig(t *testing.T) {
+	// repo 用 nil：Stats 仍应给出行数/大小，保留配置回落 0。
+	path := t.TempDir() + "/request-log.db"
+	reqDB, err := openRequestLogDB(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reqDB.Close()
+	svc := NewService(nil, slog.New(slog.DiscardHandler), reqDB, nil)
+	svc.SetDBPath(path)
+
+	now := time.Now().UTC()
+	seedLogRow(t, reqDB, "one", now.Add(-time.Hour).Format(time.RFC3339Nano), 4096)
+	seedLogRow(t, reqDB, "two", now.Format(time.RFC3339Nano), 4096)
+
+	stats := svc.Stats(context.Background())
+	if stats.Count != 2 {
+		t.Fatalf("count = %d, want 2", stats.Count)
+	}
+	if stats.Size <= 0 {
+		t.Fatalf("size = %d, want > 0", stats.Size)
+	}
+	if stats.OldestStartedAt == "" || stats.NewestStartedAt == "" {
+		t.Fatalf("time range missing: oldest=%q newest=%q", stats.OldestStartedAt, stats.NewestStartedAt)
+	}
+	if stats.MaxAgeDays != 0 || stats.MaxSizeMB != 0 {
+		t.Fatalf("config without repo = %d/%d, want 0/0", stats.MaxAgeDays, stats.MaxSizeMB)
+	}
+}
+
+// TestTrimBySizeKeepsNewest 容量清理必须是 FIFO：删最旧的，保留最新的。
+func TestTrimBySizeKeepsNewest(t *testing.T) {
+	path := t.TempDir() + "/request-log.db"
+	reqDB, err := openRequestLogDB(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reqDB.Close()
+	svc := NewService(nil, slog.New(slog.DiscardHandler), reqDB, nil)
+	svc.SetDBPath(path)
+
+	base := time.Now().UTC()
+	// 200 行、每行 32KB ≈ 6.4MB；阈值设 1MB 必然触发清理。
+	for i := 0; i < 200; i++ {
+		seedLogRow(t, reqDB, fmt.Sprintf("row-%03d", i), base.Add(time.Duration(i)*time.Minute).Format(time.RFC3339Nano), 32*1024)
+	}
+	before := svc.diskSize()
+
+	svc.ApplyRetention(context.Background(), RetentionConfig{MaxSizeMB: 1})
+
+	after := svc.diskSize()
+	if after >= before {
+		t.Fatalf("size after trim = %d, want < %d", after, before)
+	}
+	// FIFO：剩下的必须是最新的那批（row-199 一定还在，row-000 一定被删）。
+	var newestExists, oldestExists int
+	if err := reqDB.QueryRow(`SELECT count(*) FROM request_logs WHERE id = 'row-199'`).Scan(&newestExists); err != nil {
+		t.Fatal(err)
+	}
+	if err := reqDB.QueryRow(`SELECT count(*) FROM request_logs WHERE id = 'row-000'`).Scan(&oldestExists); err != nil {
+		t.Fatal(err)
+	}
+	if newestExists != 1 {
+		t.Fatal("newest row must survive FIFO trim")
+	}
+	if oldestExists != 0 {
+		t.Fatal("oldest row must be deleted first by FIFO trim")
+	}
+}
+
+// TestTrimBySizeRespectsMinKeep 阈值小到不可能达成时，也不能把库删空——
+// 至少保留 retentionMinKeep 条（防用户设 1MB 反而丢掉全部日志）。
+func TestTrimBySizeRespectsMinKeep(t *testing.T) {
+	path := t.TempDir() + "/request-log.db"
+	reqDB, err := openRequestLogDB(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reqDB.Close()
+	svc := NewService(nil, slog.New(slog.DiscardHandler), reqDB, nil)
+	svc.SetDBPath(path)
+
+	now := time.Now().UTC()
+	// 只放 10 行（远少于下限），阈值设 1MB
+	for i := 0; i < 10; i++ {
+		seedLogRow(t, reqDB, fmt.Sprintf("row-%d", i), now.Add(time.Duration(i)*time.Minute).Format(time.RFC3339Nano), 64*1024)
+	}
+	svc.ApplyRetention(context.Background(), RetentionConfig{MaxSizeMB: 1})
+
+	var count int
+	if err := reqDB.QueryRow(`SELECT count(*) FROM request_logs`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 10 {
+		t.Fatalf("rows = %d, want 10 (below min-keep floor, must not delete)", count)
 	}
 }

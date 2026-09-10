@@ -2,6 +2,7 @@
 package routelog
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"log/slog"
@@ -26,6 +27,12 @@ func (p *routeLogPlugin) Apply(ctx plugin.Context) error {
 	if !ok || logger == nil {
 		return fmt.Errorf("route-log: missing logger service")
 	}
-	ctx.Set("route-log", NewService(database, logger))
+	svc := NewService(database, logger)
+	// 装配顺序上 route-log 早于 request-log，这里拿不到对方实例；登记回调由
+	// request-log 装配完成后反向注入（见 plugins/request-log/plugin.go）。
+	ctx.SetRouteLogPresenceHook(func(fn func(context.Context, []string) (map[string]bool, error)) {
+		svc.SetRequestLogLookup(fn)
+	})
+	ctx.Set("route-log", svc)
 	return nil
 }

@@ -27,6 +27,10 @@ type Service struct {
 	// 表随进程消失——残留的 running 日志因此天然判死。并发访问用 mu 保护。
 	mu       sync.Mutex
 	activeAt map[string]time.Time
+	// requestLogIDs 查完整请求日志库（request-log.db）里仍然存在的 id 集合，
+	// 由 request-log 插件在装配时注入。route_requests.request_log_id 是历史关联，
+	// 日志被保留策略清掉后关联还在，列表要据此隐藏「进入日志」入口。nil = 未装配。
+	requestLogIDs func(context.Context, []string) (map[string]bool, error)
 }
 
 func NewService(database *sql.DB, logger *slog.Logger) *Service {
@@ -34,6 +38,12 @@ func NewService(database *sql.DB, logger *slog.Logger) *Service {
 		logger = slog.Default()
 	}
 	return &Service{db: database, lg: logger, activeAt: make(map[string]time.Time)}
+}
+
+// SetRequestLogLookup 注入完整日志 id 存在性查询（由 request-log 插件装配时调用）。
+// fn 收到候选 id 列表，返回其中仍然存在的那些。
+func (s *Service) SetRequestLogLookup(fn func(context.Context, []string) (map[string]bool, error)) {
+	s.requestLogIDs = fn
 }
 
 func (s *Service) Start(ctx context.Context, request contracts.RouteRequest) error {
@@ -333,7 +343,62 @@ func (s *Service) List(ctx context.Context, filter contracts.RouteLogFilter) (co
 		}
 		result = append(result, view)
 	}
-	return contracts.RouteLogPage{Items: result, Total: total}, rows.Err()
+	if err := rows.Err(); err != nil {
+		return contracts.RouteLogPage{}, err
+	}
+	page := contracts.RouteLogPage{Items: result, Total: total}
+	s.attachRequestLogPresence(ctx, &page)
+	return page, nil
+}
+
+// attachRequestLogPresence 给本页记录标注「完整日志是否还在」。
+//
+// route_requests.request_log_id 是写日志那一刻的关联快照，request-log 库的日志行
+// 可能已被保留策略（按天/按容量 FIFO）或手动清空删除。前端要隐藏失效入口，所以这里
+// 收集本页（含展开用的 attempts）里所有关联 id，向 request-log 插件确认存在性，
+// 把仍存在的 id 集合回给前端。
+//
+// 查询失败 / 未注入 lookup：RequestLogResolved 保持 false，前端退化为只判空显示入口
+// （宁可多点一次 404，也不要把整列入场全藏掉）。
+func (s *Service) attachRequestLogPresence(ctx context.Context, page *contracts.RouteLogPage) {
+	if s.requestLogIDs == nil {
+		return
+	}
+	seen := make(map[string]struct{})
+	ids := make([]string, 0)
+	add := func(id string) {
+		if id == "" {
+			return
+		}
+		if _, ok := seen[id]; ok {
+			return
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	for _, item := range page.Items {
+		add(item.RequestLogID)
+		for _, attempt := range item.Attempts {
+			add(attempt.RequestLogID)
+		}
+	}
+	// 没有关联可查时直接算「已确认」：前端据此隐藏这一列里的所有入口，符合实际。
+	if len(ids) == 0 {
+		page.RequestLogResolved = true
+		return
+	}
+	found, err := s.requestLogIDs(ctx, ids)
+	if err != nil {
+		s.lg.Warn("route-log: 查询完整日志存在性失败，前端退化为只判空", "err", err)
+		return
+	}
+	alive := make([]string, 0, len(found))
+	for id := range found {
+		alive = append(alive, id)
+	}
+	sort.Strings(alive)
+	page.RequestLogIDs = alive
+	page.RequestLogResolved = true
 }
 
 func (s *Service) Detail(ctx context.Context, requestID string) (contracts.RouteRequestView, error) {

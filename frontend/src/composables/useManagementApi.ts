@@ -75,11 +75,21 @@ export function useManagementApi() {
       body,
     )
   const settings = () =>
-    api<{ active_preset: string; default_model: string; use_global_cmd: boolean }>('/api/settings')
+    api<{
+      active_preset: string
+      default_model: string
+      use_global_cmd: boolean
+      /** 完整请求日志只保留最近多少天（0 = 不限） */
+      request_log_max_age_days: number
+      /** 完整请求日志库最大占用 MB（0 = 不限），超限按时间从旧到新删 */
+      request_log_max_size_mb: number
+    }>('/api/settings')
   const saveSettings = (body: {
     active_preset: string
     default_model: string
     use_global_cmd: boolean
+    request_log_max_age_days: number
+    request_log_max_size_mb: number
   }) => request<void>('/api/settings', 'PUT', body)
   const changePassword = (body: { old: string; new: string }) =>
     request<void>('/api/change-password', 'POST', body)

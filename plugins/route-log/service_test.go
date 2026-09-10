@@ -3,6 +3,7 @@ package routelog
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -779,5 +780,107 @@ func TestAttemptPersistsRequestLogID(t *testing.T) {
 	}
 	if len(detail.Attempts) != 1 || detail.Attempts[0].RequestLogID != "uuid-attempt-1" {
 		t.Fatalf("Detail attempts[0].RequestLogID = %q, want uuid-attempt-1 (attempts=%d)", detail.Attempts[0].RequestLogID, len(detail.Attempts))
+	}
+}
+
+// TestListRequestLogPresence 列表要带出「完整日志是否还存在」：
+// route_requests.request_log_id 是历史快照，日志库里的行可能已被保留策略清掉。
+// 注入的查询函数返回仍存在的 id 子集，未命中 lookup 时退化为不做校验（Resolved=false）。
+func TestListRequestLogPresence(t *testing.T) {
+	ctx := context.Background()
+	service := NewService(logDB(t), nil)
+	base := time.Now().Add(-time.Hour)
+	if err := service.Start(ctx, contracts.RouteRequest{RequestID: "r-presence", RequestedModel: "m", StartedAt: base}); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Finish(ctx, contracts.RouteFinish{RequestID: "r-presence", FinishedAt: base.Add(time.Second), Result: "success"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.db.Exec(`UPDATE route_requests SET request_log_id = 'uuid-alive' WHERE request_id = 'r-presence'`); err != nil {
+		t.Fatal(err)
+	}
+
+	// 未注入 lookup：Resolved 必须为 false，前端据此退化为只判空显示入口。
+	page, err := service.List(ctx, contracts.RouteLogFilter{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.RequestLogResolved {
+		t.Fatal("resolved must be false without a lookup hook")
+	}
+	if len(page.RequestLogIDs) != 0 {
+		t.Fatalf("ids = %v, want empty without lookup", page.RequestLogIDs)
+	}
+
+	// 注入 lookup 并声明只存在 uuid-alive
+	var seen []string
+	service.SetRequestLogLookup(func(_ context.Context, ids []string) (map[string]bool, error) {
+		seen = ids
+		return map[string]bool{"uuid-alive": true}, nil
+	})
+	page, err = service.List(ctx, contracts.RouteLogFilter{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !page.RequestLogResolved {
+		t.Fatal("resolved must be true with a healthy lookup")
+	}
+	if len(page.RequestLogIDs) != 1 || page.RequestLogIDs[0] != "uuid-alive" {
+		t.Fatalf("ids = %v, want [uuid-alive]", page.RequestLogIDs)
+	}
+	if len(seen) != 1 || seen[0] != "uuid-alive" {
+		t.Fatalf("lookup candidates = %v, want [uuid-alive]", seen)
+	}
+}
+
+// TestListRequestLogPresenceLookupFailure lookup 报错时必须保持 Resolved=false，
+// 不能因为查询失败就把入口整列藏掉（宁可多点一次 404）。
+func TestListRequestLogPresenceLookupFailure(t *testing.T) {
+	ctx := context.Background()
+	service := NewService(logDB(t), nil)
+	base := time.Now().Add(-time.Hour)
+	if err := service.Start(ctx, contracts.RouteRequest{RequestID: "r-fail", RequestedModel: "m", StartedAt: base}); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Finish(ctx, contracts.RouteFinish{RequestID: "r-fail", FinishedAt: base.Add(time.Second), Result: "success"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.db.Exec(`UPDATE route_requests SET request_log_id = 'uuid-x' WHERE request_id = 'r-fail'`); err != nil {
+		t.Fatal(err)
+	}
+	service.SetRequestLogLookup(func(context.Context, []string) (map[string]bool, error) {
+		return nil, errors.New("boom")
+	})
+	page, err := service.List(ctx, contracts.RouteLogFilter{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.RequestLogResolved {
+		t.Fatal("resolved must stay false when lookup fails")
+	}
+}
+
+// TestListRequestLogPresenceNoLinks 本页没有任何关联时直接算「已确认」，
+// 前端据此隐藏该列所有入口（而不是永远显示占位符）。
+func TestListRequestLogPresenceNoLinks(t *testing.T) {
+	ctx := context.Background()
+	service := NewService(logDB(t), nil)
+	base := time.Now().Add(-time.Hour)
+	if err := service.Start(ctx, contracts.RouteRequest{RequestID: "r-nolink", RequestedModel: "m", StartedAt: base}); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Finish(ctx, contracts.RouteFinish{RequestID: "r-nolink", FinishedAt: base.Add(time.Second), Result: "success"}); err != nil {
+		t.Fatal(err)
+	}
+	service.SetRequestLogLookup(func(context.Context, []string) (map[string]bool, error) {
+		t.Fatal("lookup must not be called when there are no links")
+		return nil, nil
+	})
+	page, err := service.List(ctx, contracts.RouteLogFilter{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !page.RequestLogResolved {
+		t.Fatal("resolved must be true when the page has no links")
 	}
 }

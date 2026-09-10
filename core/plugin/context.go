@@ -1,6 +1,7 @@
 package plugin
 
 import (
+	"context"
 	"log/slog"
 )
 
@@ -30,4 +31,14 @@ type Context interface {
 	RegisterCheck(name string, fn func() []Issue)
 	// RegisterRoute 注册 HTTP 路由，返回注销器。
 	RegisterRoute(spec RouteSpec) Disposer
+	// SetRouteLogPresenceHook 登记「完整日志存在性查询」回调。
+	//
+	// route-log 需要知道 request-log 库里的日志是否还在（列表要隐藏失效的「进入日志」
+	// 入口），但装配顺序上 route-log 早于 request-log，往前拿不到对方实例。于是
+	// route-log 先登记一个安装器，request-log 装配完成后回填真正的查询函数。
+	// 未装配 request-log 时安装器不会被调用，route-log 侧保持 nil（退化为不做校验）。
+	SetRouteLogPresenceHook(install func(fn func(ctx context.Context, ids []string) (map[string]bool, error)))
+	// InstallRouteLogPresence 回填上面登记的存在性查询（由 request-log 装配时调用）。
+	// 返回是否找到已登记的安装器（false = route-log 未装配，本次回填被忽略）。
+	InstallRouteLogPresence(fn func(ctx context.Context, ids []string) (map[string]bool, error)) bool
 }

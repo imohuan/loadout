@@ -194,6 +194,14 @@ type RouteLogFilter struct {
 type RouteLogPage struct {
 	Items []RouteRequestView `json:"items"`
 	Total int                `json:"total"`
+	// RequestLogIDs 当前日志库里仍然存在的完整日志 id 集合（request-log 插件的
+	// request_logs.id）。前端据此隐藏「进入日志」入口：日志被保留策略清掉后，
+	// route_requests.request_log_id 还留着旧关联，入口点进去只会 404。
+	// nil = 该能力未装配 / 查询失败，前端退化为只判空。
+	RequestLogIDs []string `json:"request_log_ids,omitempty"`
+	// RequestLogResolved 标记 RequestLogIDs 是否可信（true = 已成功查询过日志库）。
+	// 与 nil 区分：「查到了但一条都没有」和「查不到」在前端是两种行为。
+	RequestLogResolved bool `json:"request_log_resolved"`
 }
 
 type RouteRequestView struct {

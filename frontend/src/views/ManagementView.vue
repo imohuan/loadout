@@ -19,6 +19,7 @@ import PageHeader from '@/components/PageHeader.vue'
 import LoadingBlock from '@/components/LoadingBlock.vue'
 import EmptyState from '@/components/EmptyState.vue'
 import VolcQuotaCard from '@/components/VolcQuotaCard.vue'
+import LogRetentionCard from '@/components/LogRetentionCard.vue'
 import ConfigExportDialog from '@/components/config-transfer/ConfigExportDialog.vue'
 import ConfigImportDialog from '@/components/config-transfer/ConfigImportDialog.vue'
 import TranslateView from '@/views/TranslateView.vue'
@@ -45,7 +46,13 @@ const activeTab = ref('runtime')
 const newKey = ref('')
 const skForm = reactive({ name: '', models: '' })
 const passwordForm = reactive({ old: '', new: '' })
-const settingsForm = reactive({ active_preset: '', default_model: '', use_global_cmd: false })
+const settingsForm = reactive({
+  active_preset: '',
+  default_model: '',
+  use_global_cmd: false,
+  request_log_max_age_days: 0,
+  request_log_max_size_mb: 0,
+})
 watch(
   settingsData,
   (value) => {
@@ -57,13 +64,18 @@ const loading = computed(() => keysLoading.value || pluginsLoading.value || sett
 const translateRef = ref<InstanceType<typeof TranslateView> | null>(null)
 const multimodalRef = ref<InstanceType<typeof MultimodalView> | null>(null)
 const quotaCardRef = ref<InstanceType<typeof VolcQuotaCard> | null>(null)
+const logRetentionRef = ref<InstanceType<typeof LogRetentionCard> | null>(null)
 async function refresh() {
   await run('refresh', async () => {
     // 顶部「刷新」按当前 Tab 只刷新对应内容
     switch (activeTab.value) {
       case 'runtime':
-        // 运行设置：刷新配额本地数据 + 依赖状态
-        await Promise.all([quotaCardRef.value?.refresh(), refreshDeps()])
+        // 运行设置：刷新配额本地数据 + 依赖状态 + 日志占用
+        await Promise.all([
+          quotaCardRef.value?.refresh(),
+          logRetentionRef.value?.refresh(),
+          refreshDeps(),
+        ])
         return
       case 'credentials':
         await refreshKeys()
@@ -115,6 +127,18 @@ async function saveSettings() {
       await refreshSettings()
     },
     '设置已保存',
+  )
+}
+/** 保存日志保留策略。会立即触发一次清理（下一次写日志时生效），所以提示写清楚。 */
+async function saveLogRetention() {
+  await run(
+    'save-log-retention',
+    async () => {
+      await api.saveSettings({ ...settingsForm })
+      await refreshSettings()
+      await logRetentionRef.value?.refresh()
+    },
+    '日志保留设置已保存',
   )
 }
 async function changePassword() {
@@ -267,6 +291,13 @@ onMounted(() => {
         </TabsList>
         <TabsContent value="runtime" class="space-y-4">
           <VolcQuotaCard ref="quotaCardRef" />
+          <LogRetentionCard
+            ref="logRetentionRef"
+            v-model:max-age-days="settingsForm.request_log_max_age_days"
+            v-model:max-size-mb="settingsForm.request_log_max_size_mb"
+            :saving="isPending('save-log-retention')"
+            @save="saveLogRetention"
+          />
           <div class="grid gap-4 lg:grid-cols-2">
             <Card class="rounded-md hidden" >
               <CardHeader>

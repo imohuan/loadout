@@ -1,6 +1,7 @@
 package forcestream
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -148,6 +149,13 @@ func TestForceStreamE2E(t *testing.T) {
 	if resp.Usage.TotalTokens != 7 {
 		t.Fatalf("usage.total_tokens = %d, 期望 7", resp.Usage.TotalTokens)
 	}
+}
+
+func (m *mockCtx) SetRouteLogPresenceHook(install func(fn func(ctx context.Context, ids []string) (map[string]bool, error))) {
+}
+
+func (m *mockCtx) InstallRouteLogPresence(fn func(ctx context.Context, ids []string) (map[string]bool, error)) bool {
+	return false
 }
 
 // TestForceStreamE2ENoRoute 未命中 force_stream 路由 → 全程原样透传，不破坏透明代理语义。
