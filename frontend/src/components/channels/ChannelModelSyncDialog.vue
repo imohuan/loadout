@@ -238,8 +238,12 @@ function submit() {
 
 <template>
   <Dialog v-model:open="open">
-    <DialogContent class="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-3xl!">
-      <DialogHeader>
+    <!-- 弹窗整体是「头 + 可滚动内容 + 脚」的三段结构：标题与底部操作按钮固定，
+         只有中间内容区滚动，避免标题跟着列表一起滚走。 -->
+    <DialogContent
+      class="flex max-h-[calc(100dvh-2rem)] flex-col gap-0 overflow-hidden sm:max-w-3xl!"
+    >
+      <DialogHeader class="shrink-0 border-b border-border px-6 pt-6 pb-4">
         <DialogTitle>同步模型列表</DialogTitle>
         <DialogDescription>
           把下面这份模型列表全量写入选中的 Key：目标 Key
@@ -249,7 +253,7 @@ function submit() {
         </DialogDescription>
       </DialogHeader>
 
-      <div class="space-y-5">
+      <div class="min-h-0 flex-1 space-y-5 overflow-y-auto px-6 py-5">
         <!-- 1. 模型列表编辑区（可从某个 Key 载入底稿） -->
         <div class="space-y-2">
           <div class="flex flex-wrap items-center justify-between gap-2">
@@ -543,7 +547,7 @@ function submit() {
         </div>
       </div>
 
-      <DialogFooter>
+      <DialogFooter class="shrink-0 border-t border-border px-6 pt-4 pb-6">
         <Button type="button" :disabled="!canSync" @click="submit">
           <RiLoader4Line v-if="pending" class="animate-spin" size="16" />{{
             pending ? '同步中' : `同步到 ${selectedTargets.length} 个 Key`
