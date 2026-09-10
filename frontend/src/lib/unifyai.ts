@@ -243,11 +243,22 @@ export async function fetchOpenCodexModels(enableVision = false): Promise<OpenCo
     const res = await fetch(`/api/unifyai/opencodex-models${qs}`)
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const data = (await res.json()) as OpenCodexModelsResult
-    return { ...INITIAL_OPENCODEX_MODELS, ...data }
+    return normalizeOpenCodexModels({ ...INITIAL_OPENCODEX_MODELS, ...data })
   } catch (err) {
     console.warn('[unifyai] 获取 OpenCodex 模型列表失败，使用初始占位', err)
     return { ...INITIAL_OPENCODEX_MODELS, degradedReason: '后端接口不可用' }
   }
+}
+
+/**
+ * 归一化模型列表结果：`count` 缺失（后端只回传 models 数组）时用数组长度兜底，
+ * 避免 UI 明明拿到模型却显示「0 个模型」。
+ * 注意与 `degraded` 无关——代理不可达但列表非空（后端补了元数据）时仍要显示真实数量。
+ */
+export function normalizeOpenCodexModels(res: OpenCodexModelsResult): OpenCodexModelsResult {
+  const models = res.models ?? []
+  const count = typeof res.count === 'number' && res.count > 0 ? res.count : models.length
+  return { ...res, models, count }
 }
 
 /** 按 provider 分组，保持出现顺序。 */
@@ -408,9 +419,15 @@ export async function fetchManagedMcpServers(): Promise<McpImportSource[]> {
   type GroupItem = { name: string; tools?: unknown[] }
   type ToolsItem = { tools?: unknown[] }
   const [serverList, groupList, toolsList] = (await Promise.all([
-    fetch('/api/mcp-servers').then(parseArray).catch(() => []),
-    fetch('/api/groups').then(parseArray).catch(() => []),
-    fetch('/api/mcp-tools').then(parseArray).catch(() => []),
+    fetch('/api/mcp-servers')
+      .then(parseArray)
+      .catch(() => []),
+    fetch('/api/groups')
+      .then(parseArray)
+      .catch(() => []),
+    fetch('/api/mcp-tools')
+      .then(parseArray)
+      .catch(() => []),
   ])) as [ServerItem[], GroupItem[], ToolsItem[]]
   // 聚合端点暴露的工具总数（与 useMcpManagement 端 $smart 计数口径一致）
   const aggregateCount = toolsList.reduce(
@@ -669,7 +686,6 @@ export function buildCommand(_opts: Parameters<typeof buildArgs>[0]): string {
 }
 
 export const DEFAULT_SOURCE = '~/.opencodex/config.json'
-
 
 // ============================================================================
 // MCP 同步矩阵（--list-mcp --json 数据层）

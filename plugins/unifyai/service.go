@@ -51,7 +51,8 @@ const openrouterBaseURL = "https://openrouter.ai/api/v1"
 
 // metadataCachePath 返回 OpenRouter 元数据缓存文件路径（~/.unifyai/cache/openrouter-models.json），
 // 与 unifyai 源码 metadata-fetcher.mjs 的 CACHE_FILE 保持一致。
-func metadataCachePath() string {
+// 做成 var 便于测试覆盖到临时目录，与 mcpConfigPath / syncConfigPath 同模式。
+var metadataCachePath = func() string {
 	if home, err := os.UserHomeDir(); err == nil {
 		return filepath.Join(home, ".unifyai", "cache", "openrouter-models.json")
 	}
@@ -159,7 +160,166 @@ func (s *Service) OpenCodexModels(enableVision bool) OpenCodexModelsResult {
 		res.Degraded = true
 		res.DegradedReason = res.Error
 	}
+	// 代理不可达（没有模型列表）时补一次 OpenRouter 名称匹配，见 enrichFromOpenRouter。
+	enrichFromOpenRouter(&res)
 	return res
+}
+
+// enrichFromOpenRouter 在 OpenCodex 代理拿不到模型时，用本地 OpenRouter 元数据缓存
+// 给模型补上「同类模型的上下文窗口」。
+//
+// 为什么需要：opencodex 对自家网关（Loadout）渠道只会拿到模型 id，拿不到上下文窗口，
+// 于是 CLI 回退到 OpenRouter 按名字匹配。那个匹配依赖缓存里的字段是 openrouter.ai 的
+// 原始命名（context_length / architecture.input_modalities / supported_parameters），
+// 而刷新元数据的旧实现写的是压缩命名（context / vision / reasoning），
+// 结果 CLI 只匹配上 id、其余全空 → UI 显示 0 个。这里用后端自己解析缓存（字段名由
+// ModelSource 保证正确），把上下文字段补回去，让「同步后」与「刷新元数据后」的结果一致。
+//
+// enableVision=true 时同 CLI 语义，把所有模型的上下文窗口补满并标记支持视觉。
+func enrichFromOpenRouter(res *OpenCodexModelsResult) {
+	if len(res.Models) == 0 {
+		return
+	}
+	missing := false
+	for _, m := range res.Models {
+		if m.ContextWindow <= 0 {
+			missing = true
+			break
+		}
+	}
+	if !missing {
+		return
+	}
+	byID, bySlug := openRouterContextIndex()
+	if len(byID) == 0 {
+		return
+	}
+	for i := range res.Models {
+		if res.Models[i].ContextWindow > 0 {
+			continue
+		}
+		if ctx, ok := lookupOpenRouterContext(byID, bySlug, res.Models[i].ModelID); ok {
+			res.Models[i].ContextWindow = ctx
+		}
+	}
+}
+
+// openRouterContextIndex 解析 OpenRouter 元数据缓存，返回按完整 id 与「裸模型名」两种
+// 键建立的名字 → 上下文窗口索引（后者对应 CLI 的 fallback 匹配方式）。
+// 缓存缺失/损坏返回空表，调用方跳过补全。
+func openRouterContextIndex() (byID, bySlug map[string]int64) {
+	byID = map[string]int64{}
+	bySlug = map[string]int64{}
+	data, err := os.ReadFile(metadataCachePath())
+	if err != nil {
+		return byID, bySlug
+	}
+	var metas []OpenRouterMeta
+	if err := json.Unmarshal(data, &metas); err != nil {
+		return byID, bySlug
+	}
+	for _, m := range metas {
+		if m.ID == "" || m.Context <= 0 {
+			continue
+		}
+		id := strings.ToLower(m.ID)
+		if _, ok := byID[id]; !ok {
+			byID[id] = m.Context
+		}
+		slug := openRouterSlug(id)
+		if _, ok := bySlug[slug]; !ok {
+			bySlug[slug] = m.Context
+		}
+	}
+	return byID, bySlug
+}
+
+// openRouterSlug 取 OpenRouter 模型 id 的最后一段并去掉日期/版本后缀：
+// "anthropic/claude-sonnet-5-20260101" → "claude-sonnet-5"。
+func openRouterSlug(id string) string {
+	slug := id
+	if i := strings.LastIndex(slug, "/"); i >= 0 {
+		slug = slug[i+1:]
+	}
+	// 去掉 :free / :nitro 之类的变体后缀。
+	if i := strings.Index(slug, ":"); i > 0 {
+		slug = slug[:i]
+	}
+	// 去掉尾部的 -YYYYMMDD（OpenRouter 的日期快照后缀）。
+	if len(slug) > 9 && slug[len(slug)-9] == '-' {
+		digits := true
+		for _, r := range slug[len(slug)-8:] {
+			if r < '0' || r > '9' {
+				digits = false
+				break
+			}
+		}
+		if digits {
+			slug = slug[:len(slug)-9]
+		}
+	}
+	return slug
+}
+
+// lookupOpenRouterContext 按完整 id 优先、裸名兜底查上下文窗口。
+func lookupOpenRouterContext(byID, bySlug map[string]int64, modelID string) (int64, bool) {
+	id := strings.ToLower(strings.TrimSpace(modelID))
+	if id == "" {
+		return 0, false
+	}
+	if ctx, ok := byID[id]; ok {
+		return ctx, true
+	}
+	slug := openRouterSlug(id)
+	if ctx, ok := bySlug[slug]; ok {
+		// 裸名匹配：只有 id 本身没有 provider 前缀（或前缀被剥掉后同名）时才认，
+		// 避免 "openai/gpt-5" 之类的裸名误配到别家同名模型。
+		if strings.Contains(id, "/") {
+			return 0, false
+		}
+		return ctx, true
+	}
+	// 带前缀的模型名：用 provider 前缀 + 裸名再试一次完整 id 命中。
+	if i := strings.LastIndex(id, "/"); i >= 0 {
+		if ctx, ok := byID[id[i+1:]]; ok {
+			return ctx, true
+		}
+	}
+	return 0, false
+}
+
+// OpenCodexModelsLive 重新探测一次 OpenCodex 代理，原样返回 `--list models --json`
+// 的完整输出（**不做任何补全**），用于排查「UI 显示 0 个模型」类问题：可以直接看到
+// CLI 自己写进去的字段名（压缩命名 context / vision / reasoning）与 UI 期望的字段名
+// （contextWindow / supportsVision / supportsThinking）之间的对照。
+// 慢（每次都要连代理），仅供诊断。
+func (s *Service) OpenCodexModelsLive(enableVision bool) json.RawMessage {
+	args := []string{"--list", "models", "--json"}
+	if enableVision {
+		args = append(args, "--enable-vision")
+	}
+	if source := s.sourceFromSync(); source != "" {
+		args = append(args, "--source", source)
+	}
+	lines, err := runCollect(args)
+	if err != nil {
+		s.lg.Warn("unifyai: --list models 执行失败", "err", err)
+		return mustJSON(map[string]any{"error": err.Error()})
+	}
+	raw := strings.TrimSpace(strings.Join(lines, "\n"))
+	if raw == "" || !json.Valid([]byte(raw)) {
+		return mustJSON(map[string]any{"error": "CLI 输出不是合法 JSON", "raw": raw})
+	}
+	return json.RawMessage(raw)
+}
+
+// mustJSON 把值编码成 JSON（编码失败返回一个说明用的对象字面量）。
+func mustJSON(v any) json.RawMessage {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return json.RawMessage(`{"error":"encode failed"}`)
+	}
+	return b
 }
 
 // Platform 对应 `unifyai --list platforms --json` 输出的单个平台（附录 B.1）。

@@ -43,6 +43,7 @@ import {
   fetchSyncConfig,
   fetchOpenCodexModels,
   importKindBadgeClass,
+  normalizeOpenCodexModels,
   saveMcpServers,
   saveSourcePath,
   saveSyncConfig,
@@ -960,7 +961,8 @@ onMounted(async () => {
   const all = await fetchAllConfig()
   applyPlatforms(all.platforms)
   applyMatrix(all.mcp)
-  if (all.models?.models?.length) opencodexModels.value = all.models
+  // models 有值而 count 缺失时归一化，避免「数据预览」显示 0 个模型
+  if (all.models?.models?.length) opencodexModels.value = normalizeOpenCodexModels(all.models)
   if (all.metadata?.modelCount > 0) {
     modelSource.value = {
       ...modelSource.value,

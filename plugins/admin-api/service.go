@@ -194,6 +194,7 @@ func (s *Service) Routes() []plugin.RouteSpec {
 		{Method: http.MethodGet, Pattern: "GET /api/unifyai/platforms", Auth: plugin.AuthSession, Handler: s.session(s.handleUnifyaiPlatforms)},
 		{Method: http.MethodGet, Pattern: "GET /api/unifyai/model-source", Auth: plugin.AuthSession, Handler: s.session(s.handleUnifyaiModelSource)},
 		{Method: http.MethodGet, Pattern: "GET /api/unifyai/opencodex-models", Auth: plugin.AuthSession, Handler: s.session(s.handleUnifyaiOpenCodexModels)},
+		{Method: http.MethodGet, Pattern: "GET /api/unifyai/opencodex-models-live", Auth: plugin.AuthSession, Handler: s.session(s.handleUnifyaiOpenCodexModelsLive)},
 		{Method: http.MethodPost, Pattern: "POST /api/unifyai/run", Auth: plugin.AuthSession, Handler: s.session(s.handleUnifyaiRun)},
 		{Method: http.MethodGet, Pattern: "GET /api/unifyai/stream", Auth: plugin.AuthSession, Handler: s.session(s.handleUnifyaiStream)},
 		{Method: http.MethodGet, Pattern: "GET /api/unifyai/mcp-servers", Auth: plugin.AuthSession, Handler: s.session(s.handleUnifyaiMcpServersList)},
@@ -2455,6 +2456,15 @@ func (s *Service) handleUnifyaiMcpMatrix(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	writeJSON(w, http.StatusOK, res)
+}
+
+// handleUnifyaiOpenCodexModelsLive 重新探测 OpenCodex 代理并原样透传 `--list models --json`
+// 输出——保留 CLI 的压缩命名（context / vision / reasoning）作为对照，
+// 便于诊断「UI 显示 0 个」类问题。慢（每次都要连代理），仅供排查用。
+func (s *Service) handleUnifyaiOpenCodexModelsLive(w http.ResponseWriter, r *http.Request) {
+	enableVision := r.URL.Query().Get("enableVision") == "1" ||
+		r.URL.Query().Get("enableVision") == "true"
+	writeJSON(w, http.StatusOK, s.unify.OpenCodexModelsLive(enableVision))
 }
 
 // handleUnifyaiAll 返回全部配置（调 unifyai --list all --json）：
