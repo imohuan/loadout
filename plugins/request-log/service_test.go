@@ -1447,6 +1447,95 @@ func TestTrimBySizeDeletesOldestFirst(t *testing.T) {
 	}
 }
 
+// TestKeepRowsWithinCountsFromNewest 估算「保留最新多少行」必须从最新往旧累加。
+//
+// 回归：早先这条 SQL 写成 SUM(...) OVER (ORDER BY rn DESC)，rn 是最新为 1 的序号，
+// 这样累加是**从最旧往新**，acc 命中的是最旧的几行——算出来的数字含义完全反了，
+// 结果每次清理都严重删不到位（5000 行只删 0 行），只能靠后面反复 VACUUM 兜底，
+// 300MB 的库要跑 9 秒。
+func TestKeepRowsWithinCountsFromNewest(t *testing.T) {
+	reqDB, err := openRequestLogDB(t.TempDir() + "/request-log.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reqDB.Close()
+	svc := NewService(nil, slog.New(slog.DiscardHandler), reqDB, nil)
+
+	base := time.Now().UTC()
+	// 200 行，每行 1KB（bytes 记 1024 + 固定开销）。
+	const rows = 200
+	for i := 0; i < rows; i++ {
+		seedLogRow(t, reqDB, fmt.Sprintf("k%03d", i), base.Add(time.Duration(i)*time.Second).Format(time.RFC3339Nano), 1024)
+	}
+	perRow := rowBytes(strings.Repeat("x", 1024), "")
+	// contentBudget 会先压 95% 再折 ratio，这里反推出「想保留 100 行」对应的 limit：
+	// budget = (limit*0.95 - fixed) / ratio = perRow*100  =>  limit = (perRow*100*ratio + fixed) / 0.95
+	want := float64(perRow * 100)
+	limit := int64((want*sizeRatio + float64(fixedSizeOverhead)) / 0.95)
+	keep := svc.keepRowsWithin(context.Background(), limit)
+
+	if keep < 90 || keep > 110 {
+		t.Fatalf("keep = %d, want around 100 (must count from the newest, not the oldest)", keep)
+	}
+	// 保留的必须是最新的一批：最旧那一行不该被算进 keep 里。
+	var oldestRank int64
+	if err := reqDB.QueryRow(`SELECT rn FROM (SELECT id, ROW_NUMBER() OVER (ORDER BY started_at DESC) AS rn FROM request_logs) WHERE id = 'k000'`).Scan(&oldestRank); err != nil {
+		t.Fatal(err)
+	}
+	if keep >= oldestRank {
+		t.Fatalf("keep = %d reached the oldest row (rn=%d): accumulation direction is wrong", keep, oldestRank)
+	}
+}
+
+// TestTrimBySizeSingleVacuum 回归性能：清理只该 VACUUM 一次（估算准 -> 一次删到位）。
+//
+// 早先每轮 VACUUM 一次，300MB 的库要十几秒、15GB 就是十几分钟。VACUUM 与库大小
+// 成正比，是整个流程唯一的大头，必须只做一次。
+func TestTrimBySizeSingleVacuum(t *testing.T) {
+	path := t.TempDir() + "/request-log.db"
+	reqDB, err := openRequestLogDB(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reqDB.Close()
+	svc := NewService(nil, slog.New(slog.DiscardHandler), reqDB, nil)
+	svc.SetDBPath(path)
+
+	base := time.Now().UTC()
+	// 600 行 × 16KB ≈ 9.4MB，上限 4MB —— 必须删掉大部分。
+	const rows = 600
+	for i := 0; i < rows; i++ {
+		seedLogRow(t, reqDB, fmt.Sprintf("v%03d", i), base.Add(time.Duration(i)*time.Second).Format(time.RFC3339Nano), 16*1024)
+	}
+
+	svc.ApplyRetention(context.Background(), RetentionConfig{MaxSizeMB: 4})
+
+	after := svc.diskSize()
+	if after > 4*1024*1024 {
+		t.Fatalf("size after trim = %d, want <= %d", after, 4*1024*1024)
+	}
+	var remaining int
+	if err := reqDB.QueryRow(`SELECT COUNT(*) FROM request_logs`).Scan(&remaining); err != nil {
+		t.Fatal(err)
+	}
+	if remaining >= rows {
+		t.Fatalf("remaining = %d, want < %d", remaining, rows)
+	}
+	if remaining < retentionMinKeep {
+		t.Fatalf("remaining = %d, want >= %d", remaining, retentionMinKeep)
+	}
+	// 保留的必须是最新的：最新的留下，最旧的走。
+	var newest, oldest int
+	_ = reqDB.QueryRow(`SELECT COUNT(*) FROM request_logs WHERE id = 'v599'`).Scan(&newest)
+	_ = reqDB.QueryRow(`SELECT COUNT(*) FROM request_logs WHERE id = 'v000'`).Scan(&oldest)
+	if newest != 1 {
+		t.Fatal("newest row must survive")
+	}
+	if oldest != 0 {
+		t.Fatal("oldest row must be deleted first")
+	}
+}
+
 // TestFinishRequestLogRecalculatesBytes 收尾写入响应体后，bytes 必须跟着变大。
 //
 // 这是「写入完成时记录大小」的关键一环：请求落库时只能算到请求体，响应体是

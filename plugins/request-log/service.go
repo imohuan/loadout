@@ -233,14 +233,21 @@ func (s *Service) ApplyCurrentRetention(ctx context.Context) RequestLogStats {
 // 与文件实际大小对不上。差得少时会出现「估算说到顶了、文件其实还超」，于是反复
 // VACUUM 却怎么都不达标。
 //
-// 【做法】两段式，各取所长：
-//  1. 先按内容体积估算一个「初值」：从最新往旧累加到哪一行时数据量接近预算，
-//     一次删掉更早的那批（大库上这一步就能删掉绝大部分，避免逐行扫描）。
-//  2. 再做 VACUUM 拿**真实文件大小**，只要还超限就按「剩余量 × 超出比例」再删一批
-//     （每次至少删 1 行，保证一定前进），循环直到达标或触及保留下限。
+// 【做法】分两步，各自只做一次重活：
+//  1. 按 bytes 列估算：从最新往旧累加，找到「累计量 <= 预算」的那批行留下，
+//     一次 DELETE 掉更旧的全部（FIFO）。bytes 是写入时记好的，这一步只是纯
+//     数值的窗口求和，不碰正文。
+//  2. 收尾 VACUUM 一次，把删掉的空间真正还给磁盘。
 //
-// 第 2 段循环用真实大小做进度度量，所以既不会像「只看文件大小」那样删不干净，
-// 也不会像「纯估算」那样卡边界；每轮都有实际删除，循环必然收敛。
+// 【为什么不像早先那样循环 VACUUM】VACUUM 要重建整个库文件，是整个流程里唯一的
+// 大头，且耗时与库大小成正比（实测 300MB 约 1.2s，15GB 要 1 分钟左右）。早先每轮
+// 都 VACUUM 来「拿真实大小判断还超不超」，300MB 的库要跑十几秒、15GB 就是十几
+// 分钟。但 VACUUM 只影响文件占多少磁盘、不影响还剩几行数据——把判断依据换成
+// bytes（内容体积）后，一次就能删到位，VACUUM 只需要收尾那一次。
+//
+// 【估算偏差怎么补】内容体积总是略小于文件大小（页头、索引、碎片），所以先在
+// 预算里按比例留出余量；VACUUM 后若仍超限，用实测到的「文件/内容」比值再删一轮
+// （最多 allowExtraRounds 轮，避免极端情况无限重试）。
 func (s *Service) trimBySize(ctx context.Context, limit int64) {
 	if limit <= 0 {
 		return
@@ -254,45 +261,6 @@ func (s *Service) trimBySize(ctx context.Context, limit int64) {
 		s.lg.Info("request-log: 已触及保留下限，停止容量清理",
 			"limit", limit, "remaining", total, "min_keep", retentionMinKeep)
 		s.compactOnly(ctx)
-		return
-	}
-
-	// 预算压到 95%，留一点余量，避免刚清完下一个请求又立刻超限。
-	target := limit - limit/20
-	// 数据量预算：从目标里再扣掉 SQLite 的固定开销（页头/索引/schema 等）。
-	const fixedOverhead = 256 * 1024
-	contentBudget := target - fixedOverhead
-	if contentBudget < 1 {
-		contentBudget = 1
-	}
-
-	// 第一段：估算要保留多少行。从最新往旧累加每行记录好的 bytes，找到累计量 <= 预算的那批行。
-	//
-	// 直接读 bytes 列而不是现算 length(request_json)+...：写入时就算好了，
-	// 这里只做一次纯数值的窗口求和，不必把正文读出来量长度——大库上这一趟
-	// 省掉的是对整个 request_json/response_json 的扫描。
-	var keep int64
-	query := `
-		SELECT COALESCE(MAX(rn), 0) FROM (
-			SELECT rn, SUM(row_bytes) OVER (ORDER BY rn DESC) AS acc
-			FROM (
-				SELECT ROW_NUMBER() OVER (ORDER BY started_at DESC) AS rn, bytes AS row_bytes
-				FROM request_logs
-			)
-		) WHERE acc <= ?`
-	if err := s.reqDB.QueryRowContext(ctx, query, contentBudget).Scan(&keep); err != nil {
-		s.lg.Warn("request-log: 估算可保留行数失败", "err", err)
-		return
-	}
-	// 保留下限：估算结果低于下限时按下限保留（顶多超一点限额，也不能把库清空）。
-	if keep < retentionMinKeep {
-		keep = retentionMinKeep
-		s.lg.Info("request-log: 数据量低于保留下限，按上限条数保留", "limit", limit, "keep", keep)
-	}
-
-	// 先做一次 VACUUM 拿真实起点：文件可能本来就达标（只是没收缩），那就一行都不用删。
-	if size := s.compactedSize(ctx); size <= limit {
-		s.lg.Info("request-log: 日志库未超限，无需删除", "size", size, "limit", limit, "remaining", total)
 		return
 	}
 
@@ -311,8 +279,18 @@ func (s *Service) trimBySize(ctx context.Context, limit int64) {
 		return n
 	}
 
-	// 第二段：先按估算一次删到位（大库上这一步通常就能基本达标）。
-	if keep < total {
+	// 先量一次真实文件大小，没超限就直接收工（大多数「写日志后顺手清理」都走这里，
+	// 此时超限通常只是 WAL 没合并，VACUUM 一次让文件回落即可）。
+	size := s.diskSize()
+	if size <= limit {
+		return
+	}
+
+	// 按 bytes 估算要保留的行数，一次删到位。
+	if keep := s.keepRowsWithin(ctx, limit); keep < total {
+		if keep < retentionMinKeep {
+			keep = retentionMinKeep
+		}
 		if deleted := deleteOldest(total - keep); deleted > 0 {
 			total -= deleted
 			s.lg.Info("request-log: 容量清理删除旧日志",
@@ -320,27 +298,27 @@ func (s *Service) trimBySize(ctx context.Context, limit int64) {
 		}
 	}
 
-	// 第三段：用真实文件大小收尾。每轮都 VACUUM 后复测，只要还超限就继续删。
-	// 每轮至少删 1 行，保证单调前进；触及下限即停。
-	const maxRounds = 20
-	for round := 1; round <= maxRounds; round++ {
-		size := s.compactedSize(ctx)
-		if size <= limit {
-			s.lg.Info("request-log: 容量清理完成", "size", size, "limit", limit, "remaining", total)
-			return
-		}
+	// 收尾 VACUUM：把删掉的空间真正还给磁盘（唯一能让文件变小的手段）。
+	after := s.compactedSize(ctx)
+	if after <= limit {
+		s.lg.Info("request-log: 容量清理完成", "size", after, "limit", limit, "remaining", total)
+		return
+	}
+
+	// 仍超限：说明「文件 / 内容体积」的比值比预估更大（碎片、索引膨胀等）。
+	// 用实测比值反推还要删多少行，最多再补几轮；每轮只多一次 VACUUM。
+	const allowExtraRounds = 3
+	for round := 1; round <= allowExtraRounds; round++ {
 		if total <= retentionMinKeep {
 			s.lg.Warn("request-log: 已触及保留下限，清理后仍超限（可能单条日志就超过上限）",
-				"size", size, "limit", limit, "remaining", total, "min_keep", retentionMinKeep)
+				"size", after, "limit", limit, "remaining", total, "min_keep", retentionMinKeep)
 			return
 		}
-		// 超出量按比例折算成行数：假设剩余行均摊了 size 的占用，删掉超标的那部分即可。
-		// 至少删 1 行，避免比例算出来是 0 导致空转。
-		need := (size - limit) * total / size
+		// 超出量按比例折算成行数：剩余行均摊了 after 的占用，删掉超标那部分即可。
+		need := (after - limit) * total / after
 		if need < 1 {
 			need = 1
 		}
-		// 别一次删穿下限。
 		if total-need < retentionMinKeep {
 			need = total - retentionMinKeep
 		}
@@ -349,10 +327,67 @@ func (s *Service) trimBySize(ctx context.Context, limit int64) {
 			return
 		}
 		total -= deleted
-		s.lg.Info("request-log: 容量清理第 "+strconv.Itoa(round)+" 轮，继续删除旧日志",
-			"size", size, "deleted", deleted, "remaining", total, "limit", limit)
+		after = s.compactedSize(ctx)
+		if after <= limit {
+			s.lg.Info("request-log: 容量清理完成", "size", after, "limit", limit, "remaining", total, "rounds", round)
+			return
+		}
+		s.lg.Info("request-log: 容量清理补删一轮", "round", round, "size", after, "deleted", deleted, "remaining", total)
 	}
-	s.lg.Warn("request-log: 容量清理达到轮次上限仍未达标", "limit", limit, "remaining", total)
+	s.lg.Warn("request-log: 容量清理后仍超限", "size", after, "limit", limit, "remaining", total)
+}
+
+// keepRowsWithin 估算「保留最近多少行时，内容体积落到预算内」。
+//
+// 从最新往旧累加写入时记好的 bytes，找累计量 <= 预算的那批行——纯数值窗口求和，
+// 不需要把 request_json/response_json 读出来量长度。
+//
+// 【索引方向很要命】rn 由 ROW_NUMBER() OVER (ORDER BY started_at DESC) 得到，
+// 最新一行的 rn = 1。要「保留最新的 k 行」，就得问「rn <= k 的这批行内容量是否
+// 还装得下」——所以这里是按 rn 升序（从最新往旧）累加，然后取满足 acc <= budget
+// 的 MAX(rn)，它就是能保留的最新行数 k。
+//
+// 注意别把累加方向写反（写成 ORDER BY rn DESC 就是从最旧往新累加，acc 命中的
+// 是最旧的几行，算出来的数含义完全不同，会导致怎么都删不到位）。
+func (s *Service) keepRowsWithin(ctx context.Context, limit int64) int64 {
+	budget := s.contentBudget(limit)
+	var keep int64
+	query := `
+		SELECT COALESCE(MAX(rn), 0) FROM (
+			SELECT rn, SUM(row_bytes) OVER (ORDER BY rn ASC) AS acc
+			FROM (
+				SELECT ROW_NUMBER() OVER (ORDER BY started_at DESC) AS rn, bytes AS row_bytes
+				FROM request_logs
+			)
+		) WHERE acc <= ?`
+	if err := s.reqDB.QueryRowContext(ctx, query, budget).Scan(&keep); err != nil {
+		s.lg.Warn("request-log: 估算可保留行数失败", "err", err)
+		return 0
+	}
+	return keep
+}
+
+// sizeRatio 文件大小 / 内容体积 的兜底比值。
+//
+// SQLite 的文件除了正文还有页头、B 树填充、各索引、schema。实测这个比值很接近 1
+// （3000 行 × 64KB：1.009；剩 300 行：1.011），因为没有额外的独立索引占大块空间。
+// 取 1.05 略偏保守，既留出碎片余量，又不会像 1.10 那样多删掉一成的日志。
+const sizeRatio = 1.05
+
+// fixedSizeOverhead 库里与行数无关的固定占用（schema、页头等），约 256KB。
+const fixedSizeOverhead = 256 * 1024
+
+// contentBudget 把「目标文件大小」折算成「允许的内容体积」。
+//
+// 反比折算：文件 ≈ 内容 × sizeRatio + 固定开销，所以要留的内容体积就是
+// (目标 - 固定开销) / sizeRatio。再压 95% 留余量，避免刚清完又立刻超限。
+func (s *Service) contentBudget(limit int64) int64 {
+	target := limit - limit/20 // 95%
+	budget := int64(float64(target-fixedSizeOverhead) / sizeRatio)
+	if budget < 1 {
+		budget = 1
+	}
+	return budget
 }
 
 // compactOnly 只做 VACUUM 收尾（把已删数据的空闲页还给磁盘），不改数据。
