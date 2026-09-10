@@ -1,0 +1,29 @@
+fix(unifyai): 后端先预热 OpenCodex 代理，修掉「初始化时模型数为 0、必须点刷新才出数」
+
+现象：进 UnifyAI 页面，「数据预览 -> OpenCodex 模型」显示 0 个；点「刷新元数据」才正常。
+
+根因（本次用冷暖对照实验定位到）：
+unifyai CLI 请求 OpenCodex 代理只等 3 秒（config-loader.mjs 硬编码），而代理「冷启动」
+——第一次被问、或换个进程来问——实测要 8~11 秒。于是页面初始化那次查询必然被掐断，
+CLI 报「代理服务不可用」、模型列表为空，卡片就显示 0 个。紧接着再点一次，代理已热
+（几十毫秒返回），看起来就「刷新一下好了」。
+
+注意这不是「版本问题」：npm 全局装的 unifyai 与本地源码仓库同为 1.4.0，但文件内容不同
+（源码版已把超时改成 20s + 重试，npm 版仍是 3s 硬超时）。服务默认走全局 unifyai，
+所以此前改源码仓库不生效。
+
+修复：不再依赖 CLI 放宽超时（那份代码在 npm 包里，本仓库管不着），改为在调用 CLI 之前
+由后端自己先把代理问热 —— warmOpenCodexProxy()：
+- 从 sync.json 的 source 读代理地址（proxyUrl / port，缺省 http://localhost:10100/v1/models）；
+- 用独立 ctx 请求一次，超时上限 25s（warmProxyTimeout），冷启动多久就等多久；
+- 请求完把 body 读完并丢弃，确保连接真正建立；失败只记日志，不影响原有降级行为。
+
+同时：
+- queryModelsAttempts 由 2 提到 3，退避重试更稳；
+- queryModels / ListAll 两个入口进来先预热（/all 与 /models 两条路都覆盖）。
+
+验证（冷暖对照，代理冷却 150s 后各打一次 GET /api/unifyai/all，即页面初始化那条）：
+- 旧二进制 -> count=0 models=0 degraded=true
+- 新二进制 -> count=30 models=30 degraded=false
+  预热日志：elapsed_ms=8376（冷启动），之后再问只要 22ms。
+单测 ./plugins/unifyai/... ./plugins/admin-api/... ./core/procreg/... 全绿。

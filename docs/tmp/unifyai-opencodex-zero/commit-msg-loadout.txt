@@ -1,0 +1,35 @@
+fix(unifyai): 修掉「同步取数」时 OpenCodex 模型恒为 0（代理冷启动超时）
+
+现象：进 UnifyAI 页面走「同步取数」（--list all）时，「数据预览 -> OpenCodex 模型」
+显示 0 个；手动点「刷新元数据」才正常。
+
+根因：unifyai CLI 请求 OpenCodex 代理硬编码 3 秒超时，而代理冷启动实测要 10.4~11.3 秒
+（热了之后 44~81ms）。所以「本进程第一次问代理」必然超时 -> degraded=true + 空列表 ->
+页面显示 0；紧接着再点一次代理已热，看起来就「好了」。
+
+对照实验（同一份配置，代理晾冷 130~150s）：
+- 旧代码：rawCount=0 count=0 degraded=true（3.7s 放弃）
+- 新代码：rawCount=39 count=30 degraded=false（0.8s 返回）
+
+修复（三层）：
+1. 后端 queryModels/queryModelsOnce 抽出公共查询，判定 `Degraded && 无模型` 时退避重试一次；
+   ListAll 同样带上（之前只有 /models 有重试，/all 没有），内部拆出 listAllOnce。
+   queryModelsAttempts / queryModelsRetryDelay 做成 var 便于测试缩短等待。
+2. enableVision 改为只由调用方显式传入，不再从 sync.json 读旧值——旧值会让行为与 UI 开关对不上。
+   ListAll 签名加参、/api/unifyai/all 支持 ?enableVision=1、前端 fetchAllConfig 透传开关。
+3. 前端 normalizeOpenCodexModels：CLI 的 count 字段缺失时用 models.length 兜底，
+   避免有数据也显示「0 个模型」。
+
+顺带：
+- enrichFromOpenRouter：代理没给上下文窗口时用本地 OpenRouter 缓存按「完整 id / 裸模型名」
+  两级匹配补 contextWindow，让「同步取数」与「刷新元数据」两条路结果一致。
+- 新增 OpenCodexModelsLive(enableVision) 与 GET /api/unifyai/opencodex-models-live，
+  原样透传 CLI 输出，用于诊断字段名差异。
+- procreg 新增 SetRunCollectFn 测试 seam；sourceFromSync 抽出 expandHome。
+
+验证：go build/vet 通过；unifyai/admin-api/procreg 三包测试全绿（clean -testcache）；
+vue-tsc -b 退出码 0；新二进制在 :3111 上冷代理实测
+/api/unifyai/all -> count=30 models=30 degraded=false。
+
+注：根治在 unifyai 仓库（commit defe894，超时 3s -> 20s 且超时重试一次）；
+本提交是后端 + 前端的双保险与展示兜底。

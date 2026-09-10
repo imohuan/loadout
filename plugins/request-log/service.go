@@ -137,24 +137,33 @@ func (s *Service) Stats(ctx context.Context) RequestLogStats {
 	return stats
 }
 
-// diskSize 独立库的实际磁盘占用：request-log.db 与 WAL 边车文件之和。
+// diskSize 独立库的实际磁盘占用，单位字节。只算主文件 request-log.db。
 //
-// 为什么算 -wal：WAL 模式下新写入的日志可能还在 WAL 里没合并进主文件，
-// 只算主文件会明显偏小（刚写完大量日志时尤其明显）。
-// 为什么不算 -shm：它只是共享内存索引（32KB 固定块），不随数据量变化，
-// 计入会让「清空后大小」看起来没降下去，误导用户以为没删干净。
-// 文件不存在视为 0。
+// 【为什么不算 -wal】WAL 是「已提交但还没并回主文件」的增量缓冲，有两个要命的性质：
+//   - 它不会自己回落。实测写入 2000 行 × 64KB 后 WAL 停在 4.1MB，空闲 2 秒纹丝不动，
+//     只有 TRUNCATE checkpoint 才会清零；库越大、写得越频繁，它残留得越多。
+//   - 它会随写入活动实时波动。同一秒钟读两次可能差几十 MB。
+//
+// 把它算进「日志占用」，数字就会虚高、还会随时间跳——用户在转发日志页（每 3 秒刷）
+// 和设置页（进页面时刷一次）看到两个不同的值，看起来像 bug。日志真正占的地方是主
+// 文件，WAL 只是过程中的中转。
+//
+// 读之前先做一次 PASSIVE checkpoint 把已提交内容并回主文件：它很便宜（不重建文件，
+// 只是搬页），能保证主文件的尺寸反映最新数据，不至于刚写完一堆日志、主文件还停在旧值。
+//
+// 【为什么不算 -shm】共享内存索引，固定 32KB，不随数据量变化。
 func (s *Service) diskSize() int64 {
 	if s.dbPath == "" {
 		return 0
 	}
-	var total int64
-	for _, suffix := range []string{"", "-wal"} {
-		if info, err := os.Stat(s.dbPath + suffix); err == nil {
-			total += info.Size()
-		}
+	// best-effort：checkpoint 失败（例如别的连接正占着）就按当前主文件大小报，
+	// 不阻塞、不报错——这只是展示用的数字。
+	_, _ = s.reqDB.ExecContext(context.Background(), `PRAGMA wal_checkpoint(PASSIVE)`)
+	info, err := os.Stat(s.dbPath)
+	if err != nil {
+		return 0
 	}
-	return total
+	return info.Size()
 }
 
 // Clear 清空全部完整请求日志。同时把 loadout.db 里残留的关联列 request_log_id 清空：

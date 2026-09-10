@@ -1,0 +1,13 @@
+fix: raise OpenCodex proxy timeout to 20s and retry once on timeout
+
+The 3s hardcoded timeout in tryFetchFromProxy was below the proxy cold-start
+latency (~10.5s measured on a local gateway), so the very first query always
+aborted and returned an empty model list with degraded=true. The model list
+only appeared on a second call, once the proxy was warm - which is why the UI
+showed 0 OpenCodex models until the user manually triggered a refresh.
+
+Raise the timeout to PROXY_TIMEOUT_MS (20s) and retry once when the attempt
+timed out (not for ECONNREFUSED/DNS failures, where a retry cannot help).
+
+Verified against a real cold proxy: old code -> rawCount=0 degraded=true in
+3.7s; new code -> rawCount=39 count=30 degraded=false in 0.8s.
