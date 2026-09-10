@@ -284,15 +284,6 @@ function groupTitle(group: ChannelGroup) {
                               class="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground"
                             >
                               <span>{{ modelCountLabel(key) }}</span>
-                              <Button
-                                v-if="modelCount(key) > 0"
-                                variant="ghost"
-                                size="sm"
-                                class="h-5 px-1.5 text-xs"
-                                :aria-label="`把「${key.name}」的模型同步到其他 Key`"
-                                @click="emit('syncModels', key)"
-                                ><RiExchangeLine size="12" />同步模型</Button
-                              >
                               <span
                                 >费用同步：
                                 <Badge :variant="key.sync_billing ? 'default' : 'secondary'">{{
@@ -334,6 +325,19 @@ function groupTitle(group: ChannelGroup) {
                                 class="animate-spin"
                                 size="16"
                               /><RiRefreshLine v-else size="16" />刷新模型
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              :disabled="modelCount(key) <= 0"
+                              :title="
+                                modelCount(key) > 0
+                                  ? `把「${key.name}」的模型同步到本平台其他 Key`
+                                  : '该 Key 没有可同步的模型'
+                              "
+                              @click="emit('syncModels', key)"
+                            >
+                              <RiExchangeLine size="16" />同步模型
                             </Button>
                             <Button variant="ghost" size="sm" @click="emit('editKey', key)">
                               <RiEditLine size="16" />编辑
