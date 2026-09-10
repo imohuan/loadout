@@ -2,6 +2,8 @@
 import { computed, onMounted, ref } from 'vue'
 import { RiDatabase2Line, RiDeleteBinLine, RiLoader4Line } from '@remixicon/vue'
 import { useRequestLogs } from '@/composables/useRequestLogs'
+import { useConfirm } from '@/composables/useConfirm'
+import { toast } from 'vue-sonner'
 import { formatBytes, formatDate } from '@/lib/format'
 import type { RequestLogStats } from '@/lib/types'
 
@@ -30,6 +32,10 @@ const emit = defineEmits<{
 
 const service = useRequestLogs()
 const stats = ref<RequestLogStats | null>(null)
+// 清空进度：按钮禁用 + 转圈。清空可能删掉整个库，放这里而不是页面顶栏，
+// 是因为「日志保留」卡片本来就是这个库的大小、清理规则的唯一去处。
+const clearing = ref(false)
+const { confirmDialog } = useConfirm()
 
 /** 读当前日志库占用，给用户一个「现在多大」的参照，方便判断阈值该设多少。 */
 async function refresh() {
@@ -45,6 +51,39 @@ function setStats(value: RequestLogStats) {
 }
 onMounted(refresh)
 defineExpose({ refresh, setStats })
+
+/**
+ * 清空完整请求日志库。
+ *
+ * 先确认再删：这个库可能是十几 GB，误点代价高。清空只删 request-log.db 的记录，
+ * 转发日志（route_requests）不动——那些是路由决策记录，体积小得多，
+ * 清空入口在转发日志页自己的「清空日志」按钮上。
+ */
+async function clearAll() {
+  const current = stats.value
+  const description = current
+    ? `共 ${current.count} 条、占用 ${formatBytes(current.size)}${
+        current.oldest_started_at ? `，最早一条为 ${formatDate(current.oldest_started_at)}` : ''
+      }。删除后不可恢复。`
+    : '将删除全部完整请求日志，此操作不可恢复。'
+  const confirmed = await confirmDialog({
+    title: '清空完整请求日志？',
+    description,
+    confirmText: '清空',
+    destructive: true,
+  })
+  if (!confirmed) return
+  clearing.value = true
+  try {
+    const result = await service.clear()
+    await refresh()
+    toast.success(`已清空 ${result.affected} 条完整请求日志`)
+  } catch (error) {
+    toast.error(error instanceof Error ? error.message : '清空失败')
+  } finally {
+    clearing.value = false
+  }
+}
 
 /** 输入框与 props 双向绑定：空/非法一律归 0（= 不限），避免把 NaN 提交给后端。 */
 function toNumber(value: string) {
@@ -120,13 +159,13 @@ const unlimited = computed(() => !props.maxAgeDays && !props.maxSizeMb)
         </div>
       </div>
       <div class="flex flex-wrap items-center gap-2">
-        <Button type="button" :disabled="saving || cleaning" @click="emit('save')">
+        <Button type="button" :disabled="saving || cleaning || clearing" @click="emit('save')">
           <RiLoader4Line v-if="saving" class="animate-spin" size="16" />保存
         </Button>
         <Button
           type="button"
           variant="outline"
-          :disabled="saving || cleaning"
+          :disabled="saving || cleaning || clearing"
           :title="unlimited ? '当前未设限制，清理不会删除任何日志' : '按上面的设置立刻清理一次，不用等新请求'"
           @click="emit('clean')"
         >
@@ -135,10 +174,24 @@ const unlimited = computed(() => !props.maxAgeDays && !props.maxSizeMb)
             size="16"
           />立即清理
         </Button>
+        <Button
+          type="button"
+          variant="outline"
+          class="ml-auto text-destructive hover:text-destructive"
+          :disabled="saving || cleaning || clearing"
+          title="删除全部完整请求日志（转发日志不受影响）"
+          @click="clearAll"
+        >
+          <RiLoader4Line v-if="clearing" class="animate-spin" size="16" /><RiDeleteBinLine
+            v-else
+            size="16"
+          />清空占用
+        </Button>
       </div>
       <p class="text-xs text-muted-foreground">
         「保存」只写设置，不动日志；想让新设置马上生效（比如刚把上限改小、库里还堆着
-        十几 GB），点「立即清理」按当前设置跑一次。
+        十几 GB），点「立即清理」按当前设置跑一次。「清空占用」直接删光这个库，
+        转发日志不受影响。
       </p>
     </CardContent>
   </Card>
