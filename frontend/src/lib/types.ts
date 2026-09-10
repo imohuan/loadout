@@ -109,10 +109,11 @@ export interface TestLogMeta {
   api_key?: string
   sk_key_hash?: string
   model?: string
+  /** 左侧 Messages 编辑区快照（**不含**本次输入；本次输入由 draft 承载，避免加载时重复） */
   messages?: { role: string; content: string }[]
   /** 右侧输入区文本（draft） */
   draft?: string
-  attachments?: { name: string; kind: "image" | "file" }[]
+  attachments?: { name: string; kind: 'image' | 'file' }[]
 }
 
 export interface RouteLog {

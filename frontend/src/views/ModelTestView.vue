@@ -436,11 +436,11 @@ async function send() {
       api_key: config.apiKey,
       sk_key_hash: config.skKeyHash,
       model: config.model,
-      messages: requestMessages.map((m) => ({
-        role: m.role,
-        content:
-          typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
-      })),
+      // 左侧 Messages 快照：只存编辑区消息（不含本次输入）。
+      // 本次输入已由 draft 承载，若一并写入，加载时同一句话会同时进左侧列表和右侧输入框（重复 2 次）。
+      messages: messages.value
+        .filter((m) => m.content.trim())
+        .map((m) => ({ role: m.role, content: m.content })),
       draft: draft.value,
       attachments: attachments.value.map((a) => ({ name: a.name, kind: a.kind })),
     },
@@ -729,6 +729,9 @@ function loadFromLogMeta(meta: RouteLog['meta']) {
       role: m.role as MessageRole,
       content: m.content,
     }))
+  } else {
+    // 老日志/无编辑区消息：整体重置，避免残留上一次的消息与新 draft 叠加发送。
+    messages.value = []
   }
   if (meta.draft !== undefined) draft.value = meta.draft
 }
