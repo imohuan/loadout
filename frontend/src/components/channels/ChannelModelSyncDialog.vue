@@ -48,11 +48,15 @@ const selectedIds = ref<string[]>([])
 // 显示模式：列表（每行平铺该 Key 的模型）/ 标签（hover tooltip 看模型）。
 const displayMode = ref<'list' | 'tag'>('list')
 
-// 候选池 = 已载入的清单 ∪ 同名渠道其他 Key 已配置的模型（∪ 自定义），去重排序。
+// 候选池 = 已载入底稿（form.candidates）∪ 本平台其他 Key 已配置的模型 ∪ 自定义。
+// 注意：不载入任何底稿时（刚打开弹窗），这里只该展示「本平台 Key 已有」的模型；
+// 真正的「支持的模型全集」要靠「获取模型」按钮去探测，不能凭空铺出来。
 const channelGroups = computed(() => groupChannelsByBaseURL(props.channels || []))
 const poolModels = computed(() => {
+  const target = currentGroupUrl.value
   const set = new Set<string>(form.candidates)
   for (const ch of props.channels || []) {
+    if (target && normalizeBaseURL(ch.base_url) !== target) continue
     for (const m of ch.models || []) set.add(m)
   }
   return [...set].sort()
@@ -364,6 +368,14 @@ function submit() {
                 @click="toggleModel(m)"
                 >{{ m }}</Button
               >
+            </div>
+            <!-- 还没载入任何底稿、本平台也没有可用模型：候选区保持空，等用户主动载入 -->
+            <div
+              v-else-if="!poolModels.length && !modelSearch.trim()"
+              class="rounded-md border border-dashed border-border px-3 py-6 text-center text-xs text-muted-foreground"
+            >
+              还没有可选的模型。用右上角「从某个 Key 载入模型」挑一个 Key 载入它的清单，<br />
+              或直接在上面的输入框粘贴模型名回车添加。
             </div>
             <div
               v-else
