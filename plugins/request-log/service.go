@@ -266,14 +266,17 @@ func (s *Service) trimBySize(ctx context.Context, limit int64) {
 		contentBudget = 1
 	}
 
-	// 第一段：估算要保留多少行。从最新往旧累加内容字节，找到累计量 <= 预算的那批行。
-	const rowBytesExpr = `(length(request_json) + length(COALESCE(response_json, '')) + 128)`
+	// 第一段：估算要保留多少行。从最新往旧累加每行记录好的 bytes，找到累计量 <= 预算的那批行。
+	//
+	// 直接读 bytes 列而不是现算 length(request_json)+...：写入时就算好了，
+	// 这里只做一次纯数值的窗口求和，不必把正文读出来量长度——大库上这一趟
+	// 省掉的是对整个 request_json/response_json 的扫描。
 	var keep int64
 	query := `
 		SELECT COALESCE(MAX(rn), 0) FROM (
 			SELECT rn, SUM(row_bytes) OVER (ORDER BY rn DESC) AS acc
 			FROM (
-				SELECT ROW_NUMBER() OVER (ORDER BY started_at DESC) AS rn, ` + rowBytesExpr + ` AS row_bytes
+				SELECT ROW_NUMBER() OVER (ORDER BY started_at DESC) AS rn, bytes AS row_bytes
 				FROM request_logs
 			)
 		) WHERE acc <= ?`
@@ -517,8 +520,9 @@ func (s *Service) HandleBeforeAttempt(payload any) (any, error) {
 		return payload, nil
 	}
 	// 纯 INSERT：每次 attempt 独立 UUID 恒不冲突（无需 ON CONFLICT 分支）。
-	if _, err := s.reqDB.Exec(`INSERT INTO request_logs(id, request_id, model, channel, stream, started_at, result, request_json, created_at) VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?)`,
-		uuid, pipe.RequestID, model, channel, boolToInt(pipe.Request.Stream), started.Format(time.RFC3339Nano), string(reqJSON), started.Format(time.RFC3339Nano)); err != nil {
+	// bytes 在这里先记「请求体 + 固定开销」；响应收尾时再重算一次总量。
+	if _, err := s.reqDB.Exec(`INSERT INTO request_logs(id, request_id, model, channel, stream, started_at, result, request_json, bytes, created_at) VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?, ?)`,
+		uuid, pipe.RequestID, model, channel, boolToInt(pipe.Request.Stream), started.Format(time.RFC3339Nano), string(reqJSON), rowBytes(string(reqJSON), ""), started.Format(time.RFC3339Nano)); err != nil {
 		s.lg.Warn("request-log: 写 request_logs 半条失败", "request_id", pipe.RequestID, "err", err)
 		return payload, nil
 	}
@@ -648,8 +652,10 @@ func (s *Service) finishRequestLog(uuid string, status int, respJSON, channel, r
 	// 【P1 幂等】WHERE 加 finished_at IS NULL：聚合末次失败 attempt 会先后收到
 	// ProxyAttemptFailed（每次失败 emit）与 ProxyUpstreamFailed（聚合全败 failover）
 	// 两个事件，重复收尾同一条；限定仅首次生效可避免二次 UPDATE 与结果覆盖。
-	if _, err := s.reqDB.Exec(`UPDATE request_logs SET response_json = ?, http_status = ?, finished_at = ?, duration_ms = ?, result = ?, channel = CASE WHEN ? = '' THEN channel ELSE ? END WHERE id = ? AND finished_at IS NULL`,
-		respJSON, status, now.Format(time.RFC3339Nano), duration, result, channel, channel, uuid); err != nil {
+	// bytes 就地重算：用库里的 length(request_json) 加上本次响应体长度与固定开销，
+	// 不必把请求体读回内存。
+	if _, err := s.reqDB.Exec(`UPDATE request_logs SET response_json = ?, http_status = ?, finished_at = ?, duration_ms = ?, result = ?, bytes = length(request_json) + length(?) + ?, channel = CASE WHEN ? = '' THEN channel ELSE ? END WHERE id = ? AND finished_at IS NULL`,
+		respJSON, status, now.Format(time.RFC3339Nano), duration, result, respJSON, rowFixedOverhead, channel, channel, uuid); err != nil {
 		s.lg.Warn("request-log: 收尾写库失败", "id", uuid, "err", err)
 	}
 }
@@ -973,8 +979,10 @@ func (s *Service) healStuck(id, requestID string, started time.Time) {
 		}
 	}
 	now := time.Now().UTC()
-	_, _ = s.reqDB.Exec(`UPDATE request_logs SET finished_at = ?, duration_ms = ?, result = ?, http_status = CASE WHEN ? = 0 THEN http_status ELSE ? END, response_json = CASE WHEN ? = '' THEN response_json ELSE ? END WHERE id = ?`,
-		now.Format(time.RFC3339Nano), now.Sub(started).Milliseconds(), result, status, status, respJSON, respJSON, id)
+	// bytes 与 response_json 用同一个 CASE 条件：只有在真的写入了响应体时才重算，
+	// 否则保持原值（否则会把已有的响应体字节数抹掉）。
+	_, _ = s.reqDB.Exec(`UPDATE request_logs SET finished_at = ?, duration_ms = ?, result = ?, http_status = CASE WHEN ? = 0 THEN http_status ELSE ? END, response_json = CASE WHEN ? = '' THEN response_json ELSE ? END, bytes = CASE WHEN ? = '' THEN bytes ELSE length(request_json) + length(?) + ? END WHERE id = ?`,
+		now.Format(time.RFC3339Nano), now.Sub(started).Milliseconds(), result, status, status, respJSON, respJSON, respJSON, respJSON, rowFixedOverhead, id)
 }
 
 // ---- HTTP handlers（RegisterRoute 注册，Auth: AuthSession 由框架挂 session） ----

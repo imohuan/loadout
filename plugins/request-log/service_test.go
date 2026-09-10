@@ -932,8 +932,9 @@ func TestBeforeAttemptMissClearsAttemptKeys(t *testing.T) {
 func seedLogRow(t *testing.T, reqDB *sql.DB, id, startedAt string, bodySize int) {
 	t.Helper()
 	body := strings.Repeat("x", bodySize)
-	if _, err := reqDB.Exec(`INSERT INTO request_logs(id, request_id, model, channel, stream, started_at, result, request_json, created_at) VALUES (?, ?, 'm', 'c', 0, ?, 'success', ?, ?)`,
-		id, id, startedAt, body, startedAt); err != nil {
+	// bytes 与生产写入路径保持一致（rowBytes），容量清理按这一列求和。
+	if _, err := reqDB.Exec(`INSERT INTO request_logs(id, request_id, model, channel, stream, started_at, result, request_json, bytes, created_at) VALUES (?, ?, 'm', 'c', 0, ?, 'success', ?, ?, ?)`,
+		id, id, startedAt, body, rowBytes(body, ""), startedAt); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -1443,5 +1444,48 @@ func TestTrimBySizeDeletesOldestFirst(t *testing.T) {
 	}
 	if olderLeft != 0 {
 		t.Fatalf("found %d rows older than the oldest kept row — kept set is not a contiguous newest tail", olderLeft)
+	}
+}
+
+// TestFinishRequestLogRecalculatesBytes 收尾写入响应体后，bytes 必须跟着变大。
+//
+// 这是「写入完成时记录大小」的关键一环：请求落库时只能算到请求体，响应体是
+// 收尾时才有的。如果收尾忘了重算 bytes，这行就永远只报半个大小，容量清理
+// 会少算它占的空间。
+func TestFinishRequestLogRecalculatesBytes(t *testing.T) {
+	reqDB, err := openRequestLogDB(t.TempDir() + "/request-log.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reqDB.Close()
+	svc := NewService(nil, slog.New(slog.DiscardHandler), reqDB, nil)
+
+	reqBody := strings.Repeat("q", 1000)
+	started := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := reqDB.Exec(`INSERT INTO request_logs(id, request_id, model, channel, stream, started_at, result, request_json, bytes, created_at) VALUES ('b1','b1','m','c',0,?,'running',?,?,?)`,
+		started, reqBody, rowBytes(reqBody, ""), started); err != nil {
+		t.Fatal(err)
+	}
+
+	var before int64
+	if err := reqDB.QueryRow(`SELECT bytes FROM request_logs WHERE id = 'b1'`).Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	if want := rowBytes(reqBody, ""); before != want {
+		t.Fatalf("bytes before finish = %d, want %d", before, want)
+	}
+
+	respBody := strings.Repeat("r", 5000)
+	svc.finishRequestLog("b1", 200, respBody, "ch", "success")
+
+	var after int64
+	if err := reqDB.QueryRow(`SELECT bytes FROM request_logs WHERE id = 'b1'`).Scan(&after); err != nil {
+		t.Fatal(err)
+	}
+	if want := rowBytes(reqBody, respBody); after != want {
+		t.Fatalf("bytes after finish = %d, want %d", after, want)
+	}
+	if after <= before {
+		t.Fatalf("bytes should grow after writing the response body: %d -> %d", before, after)
 	}
 }
