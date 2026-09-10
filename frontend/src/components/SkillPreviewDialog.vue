@@ -241,7 +241,7 @@ function close() {
               </span>
             </div>
 
-            <div v-if="loadingFile" class="flex flex-1 items-center gap-2 p-4 text-sm text-muted-foreground">
+            <div v-if="loadingFile" class="flex shrink-0 items-center gap-2 px-5 py-3 text-sm text-muted-foreground">
               <RiLoader4Line class="size-4 animate-spin" />读取中…
             </div>
             <div v-else-if="!file" class="flex flex-1 items-center justify-center p-4 text-center">
