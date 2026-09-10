@@ -291,7 +291,14 @@ function hasRequestLog(requestLogId?: string) {
         <CardTitle class="text-base">请求记录</CardTitle>
         <CardDescription>展开一条请求可查看每一次真实上游尝试和被跳过的候选。</CardDescription>
       </div>
-      <slot name="actions" />
+      <div class="flex shrink-0 items-center gap-3">
+        <!-- 标题行右侧的次要控制区（转发日志页放自动刷新开关）。
+             转发日志页两个插槽都传了，所以这里放的是「标题行」那一份；
+             actions 那份在表头栏。两个插槽名分开是有意的：只用 actions 一个名字时，
+             同一份内容会被同时插进这两个位置，页面上就渲染出两个开关。 -->
+        <slot name="header-actions" />
+        <slot name="actions" />
+      </div>
     </CardHeader>
     <CardContent class="p-0">
       <div v-if="pagedLogs.length" class="overflow-x-auto">

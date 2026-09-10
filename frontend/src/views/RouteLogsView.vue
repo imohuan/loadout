@@ -16,6 +16,7 @@ import PageHeader from '@/components/PageHeader.vue'
 import LoadingBlock from '@/components/LoadingBlock.vue'
 import RouteLogFiltersForm from '@/components/route-logs/RouteLogFilters.vue'
 import RouteLogTable from '@/components/route-logs/RouteLogTable.vue'
+import RouteLogAutoRefreshSwitch from '@/components/route-logs/RouteLogAutoRefreshSwitch.vue'
 
 const service = useRouteLogs()
 const requestLogService = useRequestLogs()
@@ -422,15 +423,9 @@ const logSizeTitle = computed(() => {
     <RouteLogFiltersForm
       :channels="channelOptions"
       :is-pending="isPending"
-      :auto-refresh="autoRefreshEnabled"
       @apply="apply"
       @reset="apply({})"
-      @update:auto-refresh="setAutoRefreshEnabled"
     />
-    <!-- 自动刷新只在第 1 页跑：翻到其他页时用一句话明说，避免用户把不动的列表当成卡死。 -->
-    <p v-if="!autoRefreshActive()" class="text-sm text-muted-foreground">
-      已暂停自动刷新（仅第 1 页自动刷新）；回到第 1 页会自动继续，也可点右上角「刷新」。
-    </p>
     <LoadingBlock v-if="loading" />
     <RouteLogTable
       v-else
@@ -444,6 +439,14 @@ const logSizeTitle = computed(() => {
       @update:page="onPageChange"
       @update:page-size="onPageSizeChange"
       @expand="expand"
-    />
+    >
+      <template #header-actions>
+        <RouteLogAutoRefreshSwitch
+          :enabled="autoRefreshActive()"
+          :paused="autoRefreshEnabled && !autoRefreshActive()"
+          @update:enabled="setAutoRefreshEnabled"
+        />
+      </template>
+    </RouteLogTable>
   </div>
 </template>
