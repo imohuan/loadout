@@ -180,7 +180,8 @@ function manualRefresh() {
 //   - 翻到第 2 页及以后，列表本就是历史快照，每 3 秒重取一次既没用、又会把用户
 //     正在看的行整表换掉（展开态靠 detailsMap 兜着，但列表对象每轮都是新的）；
 //   - 因此翻页离开第 1 页即停表，回到第 1 页再立刻刷一次并重新开始计时。
-// 开关持久化在 localStorage，设置页 / 筛选行都能改（见 readAutoRefreshEnabled）。
+// 开关持久化在 localStorage，就在本页筛选行里改（见 readAutoRefreshEnabled）。
+// 只放本页、不上设置页：这是「这块列表怎么动」的显示偏好，跟日志保留策略无关。
 const AUTO_REFRESH_INTERVAL = 3_000
 const autoRefreshEnabled = ref(readAutoRefreshEnabled())
 let autoTimer: ReturnType<typeof setInterval> | undefined
@@ -375,7 +376,9 @@ const logSizeTitle = computed(() => {
   const limits: string[] = []
   if (stats.max_age_days > 0) limits.push(`只留最近 ${stats.max_age_days} 天`)
   if (stats.max_size_mb > 0) limits.push(`最多 ${stats.max_size_mb} MB`)
-  lines.push(limits.length ? `保留策略：${limits.join('、')}` : '保留策略：未设置（日志会一直增长）')
+  lines.push(
+    limits.length ? `保留策略：${limits.join('、')}` : '保留策略：未设置（日志会一直增长）',
+  )
   lines.push('点击可清空该日志库；保留策略在「设置 → 日志保留」')
   return lines.join('\n')
 })
@@ -400,8 +403,8 @@ const logSizeTitle = computed(() => {
           <RiLoader4Line v-if="isPending('clear')" class="animate-spin" size="16" /><RiDeleteBinLine
             v-else
             size="16"
-          />清空日志
-        </Button><Button
+          />清空日志 </Button
+        ><Button
           variant="outline"
           class="font-mono tabular-nums"
           :disabled="isPending('clear-request-logs')"
