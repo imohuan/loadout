@@ -8,13 +8,12 @@
 // 其余纯文本走等宽字体 + 行号；二进制/超限文件只给提示不回内容。
 
 import { computed, ref, watch } from 'vue'
-import { RiClipboardLine, RiLoader4Line, RiRefreshLine } from '@remixicon/vue'
+import { RiClipboardLine, RiCloseLine, RiLoader4Line, RiRefreshLine } from '@remixicon/vue'
 import { toast } from 'vue-sonner'
 import { useManagementApi } from '@/composables/useManagementApi'
 import { buildSkillTree, defaultExpandedPaths, type SkillTreeNode } from '@/lib/skillTree'
 import type { SkillFileContent } from '@/lib/types'
 import SplitPane from '@/components/SplitPane.vue'
-import EmptyState from '@/components/EmptyState.vue'
 import SkillTreeNodeItem from './skill-preview/SkillTreeNode.vue'
 
 const props = defineProps<{
@@ -34,6 +33,8 @@ const selectedPath = ref('')
 const file = ref<SkillFileContent | null>(null)
 const treeError = ref('')
 const rootPath = ref('')
+// 技能目录里是否有 SKILL.md（决定「查看 SKILL.md」按钮是否可用）。
+const hasSkillMd = ref(false)
 
 const skillName = computed(() => props.skill?.name || '')
 const selectedName = computed(() => {
@@ -111,9 +112,12 @@ async function loadTree(name = skillName.value) {
     expanded.value = defaultExpandedPaths(roots)
     // 默认预览 SKILL.md，方便一眼看到技能说明。
     const skillMd = (tree.entries || []).find((e) => e.path === 'SKILL.md' && !e.dir)
+    hasSkillMd.value = !!skillMd
     if (skillMd) void openFile('SKILL.md')
   } catch (e) {
+    // 目录加载失败（如后端版本过旧没有该接口）时明确提示，不要静默成「空目录」。
     treeError.value = e instanceof Error ? e.message : String(e)
+    toast.error('技能目录加载失败', { description: treeError.value })
   } finally {
     loadingTree.value = false
   }
@@ -174,8 +178,9 @@ function close() {
   <Dialog :open="open" @update:open="(o: boolean) => emit('update:open', o)">
     <DialogContent
       class="flex h-[86vh] w-[94vw] max-w-[94vw]! flex-col gap-0 overflow-hidden p-0 sm:max-w-[94vw]!"
+      :show-close-button="false"
     >
-      <DialogHeader class="flex flex-row items-center gap-2 border-b border-border px-4 py-3">
+      <DialogHeader class="flex shrink-0 flex-row items-center gap-1 border-b border-border px-4 py-2.5">
         <div class="min-w-0 flex-1">
           <DialogTitle class="truncate text-base">{{ skillName }} · 文件</DialogTitle>
           <DialogDescription class="truncate text-xs text-muted-foreground">
@@ -188,6 +193,9 @@ function close() {
         <Button variant="ghost" size="icon" aria-label="重新加载" :disabled="loadingTree" @click="loadTree()">
           <RiLoader4Line v-if="loadingTree" class="size-4 animate-spin" />
           <RiRefreshLine v-else class="size-4" />
+        </Button>
+        <Button variant="ghost" size="icon" aria-label="关闭" @click="close">
+          <RiCloseLine class="size-4" />
         </Button>
       </DialogHeader>
 
@@ -202,7 +210,9 @@ function close() {
                 <RiLoader4Line class="size-4 animate-spin" />加载中…
               </div>
               <p v-else-if="treeError" class="px-3 py-2 text-sm text-destructive">{{ treeError }}</p>
-              <EmptyState v-else-if="!entries.length" title="目录为空" description="这个技能没有任何文件。" />
+              <p v-else-if="!entries.length" class="px-3 py-4 text-sm text-muted-foreground">
+                这个技能目录是空的。
+              </p>
               <template v-else>
                 <SkillTreeNodeItem
                   v-for="node in entries"
@@ -234,12 +244,9 @@ function close() {
             <div v-if="loadingFile" class="flex flex-1 items-center gap-2 p-4 text-sm text-muted-foreground">
               <RiLoader4Line class="size-4 animate-spin" />读取中…
             </div>
-            <EmptyState
-              v-else-if="!file"
-              class="flex-1"
-              title="选择左侧文件查看内容"
-              description="点击目录展开，点击文件即可在这里预览。"
-            />
+            <div v-else-if="!file" class="flex flex-1 items-center justify-center p-4 text-center">
+              <p class="text-sm text-muted-foreground">点击左侧文件即可在这里预览内容。</p>
+            </div>
             <div v-else-if="file.binary" class="flex flex-1 items-center justify-center p-4">
               <p class="text-sm text-muted-foreground">二进制文件（{{ formatSize(file.size) }}），不支持预览。</p>
             </div>
@@ -281,7 +288,15 @@ function close() {
         </template>
       </SplitPane>
 
-      <DialogFooter class="border-t border-border px-4 py-3">
+      <DialogFooter
+        class="mx-0! mb-0! shrink-0 rounded-none! border-t border-border bg-transparent! px-4 py-2.5 sm:justify-end"
+      >
+        <Button
+          variant="outline"
+          :disabled="!hasSkillMd"
+          @click="openFile('SKILL.md')"
+          >查看 SKILL.md</Button
+        >
         <Button variant="outline" @click="close">关闭</Button>
       </DialogFooter>
     </DialogContent>
