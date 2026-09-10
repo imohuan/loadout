@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { RiDatabase2Line, RiLoader4Line } from '@remixicon/vue'
+import { RiDatabase2Line, RiDeleteBinLine, RiLoader4Line } from '@remixicon/vue'
 import { useRequestLogs } from '@/composables/useRequestLogs'
 import { formatBytes, formatDate } from '@/lib/format'
 import type { RequestLogStats } from '@/lib/types'
@@ -18,11 +18,14 @@ const props = defineProps<{
   maxAgeDays: number
   maxSizeMb: number
   saving?: boolean
+  /** 正在立即清理 */
+  cleaning?: boolean
 }>()
 const emit = defineEmits<{
   'update:maxAgeDays': [value: number]
   'update:maxSizeMb': [value: number]
   save: []
+  clean: []
 }>()
 
 const service = useRequestLogs()
@@ -36,8 +39,12 @@ async function refresh() {
     // 静默：读不到统计不影响设置本身，卡片只是少一行参考信息。
   }
 }
+/** 直接写入最新统计（清理接口会回带清理后的结果，省一次往返）。 */
+function setStats(value: RequestLogStats) {
+  stats.value = value
+}
 onMounted(refresh)
-defineExpose({ refresh })
+defineExpose({ refresh, setStats })
 
 /** 输入框与 props 双向绑定：空/非法一律归 0（= 不限），避免把 NaN 提交给后端。 */
 function toNumber(value: string) {
@@ -112,9 +119,27 @@ const unlimited = computed(() => !props.maxAgeDays && !props.maxSizeMb)
           </p>
         </div>
       </div>
-      <Button type="button" :disabled="saving" @click="emit('save')">
-        <RiLoader4Line v-if="saving" class="animate-spin" size="16" />保存日志保留设置
-      </Button>
+      <div class="flex flex-wrap items-center gap-2">
+        <Button type="button" :disabled="saving || cleaning" @click="emit('save')">
+          <RiLoader4Line v-if="saving" class="animate-spin" size="16" />保存并立即清理
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          :disabled="saving || cleaning"
+          :title="unlimited ? '当前未设限制，清理不会删除任何日志' : '按上面的设置立刻清理一次，不用等新请求'"
+          @click="emit('clean')"
+        >
+          <RiLoader4Line v-if="cleaning" class="animate-spin" size="16" /><RiDeleteBinLine
+            v-else
+            size="16"
+          />立即清理
+        </Button>
+      </div>
+      <p class="text-xs text-muted-foreground">
+        自动清理发生在「写入新日志」时；改了上限想马上见效（比如库里已经堆了十几
+        GB），用「立即清理」手动触发一次。
+      </p>
     </CardContent>
   </Card>
 </template>

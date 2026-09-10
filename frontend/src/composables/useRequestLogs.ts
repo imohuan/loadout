@@ -35,5 +35,12 @@ export function useRequestLogs() {
   /** clear：清空全部完整请求日志；返回删掉的行数。调用前必须先让用户确认。 */
   const clear = () =>
     request<{ ok: boolean; affected: number }>('/api/request-logs', 'DELETE')
-  return { list, detail, stats, clear }
+  /**
+   * applyRetention：立刻按当前设置里的保留策略清理一次（天数 + 容量上限）。
+   * 自动清理只在「写新日志」「服务启动」时跑，所以改完上限必须能手动触发，
+   * 否则用户改了设置会以为没生效。返回清理后的最新统计。
+   */
+  const applyRetention = () =>
+    request<RequestLogStats>('/api/request-logs/retention/apply', 'POST')
+  return { list, detail, stats, clear, applyRetention }
 }

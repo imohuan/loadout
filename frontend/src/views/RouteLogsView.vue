@@ -269,11 +269,32 @@ async function refreshLogStats() {
 
 /**
  * 按钮文案：显示日志库占用大小。
- * 未取到时显示「日志大小」而不是「0 B」——0 B 是个断言，取不到时不该假装知道。
+ *
+ * 取数中 / 取数失败时显示「…」而不是「日志大小」这类文字：这个按钮的职责就是显示
+ * 一个数字，文字占位会让用户以为它是个普通按钮、甚至以为功能就是这样。
+ * 「…」明确表达「马上就有数字」，且不会像「0 B」那样谎报。
  */
-const logSizeLabel = computed(() =>
-  logStats.value ? formatBytes(logStats.value.size) : '日志大小',
-)
+const logSizeLabel = computed(() => {
+  const stats = logStats.value
+  if (!stats) return '…'
+  return formatBytes(stats.size)
+})
+
+/** 悬浮提示：把条数、时间范围、当前策略一起说清楚，按钮本身只放得下大小。 */
+const logSizeTitle = computed(() => {
+  const stats = logStats.value
+  if (!stats) return '正在读取完整请求日志占用…'
+  const lines = [`完整请求日志：${formatBytes(stats.size)}，共 ${stats.count} 条`]
+  if (stats.oldest_started_at) {
+    lines.push(`最早一条：${formatDate(stats.oldest_started_at)}`)
+  }
+  const limits: string[] = []
+  if (stats.max_age_days > 0) limits.push(`只留最近 ${stats.max_age_days} 天`)
+  if (stats.max_size_mb > 0) limits.push(`最多 ${stats.max_size_mb} MB`)
+  lines.push(limits.length ? `保留策略：${limits.join('、')}` : '保留策略：未设置（日志会一直增长）')
+  lines.push('点击可清空该日志库')
+  return lines.join('\n')
+})
 
 /** 确认框描述：把大小和条数都摆出来，让用户知道删掉的是多少东西。 */
 const clearLogDescription = computed(() => {
@@ -331,7 +352,7 @@ async function clearRequestLogs() {
         </Button><Button
           variant="outline"
           :disabled="isPending('clear-request-logs')"
-          :title="`完整请求日志库占用；点击可清空`"
+          :title="logSizeTitle"
           @click="clearRequestLogs"
         >
           <RiLoader4Line

@@ -10,6 +10,7 @@ import {
   RiUpload2Line,
 } from '@remixicon/vue'
 import { useManagementApi } from '@/composables/useManagementApi'
+import { useRequestLogs } from '@/composables/useRequestLogs'
 import { useProcessStore } from '@/stores/processes'
 import { useListLoader } from '@/composables/useListLoader'
 import { useAsyncTask } from '@/composables/useAsyncTask'
@@ -26,6 +27,7 @@ import TranslateView from '@/views/TranslateView.vue'
 import MultimodalView from '@/views/MultimodalView.vue'
 
 const api = useManagementApi()
+const requestLogApi = useRequestLogs()
 const { data: keys, loading: keysLoading, refresh: refreshKeys } = useListLoader(api.keys)
 const {
   data: plugins,
@@ -129,16 +131,29 @@ async function saveSettings() {
     '设置已保存',
   )
 }
-/** 保存日志保留策略。会立即触发一次清理（下一次写日志时生效），所以提示写清楚。 */
+/** 保存日志保留策略，并立即按新策略清理一次（用户改完上限通常期望马上看到效果）。 */
 async function saveLogRetention() {
   await run(
     'save-log-retention',
     async () => {
       await api.saveSettings({ ...settingsForm })
+      const stats = await requestLogApi.applyRetention()
+      logRetentionRef.value?.setStats(stats)
       await refreshSettings()
-      await logRetentionRef.value?.refresh()
     },
-    '日志保留设置已保存',
+    '日志保留设置已保存并清理',
+  )
+}
+
+/** 手动立即清理：用当前已保存的设置跑一次，不修改设置。 */
+async function cleanRequestLogsNow() {
+  await run(
+    'clean-request-logs',
+    async () => {
+      const stats = await requestLogApi.applyRetention()
+      logRetentionRef.value?.setStats(stats)
+    },
+    '已按当前保留策略清理',
   )
 }
 async function changePassword() {
@@ -296,7 +311,9 @@ onMounted(() => {
             v-model:max-age-days="settingsForm.request_log_max_age_days"
             v-model:max-size-mb="settingsForm.request_log_max_size_mb"
             :saving="isPending('save-log-retention')"
+            :cleaning="isPending('clean-request-logs')"
             @save="saveLogRetention"
+            @clean="cleanRequestLogsNow"
           />
           <div class="grid gap-4 lg:grid-cols-2">
             <Card class="rounded-md hidden" >

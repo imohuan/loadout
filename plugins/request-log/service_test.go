@@ -1200,3 +1200,248 @@ func TestTrimBySizeRespectsMinKeep(t *testing.T) {
 		t.Fatalf("rows = %d, want 10 (below min-keep floor, must not delete)", count)
 	}
 }
+
+// TestTrimBySizeDrainsLargeDatabase 回归：大库必须真的一路删到阈值以下。
+//
+// 历史 bug：早期实现限制「最多 5 轮、每轮最多 200 行」，15GB 的库（两万多条）
+// 最多删 1000 行就停，用户把上限从「不限」改成 1000MB 后大小毫无变化。
+// 本测试造一个远超阈值的库，断言清理后确实降到了上限以下。
+func TestTrimBySizeDrainsLargeDatabase(t *testing.T) {
+	path := t.TempDir() + "/request-log.db"
+	reqDB, err := openRequestLogDB(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reqDB.Close()
+	svc := NewService(nil, slog.New(slog.DiscardHandler), reqDB, nil)
+	svc.SetDBPath(path)
+
+	base := time.Now().UTC()
+	// 2000 行 × 16KB ≈ 32MB。阈值 2MB → 必须删掉绝大多数行才可能达标，
+	// 远远超过旧的「5 轮 × 200 行 = 1000 行」上限能删的量。
+	for i := 0; i < 2000; i++ {
+		seedLogRow(t, reqDB, fmt.Sprintf("d%04d", i), base.Add(time.Duration(i)*time.Second).Format(time.RFC3339Nano), 16*1024)
+	}
+	before := svc.diskSize()
+	if before < 8*1024*1024 {
+		t.Fatalf("seeded size = %d, want tens of MB for a meaningful test", before)
+	}
+
+	svc.ApplyRetention(context.Background(), RetentionConfig{MaxSizeMB: 2})
+
+	after := svc.compactedSize(context.Background())
+	limit := int64(2 * 1024 * 1024)
+	if after > limit {
+		t.Fatalf("size after trim = %d, want <= %d (large DB must drain to the cap)", after, limit)
+	}
+
+	// 仍然必须是 FIFO：最新的留下，最旧的先走。
+	var newestKept, oldestKept int
+	if err := reqDB.QueryRow(`SELECT count(*) FROM request_logs WHERE id = 'd1999'`).Scan(&newestKept); err != nil {
+		t.Fatal(err)
+	}
+	if err := reqDB.QueryRow(`SELECT count(*) FROM request_logs WHERE id = 'd0000'`).Scan(&oldestKept); err != nil {
+		t.Fatal(err)
+	}
+	if newestKept != 1 {
+		t.Fatal("newest row must survive")
+	}
+	if oldestKept != 0 {
+		t.Fatal("oldest row must be deleted first")
+	}
+
+	// 下限保护：不能把库清空。删了这么多行之后仍应远多于... 实际上这里会删到下限，
+	// 因为 2MB 装不下 100 条 16KB 的行；断言至少保留下限条数。
+	var remaining int
+	if err := reqDB.QueryRow(`SELECT count(*) FROM request_logs`).Scan(&remaining); err != nil {
+		t.Fatal(err)
+	}
+	if remaining < retentionMinKeep {
+		t.Fatalf("remaining = %d, want >= %d (never drain the DB completely)", remaining, retentionMinKeep)
+	}
+}
+
+// TestTrimBySizeBelowCapIsNoop 未超阈值时不得删任何行。
+func TestTrimBySizeBelowCapIsNoop(t *testing.T) {
+	path := t.TempDir() + "/request-log.db"
+	reqDB, err := openRequestLogDB(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reqDB.Close()
+	svc := NewService(nil, slog.New(slog.DiscardHandler), reqDB, nil)
+	svc.SetDBPath(path)
+
+	now := time.Now().UTC()
+	for i := 0; i < 5; i++ {
+		seedLogRow(t, reqDB, fmt.Sprintf("k%d", i), now.Format(time.RFC3339Nano), 1024)
+	}
+	svc.ApplyRetention(context.Background(), RetentionConfig{MaxSizeMB: 100})
+
+	var count int
+	if err := reqDB.QueryRow(`SELECT count(*) FROM request_logs`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 5 {
+		t.Fatalf("rows = %d, want 5 (under cap must not delete)", count)
+	}
+}
+
+// TestApplyCurrentRetentionUsesSettings 手动触发接口按「当前设置」清理。
+// 这是用户改完上限后点「立即清理」走的路：必须真的把超限的旧日志删掉。
+func TestApplyCurrentRetentionUsesSettings(t *testing.T) {
+	dir := t.TempDir()
+	// 只开一次连接：db.Open 会建好 loadout 的全部表（servercore 装配时同样只用一份连接）。
+	loadoutDB, err := db.Open(dir + "/loadout.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer loadoutDB.Close()
+	if _, err := loadoutDB.Exec(`INSERT INTO settings(id, request_log_max_age_days, request_log_max_size_mb) VALUES(1, 0, 1) ON CONFLICT(id) DO UPDATE SET request_log_max_size_mb = 1`); err != nil {
+		t.Fatal(err)
+	}
+
+	path := dir + "/request-log.db"
+	reqDB, err := openRequestLogDB(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reqDB.Close()
+	svc := NewService(nil, slog.New(slog.DiscardHandler), reqDB, nil)
+	svc.SetDBPath(path)
+	repo, err := db.NewRepository(loadoutDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.SetRepository(repo)
+
+	base := time.Now().UTC()
+	for i := 0; i < 400; i++ {
+		seedLogRow(t, reqDB, fmt.Sprintf("m%03d", i), base.Add(time.Duration(i)*time.Second).Format(time.RFC3339Nano), 16*1024)
+	}
+	before := svc.diskSize()
+
+	stats := svc.ApplyCurrentRetention(context.Background())
+
+	if stats.Size >= before {
+		t.Fatalf("size after manual apply = %d, want < %d", stats.Size, before)
+	}
+	if stats.Count >= 400 {
+		t.Fatalf("count after manual apply = %d, want < 400", stats.Count)
+	}
+	// 回带的统计必须与设置一致，前端直接拿它刷新卡片。
+	if stats.MaxSizeMB != 1 {
+		t.Fatalf("stats.max_size_mb = %d, want 1", stats.MaxSizeMB)
+	}
+}
+
+// TestTrimBySizeDoesNotOverDelete 回归用户实际场景：日志库「内容多但文件不算大」时
+// 不得过度删除。
+//
+// 历史 bug：旧实现拿「文件大小」当删除进度。SQLite 删行不会让文件变小，于是每次
+// 检查都显示「还超限」，一路删到 100 条保留下限——实测 301 行只有 19MB、上限
+// 20MB 的场景被删到只剩 100 行，用户丢掉了本可以保留的日志。
+// 正确行为：只删到「真实文件大小落到上限内」为止，剩下的行必须留下。
+func TestTrimBySizeDoesNotOverDelete(t *testing.T) {
+	path := t.TempDir() + "/request-log.db"
+	reqDB, err := openRequestLogDB(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reqDB.Close()
+	svc := NewService(nil, slog.New(slog.DiscardHandler), reqDB, nil)
+	svc.SetDBPath(path)
+
+	base := time.Now().UTC()
+	// 300 行 × 64KB ≈ 23MB 磁盘占用。上限设 20MB：只超出一点点，
+	// 压缩 + 删掉少量最旧的行就该达标，绝不能一路删到 100 条下限。
+	for i := 0; i < 300; i++ {
+		seedLogRow(t, reqDB, fmt.Sprintf("s%03d", i), base.Add(time.Duration(i)*time.Second).Format(time.RFC3339Nano), 64*1024)
+	}
+	before := svc.diskSize()
+
+	svc.ApplyRetention(context.Background(), RetentionConfig{MaxSizeMB: 20})
+
+	after := svc.compactedSize(context.Background())
+	if after > 20*1024*1024 {
+		t.Fatalf("size after trim = %d, want <= %d", after, 20*1024*1024)
+	}
+	if after >= before {
+		t.Fatalf("size after trim = %d, want < %d (must actually shrink)", after, before)
+	}
+	// 关键断言：不该删到保留下限。数据量只有约 19MB，远不到需要砍到 100 行的地步。
+	var remaining int
+	if err := reqDB.QueryRow(`SELECT COUNT(*) FROM request_logs`).Scan(&remaining); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("before=%d after=%d remaining=%d", before, after, remaining)
+	if remaining < retentionMinKeep {
+		t.Fatalf("remaining = %d, want >= %d (never drain the DB completely)", remaining, retentionMinKeep)
+	}
+	// 300 行里最多只需删掉极少数旧行；一条都不删（说明只是 VACUUM 收缩了）也可以接受，
+	// 但绝不能删到只剩个位数。这里给一个宽松上限：留下的必须占绝大多数。
+	if remaining < 200 {
+		t.Fatalf("remaining = %d, want >= 200 (must not over-delete)", remaining)
+	}
+}
+
+// TestTrimBySizeDeletesOldestFirst 超限时按 FIFO 从最旧的行删起，最新的必须留下。
+func TestTrimBySizeDeletesOldestFirst(t *testing.T) {
+	path := t.TempDir() + "/request-log.db"
+	reqDB, err := openRequestLogDB(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reqDB.Close()
+	svc := NewService(nil, slog.New(slog.DiscardHandler), reqDB, nil)
+	svc.SetDBPath(path)
+
+	base := time.Now().UTC()
+	// 400 行 × 64KB ≈ 31MB，上限 8MB → 必须删掉大部分旧行。
+	const rows = 400
+	for i := 0; i < rows; i++ {
+		seedLogRow(t, reqDB, fmt.Sprintf("s%03d", i), base.Add(time.Duration(i)*time.Second).Format(time.RFC3339Nano), 64*1024)
+	}
+
+	svc.ApplyRetention(context.Background(), RetentionConfig{MaxSizeMB: 8})
+
+	if after := svc.diskSize(); after > 8*1024*1024 {
+		t.Fatalf("size after trim = %d, want <= %d", after, 8*1024*1024)
+	}
+	var remaining int
+	if err := reqDB.QueryRow(`SELECT COUNT(*) FROM request_logs`).Scan(&remaining); err != nil {
+		t.Fatal(err)
+	}
+	if remaining >= rows {
+		t.Fatalf("remaining = %d, want < %d (must shrink an over-cap DB)", remaining, rows)
+	}
+	if remaining < retentionMinKeep {
+		t.Fatalf("remaining = %d, want >= %d (never drain the DB completely)", remaining, retentionMinKeep)
+	}
+	// 最旧的先走、最新的必留。
+	var oldest, newest int
+	if err := reqDB.QueryRow(`SELECT COUNT(*) FROM request_logs WHERE id = 's000'`).Scan(&oldest); err != nil {
+		t.Fatal(err)
+	}
+	if err := reqDB.QueryRow(`SELECT COUNT(*) FROM request_logs WHERE id = 's399'`).Scan(&newest); err != nil {
+		t.Fatal(err)
+	}
+	if oldest != 0 {
+		t.Fatal("oldest row must be deleted first")
+	}
+	if newest != 1 {
+		t.Fatal("newest row must survive")
+	}
+	// 保留的必须是最新的一段：留下的最旧一行必须比任何被删的行都新。
+	var minKept string
+	if err := reqDB.QueryRow(`SELECT MIN(started_at) FROM request_logs`).Scan(&minKept); err != nil {
+		t.Fatal(err)
+	}
+	var olderLeft int
+	if err := reqDB.QueryRow(`SELECT COUNT(*) FROM request_logs WHERE started_at < ?`, minKept).Scan(&olderLeft); err != nil {
+		t.Fatal(err)
+	}
+	if olderLeft != 0 {
+		t.Fatalf("found %d rows older than the oldest kept row — kept set is not a contiguous newest tail", olderLeft)
+	}
+}

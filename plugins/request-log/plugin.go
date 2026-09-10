@@ -82,6 +82,7 @@ func (p *requestLogPlugin) Apply(ctx plugin.Context) error {
 	// 注意注册顺序：/stats 是静态路径，必须早于 /{id} 通配，否则会被当成 id 吃掉。
 	ctx.RegisterRoute(plugin.RouteSpec{Method: http.MethodGet, Pattern: "GET /api/request-logs", Auth: plugin.AuthSession, Handler: http.HandlerFunc(svc.handleList)})
 	ctx.RegisterRoute(plugin.RouteSpec{Method: http.MethodGet, Pattern: "GET /api/request-logs/stats", Auth: plugin.AuthSession, Handler: http.HandlerFunc(svc.handleStats)})
+	ctx.RegisterRoute(plugin.RouteSpec{Method: http.MethodPost, Pattern: "POST /api/request-logs/retention/apply", Auth: plugin.AuthSession, Handler: http.HandlerFunc(svc.handleApplyRetention)})
 	ctx.RegisterRoute(plugin.RouteSpec{Method: http.MethodDelete, Pattern: "DELETE /api/request-logs", Auth: plugin.AuthSession, Handler: http.HandlerFunc(svc.handleClear)})
 	ctx.RegisterRoute(plugin.RouteSpec{Method: http.MethodGet, Pattern: "GET /api/request-logs/{id}", Auth: plugin.AuthSession, Handler: http.HandlerFunc(svc.handleDetail)})
 
