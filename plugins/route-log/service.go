@@ -355,8 +355,14 @@ func (s *Service) List(ctx context.Context, filter contracts.RouteLogFilter) (co
 //
 // route_requests.request_log_id 是写日志那一刻的关联快照，request-log 库的日志行
 // 可能已被保留策略（按天/按容量 FIFO）或手动清空删除。前端要隐藏失效入口，所以这里
-// 收集本页（含展开用的 attempts）里所有关联 id，向 request-log 插件确认存在性，
-// 把仍存在的 id 集合回给前端。
+// 收集本页所有关联 id，向 request-log 插件确认存在性，把仍存在的 id 集合回给前端。
+//
+// 关联 id 有两个来源，缺一不可：
+//  1. 行级 request_log_id（外层「完整日志」入口，指向最后一次尝试）；
+//  2. route_attempts 表里每次尝试各自的 request_log_id——列表接口**不内嵌 attempts**
+//     （那是 Detail 的职责），所以必须按本页 request_id 反查这张表。只取行级列的话，
+//     折叠里除「首次尝试」以外的行全部查无此 id，前端会把它们判成「日志已被清理」
+//     而藏掉入口（用户看到「只有第一条有日志按钮」）。
 //
 // 查询失败 / 未注入 lookup：RequestLogResolved 保持 false，前端退化为只判空显示入口
 // （宁可多点一次 404，也不要把整列入场全藏掉）。
@@ -378,10 +384,12 @@ func (s *Service) attachRequestLogPresence(ctx context.Context, page *contracts.
 	}
 	for _, item := range page.Items {
 		add(item.RequestLogID)
-		for _, attempt := range item.Attempts {
+		for _, attempt := range item.Attempts { // 已内嵌 attempts 的调用方（测试/复用）直接可用
 			add(attempt.RequestLogID)
 		}
 	}
+	// 列表路径的 attempts 为空：补齐 route_attempts 表里的关联，否则折叠内层入口全被误藏。
+	s.addAttemptRequestLogIDs(ctx, page, add)
 	// 没有关联可查时直接算「已确认」：前端据此隐藏这一列里的所有入口，符合实际。
 	if len(ids) == 0 {
 		page.RequestLogResolved = true
@@ -399,6 +407,45 @@ func (s *Service) attachRequestLogPresence(ctx context.Context, page *contracts.
 	sort.Strings(alive)
 	page.RequestLogIDs = alive
 	page.RequestLogResolved = true
+}
+
+// addAttemptRequestLogIDs 把本页各请求在 route_attempts 里关联的日志 id 补进候选集。
+//
+// 按页内 request_id 批量查询（一次一条 IN 语句），不做 N+1；单页上限 500 条
+// （List 的 limit 上限），SQLite 默认变量上限 999 安全。查询失败只记日志：候选少几个
+// 只会让前端少显示几个入口（退化为保守），不影响列表本身可用。
+func (s *Service) addAttemptRequestLogIDs(ctx context.Context, page *contracts.RouteLogPage, add func(string)) {
+	requestIDs := make([]string, 0, len(page.Items))
+	for _, item := range page.Items {
+		if item.RequestID != "" {
+			requestIDs = append(requestIDs, item.RequestID)
+		}
+	}
+	if len(requestIDs) == 0 {
+		return
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(requestIDs)), ",")
+	args := make([]any, len(requestIDs))
+	for i, id := range requestIDs {
+		args[i] = id
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT COALESCE(request_log_id, '') FROM route_attempts WHERE request_id IN (`+placeholders+`)`, args...)
+	if err != nil {
+		s.lg.Warn("route-log: 查询 attempt 日志关联失败，折叠内层入口可能少显示", "err", err)
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			s.lg.Warn("route-log: 读取 attempt 日志关联失败", "err", err)
+			return
+		}
+		add(id)
+	}
+	if err := rows.Err(); err != nil {
+		s.lg.Warn("route-log: 遍历 attempt 日志关联失败", "err", err)
+	}
 }
 
 func (s *Service) Detail(ctx context.Context, requestID string) (contracts.RouteRequestView, error) {

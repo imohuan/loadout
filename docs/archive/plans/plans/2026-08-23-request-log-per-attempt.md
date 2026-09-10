@@ -30,7 +30,8 @@
 | 中间失败 attempt 终态 | 靠 self-heal 兜底（已知限制） | failover 链中先前失败的 attempt：after 事件只在最终路径发一次且 keyed 最新 UUID → 中间行留 running，`healStuckList`/`Detail` 访问时按 `route_requests.result` 收尾为 failed/stream_interrupted（service.go:647-673）。真实 4xx/429 错误体在普通模型 failover 场景拿不到（无输出事件），只落 stream_interrupted |
 | :448 / :660 关联 | 依赖 Task 4 的 CASE WHEN 保留 | after-hook 拒绝（proxy.go:448）与 flushEst（:660）直接构造 RouteAttempt 传空 RequestLogID，靠 running 占位（:432/:479）已写列 + UPSERT CASE WHEN 保留旧值 —— **Task 4 的 CASE WHEN 是硬依赖，实现时必须落地** |
 | lookupRequestLogID | **删除**（P1） | 改造后每次 HandleBeforeAttempt 都自造新 UUID，反查复用逻辑成死代码 |
-| 外层按钮指向 | 首次命中 attempt 的 UUID（已知限制） | route_requests.request_log_id 仍只写首次；failover 时收尾 finalize 的是最新行，外层按钮可能跳到 stream_interrupted 行。与现有「一条 pipe 一条日志」的 UX 相比略不一致，属可接受范围（内层按钮才是 per-attempt 的正主） |
+| 外层按钮指向 | ~~首次命中 attempt 的 UUID（已知限制）~~ → **2026-09-10 修订：改为最后一次 attempt 的 UUID** | 原方案 route_requests.request_log_id 只写首次；failover 后外层按钮指着早已 429 失败的第 1 条，点进去与列表显示的「成功」矛盾（用户报障）。现改为每次尝试都覆写该列（`plugins/request-log/service.go` HandleBeforeAttempt），外层入口指向真正把响应交给用户的那次 |
+| 列表内层入口（2026-09-10 补） | List 不内嵌 attempts，需反查 route_attempts | List 接口只填行级 request_log_id，attempts 由 Detail 填。前端存在性校验（`hasRequestLog`）只拿到行级 id，把折叠内其余行全判成「日志已清理」而藏掉按钮（用户报障「只有第一条有按钮」）。修法：`plugins/route-log/service.go` 的 `attachRequestLogPresence` 新增 `addAttemptRequestLogIDs`，按本页 request_id 一条 `IN` 查 `route_attempts.request_log_id` 补进候选集 |
 | request_logs INSERT UPSERT | 简化为纯 INSERT | ON CONFLICT(id) 在每次新 UUID 下永不触发（P2），删掉 DO UPDATE 分支 |
 | 既有测试处置 | 4 个测试需同步 | `TestHandleBeforeAttemptConsumesInjectedUUID`（断言注入 UUID 消费 + re-entry 早退，改造后必挂，删/改）；`TestHandleAfterUpstreamSuccess` / `TestHandleUpstreamFailed`（从 metadataKey 取 uuid，覆写方案下仍成立，**无需改**）；`TestHandleBeforeAttemptIdempotentSamePipe`（断言同 pipe 两次 count=1，必挂，改为 per-attempt 语义）；`TestHandleBeforeAttemptReuseOnRetry`（断言 uuid1==uuid2，必挂，改为新 UUID 新行） |
 

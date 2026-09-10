@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import { RiRefreshLine } from '@remixicon/vue'
 import { TooltipProvider } from 'shadcn-vue-cdn'
 
 /**

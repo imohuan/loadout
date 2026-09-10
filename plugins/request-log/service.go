@@ -548,9 +548,11 @@ func (s *Service) HandleBeforeAttempt(payload any) (any, error) {
 	pipe.Metadata[attemptMetadataKey] = uuid
 
 	// UPDATE 关联列（best-effort；loadout 连接为空或行不存在时忽略，不影响记录）。
-	// COALESCE 条件保证仅首次命中写入——外层按钮指向第一次渠道尝试的日志。
+	// 每次尝试都覆写：外层「完整日志」入口必须指向**最后一次**渠道尝试的日志，也就是真正
+	// 把响应交给用户的那次。早先只在首次写入（`AND COALESCE(request_log_id, '') = ''`），
+	// failover 后外层按钮仍指着早已 429 失败的第 1 条，点进去与列表显示的「成功」矛盾。
 	if s.loadout != nil {
-		if _, err := s.loadout.Exec(`UPDATE route_requests SET request_log_id = ? WHERE request_id = ? AND COALESCE(request_log_id, '') = ''`, uuid, pipe.RequestID); err != nil {
+		if _, err := s.loadout.Exec(`UPDATE route_requests SET request_log_id = ? WHERE request_id = ?`, uuid, pipe.RequestID); err != nil {
 			s.lg.Warn("request-log: 写 route_requests.request_log_id 失败", "request_id", pipe.RequestID, "err", err)
 		}
 	}

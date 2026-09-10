@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -882,5 +883,61 @@ func TestListRequestLogPresenceNoLinks(t *testing.T) {
 	}
 	if !page.RequestLogResolved {
 		t.Fatal("resolved must be true when the page has no links")
+	}
+}
+
+// TestListRequestLogPresenceIncludesAttempts 回归：列表页不内嵌 attempts（那是 Detail
+// 的职责），所以存在性候选必须从 route_attempts 表补齐。
+//
+// 否则只有「首次尝试」的日志 id（= route_requests.request_log_id）进了候选集，前端折叠
+// 里其余 attempt 行全部查无此 id，被判成「日志已被清理」而藏掉「进入日志」入口——
+// 用户看到的就是「只有第一条有按钮」。
+func TestListRequestLogPresenceIncludesAttempts(t *testing.T) {
+	ctx := context.Background()
+	service := NewService(logDB(t), nil)
+	base := time.Now().Add(-time.Hour)
+	if err := service.Start(ctx, contracts.RouteRequest{RequestID: "r-multi", RequestedModel: "m", StartedAt: base}); err != nil {
+		t.Fatal(err)
+	}
+	// 三次渠道尝试：step 1/2/3 各有独立日志 id，外层关联指向首次（step 1）。
+	for i, id := range []string{"uuid-attempt-1", "uuid-attempt-2", "uuid-attempt-3"} {
+		if _, err := service.Attempt(ctx, contracts.RouteAttempt{
+			RequestID: "r-multi", StepNo: fmt.Sprintf("%d", i+1), Model: "m",
+			StartedAt: base, Result: "failed", RequestLogID: id,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := service.Finish(ctx, contracts.RouteFinish{RequestID: "r-multi", FinishedAt: base.Add(time.Second), Result: "success"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.db.Exec(`UPDATE route_requests SET request_log_id = 'uuid-attempt-1' WHERE request_id = 'r-multi'`); err != nil {
+		t.Fatal(err)
+	}
+
+	// lookup 只认这三条（模拟日志库都还在）。
+	service.SetRequestLogLookup(func(_ context.Context, ids []string) (map[string]bool, error) {
+		found := make(map[string]bool)
+		for _, id := range ids {
+			if strings.HasPrefix(id, "uuid-attempt-") {
+				found[id] = true
+			}
+		}
+		return found, nil
+	})
+	page, err := service.List(ctx, contracts.RouteLogFilter{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !page.RequestLogResolved {
+		t.Fatal("resolved must be true")
+	}
+	if len(page.RequestLogIDs) != 3 {
+		t.Fatalf("ids = %v, want all three attempt ids", page.RequestLogIDs)
+	}
+	for _, want := range []string{"uuid-attempt-1", "uuid-attempt-2", "uuid-attempt-3"} {
+		if !slices.Contains(page.RequestLogIDs, want) {
+			t.Fatalf("ids = %v, want to contain %q", page.RequestLogIDs, want)
+		}
 	}
 }

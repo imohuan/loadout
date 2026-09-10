@@ -1578,3 +1578,60 @@ func TestFinishRequestLogRecalculatesBytes(t *testing.T) {
 		t.Fatalf("bytes should grow after writing the response body: %d -> %d", before, after)
 	}
 }
+
+// TestOuterLinkFollowsLatestAttempt 回归：外层表格那条「完整日志」入口必须指向最后一次
+// 渠道尝试的日志，而不是第一次。
+//
+// 原实现加上空值条件后只写首次，failover 后外层按钮仍指着
+// 早已失败的第 1 条（用户看到的「成功」行点进去却是 429 失败的日志）。每次尝试都会写一条
+// 独立日志，最后一条（真正返回给用户的那次）才是这条请求的日志。
+func TestOuterLinkFollowsLatestAttempt(t *testing.T) {
+	loadout, err := db.Open(t.TempDir() + "/loadout.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer loadout.Close()
+	if _, err := loadout.Exec(`INSERT INTO route_requests(request_id, requested_model, started_at, result) VALUES ('req-last', 'gpt-4o', '2026-01-01T00:00:00Z', 'running')`); err != nil {
+		t.Fatal(err)
+	}
+	reqDB, _ := openRequestLogDB(t.TempDir() + "/request-log.db")
+	defer reqDB.Close()
+	svc := testService(t, []types.CapabilityRoute{
+		{Models: []string{"*"}, Capability: capabilityName, Route: types.RouteProxy},
+	})
+	svc.reqDB = reqDB
+	svc.loadout = loadout
+
+	// 首次尝试
+	pipe := testPipe("req-last")
+	if _, err := svc.HandleBeforeAttempt(pipe); err != nil {
+		t.Fatal(err)
+	}
+	firstID, _ := pipe.Metadata[metadataKey].(string)
+	if firstID == "" {
+		t.Fatal("first attempt uuid missing")
+	}
+	var afterFirst sql.NullString
+	if err := loadout.QueryRow(`SELECT request_log_id FROM route_requests WHERE request_id = 'req-last'`).Scan(&afterFirst); err != nil {
+		t.Fatal(err)
+	}
+	if afterFirst.String != firstID {
+		t.Fatalf("after first attempt link = %q, want %q", afterFirst.String, firstID)
+	}
+
+	// failover：同一 pipe 第 2 次尝试 = 新日志，外层关联必须跟着走
+	if _, err := svc.HandleBeforeAttempt(pipe); err != nil {
+		t.Fatal(err)
+	}
+	lastID, _ := pipe.Metadata[metadataKey].(string)
+	if lastID == "" || lastID == firstID {
+		t.Fatalf("second attempt must get a new uuid: first=%q second=%q", firstID, lastID)
+	}
+	var afterSecond sql.NullString
+	if err := loadout.QueryRow(`SELECT request_log_id FROM route_requests WHERE request_id = 'req-last'`).Scan(&afterSecond); err != nil {
+		t.Fatal(err)
+	}
+	if afterSecond.String != lastID {
+		t.Fatalf("outer link = %q, want latest attempt %q", afterSecond.String, lastID)
+	}
+}
