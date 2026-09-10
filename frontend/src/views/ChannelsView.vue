@@ -10,6 +10,7 @@ import type { ChannelInput } from '@/composables/useChannels'
 import PageHeader from '@/components/PageHeader.vue'
 import LoadingBlock from '@/components/LoadingBlock.vue'
 import ChannelEditor from '@/components/channels/ChannelEditor.vue'
+import ChannelModelSyncDialog from '@/components/channels/ChannelModelSyncDialog.vue'
 import ChannelTable from '@/components/channels/ChannelTable.vue'
 
 const service = useChannels()
@@ -18,6 +19,9 @@ const { run, isPending } = useAsyncTask()
 const { confirmDialog } = useConfirm()
 const editing = ref<Channel>()
 const editorOpen = ref(false)
+/** 模型同步弹窗：记录触发它的那个 Key，弹窗用它作默认载入源 */
+const syncSource = ref<Channel>()
+const syncOpen = ref(false)
 /** 非空 = "添加 Key" 模式，base_url 锁定为该组地址 */
 const lockBaseUrl = ref('')
 /** 添加 Key 时展示的所属渠道组名称（同组首个 Key 的 channel_name 兜底 name） */
@@ -106,6 +110,31 @@ async function refreshKey(channel: Channel) {
     '模型列表已刷新',
   )
 }
+function openSync(channel: Channel) {
+  syncSource.value = channel
+  syncOpen.value = true
+}
+// 同步模型：把弹窗里编辑好的模型清单全量写进选中的 Key。
+// 服务端是 PUT /api/channels/{id}/models（全量替换），并发下发后统一刷新列表；
+// 失败由 useAsyncTask 统一提示（已成功的 Key 已生效）。
+async function syncModels(payload: { channelIds: string[]; models: string[] }) {
+  await run(
+    'sync-models',
+    async () => {
+      await Promise.all(
+        payload.channelIds.map((id) =>
+          service.replaceModels(
+            id,
+            payload.models.map((model) => ({ model, enabled: true })),
+          ),
+        ),
+      )
+      syncOpen.value = false
+      await refresh()
+    },
+    `模型已同步到 ${payload.channelIds.length} 个 Key`,
+  )
+}
 async function refreshGroup(baseUrl: string) {
   const keys = groupKeys(baseUrl)
   await run(
@@ -191,6 +220,12 @@ async function moveKey(channel: Channel, direction: 'up' | 'down') {
       :pending="isPending('save')"
       @save="save"
       @cancel="editorOpen = false"
+    /><ChannelModelSyncDialog
+      v-model:open="syncOpen"
+      :channels="data || []"
+      :channel="syncSource"
+      :pending="isPending('sync-models')"
+      @sync="syncModels"
     /><LoadingBlock v-if="loading" /><ChannelTable
       v-else
       :channels="data || []"
@@ -199,6 +234,7 @@ async function moveKey(channel: Channel, direction: 'up' | 'down') {
       @toggle-key="toggleKey"
       @refresh-key="refreshKey"
       @edit-key="openEdit"
+      @sync-models="openSync"
       @move-key="moveKey"
       @remove-key="removeKey"
       @refresh-group="refreshGroup"

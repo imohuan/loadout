@@ -8,6 +8,7 @@ import {
   RiArrowUpLine,
   RiDeleteBinLine,
   RiEditLine,
+  RiExchangeLine,
   RiLoader4Line,
   RiRefreshLine,
 } from '@remixicon/vue'
@@ -21,6 +22,7 @@ const emit = defineEmits<{
   toggleKey: [channel: Channel]
   refreshKey: [channel: Channel]
   editKey: [channel: Channel]
+  syncModels: [channel: Channel]
   moveKey: [channel: Channel, direction: 'up' | 'down']
   removeKey: [channel: Channel]
   refreshGroup: [baseUrl: string]
@@ -282,6 +284,15 @@ function groupTitle(group: ChannelGroup) {
                               class="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground"
                             >
                               <span>{{ modelCountLabel(key) }}</span>
+                              <Button
+                                v-if="modelCount(key) > 0"
+                                variant="ghost"
+                                size="sm"
+                                class="h-5 px-1.5 text-xs"
+                                :aria-label="`把「${key.name}」的模型同步到其他 Key`"
+                                @click="emit('syncModels', key)"
+                                ><RiExchangeLine size="12" />同步模型</Button
+                              >
                               <span
                                 >费用同步：
                                 <Badge :variant="key.sync_billing ? 'default' : 'secondary'">{{
