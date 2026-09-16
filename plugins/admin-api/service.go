@@ -202,6 +202,7 @@ func (s *Service) Routes() []plugin.RouteSpec {
 		// UnifyAI 配置同步
 		{Method: http.MethodGet, Pattern: "GET /api/unifyai/platforms", Auth: plugin.AuthSession, Handler: s.session(s.handleUnifyaiPlatforms)},
 		{Method: http.MethodGet, Pattern: "GET /api/unifyai/model-source", Auth: plugin.AuthSession, Handler: s.session(s.handleUnifyaiModelSource)},
+		{Method: http.MethodGet, Pattern: "GET /api/unifyai/catalog-models", Auth: plugin.AuthSession, Handler: s.session(s.handleUnifyaiCatalogModels)},
 		{Method: http.MethodGet, Pattern: "GET /api/unifyai/opencodex-models", Auth: plugin.AuthSession, Handler: s.session(s.handleUnifyaiOpenCodexModels)},
 		{Method: http.MethodGet, Pattern: "GET /api/unifyai/opencodex-models-live", Auth: plugin.AuthSession, Handler: s.session(s.handleUnifyaiOpenCodexModelsLive)},
 		{Method: http.MethodPost, Pattern: "POST /api/unifyai/run", Auth: plugin.AuthSession, Handler: s.session(s.handleUnifyaiRun)},
@@ -2400,6 +2401,13 @@ func (s *Service) handleUnifyaiPlatforms(w http.ResponseWriter, r *http.Request)
 // （读 ~/.unifyai/cache/openrouter-models.json，不经 CLI）。
 func (s *Service) handleUnifyaiModelSource(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.unify.ModelSource())
+}
+
+// handleUnifyaiCatalogModels 返回「加载配置」下拉的候选模型
+// （读 ~/.unifyai/cache/openrouter-models.json，不经 CLI、毫秒级返回）。
+func (s *Service) handleUnifyaiCatalogModels(w http.ResponseWriter, r *http.Request) {
+	models := s.unify.CatalogModels()
+	writeJSON(w, http.StatusOK, map[string]any{"models": models, "count": len(models)})
 }
 
 // handleUnifyaiOpenCodexModels 返回 OpenCodex 代理的模型列表

@@ -62,6 +62,12 @@ var metadataCachePath = func() string {
 	return "openrouter-models.json"
 }
 
+// MetadataCachePath / SetMetadataCachePath 暴露缓存路径的读取与替换，
+// 供 admin-api 等外部包在测试里隔离真实用户目录（包内测试直接改 var）。
+func MetadataCachePath() string { return metadataCachePath() }
+
+func SetMetadataCachePath(fn func() string) { metadataCachePath = fn }
+
 // ModelSource 读取 OpenRouter 元数据缓存（不经 CLI，快、离线可用）。
 // 缓存缺失/损坏时返回 Kind=none（不报错），UI 据此提示先执行刷新。
 func (s *Service) ModelSource() ModelSourceStatus {
