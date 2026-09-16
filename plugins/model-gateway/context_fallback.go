@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -21,10 +22,11 @@ type openrouterMetaCache struct {
 
 // openrouterModelMeta 一个模型的完整对外声明（OpenRouter 元数据 + 渠道探测兜底之外的能力来源）。
 type openrouterModelMeta struct {
-	Context   int64 // 上下文窗口 token 数；0 = 缓存未提供
-	Output    int64 // 最大输出 token 数；0 = 缓存未提供
-	Vision    bool  // 支持视觉（图片输入）
-	Reasoning bool  // 支持推理（思考）
+	ID        string // 命中的 OpenRouter 完整 id（诊断用）
+	Context   int64  // 上下文窗口 token 数；0 = 缓存未提供
+	Output    int64  // 最大输出 token 数；0 = 缓存未提供
+	Vision    bool   // 支持视觉（图片输入）
+	Reasoning bool   // 支持推理（思考）
 }
 
 // openrouterCachePath 返回 openrouter 元数据缓存文件路径。做成变量便于测试注入。
@@ -64,6 +66,7 @@ func loadOpenRouterContext() map[string]openrouterModelMeta {
 			continue
 		}
 		meta := openrouterModelMeta{Context: m.Context, Output: m.Output, Vision: m.Vision, Reasoning: m.Reasoning}
+		meta.ID = m.ID
 		key := strings.ToLower(strings.TrimSpace(m.ID))
 		if key == "" {
 			continue
@@ -113,5 +116,159 @@ func (r *openrouterContextResolver) metaOf(model string) (openrouterModelMeta, b
 	if r.meta == nil {
 		r.meta = loadOpenRouterContext()
 	}
-	return lookupOpenRouterContext(r.meta, model)
+	if v, ok := lookupOpenRouterContext(r.meta, model); ok {
+		return v, true
+	}
+	// 精确键未命中：渠道命名与 OpenRouter 命名存在系统性差异（doubao-seed-* vs
+	// bytedance-seed/seed-*、-ga-260731 日期版、hy 简称等），走模糊匹配兜底。
+	return matchOpenRouterModel(r.meta, model)
+}
+
+// openrouterBareName 取模型名的裸名（去 provider 前缀，小写）。
+func openrouterBareName(model string) string {
+	key := strings.ToLower(strings.TrimSpace(model))
+	if i := strings.LastIndexByte(key, '/'); i >= 0 {
+		return key[i+1:]
+	}
+	return key
+}
+
+// openrouterNormalizeKey 标准化模型名用于比较：去掉 - . : _ 等分隔符。
+// "glm-5-2" 与 "glm.5.2" 归一后都是 "glm52"。
+func openrouterNormalizeKey(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch r {
+		case '-', '.', ':', '_':
+			return -1
+		}
+		return r
+	}, s)
+}
+
+// matchOpenRouterModel 渠道命名 → OpenRouter 命名的模糊匹配（unifyai findInOpenRouter 的
+// Go 移植 + 渠道特有差异的补充规则）。按置信度从高到低依次尝试：
+//  1. ga 日期版映射：deepseek-v4-flash-ga-260731（渠道 GA 版，26=2026 年）→ -0731（OR 月日版）
+//  2. doubao-seed → seed 前缀改名：渠道 doubao-seed-2-0-lite-260428 → OR bytedance-seed/seed-2.0-lite
+//     （剥 -YYMMDD 日期尾、-preview 尾后，先精确再标准化相等）
+//  3. unifyai 原生匹配（-latest 优先、逐段剥离尾部版本、名称包含）
+func matchOpenRouterModel(meta map[string]openrouterModelMeta, model string) (openrouterModelMeta, bool) {
+	if len(meta) == 0 {
+		return openrouterModelMeta{}, false
+	}
+	miss := openrouterModelMeta{}
+	bare := openrouterBareName(model)
+	if bare == "" {
+		return miss, false
+	}
+
+	// 1. ga 日期版：*-ga-YYMMDD（YY=年份）→ *-MMDD（OpenRouter 的发布日期后缀口径）。
+	if ga := gaDateSuffix.FindStringSubmatch(bare); ga != nil {
+		if v, ok := lookupOpenRouterContext(meta, ga[1]+"-"+ga[2]); ok {
+			return v, true
+		}
+	}
+
+	// 2. doubao-seed 前缀改名（渠道侧火山引擎命名 vs OpenRouter bytedance-seed 命名）：
+	//    doubao-seed-2-0-lite-260428 → seed-2-0-lite（再剥日期尾）→ 精确/标准化匹配。
+	// hy 简称同理：hy4 → hy4-preview（OR 只有 preview 变体），由第 3 步名称包含兜底。
+	if renamed, ok := strings.CutPrefix(bare, "doubao-seed"); ok {
+		base := "seed" + renamed
+		candidates := []string{base}
+		// 剥渠道日期尾：-260428（6 位以上数字）。
+		if trimmed, n := cutNumericDateSuffix(base); n {
+			candidates = append(candidates, trimmed)
+			// 日期+preview 组合：seed-2-0-code-preview-260215 → seed-2-0-code。
+			if t2, n2 := strings.CutSuffix(trimmed, "-preview"); n2 {
+				candidates = append(candidates, t2)
+			}
+		}
+		// 剥 -preview 尾。
+		if trimmed, n := strings.CutSuffix(base, "-preview"); n {
+			candidates = append(candidates, trimmed)
+			if t2, n2 := cutNumericDateSuffix(trimmed); n2 {
+				candidates = append(candidates, t2)
+			}
+		}
+		for _, cand := range candidates {
+			if v, ok := lookupOpenRouterContext(meta, cand); ok {
+				return v, true
+			}
+			// 标准化相等：渠道 2-0 vs OR 2.0、日期尾 260428 还在键里时也按标准化比。
+			norm := openrouterNormalizeKey(cand)
+			for k, v := range meta {
+				if openrouterNormalizeKey(openrouterBareName(k)) == norm {
+					return v, true
+				}
+			}
+		}
+	}
+
+	// 3. unifyai 原生匹配（-latest 优先、逐段剥离、名称包含）。
+	// ga 日期版没精确命中 -MMDD 时，unifyai 的「-latest 优先」会抢在前面，导致
+	// flash-ga-260731 命中 flash-latest 而不是 flash-0731（更精确的日期版）。所以
+	// 这里先做一次「剥 ga 尾 → unifyai 匹配」，让日期语义仍然参与匹配。
+	gaStrip := gaDateSuffix.ReplaceAllString(bare, "$1")
+	for _, cand := range []string{bare, gaStrip} {
+		if v, ok := lookupOpenRouterNative(meta, cand); ok {
+			return v, true
+		}
+	}
+	// hy 简称（hy3/hy4）：OR 只有 hy3 / hy4-preview。裸名是 OR 裸名的前缀时按
+	// 前缀匹配（hy4 → tencent/hy4-preview），前提是长度差 ≥2（避免 gpt → gpt-5.6 误配）。
+	for k, v := range meta {
+		orBare := openrouterBareName(k)
+		if strings.HasPrefix(orBare, bare) && len(orBare)-len(bare) >= 2 {
+			return v, true
+		}
+	}
+	return miss, false
+}
+
+// cutNumericDateSuffix 剥掉尾部的日期片段（-260428 这类 6 位以上纯数字，渠道
+// 侧常用来标记 GA 日期；OpenRouter 同模型条目不带该尾）。没有该尾时原样返回。
+func cutNumericDateSuffix(s string) (string, bool) {
+	i := strings.LastIndexByte(s, '-')
+	if i <= 0 || i+7 > len(s) {
+		return s, false
+	}
+	for _, r := range s[i+1:] {
+		if r < '0' || r > '9' {
+			return s, false
+		}
+	}
+	return s[:i], true
+}
+
+// gaDateSuffix 匹配渠道 GA 日期版模型名：*-ga-YYMMDD。
+// ga[1] = 去掉 -ga-YYMMDD 的基础名；ga[2] = MMDD（OpenRouter 用月日后缀，如 -0731）。
+var gaDateSuffix = regexp.MustCompile(`^(.+)-ga-\d{2}(\d{4})$`)
+
+// lookupOpenRouterNative unifyai findInOpenRouter 的 Go 移植（仅保留对 /v1/models
+// 补全有意义的顺序）：裸名后缀匹配 → -latest 优先 → 逐段剥离尾部 → 标准化包含。
+func lookupOpenRouterNative(meta map[string]openrouterModelMeta, bare string) (openrouterModelMeta, bool) {
+	// OR 条目裸名以「/ + bare」结尾：hy3 → tencent/hy3。
+	if v, ok := meta[bare]; ok {
+		return v, true
+	}
+	// 逐段剥离尾部片段（至少保留 2 段），优先 <candidate>-latest。
+	parts := strings.Split(bare, "-")
+	for i := len(parts) - 1; i >= 2; i-- {
+		candidate := strings.Join(parts[:i], "-")
+		if v, ok := meta[candidate+"-latest"]; ok {
+			return v, true
+		}
+		if v, ok := meta[candidate]; ok {
+			return v, true
+		}
+		norm := openrouterNormalizeKey(candidate)
+		if len(norm) < 4 {
+			continue
+		}
+		for k, v := range meta {
+			if strings.Contains(openrouterNormalizeKey(openrouterBareName(k)), norm) {
+				return v, true
+			}
+		}
+	}
+	return openrouterModelMeta{}, false
 }
