@@ -620,6 +620,30 @@ ALTER TABLE settings ADD COLUMN request_log_max_size_mb INTEGER NOT NULL DEFAULT
 -- 输出只带 id/object，与改造前一致。
 ALTER TABLE aggregates ADD COLUMN config_json TEXT;
 `,
+}, {
+	version: 33,
+	name:    "smart-tool-descriptions",
+	sql: `
+-- $smart 端点入口工具（status/get/invoke）的描述覆盖：用户可在管理后台改默认描述。
+-- 只存覆盖条目，没记录的工具继续用硬编码默认描述。
+CREATE TABLE smart_tool_desc (
+  name TEXT PRIMARY KEY,
+  description TEXT NOT NULL DEFAULT ''
+);
+`,
+}, {
+	version: 34,
+	name:    "route-stats-archive",
+	sql: `
+-- 清空转发日志前的统计归档：Clear 先把现有 route_requests 按"本地日 + 最终模型"
+-- 聚合成每日桶存进本表（JSON），再真实 DELETE 日志。/api/stats/models 读取本表
+-- 与现场日志合并，保证清空后概览数据不归零。
+CREATE TABLE route_stats_archive (
+  id TEXT PRIMARY KEY,
+  archived_at TEXT NOT NULL,
+  snapshot_json TEXT NOT NULL
+);
+`,
 }}
 
 // Migrate applies all pending schema migrations and rejects an incompatible

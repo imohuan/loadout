@@ -157,6 +157,10 @@ func (s *Service) Routes() []plugin.RouteSpec {
 		{Method: http.MethodPut, Pattern: "PUT /api/groups", Auth: plugin.AuthSession, Handler: s.session(s.handleGroupsReplace)},
 		{Method: http.MethodDelete, Pattern: "DELETE /api/groups", Auth: plugin.AuthSession, Handler: s.session(s.handleGroupDelete)},
 
+		// $smart 入口工具描述
+		{Method: http.MethodGet, Pattern: "GET /api/mcp-smart-tool-descs", Auth: plugin.AuthSession, Handler: s.session(s.handleSmartToolDescsList)},
+		{Method: http.MethodPut, Pattern: "PUT /api/mcp-smart-tool-descs", Auth: plugin.AuthSession, Handler: s.session(s.handleSmartToolDescsReplace)},
+
 		// 密钥
 		{Method: http.MethodGet, Pattern: "GET /api/keys", Auth: plugin.AuthSession, Handler: s.session(s.handleKeysList)},
 		{Method: http.MethodPost, Pattern: "POST /api/keys/sk", Auth: plugin.AuthSession, Handler: s.session(s.handleCreateSKKey)},
@@ -1914,6 +1918,66 @@ func (s *Service) handleGroupDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.writeGroups(r.Context(), out); err != nil {
+		s.writeServerError(w, err)
+		return
+	}
+	s.invalidateHub()
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// ===== $smart 入口工具描述 =====
+
+// handleSmartToolDescsList 返回 $smart 入口工具的描述清单（默认 + 用户覆盖合并）。
+// 前端展示用：返回固定 3 个工具的 name + description（已应用覆盖）+ overridden 标记
+// + default_description（硬编码默认文案，供前端「恢复默认」一键回填）。
+func (s *Service) handleSmartToolDescsList(w http.ResponseWriter, r *http.Request) {
+	overrides := map[string]string{}
+	if s.hub != nil {
+		overrides = s.hub.SmartToolOverrides()
+	}
+	type smartToolDesc struct {
+		Name               string `json:"name"`
+		Description        string `json:"description"`
+		Overridden         bool   `json:"overridden"`
+		DefaultDescription string `json:"default_description"`
+	}
+	out := make([]smartToolDesc, 0, 3)
+	for _, name := range []string{"status", "get", "invoke"} {
+		desc, ok := overrides[name]
+		if !ok {
+			desc = mcphub.SmartDefaultToolDesc(name)
+		}
+		out = append(out, smartToolDesc{
+			Name:               name,
+			Description:        desc,
+			Overridden:         ok,
+			DefaultDescription: mcphub.SmartDefaultToolDesc(name),
+		})
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// handleSmartToolDescsReplace 用请求体数组整体替换描述覆盖（前端单条编辑后
+// 全量提交，实现简单且并发冲突面小）。
+// 只接受 status/get/invoke 三个工具名；描述等于默认文案 = 不存覆盖（等同恢复默认）。
+func (s *Service) handleSmartToolDescsReplace(w http.ResponseWriter, r *http.Request) {
+	var req []types.SmartToolDesc
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	valid := map[string]bool{"status": true, "get": true, "invoke": true}
+	out := make([]types.SmartToolDesc, 0, len(req))
+	for _, d := range req {
+		if !valid[d.Name] {
+			writeError(w, http.StatusBadRequest, "无效的 $smart 工具名: "+d.Name)
+			return
+		}
+		// 描述为空或与默认完全一致都不落库：省空间，语义上就是「用默认」。
+		if strings.TrimSpace(d.Description) != "" && d.Description != mcphub.SmartDefaultToolDesc(d.Name) {
+			out = append(out, d)
+		}
+	}
+	if err := s.writeSmartToolDescs(r.Context(), out); err != nil {
 		s.writeServerError(w, err)
 		return
 	}

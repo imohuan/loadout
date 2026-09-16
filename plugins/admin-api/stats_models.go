@@ -3,6 +3,7 @@ package adminapi
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"net/http"
 	"sort"
 	"strconv"
@@ -95,7 +96,96 @@ func (s *Service) handleStatsModels(w http.ResponseWriter, r *http.Request) {
 		s.writeServerError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, aggregateModelStats(logs, days, loc, now))
+	// 归档合并：清空转发日志时数据已被聚合成 route_stats_archive 每日桶，
+	// 这里读取全部归档（无日期过滤——窗口外桶仍计入 summary/dist，不丢数据），
+	// 转成伪日志行与现场日志一起交给 aggregateModelStats。
+	archived, err := listArchivedRouteRequests(r.Context(), s.sqlDB)
+	if err != nil {
+		s.writeServerError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, aggregateModelStats(append(logs, archived...), days, loc, now))
+}
+
+// archivedDayBucket 是 route_stats_archive.snapshot_json 的元素结构
+// （route-log.Clear 写入，字段名对齐其 routeDayBucket）。
+type archivedDayBucket struct {
+	Date             string `json:"date"`
+	Model            string `json:"model"`
+	Requests         int    `json:"requests"`
+	Successes        int    `json:"successes"`
+	DurationMS       int64  `json:"duration_ms"`
+	PromptTokens     int    `json:"prompt_tokens"`
+	CompletionTokens int    `json:"completion_tokens"`
+	CachedTokens     int    `json:"cached_tokens"`
+}
+
+// listArchivedRouteRequests 读取全部归档快照，展开成与现场日志同构的伪日志行。
+// 读取失败返回错误；快照里的非法日期跳过（不因单条脏数据打挂整个统计接口）。
+func listArchivedRouteRequests(ctx context.Context, database *sql.DB) ([]contracts.RouteRequestView, error) {
+	rows, err := database.QueryContext(ctx, `SELECT snapshot_json FROM route_stats_archive ORDER BY archived_at`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]contracts.RouteRequestView, 0)
+	for rows.Next() {
+		var snapshot string
+		if err := rows.Scan(&snapshot); err != nil {
+			return nil, err
+		}
+		var buckets []archivedDayBucket
+		if err := json.Unmarshal([]byte(snapshot), &buckets); err != nil {
+			continue
+		}
+		for _, b := range buckets {
+			if b.Requests <= 0 {
+				continue
+			}
+			started, err := time.Parse("2006-01-02", b.Date)
+			if err != nil {
+				continue
+			}
+			// 归档快照只有「日期+模型」粒度的合计值：token/耗时按条数均摊展开成
+			// 与现场日志同构的伪行。分摊分母用请求数——与原统计口径一致（失败请求
+			// 的 token 本来也计入总量）；successes 只决定行的成败标记。
+			successes := b.Successes
+			if successes < 0 || successes > b.Requests {
+				successes = b.Requests
+			}
+			for i := 0; i < b.Requests; i++ {
+				row := contracts.RouteRequestView{
+					RequestedModel:   b.Model,
+					FinalModel:       b.Model,
+					StartedAt:        started,
+					Result:           "success",
+					Duration:         contracts.DurationMS(time.Duration(b.DurationMS/int64(b.Requests)) * time.Millisecond),
+					PromptTokens:     apportion(b.PromptTokens, b.Requests, i),
+					CompletionTokens: apportion(b.CompletionTokens, b.Requests, i),
+					CachedTokens:     apportion(b.CachedTokens, b.Requests, i),
+				}
+				if i >= successes {
+					row.Result = "failed"
+				}
+				out = append(out, row)
+			}
+		}
+	}
+	return out, rows.Err()
+}
+
+// apportion 把 total 均分成 n 份：整除部分每份相同，余数分给前 rem 份，
+// 保证各份之和等于 total（归档合计值按请求数分摊时用）。
+func apportion(total, n, i int) int {
+	if n <= 0 {
+		return 0
+	}
+	base := total / n
+	rem := total % n
+	if i < rem {
+		return base + 1
+	}
+	return base
 }
 
 // listRouteRequests 拉取最近 days 天（含今天）的 route_requests 全量，按 started_at 升序。

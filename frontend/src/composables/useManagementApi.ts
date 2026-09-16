@@ -72,14 +72,24 @@ export function useManagementApi() {
       'POST',
       body,
     )
-  // $smart 端点入口工具（status/get/invoke）的描述配置：GET 返回默认+覆盖合并，
-  // PUT 整体保存（空描述 = 恢复默认）。
+  // $smart 端点入口工具（status/get/invoke）的描述配置：GET 返回当前生效描述
+  // （默认+覆盖合并）+ 默认文案，PUT 整体保存（与默认一致的描述不落库）。
   const mcpSmartToolDescs = () =>
-    api<Array<{ name: string; description: string; overridden: boolean }>>(
-      '/api/mcp-smart-tool-descs',
-    )
+    api<
+      Array<{
+        name: string
+        description: string
+        overridden: boolean
+        default_description: string
+      }>
+    >('/api/mcp-smart-tool-descs')
   const saveMcpSmartToolDescs = (
-    body: Array<{ name: string; description: string; overridden: boolean }>,
+    body: Array<{
+      name: string
+      description: string
+      overridden: boolean
+      default_description: string
+    }>,
   ) => request<void>('/api/mcp-smart-tool-descs', 'PUT', body)
   const settings = () =>
     api<{

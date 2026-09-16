@@ -2,7 +2,9 @@ package routelog
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -126,6 +128,7 @@ func (s *Service) IsActive(requestID string, maxAge time.Duration) bool {
 // 判定分两层，任何一层命中即收尾（标 stream_interrupted）：
 //  1. 活跃登记表：IsActive 为 false（转发已结束/进程已崩溃/超时兜底）——事实判死；
 //  2. 时间兜底：result='running' 且 finished_at 为空 且距 started_at 超过 threshold。
+//
 // 两层都认为「还活着」时才 no-op，最大限度避免误杀真正在跑的请求。
 //
 // 收尾前**额外优化**：查最后一次非视觉 attempt（action != '视觉识别'，视觉是预处理不算）。
@@ -279,8 +282,11 @@ func listWhere(filter contracts.RouteLogFilter) (string, []any) {
 	query := ` WHERE 1=1`
 	args := []any{}
 	if filter.Model != "" {
-		query += ` AND (r.requested_model = ? OR r.final_model = ? OR EXISTS (SELECT 1 FROM route_attempts a WHERE a.request_id = r.request_id AND a.model = ?))`
-		args = append(args, filter.Model, filter.Model, filter.Model)
+		// 模糊匹配：输入片段命中即算（如搜 "4o" 同时命中 gpt-4o / gpt-4o-mini）。
+		// ESCAPE 防止用户输入的 % 和 _ 被当成 LIKE 通配符。
+		pattern := "%" + escapeLike(filter.Model) + "%"
+		query += ` AND (r.requested_model LIKE ? ESCAPE '\' OR r.final_model LIKE ? ESCAPE '\' OR EXISTS (SELECT 1 FROM route_attempts a WHERE a.request_id = r.request_id AND a.model LIKE ? ESCAPE '\'))`
+		args = append(args, pattern, pattern, pattern)
 	}
 	if filter.ChannelID != "" {
 		// 渠道过滤同时匹配 final_channel_id / final_channel_ids_json / 任一 attempt.channel_id，
@@ -522,10 +528,80 @@ func compareStepNo(a, b string) int {
 }
 
 // Clear 清空全部转发日志（route_attempts 由外键 ON DELETE CASCADE 级联删除）。
+// 删除前把现有日志按「本地日 + 最终模型」聚合成每日桶（请求数 / 三类 token），
+// 追加写入 route_stats_archive（JSON 快照）——概览统计读取该表与现场日志合并，
+// 因此清空后统计不归零。聚合与删除在同一事务：写归档失败则放弃清空（可重试）。
 // before 参数保留仅为兼容 contracts.RouteLog 接口，当前实现为全量清空。
 func (s *Service) Clear(ctx context.Context, _ time.Time) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM route_requests`)
-	return err
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	// 按天聚合：final_model 为空时回退 requested_model（与统计聚合口径一致）。
+	rows, err := tx.QueryContext(ctx, `SELECT COALESCE(NULLIF(COALESCE(final_model, ''), ''), requested_model, 'unknown'),
+			substr(COALESCE(started_at, ''), 1, 10), COUNT(*), COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0), COALESCE(SUM(cached_tokens), 0),
+			COALESCE(SUM(CASE WHEN result = 'success' THEN 1 ELSE 0 END), 0), COALESCE(SUM(duration_ms), 0)
+			FROM route_requests GROUP BY 1, 2`)
+	if err != nil {
+		return err
+	}
+	buckets := make([]routeDayBucket, 0)
+	for rows.Next() {
+		var b routeDayBucket
+		if err := rows.Scan(&b.Model, &b.Date, &b.Requests, &b.PromptTokens, &b.CompletionTokens, &b.CachedTokens, &b.Successes, &b.DurationMS); err != nil {
+			rows.Close()
+			return err
+		}
+		buckets = append(buckets, b)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	if len(buckets) > 0 {
+		id, err := newRandomID()
+		if err != nil {
+			return err
+		}
+		snapshot, err := json.Marshal(buckets)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO route_stats_archive(id, archived_at, snapshot_json) VALUES (?, ?, ?)`,
+			id, time.Now().UTC().Format(time.RFC3339Nano), string(snapshot)); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM route_requests`); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// routeDayBucket 清空归档的最小统计单元：某「本地日 + 最终模型」的请求次数、
+// 成功次数、总耗时与三类 token 合计。JSON 存进 route_stats_archive.snapshot_json，
+// 由 admin-api 的统计聚合读取并与现场日志合并（合计值按请求数分摊展开）。
+// 日期取 started_at 前缀（UTC 日界），历史日志统一按此口径，不做时区重切。
+type routeDayBucket struct {
+	Date             string `json:"date"`
+	Model            string `json:"model"`
+	Requests         int    `json:"requests"`
+	Successes        int    `json:"successes"`
+	DurationMS       int64  `json:"duration_ms"`
+	PromptTokens     int    `json:"prompt_tokens"`
+	CompletionTokens int    `json:"completion_tokens"`
+	CachedTokens     int    `json:"cached_tokens"`
+}
+
+// newRandomID 生成归档快照主键（32 位十六进制）。
+func newRandomID() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b[:]), nil
 }
 
 type scanner interface{ Scan(...any) error }
@@ -562,6 +638,12 @@ func nullInt64(value sql.NullInt64) *int64 {
 	}
 	out := value.Int64
 	return &out
+}
+
+// escapeLike 转义 LIKE 通配符（% _ 和转义符本身），保证用户输入按字面量匹配。
+func escapeLike(value string) string {
+	replacer := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return replacer.Replace(value)
 }
 
 func safeMetadata(metadata map[string]any) (string, error) {

@@ -18,6 +18,7 @@ export default defineConfig({
     },
   },
   server: {
+    port: 5273,
     host: '0.0.0.0', // 监听所有网卡（支持 IPv4 + IPv6），避免 IPv6-only 导致 Desktop 无法连接
     // 开发模式（npm run dev）下，把后端接口代理到 Loadout 服务器（单端口 :3000）：
     //   /api/* → 管理 API（session）

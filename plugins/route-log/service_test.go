@@ -580,6 +580,70 @@ func TestListPagination(t *testing.T) {
 	}
 }
 
+// TestListFiltersModelFuzzy：模型过滤是模糊匹配——输入片段应命中
+// requested_model / final_model / 任一 attempt.model 包含它的日志；
+// 不包含该片段的日志不命中，% 和 _ 等 LIKE 通配符按字面量处理。
+func TestListFiltersModelFuzzy(t *testing.T) {
+	service := NewService(logDB(t), nil)
+	ctx := context.Background()
+	base := time.Now().Add(-time.Hour)
+	insert := func(id, requested, final, attemptModel string) {
+		t.Helper()
+		if err := service.Start(ctx, contracts.RouteRequest{RequestID: id, RequestedModel: requested, StartedAt: base}); err != nil {
+			t.Fatalf("Start(%s): %v", id, err)
+		}
+		if attemptModel != "" {
+			if _, err := service.Attempt(ctx, contracts.RouteAttempt{RequestID: id, StepNo: "1", Action: "首次尝试", Model: attemptModel, ChannelID: "c", StartedAt: base, FinishedAt: pointer(base.Add(time.Second)), Result: "success"}); err != nil {
+				t.Fatalf("Attempt(%s): %v", id, err)
+			}
+		}
+		if err := service.Finish(ctx, contracts.RouteFinish{RequestID: id, FinishedAt: base.Add(time.Second), Result: "success", FinalModel: final}); err != nil {
+			t.Fatalf("Finish(%s): %v", id, err)
+		}
+	}
+	insert("r-4o", "gpt-4o", "gpt-4o", "")
+	insert("r-4o-mini", "gpt-4o-mini", "gpt-4o-mini", "")
+	insert("r-sonnet", "claude-sonnet", "claude-sonnet", "")
+	insert("r-attempt", "auto", "glm-5", "deepseek-v3")
+	insert("r-literal", "a%b_c", "a%b_c", "")
+
+	// 片段 "4o" 同时命中 gpt-4o 与 gpt-4o-mini。
+	page, err := service.List(ctx, contracts.RouteLogFilter{Model: "4o", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 2 {
+		t.Fatalf("片段 4o total=%d, want 2: %+v", page.Total, page.Items)
+	}
+
+	// attempt.model 也参与匹配（r-attempt 的尝试模型是 deepseek-v3）。
+	page, err = service.List(ctx, contracts.RouteLogFilter{Model: "deepseek", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 1 || page.Items[0].RequestID != "r-attempt" {
+		t.Fatalf("attempt 模型过滤 total=%d items=%+v, want r-attempt", page.Total, page.Items)
+	}
+
+	// 不包含的片段不命中。
+	page, err = service.List(ctx, contracts.RouteLogFilter{Model: "haiku", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 0 {
+		t.Fatalf("haiku total=%d, want 0", page.Total)
+	}
+
+	// % 与 _ 按字面量匹配，不当通配符：搜 "a%b" 只命中 r-literal。
+	page, err = service.List(ctx, contracts.RouteLogFilter{Model: "a%b", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 1 || page.Items[0].RequestID != "r-literal" {
+		t.Fatalf("%% 字面量过滤 total=%d items=%+v, want r-literal", page.Total, page.Items)
+	}
+}
+
 // TestListFiltersByChannelName：渠道名过滤应命中 final_channel_name 快照与任一 attempt 的
 // channel_name 快照（渠道级粒度，一个渠道名 = 一组 Key）。
 func TestListFiltersByChannelName(t *testing.T) {

@@ -83,9 +83,39 @@ const toolExecuting = ref(false)
 const toolEditName = ref('')
 const toolEditDescription = ref('')
 // ===== $smart 入口工具描述 tab =====
-const smartToolDescs = ref<Array<{ name: string; description: string; overridden: boolean }>>([])
+type SmartToolDescRow = {
+  name: string
+  description: string
+  overridden: boolean
+  default_description: string
+}
+const smartToolDescs = ref<SmartToolDescRow[]>([])
 const smartToolDescLoading = ref(false)
 const smartToolDescSaving = ref(false)
+// resetSmartToolDesc 一键恢复默认：默认文案直接回填输入框，点「保存」才落库。
+async function resetSmartToolDesc(entry: SmartToolDescRow) {
+  entry.description = entry.default_description
+  entry.overridden = entry.description !== entry.default_description
+}
+// saveSmartToolDescsEdit 点击「保存」按钮时才整体提交当前编辑内容。
+async function saveSmartToolDescsEdit() {
+  await saveSmartToolDescs(smartToolDescs.value, '聚合工具描述已保存')
+}
+async function saveSmartToolDescs(rows: SmartToolDescRow[], successText: string) {
+  smartToolDescSaving.value = true
+  try {
+    await api.saveMcpSmartToolDescs(rows)
+    toast.success(successText)
+    // 后端会把「等于默认」的条目剔除，重新拉一次让 overridden 状态同步。
+    await loadSmartToolDescs()
+  } catch (error) {
+    toast.error('保存失败', {
+      description: error instanceof Error ? error.message : String(error),
+    })
+  } finally {
+    smartToolDescSaving.value = false
+  }
+}
 async function loadSmartToolDescs() {
   smartToolDescLoading.value = true
   try {
@@ -96,19 +126,6 @@ async function loadSmartToolDescs() {
     })
   } finally {
     smartToolDescLoading.value = false
-  }
-}
-async function saveSmartToolDescs() {
-  smartToolDescSaving.value = true
-  try {
-    await api.saveMcpSmartToolDescs(smartToolDescs.value)
-    toast.success('$smart 工具描述已保存')
-  } catch (error) {
-    toast.error('保存 $smart 工具描述失败', {
-      description: error instanceof Error ? error.message : String(error),
-    })
-  } finally {
-    smartToolDescSaving.value = false
   }
 }
 watch(activeTab, (tab) => {
@@ -876,7 +893,8 @@ async function copyConfig(endpoint: { path: string; label: string }) {
             <CardTitle class="text-base">聚合入口工具描述</CardTitle>
             <CardDescription>
               $smart 端点（/mcp/$smart）对外只暴露 status / get / invoke
-              三个入口工具，这里可覆盖它们的默认描述，保存后 MCP 客户端重新连接即生效。
+              三个入口工具，这里可覆盖它们的默认描述。点「恢复默认」把默认文案填回输入框，点「保存」后
+              MCP 客户端重新连接即生效。
             </CardDescription>
           </CardHeader>
           <CardContent class="space-y-4">
@@ -891,14 +909,15 @@ async function copyConfig(endpoint: { path: string; label: string }) {
                     variant="ghost"
                     size="sm"
                     class="ml-auto h-7 text-xs text-muted-foreground"
-                    @click="entry.description = ''"
-                    >恢复默认（保存后生效）</Button
+                    :disabled="smartToolDescSaving"
+                    @click="resetSmartToolDesc(entry)"
+                    >恢复默认</Button
                   >
                 </div>
                 <Textarea v-model="entry.description" rows="5" />
               </div>
               <div class="flex justify-end">
-                <Button :disabled="smartToolDescSaving" @click="saveSmartToolDescs">
+                <Button :disabled="smartToolDescSaving" @click="saveSmartToolDescsEdit">
                   <RiCheckLine size="16" />保存
                 </Button>
               </div>

@@ -199,3 +199,114 @@ func TestStatsModelsEndpoint(t *testing.T) {
 		}
 	}
 }
+
+// TestStatsModelsMergeArchivedOnClear 回归：清空转发日志时必须先把统计数据
+// 归档保存（route_stats_archive），之后的 /api/stats/models 要把归档数据与
+// 现场日志一起算——归档桶进 summary、trend、calendar 与 model_dist，概览不归零。
+func TestStatsModelsMergeArchivedOnClear(t *testing.T) {
+	ts, _, sqlDB, pw := newStatsTestServer(t)
+	cookie := login(t, ts, pw)
+
+	// 清空前的日志：2 条成功请求，今天与昨天各一条。
+	today := time.Now().Format("2006-01-02")
+	yesterday := time.Now().AddDate(0, 0, -1).Format("2006-01-02")
+	insertReq := func(id, started string) {
+		t.Helper()
+		if _, err := sqlDB.Exec("INSERT INTO route_requests (request_id, requested_model, final_model, started_at, finished_at, result, duration_ms, prompt_tokens, completion_tokens, cached_tokens) VALUES (?, ?, ?, ?, ?, ?, 120, 100, 20, 5)", id, "gpt-4o", "gpt-4o", started, started, "success"); err != nil {
+			t.Fatalf("插入 route_requests: %v", err)
+		}
+	}
+	insertReq("req-arch-1", time.Now().UTC().Format(time.RFC3339Nano))
+	insertReq("req-arch-2", time.Now().UTC().AddDate(0, 0, -1).Format(time.RFC3339Nano))
+
+	// 清空：真实 DELETE，但统计先归档。
+	resp, data := apiReq(t, ts, http.MethodDelete, "/api/route-logs", nil, cookie)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("DELETE /api/route-logs: %d %s", resp.StatusCode, data)
+	}
+	// 日志真的没了。
+	var count int
+	if err := sqlDB.QueryRow("SELECT COUNT(*) FROM route_requests").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("清空后 route_requests 应为 0 条，实际 %d", count)
+	}
+	// 归档表有一条快照。
+	if err := sqlDB.QueryRow("SELECT COUNT(*) FROM route_stats_archive").Scan(&count); err != nil {
+		t.Fatalf("查 route_stats_archive: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("清空后 route_stats_archive 应有 1 条快照，实际 %d", count)
+	}
+
+	// 统计接口：归档数据仍然在。
+	resp, data = apiReq(t, ts, http.MethodGet, "/api/stats/models?days=7", nil, cookie)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /api/stats/models: %d %s", resp.StatusCode, data)
+	}
+	var payload ModelStats
+	if err := json.Unmarshal(data, &payload); err != nil {
+		t.Fatalf("解析统计响应: %v", err)
+	}
+	if payload.Summary.Requests != 2 {
+		t.Fatalf("归档后 summary.requests = %d, want 2（响应：%s）", payload.Summary.Requests, data)
+	}
+	if payload.Summary.PromptTokens != 200 {
+		t.Fatalf("归档后 summary.prompt_tokens = %d, want 200", payload.Summary.PromptTokens)
+	}
+	seenDates := map[string]bool{}
+	for _, day := range payload.Trend {
+		if day.Requests > 0 {
+			seenDates[day.Date] = true
+		}
+	}
+	if !seenDates[today] || !seenDates[yesterday] {
+		t.Fatalf("trend 缺少归档日期 %v/%v: %+v", today, yesterday, payload.Trend)
+	}
+	if len(payload.ModelDist) != 1 || payload.ModelDist[0].Model != "gpt-4o" || payload.ModelDist[0].Calls != 2 {
+		t.Fatalf("model_dist 未含归档数据: %+v", payload.ModelDist)
+	}
+	tokensByDate := map[string]int{}
+	for _, day := range payload.Calendar {
+		tokensByDate[day.Date] = day.Tokens
+	}
+	// 每天 120 = prompt 100 + completion 20（每天 1 条，日历口径不含 cached）。
+	if tokensByDate[today] != 120 || tokensByDate[yesterday] != 120 {
+		t.Fatalf("calendar 归档 token 不对: %+v（每天应为 120）", tokensByDate)
+	}
+}
+
+// TestStatsModelsArchivedPersistsAcrossWindows：归档日期在查询窗口之外时，
+// 其汇总数与模型分布仍计入（不丢数据），trend/calendar 只显示窗口内日期。
+func TestStatsModelsArchivedPersistsAcrossWindows(t *testing.T) {
+	ts, _, sqlDB, pw := newStatsTestServer(t)
+	cookie := login(t, ts, pw)
+
+	// 归档一条 40 天前的请求（超出 7 天窗口）。
+	old := time.Now().UTC().AddDate(0, 0, -40).Format("2006-01-02")
+	archiveJSON := "[{\"date\": \"" + old + "\", \"requests\": 1, \"prompt_tokens\": 50, \"completion_tokens\": 10, \"cached_tokens\": 0}]"
+	if _, err := sqlDB.Exec("INSERT INTO route_stats_archive (id, archived_at, snapshot_json) VALUES (?, ?, ?)", "arch-1", time.Now().UTC().Format(time.RFC3339Nano), archiveJSON); err != nil {
+		t.Fatalf("预置归档: %v", err)
+	}
+
+	resp, data := apiReq(t, ts, http.MethodGet, "/api/stats/models?days=7", nil, cookie)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /api/stats/models: %d %s", resp.StatusCode, data)
+	}
+	var payload ModelStats
+	if err := json.Unmarshal(data, &payload); err != nil {
+		t.Fatalf("解析统计响应: %v", err)
+	}
+	if payload.Summary.Requests != 1 || payload.Summary.PromptTokens != 50 {
+		t.Fatalf("窗口外归档应计入 summary: %+v（响应 %s）", payload.Summary, data)
+	}
+	if len(payload.ModelDist) != 1 {
+		t.Fatalf("窗口外归档应计入 model_dist: %+v", payload.ModelDist)
+	}
+	for _, day := range payload.Trend {
+		if day.Requests != 0 {
+			t.Fatalf("窗口外日期不应出现在 trend: %+v", day)
+		}
+	}
+}
