@@ -17,6 +17,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -30,6 +31,7 @@ import (
 	"loadout/core/deps"
 	"loadout/core/mcpkit"
 	"loadout/core/plugin"
+	"loadout/core/procreg"
 	"loadout/core/store"
 	"loadout/plugins/admin-auth"
 	"loadout/plugins/contracts"
@@ -193,6 +195,9 @@ func (s *Service) Routes() []plugin.RouteSpec {
 		// 全局进程（统一命令执行器）
 		{Method: http.MethodGet, Pattern: "GET /api/processes/stream", Auth: plugin.AuthSession, Handler: s.session(s.handleProcessesStream)},
 		{Method: http.MethodPost, Pattern: "POST /api/processes/{id}/kill", Auth: plugin.AuthSession, Handler: s.session(s.handleProcessKill)},
+
+		// OpenCodex（ocx CLI）
+		{Method: http.MethodPost, Pattern: "POST /api/opencodex/sync", Auth: plugin.AuthSession, Handler: s.session(s.handleOpenCodexSync)},
 
 		// UnifyAI 配置同步
 		{Method: http.MethodGet, Pattern: "GET /api/unifyai/platforms", Auth: plugin.AuthSession, Handler: s.session(s.handleUnifyaiPlatforms)},
@@ -2758,7 +2763,7 @@ func (s *Service) handleSettingsPut(w http.ResponseWriter, r *http.Request) {
 // ===== 依赖更新检查（unifyai / skills 全局包） =====
 
 // depNames 返回后台监控的依赖库列表。
-func depNames() []string { return []string{"unifyai", "skills"} }
+func depNames() []string { return []string{"unifyai", "skills", "@bitkyc08/opencodex"} }
 
 // syncUseGlobal 把设置的全局指令开关同步到 deps 包（供 unifyai/skills 执行时选命令）。
 func (s *Service) syncUseGlobal(ctx context.Context) {
@@ -2848,6 +2853,27 @@ func (s *Service) handleDepsInstall(w http.ResponseWriter, r *http.Request) {
 		// /api/deps/refresh 单库刷新并更新缓存。这里不再额外 refreshDep，避免重复自检。
 		if err := deps.Install(name, req.ID, nil); err != nil {
 			s.lg.Warn("deps: 安装失败", "name", name, "err", err)
+		}
+	}()
+	writeJSON(w, http.StatusOK, map[string]any{"started": true, "id": req.ID})
+}
+
+// handleOpenCodexSync 后台执行 `ocx sync`（OpenCodex CLI 同步指令）。
+// 经 procreg 统一启动（日志实时推 /api/processes/stream，ProcessFooter 可见可终止），
+// 立即返回 {started, id}；结束后前端由 useTask 监听进程终态收尾。
+func (s *Service) handleOpenCodexSync(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ID string `json:"id"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	cmd, err := exec.LookPath("ocx")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "未找到 ocx 指令，请先全局安装 @bitkyc08/opencodex（npm install -g @bitkyc08/opencodex）")
+		return
+	}
+	go func() {
+		if _, err := procreg.RunCollect("OpenCodex 同步", "opencodex", cmd, []string{"sync"}, nil); err != nil {
+			s.lg.Warn("opencodex: ocx sync 执行失败", "err", err)
 		}
 	}()
 	writeJSON(w, http.StatusOK, map[string]any{"started": true, "id": req.ID})

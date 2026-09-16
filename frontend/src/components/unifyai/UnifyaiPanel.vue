@@ -15,6 +15,7 @@ import {
   RiQuestionLine,
   RiRefreshLine,
   RiSettings3Line,
+  RiTerminalLine,
 } from '@remixicon/vue'
 import PageHeader from '@/components/PageHeader.vue'
 import LoadingBlock from '@/components/LoadingBlock.vue'
@@ -426,9 +427,10 @@ async function importSelectedServers() {
   if (!added.length) return
   const next = { ...matrix.value }
   for (const name of added) {
-    next[name] = Object.fromEntries(
-      platforms.value.map((p) => [p.id, undefined])
-    ) as Record<PlatformId, McpMatrixCell>
+    next[name] = Object.fromEntries(platforms.value.map((p) => [p.id, undefined])) as Record<
+      PlatformId,
+      McpMatrixCell
+    >
   }
   matrix.value = next
   try {
@@ -492,9 +494,10 @@ async function addManualServer() {
   allServers.value = [...allServers.value, srv]
   matrix.value = {
     ...matrix.value,
-    [name]: Object.fromEntries(
-      platforms.value.map((p) => [p.id, undefined])
-    ) as Record<PlatformId, McpMatrixCell>,
+    [name]: Object.fromEntries(platforms.value.map((p) => [p.id, undefined])) as Record<
+      PlatformId,
+      McpMatrixCell
+    >,
   }
   try {
     await persistMcpServers()
@@ -589,9 +592,12 @@ async function saveJsonFile() {
     // 重建 matrix：保留仍在列表中的服务器原有状态，新条目补 undefined 占位
     const nextMatrix: Record<string, Record<PlatformId, McpMatrixCell>> = {}
     for (const srv of servers) {
-      nextMatrix[srv.name] = matrix.value[srv.name] || Object.fromEntries(
-        platforms.value.map((p) => [p.id, undefined])
-      ) as Record<PlatformId, McpMatrixCell>
+      nextMatrix[srv.name] =
+        matrix.value[srv.name] ||
+        (Object.fromEntries(platforms.value.map((p) => [p.id, undefined])) as Record<
+          PlatformId,
+          McpMatrixCell
+        >)
     }
     matrix.value = nextMatrix
     // 重建 disabled：只保留仍在列表中的，再按 enabled 字段对齐
@@ -612,7 +618,6 @@ async function saveJsonFile() {
     savingJsonFile.value = false
   }
 }
-
 
 const matrix = ref<Record<string, Record<PlatformId, McpMatrixCell>>>({})
 
@@ -647,7 +652,7 @@ function applyMatrix(res: McpMatrixResult) {
   const next: Record<string, Record<PlatformId, McpMatrixCell>> = {}
   for (const srv of allServers.value) {
     const row: Record<PlatformId, McpMatrixCell> = Object.fromEntries(
-      platforms.value.map((p) => [p.id, undefined])
+      platforms.value.map((p) => [p.id, undefined]),
     ) as Record<PlatformId, McpMatrixCell>
     for (const p of res.platforms) {
       if (!p.readable) continue
@@ -733,7 +738,7 @@ const commandOpts = computed(() => ({
   mcpPlatforms: null,
   globalExcludes: [] as string[],
   perPlatformExcludes: Object.fromEntries(
-    platforms.value.map((p) => [p.id, [] as string[]])
+    platforms.value.map((p) => [p.id, [] as string[]]),
   ) as Record<PlatformId, string[]>,
   dryRun: false,
   source: sourcePath.value,
@@ -839,7 +844,9 @@ function buildFullConfig() {
  */
 function buildSyncConfig() {
   const cfg = buildFullConfig() as { mcp?: Record<string, unknown> }
-  const matrixObj = (buildMatrixConfig(matrix.value) as { mcp: { matrix?: Record<string, unknown> } }).mcp.matrix
+  const matrixObj = (
+    buildMatrixConfig(matrix.value) as { mcp: { matrix?: Record<string, unknown> } }
+  ).mcp.matrix
   // 矩阵无条件写入（空对象也写）：确保 CLI 走矩阵模式而不是全量同步——
   // 用户全部删除时矩阵为空，此时仍要触发 forceMcp 清空目标平台
   cfg.mcp = { ...(cfg.mcp || {}), matrix: matrixObj || {} }
@@ -895,6 +902,48 @@ function confirmAndExecute() {
   const { args, dryRun, config } = pendingRun.value
   pendingRun.value = null
   executeWithArgs(args, dryRun, config)
+}
+
+// ---------- ocx sync（OpenCodex CLI，经 /api/opencodex/sync 由 procreg 后台执行，日志进全局进程面板） ----------
+const ocxSyncing = ref(false)
+
+/** 启动 `ocx sync`（后台任务，结束后弹提示）。日志在全局进程面板实时可见。 */
+async function startOcxSync() {
+  if (ocxSyncing.value) return
+  const id = `opencodex:sync:${Date.now()}`
+  ocxSyncing.value = true
+  registerTask(id, {
+    kind: 'opencodex',
+    onDone: () => {
+      ocxSyncing.value = false
+      toast.success('ocx sync 完成')
+    },
+    onError: (e) => {
+      ocxSyncing.value = false
+      toast.error('ocx sync 失败', { description: String(e) })
+    },
+  })
+  const processStore = useProcessStore()
+  processStore.openLog(id) // 自动弹出日志对话框查看实时输出
+  try {
+    await startTask({
+      id,
+      kind: 'opencodex',
+      run: () =>
+        fetch('/api/opencodex/sync', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id }),
+        }).then(async (res) => {
+          if (!res.ok)
+            throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`)
+        }),
+    })
+  } catch (e) {
+    clearTask(id)
+    ocxSyncing.value = false
+    toast.error('ocx sync 启动失败', { description: String(e) })
+  }
 }
 
 // ---------- 帮助 ----------
@@ -958,31 +1007,31 @@ onMounted(async () => {
     })
     .catch(() => {})
   try {
-  const all = await fetchAllConfig(enableVision.value)
-  applyPlatforms(all.platforms)
-  applyMatrix(all.mcp)
-  // models 有值而 count 缺失时归一化，避免「数据预览」显示 0 个模型
-  if (all.models?.models?.length) opencodexModels.value = normalizeOpenCodexModels(all.models)
-  if (all.metadata?.modelCount > 0) {
-    modelSource.value = {
-      ...modelSource.value,
-      kind: 'openrouter',
-      baseUrl: 'https://openrouter.ai/api/v1',
-      modelCount: all.metadata.modelCount,
-      cachedAt: all.metadata.cachedAt || '',
+    const all = await fetchAllConfig(enableVision.value)
+    applyPlatforms(all.platforms)
+    applyMatrix(all.mcp)
+    // models 有值而 count 缺失时归一化，避免「数据预览」显示 0 个模型
+    if (all.models?.models?.length) opencodexModels.value = normalizeOpenCodexModels(all.models)
+    if (all.metadata?.modelCount > 0) {
+      modelSource.value = {
+        ...modelSource.value,
+        kind: 'openrouter',
+        baseUrl: 'https://openrouter.ai/api/v1',
+        modelCount: all.metadata.modelCount,
+        cachedAt: all.metadata.cachedAt || '',
+      }
     }
-  }
-  // 兜底：--list all 无数据（CLI 不可用）时用独立接口再试，保证页面有内容
-  if (!all.mcp?.platforms?.length) {
-    fetchModelSource().then((source) => (modelSource.value = source))
-    reloadOpenCodexModels()
-    fetch('/api/unifyai/platforms')
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data: { platforms?: BackendPlatform[] } | null) => {
-        if (data?.platforms?.length) applyPlatforms(data.platforms)
-      })
-      .catch(() => {})
-  }
+    // 兜底：--list all 无数据（CLI 不可用）时用独立接口再试，保证页面有内容
+    if (!all.mcp?.platforms?.length) {
+      fetchModelSource().then((source) => (modelSource.value = source))
+      reloadOpenCodexModels()
+      fetch('/api/unifyai/platforms')
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data: { platforms?: BackendPlatform[] } | null) => {
+          if (data?.platforms?.length) applyPlatforms(data.platforms)
+        })
+        .catch(() => {})
+    }
   } finally {
     const elapsed = performance.now() - startedAt
     const rest = Math.max(0, MIN_LOADING_MS - elapsed)
@@ -1012,153 +1061,160 @@ onMounted(async () => {
     <template v-else>
       <!-- ① 同步内容与目标平台（头部含同步内容 + 全部平台） -->
       <Card class="rounded-md">
-      <CardHeader
-        class="flex flex-col gap-3 space-y-0 lg:flex-row lg:items-center lg:justify-between"
-      >
-        <div class="space-y-0.5">
-          <CardTitle class="text-base">① 同步内容与目标平台</CardTitle>
-          <CardDescription
-            >勾选要同步的平台；不支持所选能力的平台将置灰（执行时跳过并提示）。</CardDescription
-          >
-        </div>
-        <div class="flex flex-wrap items-center gap-x-4 gap-y-2">
-          <Tabs v-model="modeTab">
-            <TabsList class="inline-flex h-auto w-fit max-w-full flex-wrap justify-start gap-1">
-              <TabsTrigger value="all">全部同步</TabsTrigger>
-              <TabsTrigger value="models">仅模型</TabsTrigger>
-              <TabsTrigger value="mcp">仅 MCP</TabsTrigger>
-            </TabsList>
-          </Tabs>
-          <div class="flex items-center gap-2">
-            <Switch id="all-platforms" v-model="allPlatforms" />
-            <Label for="all-platforms" class="cursor-pointer whitespace-nowrap text-sm font-medium"
-              >全部平台（--all）</Label
+        <CardHeader
+          class="flex flex-col gap-3 space-y-0 lg:flex-row lg:items-center lg:justify-between"
+        >
+          <div class="space-y-0.5">
+            <CardTitle class="text-base">① 同步内容与目标平台</CardTitle>
+            <CardDescription
+              >勾选要同步的平台；不支持所选能力的平台将置灰（执行时跳过并提示）。</CardDescription
             >
           </div>
-          <div class="flex items-center gap-2">
-            <Switch id="enable-vision" v-model="enableVision" />
-            <Label for="enable-vision" class="cursor-pointer whitespace-nowrap text-sm font-medium"
-              >强制视觉（--enable-vision）</Label
-            >
-          </div>
-        </div>
-      </CardHeader>
-      <CardContent>
-        <div
-          class="grid grid-cols-2 gap-2 md:grid-cols-4! lg:grid-cols-6!"
-        >
-          <PlatformCard
-            v-for="platform in platforms"
-            :key="platform.id"
-            :platform="platform"
-            :selected="allPlatforms || selectedPlatforms.includes(platform.id)"
-            :disabled="platformDisabled(platform)"
-            :disable-reason="disableReason(platform)"
-            @toggle="togglePlatform"
-          />
-        </div>
-      </CardContent>
-    </Card>
-
-    <!-- ② MCP 同步矩阵（勾选=平台开启 + 白名单） -->
-    <Card v-if="mode !== 'models'" class="rounded-md">
-      <CardHeader class="flex flex-row items-center justify-between space-y-0 pb-2">
-        <div class="space-y-0.5">
-          <CardTitle class="text-base">② MCP 同步矩阵</CardTitle>
-          <CardDescription
-            >行 = 服务器（跨平台去重），列 = 平台，勾选 = 该平台开启。改动后到「③ 执行」点「按矩阵同步」落地到各平台。</CardDescription
-          >
-        </div>
-        <div class="flex items-center gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            :disabled="runStatus"
-            @click="startImportMcp"
-          >
-            <RiImportLine size="16" />导入各平台配置到源
-          </Button>
-          <Button variant="outline" size="sm" :disabled="savingMcp" @click="openAddDialog">
-            <RiAddLine size="16" />添加 MCP 工具
-          </Button>
-          <Button variant="outline" size="sm" :disabled="savingMcp" @click="openJsonFileEdit">
-            <RiEditLine size="16" />编辑
-          </Button>
-        </div>
-      </CardHeader>
-      <CardContent class="space-y-6">
-        <section>
-          <ExcludeMatrix
-            :servers="allServers"
-            :platforms="platforms"
-            :disabled="disabledServers"
-            v-model:matrix="matrix"
-            @update:disabled="onDisabledChange"
-            @remove="removeServer"
-            @edit="openEditServer"
-          />
-        </section>
-      </CardContent>
-    </Card>
-
-    <!-- 数据预览（非操作步骤，纯展示） -->
-    <CommandPreview
-      :command="command"
-      :config-data="configPreview"
-      :model-source="modelSource"
-      :opencodex-models="opencodexModels"
-      :enable-vision="enableVision"
-      :on-toggle-vision="handleToggleVision"
-      :show-vision="false"
-      :mcp-source-path="mcpSourcePath"
-      :mcp-enabled="allServers.length"
-      :mcp-total="allServers.length"
-    />
-
-    <!-- ③ 执行（高级选项 + 操作区） -->
-    <Card class="rounded-md">
-      <CardHeader>
-        <CardTitle class="text-base">③ 执行</CardTitle>
-        <CardDescription
-          >预览（dry-run）只展示不写文件；开始同步前会弹确认，备份后写入各平台配置。</CardDescription
-        >
-      </CardHeader>
-      <CardContent class="space-y-4">
-        <div class="rounded-md border">
-          <button
-            type="button"
-            class="flex w-full items-center justify-between gap-2 px-3 py-2.5 text-left text-sm font-medium"
-            @click="advancedOpen = !advancedOpen"
-          >
-            <span class="flex items-center gap-2"><RiSettings3Line size="15" />高级选项</span>
-            <RiArrowDownSLine v-if="advancedOpen" size="16" class="text-muted-foreground" />
-            <RiArrowRightSLine v-else size="16" class="text-muted-foreground" />
-          </button>
-          <div v-show="advancedOpen" class="grid gap-3 border-t px-3 py-3 sm:grid-cols-2">
-            <div class="space-y-1">
-              <Label>模型源配置路径（--source）</Label>
-              <Input v-model="sourcePath" placeholder="~/.opencodex/config.json" @blur="handleSourceBlur" />
+          <div class="flex flex-wrap items-center gap-x-4 gap-y-2">
+            <Tabs v-model="modeTab">
+              <TabsList class="inline-flex h-auto w-fit max-w-full flex-wrap justify-start gap-1">
+                <TabsTrigger value="all">全部同步</TabsTrigger>
+                <TabsTrigger value="models">仅模型</TabsTrigger>
+                <TabsTrigger value="mcp">仅 MCP</TabsTrigger>
+              </TabsList>
+            </Tabs>
+            <div class="flex items-center gap-2">
+              <Switch id="all-platforms" v-model="allPlatforms" />
+              <Label
+                for="all-platforms"
+                class="cursor-pointer whitespace-nowrap text-sm font-medium"
+                >全部平台（--all）</Label
+              >
             </div>
-            <!-- <div class="flex items-center gap-2 pt-5">
+            <div class="flex items-center gap-2">
+              <Switch id="enable-vision" v-model="enableVision" />
+              <Label
+                for="enable-vision"
+                class="cursor-pointer whitespace-nowrap text-sm font-medium"
+                >强制视觉（--enable-vision）</Label
+              >
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <div class="grid grid-cols-2 gap-2 md:grid-cols-4! lg:grid-cols-6!">
+            <PlatformCard
+              v-for="platform in platforms"
+              :key="platform.id"
+              :platform="platform"
+              :selected="allPlatforms || selectedPlatforms.includes(platform.id)"
+              :disabled="platformDisabled(platform)"
+              :disable-reason="disableReason(platform)"
+              @toggle="togglePlatform"
+            />
+          </div>
+        </CardContent>
+      </Card>
+
+      <!-- ② MCP 同步矩阵（勾选=平台开启 + 白名单） -->
+      <Card v-if="mode !== 'models'" class="rounded-md">
+        <CardHeader class="flex flex-row items-center justify-between space-y-0 pb-2">
+          <div class="space-y-0.5">
+            <CardTitle class="text-base">② MCP 同步矩阵</CardTitle>
+            <CardDescription
+              >行 = 服务器（跨平台去重），列 = 平台，勾选 = 该平台开启。改动后到「③
+              执行」点「按矩阵同步」落地到各平台。</CardDescription
+            >
+          </div>
+          <div class="flex items-center gap-2">
+            <Button variant="outline" size="sm" :disabled="runStatus" @click="startImportMcp">
+              <RiImportLine size="16" />导入各平台配置到源
+            </Button>
+            <Button variant="outline" size="sm" :disabled="savingMcp" @click="openAddDialog">
+              <RiAddLine size="16" />添加 MCP 工具
+            </Button>
+            <Button variant="outline" size="sm" :disabled="savingMcp" @click="openJsonFileEdit">
+              <RiEditLine size="16" />编辑
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent class="space-y-6">
+          <section>
+            <ExcludeMatrix
+              :servers="allServers"
+              :platforms="platforms"
+              :disabled="disabledServers"
+              v-model:matrix="matrix"
+              @update:disabled="onDisabledChange"
+              @remove="removeServer"
+              @edit="openEditServer"
+            />
+          </section>
+        </CardContent>
+      </Card>
+
+      <!-- 数据预览（非操作步骤，纯展示） -->
+      <CommandPreview
+        :command="command"
+        :config-data="configPreview"
+        :model-source="modelSource"
+        :opencodex-models="opencodexModels"
+        :enable-vision="enableVision"
+        :on-toggle-vision="handleToggleVision"
+        :show-vision="false"
+        :mcp-source-path="mcpSourcePath"
+        :mcp-enabled="allServers.length"
+        :mcp-total="allServers.length"
+      />
+
+      <!-- ③ 执行（高级选项 + 操作区） -->
+      <Card class="rounded-md">
+        <CardHeader>
+          <CardTitle class="text-base">③ 执行</CardTitle>
+          <CardDescription
+            >预览（dry-run）只展示不写文件；开始同步前会弹确认，备份后写入各平台配置。</CardDescription
+          >
+        </CardHeader>
+        <CardContent class="space-y-4">
+          <div class="rounded-md border">
+            <button
+              type="button"
+              class="flex w-full items-center justify-between gap-2 px-3 py-2.5 text-left text-sm font-medium"
+              @click="advancedOpen = !advancedOpen"
+            >
+              <span class="flex items-center gap-2"><RiSettings3Line size="15" />高级选项</span>
+              <RiArrowDownSLine v-if="advancedOpen" size="16" class="text-muted-foreground" />
+              <RiArrowRightSLine v-else size="16" class="text-muted-foreground" />
+            </button>
+            <div v-show="advancedOpen" class="grid gap-3 border-t px-3 py-3 sm:grid-cols-2">
+              <div class="space-y-1">
+                <Label>模型源配置路径（--source）</Label>
+                <Input
+                  v-model="sourcePath"
+                  placeholder="~/.opencodex/config.json"
+                  @blur="handleSourceBlur"
+                />
+              </div>
+              <!-- <div class="flex items-center gap-2 pt-5">
               <Switch id="verbose" v-model="verbose" />
               <Label for="verbose" class="cursor-pointer text-sm">显示详细堆栈信息（--verbose）</Label>
             </div> -->
+            </div>
           </div>
-        </div>
-        <div class="flex flex-wrap justify-end gap-2">
-          <Button variant="outline" :disabled="runStatus" @click="execute(true)">
-            <RiLoader4Line v-if="runStatus && dryRunMode" size="16" class="animate-spin" />
-            <RiPlayLine v-else size="16" />
-            {{ runStatus && dryRunMode ? '预览中…' : '预览（dry-run）' }}
-          </Button>
-          <Button :disabled="runStatus" @click="startSync">
-            <RiLoader4Line v-if="runStatus && !dryRunMode" size="16" class="animate-spin" />
-            <RiPlayLine v-else size="16" />
-            {{ runStatus && !dryRunMode ? '同步中…' : '开始同步' }}
-          </Button>
-        </div>
-      </CardContent>
-    </Card>
+          <div class="flex flex-wrap justify-end gap-2">
+            <Button variant="secondary" :disabled="runStatus || ocxSyncing" @click="startOcxSync">
+              <RiLoader4Line v-if="ocxSyncing" size="16" class="animate-spin" />
+              <RiTerminalLine v-else size="16" />
+              {{ ocxSyncing ? 'ocx sync 执行中…' : 'ocx sync' }}
+            </Button>
+            <Button variant="outline" :disabled="runStatus" @click="execute(true)">
+              <RiLoader4Line v-if="runStatus && dryRunMode" size="16" class="animate-spin" />
+              <RiPlayLine v-else size="16" />
+              {{ runStatus && dryRunMode ? '预览中…' : '预览（dry-run）' }}
+            </Button>
+            <Button :disabled="runStatus" @click="startSync">
+              <RiLoader4Line v-if="runStatus && !dryRunMode" size="16" class="animate-spin" />
+              <RiPlayLine v-else size="16" />
+              {{ runStatus && !dryRunMode ? '同步中…' : '开始同步' }}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
     </template>
 
     <!-- 添加 / 导入 MCP 工具弹窗 -->
@@ -1210,9 +1266,7 @@ onMounted(async () => {
                   <span class="block truncate text-xs text-muted-foreground">
                     <template v-if="srv.kind === '单 MCP'">
                       {{
-                        srv.server.type === 'local'
-                          ? srv.server.command?.join(' ')
-                          : srv.server.url
+                        srv.server.type === 'local' ? srv.server.command?.join(' ') : srv.server.url
                       }}
                     </template>
                     <template v-else-if="srv.kind === '分组'">
