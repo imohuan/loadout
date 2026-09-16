@@ -17,6 +17,7 @@ const (
 	FileMCPServers       = "mcp_servers.json"       // 上游 MCP 服务器
 	FileToolsState       = "tools_state.json"       // 单工具开关与分类
 	FileGroups           = "groups.json"            // 分组
+	FileSmartToolDesc    = "smart_tool_desc.json"   // $smart 入口工具描述覆盖
 	FileSkills           = "skills.json"            // 技能仓库清单
 	FilePresets          = "presets.json"           // 技能预设
 	FileSettings         = "settings.json"          // 运行时设置
@@ -501,6 +502,15 @@ type GroupTool struct {
 type Group struct {
 	Name  string      `json:"name"`  // 分组名（决定 /mcp/{分组名} 端点）
 	Tools []GroupTool `json:"tools"` // 勾选的工具
+}
+
+// ============ 5.8b $smart 入口工具描述 ============
+
+// SmartToolDesc 覆盖 $smart 端点某个入口工具的默认描述。仅记录用户改过的条目，
+// 未记录的工具继续用硬编码默认描述。
+type SmartToolDesc struct {
+	Name        string `json:"name"`        // 入口工具名：status / get / invoke
+	Description string `json:"description"` // 覆盖后的描述
 }
 
 // ============ 5.9 技能仓库清单 ============

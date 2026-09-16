@@ -104,7 +104,16 @@ func seedTransferData(t *testing.T, svc *Service, st *store.Store, repoDir strin
 		t.Fatalf("seed channels: %v", err)
 	}
 	aggregates := []db.Aggregate{
-		{Name: "auto", Enabled: true, Targets: []db.AggregateTarget{{Model: "deepseek-chat", ChannelID: "ch-1"}}},
+		{
+			Name: "auto", Enabled: true,
+			Targets: []db.AggregateTarget{{Model: "deepseek-chat", ChannelID: "ch-1"}},
+			// 模型配置也要随导出/导入往返：搬配置不能把虚拟模型对外声明的属性丢掉。
+			Config: &db.AggregateConfig{
+				ContextLength:   1048576,
+				MaxOutputTokens: 384000,
+				Capabilities:    []string{db.CapabilityVision, db.CapabilityReasoning},
+			},
+		},
 	}
 	if err := svc.routing.ReplaceAggregates(ctx, aggregates); err != nil {
 		t.Fatalf("seed aggregates: %v", err)
@@ -301,6 +310,12 @@ func TestConfigExportBundle(t *testing.T) {
 	if len(aggregates) != 1 || aggregates[0].Name != "auto" || aggregates[0].Enabled == nil || !*aggregates[0].Enabled {
 		t.Fatalf("聚合导出不符: %+v", aggregates)
 	}
+	// 模型配置随导出一起走：导入到别的实例后仍要能声明同样的上下文与能力。
+	if aggregates[0].Config == nil || aggregates[0].Config.ContextLength != 1048576 ||
+		aggregates[0].Config.MaxOutputTokens != 384000 ||
+		len(aggregates[0].Config.Capabilities) != 2 {
+		t.Fatalf("聚合模型配置未随导出保留: %+v", aggregates[0].Config)
+	}
 
 	// manifest。
 	var manifest transferManifest
@@ -428,6 +443,10 @@ func TestConfigImportPreviewAndApply(t *testing.T) {
 	}
 	if len(aggregates) != 1 || aggregates[0].Name != "auto" {
 		t.Fatalf("导入后聚合不符: %+v", aggregates)
+	}
+	if aggregates[0].Config == nil || aggregates[0].Config.ContextLength != 1048576 ||
+		!aggregates[0].Config.HasCapability(db.CapabilityVision) {
+		t.Fatalf("导入后聚合模型配置丢失: %+v", aggregates[0].Config)
 	}
 
 	servers, err := other.routing.ListMCPServers(ctx)

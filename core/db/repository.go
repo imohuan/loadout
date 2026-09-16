@@ -42,6 +42,53 @@ type Aggregate struct {
 	CreatedAt string            `json:"created_at"`
 	UpdatedAt string            `json:"updated_at"`
 	Targets   []AggregateTarget `json:"targets"`
+	// Config 虚拟模型对外声明的模型配置（/v1/models 那一行的上下文与能力）。
+	// nil = 未配置：输出只带 id/object，与改造前完全一致。
+	Config *AggregateConfig `json:"config,omitempty"`
+}
+
+// 虚拟模型的「能力」标记取值。与 opencodex 读 /v1/models 时认的键对齐：
+// vision → supports_vision + input_modalities 含 image；reasoning → supports_reasoning；
+// tool_use → supports_tool_use。前端「模型配置」用多选框勾选。
+const (
+	CapabilityVision    = "vision"
+	CapabilityReasoning = "reasoning"
+	CapabilityToolUse   = "tool_use"
+)
+
+// AggregateConfig 聚合（虚拟）模型对外声明的模型配置。
+// 这些字段最终合并进 /v1/models 里该虚拟模型那一行，供 Codex / Cursor 等客户端
+// 判断能开多大上下文、能不能发图、要不要放开思考开关。
+// 全部零值（nil）时输出不额外声明任何字段。
+type AggregateConfig struct {
+	// ContextLength 上下文窗口 token 数（>0 时输出 context_length）。
+	ContextLength int64 `json:"context_length,omitempty"`
+	// MaxOutputTokens 最大输出 token 数（>0 时输出 max_output_tokens）。
+	MaxOutputTokens int64 `json:"max_output_tokens,omitempty"`
+	// Capabilities 能力标记（vision / reasoning / tool_use），输出时投影成对应字段。
+	Capabilities []string `json:"capabilities,omitempty"`
+}
+
+// HasCapability 判断是否勾选了某项能力。
+func (c *AggregateConfig) HasCapability(name string) bool {
+	if c == nil {
+		return false
+	}
+	for _, v := range c.Capabilities {
+		if v == name {
+			return true
+		}
+	}
+	return false
+}
+
+// IsZero 判断配置是否为空（没有任何一项要声明）。
+// 空配置在写库时折叠成 NULL，读回仍是 nil，保证「没配 = 行为不变」。
+func (c *AggregateConfig) IsZero() bool {
+	if c == nil {
+		return true
+	}
+	return c.ContextLength <= 0 && c.MaxOutputTokens <= 0 && len(c.Capabilities) == 0
 }
 
 // AggregateTarget pins an aggregate position to a model on one channel.
@@ -263,7 +310,7 @@ func (r *Repository) UpdateChannelModelsError(ctx context.Context, channelID, mo
 
 // ListAggregates returns virtual models with ordered targets.
 func (r *Repository) ListAggregates(ctx context.Context) ([]Aggregate, error) {
-	rows, err := r.database.QueryContext(ctx, "SELECT id, name, enabled, created_at, updated_at FROM aggregates ORDER BY name")
+	rows, err := r.database.QueryContext(ctx, "SELECT id, name, enabled, created_at, updated_at, config_json FROM aggregates ORDER BY name")
 	if err != nil {
 		return nil, fmt.Errorf("db: list aggregates: %w", err)
 	}
@@ -272,8 +319,20 @@ func (r *Repository) ListAggregates(ctx context.Context) ([]Aggregate, error) {
 	byID := make(map[int64]int)
 	for rows.Next() {
 		var aggregate Aggregate
-		if err := rows.Scan(&aggregate.ID, &aggregate.Name, &aggregate.Enabled, &aggregate.CreatedAt, &aggregate.UpdatedAt); err != nil {
+		var configJSON sql.NullString
+		if err := rows.Scan(&aggregate.ID, &aggregate.Name, &aggregate.Enabled, &aggregate.CreatedAt, &aggregate.UpdatedAt, &configJSON); err != nil {
 			return nil, fmt.Errorf("db: scan aggregate: %w", err)
+		}
+		// 空/损坏的配置一律当「未配置」，不让坏数据打断列表读取。
+		if configJSON.Valid && configJSON.String != "" {
+			var config AggregateConfig
+			if err := json.Unmarshal([]byte(configJSON.String), &config); err != nil {
+				// 损坏配置按「未配置」处理（Config 留 nil）：列表照常返回，
+				// 虚拟模型不因一条脏数据从 /v1/models 消失。
+				aggregate.Config = nil
+			} else if !config.IsZero() {
+				aggregate.Config = &config
+			}
 		}
 		byID[aggregate.ID] = len(aggregates)
 		aggregates = append(aggregates, aggregate)
@@ -331,7 +390,16 @@ func (r *Repository) ReplaceAggregates(ctx context.Context, aggregates []Aggrega
 			if aggregate.UpdatedAt == "" {
 				aggregate.UpdatedAt = now
 			}
-			if _, err := tx.ExecContext(ctx, `INSERT INTO aggregates (name, enabled, created_at, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(name) DO UPDATE SET enabled = excluded.enabled, updated_at = excluded.updated_at`, aggregate.Name, aggregate.Enabled, aggregate.CreatedAt, aggregate.UpdatedAt); err != nil {
+			// 空配置折叠成 NULL：读回仍是 nil，保证「没配 = 输出不变」。
+			var configJSON any
+			if !aggregate.Config.IsZero() {
+				data, err := json.Marshal(aggregate.Config)
+				if err != nil {
+					return fmt.Errorf("db: marshal aggregate %q config: %w", aggregate.Name, err)
+				}
+				configJSON = string(data)
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO aggregates (name, enabled, created_at, updated_at, config_json) VALUES (?, ?, ?, ?, ?) ON CONFLICT(name) DO UPDATE SET enabled = excluded.enabled, updated_at = excluded.updated_at, config_json = excluded.config_json`, aggregate.Name, aggregate.Enabled, aggregate.CreatedAt, aggregate.UpdatedAt, configJSON); err != nil {
 				return fmt.Errorf("db: replace aggregate %q: %w", aggregate.Name, err)
 			}
 			var id int64

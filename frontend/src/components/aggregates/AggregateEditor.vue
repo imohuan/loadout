@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { reactive, watch } from 'vue'
 import ModelChannelList from '@/components/ModelChannelList.vue'
-import type { Aggregate, Channel } from '@/lib/types'
+import AggregateModelConfig from '@/components/aggregates/AggregateModelConfig.vue'
+import type { Aggregate, AggregateConfig, Channel } from '@/lib/types'
 
 const props = defineProps<{
   aggregate?: Aggregate
@@ -13,10 +14,12 @@ const props = defineProps<{
 const emit = defineEmits<{ save: [value: Aggregate]; cancel: [] }>()
 const open = defineModel<boolean>('open', { required: true })
 
-const form = reactive<Aggregate>({
+// 编辑态表单：config 始终存在（空对象 = 未配置），便于 v-model 直接绑定子组件。
+const form = reactive<Aggregate & { config: AggregateConfig }>({
   name: '',
   enabled: true,
   targets: [{ model: '', channel_id: '', channel_ids: [] }],
+  config: {},
 })
 
 watch(
@@ -28,6 +31,7 @@ watch(
       targets: aggregate?.targets?.map((target) => ({ ...target })) || [
         { model: '', channel_id: '', channel_ids: [] },
       ],
+      config: { ...(aggregate?.config || {}) },
     })
   },
   { immediate: true },
@@ -39,7 +43,20 @@ function submit() {
   const targets = form.targets.filter(
     (t) => t.model && (t.channel_id || t.channel_ids?.length || t.channel_base_url),
   )
-  if (targets.length) emit('save', { name: form.name, enabled: form.enabled, targets })
+  if (targets.length)
+    emit('save', {
+      name: form.name,
+      enabled: form.enabled,
+      targets,
+      // 模型配置留空时不带该字段，落库为「未配置」，输出与改造前一致。
+      config: hasConfig(form.config) ? form.config : undefined,
+    })
+}
+
+// 模型配置是否填了内容（三项都空 = 未配置）。
+function hasConfig(config?: AggregateConfig): boolean {
+  if (!config) return false
+  return Boolean(config.context_length || config.max_output_tokens || config.capabilities?.length)
 }
 </script>
 
@@ -76,6 +93,9 @@ function submit() {
             :show-index="true"
             add-label="添加目标"
           />
+        </div>
+        <div class="space-y-2 border-t border-border pt-4">
+          <AggregateModelConfig v-model="form.config" />
         </div>
         <DialogFooter>
           <Button type="submit" :disabled="pending">{{

@@ -160,6 +160,8 @@ type exportAggregate struct {
 	Name    string                  `json:"name"`
 	Enabled *bool                   `json:"enabled,omitempty"`
 	Targets []types.AggregateTarget `json:"targets"`
+	// Config 虚拟模型对外声明的模型配置（/v1/models 那一行的上下文与能力）。
+	Config *db.AggregateConfig `json:"config,omitempty"`
 }
 
 // manifest 导出清单。
@@ -276,6 +278,7 @@ func (s *Service) writeExportSection(ctx context.Context, zw *zip.Writer, key st
 				Name:    agg.Name,
 				Enabled: boolPtr(agg.Enabled),
 				Targets: targets,
+				Config:  agg.Config,
 			})
 		}
 		return writeZipEntry(zw, "loadout-config/aggregates.json", out)
@@ -974,7 +977,7 @@ func (s *Service) importAggregates(ctx context.Context, data []byte, mode string
 		for _, t := range item.Targets {
 			targets = append(targets, db.AggregateTarget{Model: t.Model, ChannelID: t.ChannelID, ChannelIDs: t.ChannelIDs, ChannelBaseURL: t.ChannelBaseURL})
 		}
-		merged = append(merged, db.Aggregate{Name: item.Name, Enabled: enabled, Targets: targets})
+		merged = append(merged, db.Aggregate{Name: item.Name, Enabled: enabled, Targets: targets, Config: item.Config})
 	}
 	if mode == modeAppend {
 		for _, agg := range existing {

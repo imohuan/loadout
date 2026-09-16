@@ -61,6 +61,10 @@ function openDuplicate(value: Aggregate) {
     name: duplicateName(value.name, taken),
     enabled: value.enabled ?? true,
     targets: value.targets.map((t) => ({ ...t })),
+    // 模型配置一并克隆：复制出来的虚拟模型默认与源模型对外声明一致。
+    config: value.config
+      ? { ...value.config, capabilities: [...(value.config.capabilities || [])] }
+      : undefined,
   }
   editorDuplicate.value = true
   editorOpen.value = true
@@ -101,7 +105,8 @@ async function pruneAbnormal(removedHint: number) {
   if (
     !(await confirmDialog({
       title: `清除 ${removedHint} 个异常模型？`,
-      description: '将从所有聚合模型中移除检测为异常的目标（模型不存在/渠道缺失/Key 缺失/该渠道不提供此模型）。',
+      description:
+        '将从所有聚合模型中移除检测为异常的目标（模型不存在/渠道缺失/Key 缺失/该渠道不提供此模型）。',
       confirmText: '清除',
     }))
   )

@@ -244,6 +244,44 @@ func (r *Repository) ReplaceToolStates(ctx context.Context, states []types.ToolS
 	})
 }
 
+// ==================== $smart 入口工具描述 ====================
+
+// ListSmartToolDescs 返回 $smart 入口工具的描述覆盖清单。
+func (r *Repository) ListSmartToolDescs(ctx context.Context) ([]types.SmartToolDesc, error) {
+	rows, err := r.database.QueryContext(ctx, `SELECT name, description FROM smart_tool_desc ORDER BY name`)
+	if err != nil {
+		return nil, fmt.Errorf("db: list smart tool descs: %w", err)
+	}
+	defer rows.Close()
+	var descs []types.SmartToolDesc
+	for rows.Next() {
+		var d types.SmartToolDesc
+		if err := rows.Scan(&d.Name, &d.Description); err != nil {
+			return nil, fmt.Errorf("db: scan smart tool desc: %w", err)
+		}
+		descs = append(descs, d)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("db: iterate smart tool descs: %w", err)
+	}
+	return descs, nil
+}
+
+// ReplaceSmartToolDescs 整体替换 $smart 入口工具描述覆盖清单。
+func (r *Repository) ReplaceSmartToolDescs(ctx context.Context, descs []types.SmartToolDesc) error {
+	return r.Transaction(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, "DELETE FROM smart_tool_desc"); err != nil {
+			return fmt.Errorf("db: clear smart tool descs: %w", err)
+		}
+		for _, d := range descs {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO smart_tool_desc (name, description) VALUES (?, ?)`, d.Name, d.Description); err != nil {
+				return fmt.Errorf("db: insert smart tool desc %q: %w", d.Name, err)
+			}
+		}
+		return nil
+	})
+}
+
 // ==================== 技能清单 ====================
 
 // ListSkills 返回全部技能清单。

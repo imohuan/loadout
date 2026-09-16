@@ -245,7 +245,8 @@ func (s *Service) HandleModels(w http.ResponseWriter, r *http.Request) {
 	modelChannels := map[string]map[string]bool{}
 	// model → 该模型在任一渠道上报的上下文窗口（token）；0 = 无渠道上报。
 	modelContext := map[string]int64{}
-	var virtualModels []string
+	// model → OpenRouter 元数据（最大输出/视觉/推理），真实模型的能力声明来源。
+	openrouterMetaByModel := map[string]openrouterModelMeta{}
 	seen := map[string]bool{}
 
 	// 1. 渠道模型（探测 + 手动，channel_models 注册表）。
@@ -258,20 +259,24 @@ func (s *Service) HandleModels(w http.ResponseWriter, r *http.Request) {
 		modelChannels[e.Model][e.ChannelID] = true
 		ctx := e.Context
 		if ctx <= 0 {
-			ctx = orCtx.contextOf(e.Model)
+			if meta, ok := orCtx.metaOf(e.Model); ok && meta.Context > 0 {
+				ctx = meta.Context
+			}
 		}
 		if ctx > 0 {
 			if known, ok := modelContext[e.Model]; !ok || known <= 0 {
 				modelContext[e.Model] = ctx
 			}
 		}
+		// OpenRouter 元数据补能力声明：最大输出 / 视觉 / 推理（渠道探测只有上下文一个数）。
+		if meta, ok := orCtx.metaOf(e.Model); ok {
+			openrouterMetaByModel[e.Model] = meta
+		}
 	}
 
 	// 2. 虚拟（聚合）模型名：收集但先不标记 seen，追加时统一去重
 	//（渠道模型过滤与 key 白名单对虚拟模型同样适用，先收集后合并）。
-	for _, name := range s.aggregateNames(r.Context()) {
-		virtualModels = append(virtualModels, name)
-	}
+	aggregates := s.aggregateEntries(r.Context())
 
 	// 3. 减去 model-status 配置的禁用模型（model_states.manual_enabled=false）。
 	// 同名模型在所有渠道都被禁用才从列表移除；至少一个渠道可用则保留。
@@ -290,10 +295,10 @@ func (s *Service) HandleModels(w http.ResponseWriter, r *http.Request) {
 			models = append(models, model)
 		}
 	}
-	for _, name := range virtualModels {
-		if !seen[name] {
-			seen[name] = true
-			models = append(models, name)
+	for _, agg := range aggregates {
+		if !seen[agg.Name] {
+			seen[agg.Name] = true
+			models = append(models, agg.Name)
 		}
 	}
 
@@ -309,10 +314,24 @@ func (s *Service) HandleModels(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := make([]map[string]any, 0, len(models))
+	configByName := map[string]*db.AggregateConfig{}
+	for _, agg := range aggregates {
+		if agg.Config != nil {
+			configByName[agg.Name] = agg.Config
+		}
+	}
 	for _, m := range models {
 		item := map[string]any{"id": m, "object": "model"}
 		if ctx, ok := modelContext[m]; ok && ctx > 0 {
 			item["context_length"] = ctx
+		}
+		// 真实（渠道）模型：OpenRouter 元数据补全对外声明（能力为 false 也如实输出）。
+		if meta, ok := openrouterMetaByModel[m]; ok {
+			applyOpenRouterMeta(item, meta)
+		}
+		// 虚拟模型的模型配置：覆盖/补充该行对外声明的属性。
+		if config, ok := configByName[m]; ok {
+			applyAggregateConfig(item, config)
 		}
 		data = append(data, item)
 	}
@@ -332,7 +351,8 @@ func (s *Service) HandleModelsV2(w http.ResponseWriter, r *http.Request) {
 	modelChannels := map[string]map[string]bool{}
 	// displayName → 上下文窗口（token）；0 = 无渠道上报。
 	modelContext := map[string]int64{}
-	var virtualModels []string
+	// displayName → OpenRouter 元数据（真实模型的能力声明来源）。
+	openrouterMetaByModel := map[string]openrouterModelMeta{}
 	seen := map[string]bool{}
 
 	entries := s.collectChannelModels(r.Context())
@@ -350,18 +370,21 @@ func (s *Service) HandleModelsV2(w http.ResponseWriter, r *http.Request) {
 		modelChannels[display][e.ChannelID] = true
 		ctx := e.Context
 		if ctx <= 0 {
-			ctx = orCtx.contextOf(e.Model)
+			if meta, ok := orCtx.metaOf(e.Model); ok && meta.Context > 0 {
+				ctx = meta.Context
+			}
 		}
 		if ctx > 0 {
 			if known, ok := modelContext[display]; !ok || known <= 0 {
 				modelContext[display] = ctx
 			}
 		}
+		if meta, ok := orCtx.metaOf(e.Model); ok {
+			openrouterMetaByModel[display] = meta
+		}
 	}
 
-	for _, name := range s.aggregateNames(r.Context()) {
-		virtualModels = append(virtualModels, name)
-	}
+	aggregates := s.aggregateEntries(r.Context())
 
 	// 禁用过滤：同组至少一个 Key 的该模型可用才保留。
 	disabled := s.disabledModelSet(r.Context())
@@ -386,10 +409,10 @@ func (s *Service) HandleModelsV2(w http.ResponseWriter, r *http.Request) {
 			models = append(models, display)
 		}
 	}
-	for _, name := range virtualModels {
-		if !seen[name] {
-			seen[name] = true
-			models = append(models, name)
+	for _, agg := range aggregates {
+		if !seen[agg.Name] {
+			seen[agg.Name] = true
+			models = append(models, agg.Name)
 		}
 	}
 
@@ -411,10 +434,24 @@ func (s *Service) HandleModelsV2(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := make([]map[string]any, 0, len(models))
+	configByName := map[string]*db.AggregateConfig{}
+	for _, agg := range aggregates {
+		if agg.Config != nil {
+			configByName[agg.Name] = agg.Config
+		}
+	}
 	for _, m := range models {
 		item := map[string]any{"id": m, "object": "model"}
 		if ctx, ok := modelContext[m]; ok && ctx > 0 {
 			item["context_length"] = ctx
+		}
+		// 真实（渠道）模型：OpenRouter 元数据补全对外声明。
+		if meta, ok := openrouterMetaByModel[m]; ok {
+			applyOpenRouterMeta(item, meta)
+		}
+		// 虚拟模型的模型配置：覆盖/补充该行对外声明的属性。
+		if config, ok := configByName[m]; ok {
+			applyAggregateConfig(item, config)
 		}
 		data = append(data, item)
 	}
@@ -444,38 +481,99 @@ func (s *Service) disabledModelSet(ctx context.Context) map[string]bool {
 	return out
 }
 
-// aggregateNames 返回所有已启用的虚拟（聚合）模型名（去重、按顺序）。
-func (s *Service) aggregateNames(ctx context.Context) []string {
-	var names []string
+// aggregateEntry 一个已启用的虚拟（聚合）模型：名字 + 对外声明的模型配置（可能为空）。
+type aggregateEntry struct {
+	Name   string
+	Config *db.AggregateConfig
+}
+
+// aggregateEntries 返回所有已启用的虚拟（聚合）模型（去重、按顺序），
+// 连同各自的「模型配置」——/v1/models 要把配置合并进该虚拟模型那一行。
+func (s *Service) aggregateEntries(ctx context.Context) []aggregateEntry {
+	var entries []aggregateEntry
 	seen := map[string]bool{}
 	if s.routing != nil {
 		aggs, err := s.routing.ListAggregates(ctx)
 		if err != nil {
 			s.lg.Warn("读取聚合模型失败", "err", err)
-			return names
+			return entries
 		}
 		for _, a := range aggs {
 			if a.Enabled && !seen[a.Name] {
 				seen[a.Name] = true
-				names = append(names, a.Name)
+				entries = append(entries, aggregateEntry{Name: a.Name, Config: a.Config})
 			}
 		}
-		return names
+		return entries
 	}
 	var aggs []types.AggregateModel
 	if err := s.st.Read(types.FileAggregates, &aggs); err != nil {
 		if !errors.Is(err, store.ErrNotExist) {
 			s.lg.Warn("读取聚合模型失败", "err", err)
 		}
-		return names
+		return entries
 	}
 	for _, a := range aggs {
 		if !seen[a.Name] {
 			seen[a.Name] = true
-			names = append(names, a.Name)
+			// JSON 兜底路径（legacy）没有模型配置，只出名字。
+			entries = append(entries, aggregateEntry{Name: a.Name})
 		}
 	}
-	return names
+	return entries
+}
+
+// applyAggregateConfig 把虚拟模型的「模型配置」合并进 /v1/models 的那一行。
+// 只写用户明确配过的字段：没配（config 为空）时该行保持 id/object 不变。
+// 字段名与 opencodex 读 /v1/models 时认的键对齐（catalogHintsFromModelsApiItem）：
+//   - 上下文 / 最大输出 → context_length / max_output_tokens
+//   - 视觉 → supports_vision + input_modalities 含 image（客户端据此放开图片）
+//   - 推理 → supports_reasoning
+//   - 工具调用 → supports_tool_use
+func applyAggregateConfig(item map[string]any, config *db.AggregateConfig) {
+	if config.IsZero() {
+		return
+	}
+	if config.ContextLength > 0 {
+		item["context_length"] = config.ContextLength
+	}
+	if config.MaxOutputTokens > 0 {
+		item["max_output_tokens"] = config.MaxOutputTokens
+	}
+	vision := config.HasCapability(db.CapabilityVision)
+	if vision {
+		item["supports_vision"] = true
+		item["input_modalities"] = []string{"text", "image"}
+	}
+	if config.HasCapability(db.CapabilityReasoning) {
+		item["supports_reasoning"] = true
+	}
+	if config.HasCapability(db.CapabilityToolUse) {
+		item["supports_tool_use"] = true
+	}
+}
+
+// applyOpenRouterMeta 把 OpenRouter 元数据的对外声明合并进 /v1/models 的真实模型行。
+// 与虚拟模型 applyAggregateConfig 的差异：能力是**事实陈述**——false 也输出，
+// 让客户端明确知道"不支持"（OpenRouter 缓存没有工具调用字段，不输出 supports_tool_use）。
+// 上下文只有当前行还没有 context_length 时才补（渠道探测值优先）。
+func applyOpenRouterMeta(item map[string]any, meta openrouterModelMeta) {
+	if _, ok := item["context_length"]; !ok && meta.Context > 0 {
+		item["context_length"] = meta.Context
+	}
+	if meta.Output > 0 {
+		item["max_output_tokens"] = meta.Output
+	}
+	// 视觉同时投影两个键：supports_vision 布尔 + input_modalities 枚举
+	//（客户端读哪个的都有，opencodex 认 input_modalities）。
+	if meta.Vision {
+		item["supports_vision"] = true
+		item["input_modalities"] = []string{"text", "image"}
+	} else {
+		item["supports_vision"] = false
+		item["input_modalities"] = []string{"text"}
+	}
+	item["supports_reasoning"] = meta.Reasoning
 }
 
 // resolveChannels 按模型匹配渠道（含健康检查/熔断、aggregate 指定渠道过滤）。

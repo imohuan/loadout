@@ -23,8 +23,7 @@ export function useManagementApi() {
   const syncSkills = () => request<{ synced: number }>('/api/skills/sync', 'POST')
   const checkSkillUpdates = (id?: string) =>
     request<{ updates: string[] }>('/api/skills/check-updates', 'POST', { id })
-  const updateStatus = () =>
-    request<{ running: boolean }>('/api/skills/update-status', 'GET')
+  const updateStatus = () => request<{ running: boolean }>('/api/skills/update-status', 'GET')
   const restoreBackup = (target: string) => request<void>('/api/skills/restore', 'POST', { target })
   const restoreAllBackups = () => request<{ restored: string[] }>('/api/skills/restore-all', 'POST')
   const installSkill = (body: { name: string; source: string; version: string }) =>
@@ -40,8 +39,7 @@ export function useManagementApi() {
   const unregisterSkill = (name: string) =>
     request<void>(`/api/skills/${encodeURIComponent(name)}/source`, 'DELETE')
   // 技能文件浏览（只读预览）：先取目录清单，再按相对路径取单个文件内容。
-  const skillTree = (name: string) =>
-    api<SkillTree>(`/api/skills/${encodeURIComponent(name)}/tree`)
+  const skillTree = (name: string) => api<SkillTree>(`/api/skills/${encodeURIComponent(name)}/tree`)
   const skillFile = (name: string, path: string) =>
     api<SkillFileContent>(
       `/api/skills/${encodeURIComponent(name)}/file?path=${encodeURIComponent(path)}`,
@@ -74,6 +72,15 @@ export function useManagementApi() {
       'POST',
       body,
     )
+  // $smart 端点入口工具（status/get/invoke）的描述配置：GET 返回默认+覆盖合并，
+  // PUT 整体保存（空描述 = 恢复默认）。
+  const mcpSmartToolDescs = () =>
+    api<Array<{ name: string; description: string; overridden: boolean }>>(
+      '/api/mcp-smart-tool-descs',
+    )
+  const saveMcpSmartToolDescs = (
+    body: Array<{ name: string; description: string; overridden: boolean }>,
+  ) => request<void>('/api/mcp-smart-tool-descs', 'PUT', body)
   const settings = () =>
     api<{
       active_preset: string
@@ -93,10 +100,13 @@ export function useManagementApi() {
   }) => request<void>('/api/settings', 'PUT', body)
   const changePassword = (body: { old: string; new: string }) =>
     request<void>('/api/change-password', 'POST', body)
-  const depsStatus = () =>
-    api<{ items: DepStatus[]; checking: boolean }>('/api/deps/status')
+  const depsStatus = () => api<{ items: DepStatus[]; checking: boolean }>('/api/deps/status')
   const depsRefresh = (name?: string) =>
-    request<{ items: DepStatus[]; checking: boolean }>('/api/deps/refresh', 'POST', name ? { name } : undefined)
+    request<{ items: DepStatus[]; checking: boolean }>(
+      '/api/deps/refresh',
+      'POST',
+      name ? { name } : undefined,
+    )
   const depsInstall = (name: string, id?: string) =>
     request<{ started: boolean }>('/api/deps/install', 'POST', { name, id })
   return {
@@ -125,6 +135,8 @@ export function useManagementApi() {
     deleteMcpKey,
     mcpToolSchema,
     callMcpTool,
+    mcpSmartToolDescs,
+    saveMcpSmartToolDescs,
     settings,
     saveSettings,
     changePassword,

@@ -28,6 +28,19 @@ import (
 // skillCategory 技能工具在索引里使用的固定分类名。
 const skillCategory = "skill"
 
+// smartDefaultToolDescs $smart 端点入口工具的默认描述（key = 工具名）。
+// 用户可在管理后台覆盖，见 smartToolOverrides。
+var smartDefaultToolDescs = map[string]string{
+	"status": "查看当前可用的 MCP 工具。当用户提到使用 MCP，或者你在当前工具列表中找不到需要的工具时，必须首先调用此工具。本工具严格采用二级分类机制，你必须完成以下两步才能继续后续任务：\n1. 第一步：无参数调用本工具，获取第一级目录（分类总览）。\n2. 第二步：必须携带 category 参数调用本工具，进入第二级目录，获取该分类下的具体工具列表。\n【强制禁止】绝对禁止在仅获取第一级目录（未携带 category 参数进入第二级）的情况下，直接调用 get 或 invoke 工具。只有在第二级目录中确认目标工具后，才能使用 get 加载定义。",
+	"get":    "批量加载工具的完整定义。必须在 status 工具进入第二级目录并确认目标工具存在后，再调用本工具一次性加载本次任务需要的所有工具定义。未加载定义的工具 invoke 时无法正确传参。【强制禁止】禁止跳过 status 的第二级目录查询直接调用本工具。",
+	"invoke": "调用一个具体工具。必须先通过 status 进入第二级目录确认工具存在，再用 get 加载其完整定义，最后严格按定义里的参数格式调用。【强制禁止】禁止在未走完 status 二级目录或未 get 的情况下猜测参数直接调用。",
+}
+
+// SmartDefaultToolDesc 返回 $smart 入口工具的硬编码默认描述（未知名字返回空）。
+func SmartDefaultToolDesc(name string) string {
+	return smartDefaultToolDescs[name]
+}
+
 // ToolEntry 索引中的一个工具。
 type ToolEntry struct {
 	Name        string         `json:"name"`        // 索引里的调用名（可能带冲突前缀）
@@ -564,6 +577,18 @@ func (s *Service) exposedTools(endpoint string, entries []ToolEntry) []mcpkit.Se
 // SmartEndpointServer 为 $smart 端点构建「3 工具入口」的 mcp.Server（status/get/invoke）。
 // group 为请求 header 指定的分组名；空 = 全部工具；分组不存在时三个入口返回错误。
 func (s *Service) SmartEndpointServer(group string) *mcp.Server {
+	resolve := func() ([]ToolEntry, error) {
+		return s.resolveTools("/mcp/$smart", group)
+	}
+
+	tools := s.smartEndpointToolsWith(resolve)
+	return mcpkit.NewServer("/mcp/$smart", tools)
+}
+
+// smartEndpointToolsWith 构造 $smart 端点 3 个入口工具（status/get/invoke），
+// 描述取「用户覆盖 → 硬编码默认」，handler 通过 resolve 注入视图来源。
+func (s *Service) smartEndpointToolsWith(resolve func() ([]ToolEntry, error)) []mcpkit.ServerTool {
+	overrides := s.smartToolOverrides()
 	statusSchema := map[string]any{
 		"type": "object",
 		"properties": map[string]any{
@@ -585,16 +610,10 @@ func (s *Service) SmartEndpointServer(group string) *mcp.Server {
 		},
 		"required": []any{"tool"},
 	}
-
-	// resolve 按 group 解析 $smart 端点的工具视图。
-	resolve := func() ([]ToolEntry, error) {
-		return s.resolveTools("/mcp/$smart", group)
-	}
-
-	tools := []mcpkit.ServerTool{
+	return []mcpkit.ServerTool{
 		{
 			Name:        "status",
-			Description: "查看当前可用的 MCP 工具。当用户提到使用 MCP，或者你在当前工具列表中找不到需要的工具时，必须首先调用此工具。本工具严格采用二级分类机制，你必须完成以下两步才能继续后续任务：\n1. 第一步：无参数调用本工具，获取第一级目录（分类总览）。\n2. 第二步：必须携带 category 参数调用本工具，进入第二级目录，获取该分类下的具体工具列表。\n【强制禁止】绝对禁止在仅获取第一级目录（未携带 category 参数进入第二级）的情况下，直接调用 get 或 invoke 工具。只有在第二级目录中确认目标工具后，才能使用 get 加载定义。",
+			Description: pickSmartToolDesc(overrides, "status"),
 			InputSchema: statusSchema,
 			Handler: func(_ context.Context, args map[string]any) (*mcpkit.ToolResult, error) {
 				view, err := resolve()
@@ -610,7 +629,7 @@ func (s *Service) SmartEndpointServer(group string) *mcp.Server {
 		},
 		{
 			Name:        "get",
-			Description: "批量加载工具的完整定义。必须在 status 工具进入第二级目录并确认目标工具存在后，再调用本工具一次性加载本次任务需要的所有工具定义。未加载定义的工具 invoke 时无法正确传参。【强制禁止】禁止跳过 status 的第二级目录查询直接调用本工具。",
+			Description: pickSmartToolDesc(overrides, "get"),
 			InputSchema: getSchema,
 			Handler: func(_ context.Context, args map[string]any) (*mcpkit.ToolResult, error) {
 				view, err := resolve()
@@ -626,7 +645,7 @@ func (s *Service) SmartEndpointServer(group string) *mcp.Server {
 		},
 		{
 			Name:        "invoke",
-			Description: "调用一个具体工具。必须先通过 status 进入第二级目录确认工具存在，再用 get 加载其完整定义，最后严格按定义里的参数格式调用。【强制禁止】禁止在未走完 status 二级目录或未 get 的情况下猜测参数直接调用。",
+			Description: pickSmartToolDesc(overrides, "invoke"),
 			InputSchema: invokeSchema,
 			Handler: func(ctx context.Context, args map[string]any) (*mcpkit.ToolResult, error) {
 				view, err := resolve()
@@ -641,15 +660,68 @@ func (s *Service) SmartEndpointServer(group string) *mcp.Server {
 			},
 		},
 	}
-
-	return mcpkit.NewServer("/mcp/$smart", tools)
 }
 
 // ===== 内部辅助 =====
 
+// smartToolOverrides 读用户配置的入口工具描述覆盖。repo 不可用或读失败返回空映射
+// （不阻断端点构建，退回默认描述）。
+func (s *Service) smartToolOverrides() map[string]string {
+	if s.repo == nil {
+		// repo 未装配（旧部署/单测）：退回 JSON 文件配置。
+		var descs []types.SmartToolDesc
+		if err := s.st.Read(types.FileSmartToolDesc, &descs); err != nil {
+			if !errors.Is(err, store.ErrNotExist) {
+				s.warn("mcphub: 读取 $smart 工具描述覆盖失败，退回默认", "err", err)
+			}
+			return nil
+		}
+		out := make(map[string]string, len(descs))
+		for _, d := range descs {
+			if strings.TrimSpace(d.Description) != "" {
+				out[d.Name] = d.Description
+			}
+		}
+		return out
+	}
+	descs, err := s.repo.ListSmartToolDescs(context.Background())
+	if err != nil {
+		s.warn("mcphub: 读取 $smart 工具描述覆盖失败，退回默认", "err", err)
+		return nil
+	}
+	out := make(map[string]string, len(descs))
+	for _, d := range descs {
+		if strings.TrimSpace(d.Description) != "" {
+			out[d.Name] = d.Description
+		}
+	}
+	return out
+}
+
+// pickSmartToolDesc 覆盖优先，否则用默认描述；未知工具名兜底为空（不会出现，
+// SmartEndpointServer 只用固定 3 个名字调用）。
+func pickSmartToolDesc(overrides map[string]string, name string) string {
+	if v, ok := overrides[name]; ok {
+		return v
+	}
+	return smartDefaultToolDescs[name]
+}
+
 // ListServers 返回当前 MCP 服务器清单（含内置 server）。
 func (s *Service) ListServers(ctx context.Context) ([]types.MCPServer, error) {
 	return s.readServers()
+}
+
+// SmartToolOverrides 返回当前生效的入口工具描述覆盖（repo 读实时数据，不走索引缓存）。
+func (s *Service) SmartToolOverrides() map[string]string {
+	return s.smartToolOverrides()
+}
+
+// smartToolsForTest 仅测试用：返回 SmartEndpointServer 的工具定义（含描述），
+// 避免测试起 HTTP 会话逐个 ListTools。
+func (s *Service) smartToolsForTest() []mcpkit.ServerTool {
+	resolve := func() ([]ToolEntry, error) { return s.resolveTools("/mcp/$smart", "") }
+	return s.smartEndpointToolsWith(resolve)
 }
 
 // readServers 读 MCP 服务器清单（SQLite 优先，fallback mcp_servers.json）。

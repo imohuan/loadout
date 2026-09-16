@@ -147,6 +147,40 @@ func (s *Service) writeToolStates(ctx context.Context, states []types.ToolState)
 	return s.st.Write(types.FileToolsState, states)
 }
 
+// ==================== $smart 入口工具描述 ====================
+
+func (s *Service) readSmartToolDescs(ctx context.Context) ([]types.SmartToolDesc, error) {
+	if s.routing != nil {
+		descs, err := s.routing.ListSmartToolDescs(ctx)
+		if err == nil {
+			if descs == nil {
+				descs = []types.SmartToolDesc{}
+			}
+			return descs, nil
+		}
+		s.lg.Warn("admin-api: 从 SQLite 读 $smart 工具描述失败，回退 JSON", "err", err)
+	}
+	items, err := readSlice[types.SmartToolDesc](s.st, types.FileSmartToolDesc)
+	if err != nil {
+		if errors.Is(err, store.ErrNotExist) {
+			return []types.SmartToolDesc{}, nil
+		}
+		return nil, err
+	}
+	return items, nil
+}
+
+func (s *Service) writeSmartToolDescs(ctx context.Context, descs []types.SmartToolDesc) error {
+	if s.routing != nil {
+		if err := s.routing.ReplaceSmartToolDescs(ctx, descs); err == nil {
+			return nil
+		} else {
+			s.lg.Warn("admin-api: 写 $smart 工具描述到 SQLite 失败，回退 JSON", "err", err)
+		}
+	}
+	return s.st.Write(types.FileSmartToolDesc, descs)
+}
+
 // ==================== 运行时设置 ====================
 
 func (s *Service) readSettings(ctx context.Context) (types.Settings, error) {

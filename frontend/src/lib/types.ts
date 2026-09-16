@@ -34,10 +34,33 @@ export interface AggregateTarget {
   channel_base_url?: string
 }
 
+/** 虚拟模型的「能力」标记：与后端 capability 取值一致。 */
+export type AggregateCapability = 'vision' | 'reasoning' | 'tool_use'
+
+/** 聚合（虚拟）模型对外声明的模型配置：决定 /v1/models 里该虚拟模型那一行的属性。
+ *  未配置（undefined）时输出只带 id/object，与改造前一致。 */
+export interface AggregateConfig {
+  context_length?: number
+  max_output_tokens?: number
+  capabilities?: AggregateCapability[]
+}
+
 export interface Aggregate {
   name: string
   enabled?: boolean
   targets: AggregateTarget[]
+  /** 模型配置：虚拟模型对外声明的上下文/最大输出/能力。 */
+  config?: AggregateConfig
+}
+
+/** 「加载配置」下拉里的单个 OpenRouter 模型条目（来自 OpenRouter 元数据缓存）。 */
+export interface CatalogModel {
+  id: string
+  name: string
+  context: number
+  output: number
+  vision: boolean
+  reasoning: boolean
 }
 
 export interface ModelStatus {

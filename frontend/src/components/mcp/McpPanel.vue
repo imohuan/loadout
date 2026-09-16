@@ -30,7 +30,7 @@ import TranslateText from '@/components/TranslateText.vue'
 import { useMcpManagement, isServerActive } from '@/composables/useMcpManagement'
 import { useManagementApi } from '@/composables/useManagementApi'
 import { useAsyncTask } from '@/composables/useAsyncTask'
-import { getLoadoutBaseSync } from '@/lib/base'
+import { getLoadoutBase, getLoadoutBaseSync } from '@/lib/base'
 import { useMcpNavStore } from '@/stores/mcpNavigation'
 const mcp = reactive(useMcpManagement())
 const api = useManagementApi()
@@ -54,7 +54,10 @@ function applyLogQuery() {
   if (!serverName) return
   mcpNav.gotoServerLogs(serverName)
   activeTab.value = 'logs'
-  const next: Record<string, string> = {}; for (const [k, v] of Object.entries(route.query)) if (k !== 'log' && typeof v === 'string') next[k] = v; router.replace({ name: 'integrations', query: next })
+  const next: Record<string, string> = {}
+  for (const [k, v] of Object.entries(route.query))
+    if (k !== 'log' && typeof v === 'string') next[k] = v
+  router.replace({ name: 'integrations', query: next })
 }
 onMounted(applyLogQuery)
 watch(() => route.query.log, applyLogQuery)
@@ -79,6 +82,38 @@ const toolLoading = ref(false)
 const toolExecuting = ref(false)
 const toolEditName = ref('')
 const toolEditDescription = ref('')
+// ===== $smart 入口工具描述 tab =====
+const smartToolDescs = ref<Array<{ name: string; description: string; overridden: boolean }>>([])
+const smartToolDescLoading = ref(false)
+const smartToolDescSaving = ref(false)
+async function loadSmartToolDescs() {
+  smartToolDescLoading.value = true
+  try {
+    smartToolDescs.value = await api.mcpSmartToolDescs()
+  } catch (error) {
+    toast.error('加载 $smart 工具描述失败', {
+      description: error instanceof Error ? error.message : String(error),
+    })
+  } finally {
+    smartToolDescLoading.value = false
+  }
+}
+async function saveSmartToolDescs() {
+  smartToolDescSaving.value = true
+  try {
+    await api.saveMcpSmartToolDescs(smartToolDescs.value)
+    toast.success('$smart 工具描述已保存')
+  } catch (error) {
+    toast.error('保存 $smart 工具描述失败', {
+      description: error instanceof Error ? error.message : String(error),
+    })
+  } finally {
+    smartToolDescSaving.value = false
+  }
+}
+watch(activeTab, (tab) => {
+  if (tab === 'smart-descriptions' && !smartToolDescs.value.length) loadSmartToolDescs()
+})
 const expandedGroupServers = ref<string[]>([])
 function openServerDialog(server?: (typeof mcp.servers)[number]) {
   if (server) mcp.editServer(server)
@@ -312,23 +347,15 @@ async function deleteMcpKey(endpoint: string) {
 async function copyKey(value: string) {
   await navigator.clipboard.writeText(value)
 }
-async function copyConfig(endpoint: {
-  path: string
-  kind: string
-  label: string
-  transport: string
-}) {
-  const url = await endpointUrl(endpoint.path)
-  const serverConfig: Record<string, any> = {}
-  if (endpoint.transport === 'stdio') {
-    // stdio endpoints are proxied as a local command by the host runtime.
-    serverConfig.command = 'loadout'
-    serverConfig.args = ['mcp', 'serve', endpoint.label]
-  } else {
-    serverConfig.url = url
-  }
+async function copyConfig(endpoint: { path: string; label: string }) {
+  // /mcp/* 端点都是后端挂的 Streamable HTTP 端点，客户端一律用 URL 接入；
+  // 上游 transport（stdio/sse/http）只影响 Loadout 连上游，与端点配置无关。
+  const url = (await getLoadoutBase()) + endpoint.path
+  const serverConfig: Record<string, any> = { url }
   if (mcp.endpointHasKey(endpoint.path)) {
-    serverConfig.headers = { 'X-Loadout-Key': '<YOUR_MCP_KEY>' }
+    // 刚创建过 token 时用真实值，避免用户还要手动替换占位符。
+    const token = endpointKeys.value[endpoint.path]
+    serverConfig.headers = { 'X-Loadout-Key': token || '<YOUR_MCP_KEY>' }
   }
   const config = {
     mcpServers: {
@@ -360,6 +387,7 @@ async function copyConfig(endpoint: {
         <TabsTrigger value="upstream">上游 MCP</TabsTrigger>
         <TabsTrigger value="groups">分组 MCP</TabsTrigger>
         <TabsTrigger value="endpoints">连接端点配置</TabsTrigger>
+        <TabsTrigger value="smart-descriptions">聚合工具描述</TabsTrigger>
         <TabsTrigger value="invocations">工具调用</TabsTrigger>
         <TabsTrigger value="logs">原始日志</TabsTrigger>
       </TabsList>
@@ -841,6 +869,42 @@ async function copyConfig(endpoint: {
       </TabsContent>
       <TabsContent value="invocations" class="space-y-4">
         <McpInvocationsTab />
+      </TabsContent>
+      <TabsContent value="smart-descriptions" class="space-y-4">
+        <Card class="rounded-md">
+          <CardHeader>
+            <CardTitle class="text-base">聚合入口工具描述</CardTitle>
+            <CardDescription>
+              $smart 端点（/mcp/$smart）对外只暴露 status / get / invoke
+              三个入口工具，这里可覆盖它们的默认描述，保存后 MCP 客户端重新连接即生效。
+            </CardDescription>
+          </CardHeader>
+          <CardContent class="space-y-4">
+            <LoadingBlock v-if="smartToolDescLoading" />
+            <template v-else>
+              <div v-for="entry in smartToolDescs" :key="entry.name" class="space-y-1.5">
+                <div class="flex items-center gap-2">
+                  <span class="font-mono text-sm font-medium">{{ entry.name }}</span>
+                  <Badge v-if="entry.overridden" variant="secondary">已覆盖</Badge>
+                  <Button
+                    v-if="entry.overridden"
+                    variant="ghost"
+                    size="sm"
+                    class="ml-auto h-7 text-xs text-muted-foreground"
+                    @click="entry.description = ''"
+                    >恢复默认（保存后生效）</Button
+                  >
+                </div>
+                <Textarea v-model="entry.description" rows="5" />
+              </div>
+              <div class="flex justify-end">
+                <Button :disabled="smartToolDescSaving" @click="saveSmartToolDescs">
+                  <RiCheckLine size="16" />保存
+                </Button>
+              </div>
+            </template>
+          </CardContent>
+        </Card>
       </TabsContent>
     </Tabs>
     <Dialog v-model:open="serverDialog">

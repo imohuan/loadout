@@ -665,6 +665,38 @@ func TestSmartEndpointServer(t *testing.T) {
 	}
 }
 
+// TestSmartEndpointToolDescOverride 验证 $smart 入口工具描述覆盖：
+// 写入 smart_tool_desc.json 后 SmartEndpointServer 的对应工具描述被替换，
+// 未覆盖的工具继续用默认描述；描述为空的条目视为未覆盖。
+func TestSmartEndpointToolDescOverride(t *testing.T) {
+	env := newHubEnv(t)
+
+	if err := env.st.Write(types.FileSmartToolDesc, []types.SmartToolDesc{
+		{Name: "status", Description: "自定义 status 描述"},
+		{Name: "get", Description: "   "},
+	}); err != nil {
+		t.Fatalf("写入 smart_tool_desc.json 失败: %v", err)
+	}
+
+	tools := env.svc.smartToolsForTest()
+	descs := map[string]string{}
+	for _, tool := range tools {
+		descs[tool.Name] = tool.Description
+	}
+	if descs["status"] != "自定义 status 描述" {
+		t.Fatalf("status 描述 = %q, want 覆盖后的自定义描述", descs["status"])
+	}
+	if descs["get"] == "" || descs["get"] == "   " {
+		t.Fatalf("get 描述 = %q, want 空白覆盖不生效回退默认", descs["get"])
+	}
+	if descs["get"] == "自定义 status 描述" {
+		t.Fatal("get 不应命中 status 的覆盖")
+	}
+	if descs["invoke"] != SmartDefaultToolDesc("invoke") {
+		t.Fatalf("invoke 未覆盖时应等于默认描述，实际 %q", descs["invoke"])
+	}
+}
+
 // listServerTools 把 *mcp.Server 挂到 streamable HTTP 测试服务器，连接后 ListTools 返回工具名集合。
 func listServerTools(t *testing.T, srv *mcp.Server) map[string]bool {
 	t.Helper()

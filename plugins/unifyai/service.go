@@ -105,6 +105,47 @@ func maskSecret(secret string) string {
 	return secret[:4] + "****" + secret[len(secret)-4:]
 }
 
+// CatalogModel 「加载配置」下拉里的单个 OpenRouter 模型条目。
+// 字段与聚合模型「模型配置」一一对应，前端选中后直接回填输入框。
+type CatalogModel struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Context   int64  `json:"context"`
+	Output    int64  `json:"output"`
+	Vision    bool   `json:"vision"`
+	Reasoning bool   `json:"reasoning"`
+}
+
+// CatalogModels 读 OpenRouter 元数据缓存（~/.unifyai/cache/openrouter-models.json），
+// 返回可用于回填虚拟模型「模型配置」的模型清单。
+// 缓存缺失/损坏时返回空列表（不报错），UI 据此提示先「更新元数据」。
+// 空 id 的脏条目直接跳过，避免下拉出现无法识别的空行。
+func (s *Service) CatalogModels() []CatalogModel {
+	data, err := os.ReadFile(metadataCachePath())
+	if err != nil {
+		return nil
+	}
+	var metas []OpenRouterMeta
+	if err := json.Unmarshal(data, &metas); err != nil {
+		return nil
+	}
+	out := make([]CatalogModel, 0, len(metas))
+	for _, m := range metas {
+		if strings.TrimSpace(m.ID) == "" {
+			continue
+		}
+		out = append(out, CatalogModel{
+			ID:        m.ID,
+			Name:      m.Name,
+			Context:   m.Context,
+			Output:    m.Output,
+			Vision:    m.Vision,
+			Reasoning: m.Reasoning,
+		})
+	}
+	return out
+}
+
 // OpenCodexModel 对应 unifyai --list models --json 输出的单个模型。
 type OpenCodexModel struct {
 	Provider          string `json:"provider"`

@@ -259,15 +259,15 @@ INSERT INTO aggregate_targets (aggregate_id, position, model, channel_id, channe
 DROP TABLE aggregate_targets_old;
 `,
 }, {
-		version: 9,
-		name:    "capability-routes-channel-level",
-		sql: `
+	version: 9,
+	name:    "capability-routes-channel-level",
+	sql: `
 ALTER TABLE capability_routes ADD COLUMN channel_base_urls_json TEXT NOT NULL DEFAULT '[]';
 `,
-	}, {
-		version: 10,
-		name:    "volc-free-quota",
-		sql: `
+}, {
+	version: 10,
+	name:    "volc-free-quota",
+	sql: `
 -- 火山引擎免费额度插件：每条配置对应一个渠道 Key（channel_id）的一对 AK/SK。
 -- access_key 明文存（控制台查询方便），secret_key 用 AES-GCM 加密（与渠道 key 同级别保护）。
 CREATE TABLE volc_quota_config (
@@ -308,10 +308,10 @@ CREATE TABLE volc_quota_usage (
 CREATE INDEX idx_volc_quota_models_status ON volc_quota_models(status);
 CREATE INDEX idx_volc_quota_usage_last_used_at ON volc_quota_usage(last_used_at DESC);
 `,
-	}, {
-		version: 11,
-		name:    "volc-quota-account-alignment",
-		sql: `
+}, {
+	version: 11,
+	name:    "volc-quota-account-alignment",
+	sql: `
 -- 免费额度按火山账号（AK/SK）对齐，而非按渠道 Key：同一账号可有多个 Key 共享额度。
 -- account_id = SHA256(access_key) 前 16 位（Go 代码计算，见 service.accountID）。
 -- 旧快照/统计无 account_id 且无法在 SQL 内可靠反推指纹，直接清空重建——额度会在
@@ -349,28 +349,28 @@ DROP TABLE volc_quota_usage;
 ALTER TABLE volc_quota_usage_new RENAME TO volc_quota_usage;
 CREATE INDEX idx_volc_quota_usage_last_used_at ON volc_quota_usage(last_used_at DESC);
 `,
-	}, {
-		version: 12,
-		name:    "volc-quota-force-block",
-		sql: `
+}, {
+	version: 12,
+	name:    "volc-quota-force-block",
+	sql: `
 -- 强制关停：volc_quota_config.force_block=1 时，即使 model_states 被手动恢复，
 -- 请求也按 volc_quota_models.status='exhausted' 直接拦截（不依赖 model_states 冷却）。
 ALTER TABLE volc_quota_config ADD COLUMN force_block INTEGER NOT NULL DEFAULT 0;
 `,
-	}, {
-		version: 13,
-		name:    "volc-quota-local-remaining",
-		sql: `
+}, {
+	version: 13,
+	name:    "volc-quota-local-remaining",
+	sql: `
 -- 本地递减余额：不依赖 billing API（429 不可靠），每次请求成功后扣减 total_tokens。
 -- local_remaining = 初始总额度 - 已用 token（本地递减）；initial_total = 首次刷新写入的总额。
 -- 当 local_remaining <= 0 时拦截请求（force_block=1 生效），不需要等 billing API 确认。
 ALTER TABLE volc_quota_models ADD COLUMN initial_total INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE volc_quota_models ADD COLUMN local_remaining INTEGER NOT NULL DEFAULT 0;
 `,
-	}, {
-		version: 14,
-		name:    "volc-quota-packages",
-		sql: `
+}, {
+	version: 14,
+	name:    "volc-quota-packages",
+	sql: `
 -- 资源包逐条明细：同 Product（如 ark_bd）下包含几十种不同模型配置
 -- （ConfigurationCode 如 Doubao_Seed_2.1_pro_data_collaboration / DeepSeek_V4_flash...），
 -- 聚合到 model 会丢失"哪个模型还有额度"的信息。此表按 InstanceNo 逐条保存，
@@ -394,10 +394,10 @@ CREATE TABLE volc_quota_packages (
 );
 CREATE INDEX idx_volc_quota_packages_product ON volc_quota_packages(account_id, product);
 `,
-	}, {
-		version: 15,
-		name:    "volc-quota-packages-local-remaining",
-		sql: `
+}, {
+	version: 15,
+	name:    "volc-quota-packages-local-remaining",
+	sql: `
 -- 资源包级本地扣减余额：扣减锚点从 volc_quota_models（Product 聚合名，匹配不上 API 模型名）
 -- 改为 volc_quota_packages（configuration_code 提取名）。每个资源包行独立维护
 -- initial_total（首次刷新总额）与 local_remaining（每次请求扣减），UI 逐条展示。
@@ -406,18 +406,18 @@ ALTER TABLE volc_quota_packages ADD COLUMN model TEXT NOT NULL DEFAULT '';
 ALTER TABLE volc_quota_packages ADD COLUMN initial_total INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE volc_quota_packages ADD COLUMN local_remaining INTEGER NOT NULL DEFAULT 0;
 `,
-	}, {
-		version: 16,
-		name:    "drop-volc-quota-models",
-		sql: `
+}, {
+	version: 16,
+	name:    "drop-volc-quota-models",
+	sql: `
 -- 删除 volc_quota_models 聚合表（用户要求）：扣减/拦截/UI 都改走 volc_quota_packages
 -- （逐条资源包账本 + 同步扣减初始逻辑），聚合视图没必要维护。DROP 而非保留空表。
 DROP TABLE volc_quota_models;
 `,
-	}, {
-		version: 17,
-		name:    "route-attempts-channel-level",
-		sql: `
+}, {
+	version: 17,
+	name:    "route-attempts-channel-level",
+	sql: `
 -- 聚合目标三种粒度（单 Key / Key 多选 / 渠道级）落库：让请求日志里被跳过的
 -- 候选 attempt 能完整还原"目标跨了哪几个 Key / 哪个 base_url 组"，前端据此
 -- 渲染"@ 渠道名(Key1, Key2)"而非空 channel_id。
@@ -428,45 +428,45 @@ DROP TABLE volc_quota_models;
 ALTER TABLE route_attempts ADD COLUMN channel_ids_json TEXT NOT NULL DEFAULT '[]';
 ALTER TABLE route_attempts ADD COLUMN channel_base_url TEXT NOT NULL DEFAULT '';
 `,
-	}, {
-		version: 18,
-		name:    "route-requests-final-channel-level",
-		sql: `
+}, {
+	version: 18,
+	name:    "route-requests-final-channel-level",
+	sql: `
 -- 与 v17 对应：route_requests 的最终目标（Finish 阶段锁定）也要承载三种粒度。
 -- 否则聚合目标 rejected 时 list 视图的「最终目标」列只能看到 final_channel_id（Key 多选场景为空），
 -- 渲染不出 "@ 渠道名(Key1, Key2)"。
 ALTER TABLE route_requests ADD COLUMN final_channel_ids_json TEXT NOT NULL DEFAULT '[]';
 ALTER TABLE route_requests ADD COLUMN final_channel_base_url TEXT NOT NULL DEFAULT '';
 `,
-	}, {
-		version: 19,
-		name:    "route-attempts-first-byte-at",
-		sql: `
+}, {
+	version: 19,
+	name:    "route-attempts-first-byte-at",
+	sql: `
 -- 流式 attempt 收到上游响应头的时刻（TTFB），配合 started_at 前端可算
 -- "等待响应 Xs"，配合当前时间/ finished_at 可算 "输出中 Ys"。
 -- 运行中由 model-gateway 写入；流结束的 success UPSERT 用 COALESCE 保留旧值。
 ALTER TABLE route_attempts ADD COLUMN first_byte_at TEXT;
 `,
-	}, {
-		version: 20,
-		name:    "capability-routes-field-rules",
-		sql: `
+}, {
+	version: 20,
+	name:    "capability-routes-field-rules",
+	sql: `
 -- field_filter 能力插件的字段规则（嵌套 JSON 列，与 via_options/replacements 同模式）。
 ALTER TABLE capability_routes ADD COLUMN field_rules_json TEXT NOT NULL DEFAULT '{}';
 `,
-	}, {
-		version: 21,
-		name:    "route-logs-channel-name-snapshot",
-		sql: `
+}, {
+	version: 21,
+	name:    "route-logs-channel-name-snapshot",
+	sql: `
 -- 渠道名称快照：写日志时把 channel_name（渠道名）落库。
 -- Key 被删除后前端仍能显示「@渠道名(Unknown)」，否则只剩 channel_id 无从反查渠道名。
 ALTER TABLE route_attempts ADD COLUMN channel_name TEXT NOT NULL DEFAULT '';
 ALTER TABLE route_requests ADD COLUMN final_channel_name TEXT NOT NULL DEFAULT '';
 `,
-	}, {
-		version: 22,
-		name:    "route-logs-error-body",
-		sql: `
+}, {
+	version: 22,
+	name:    "route-logs-error-body",
+	sql: `
 -- 上游原始错误响应体（截断到 8KB）：与 error_message（解析后的 message 字段）
 -- 互补。error_message 只保留一行摘要，前端 model-gateway 失败的「上游返回错误(N)」
 -- 看不到具体厂商返回的 code/msg/extError 字段，定位 400/429/500 根因时只能翻
@@ -475,10 +475,10 @@ ALTER TABLE route_requests ADD COLUMN final_channel_name TEXT NOT NULL DEFAULT '
 -- raw body。attempt 行单条存储便于「切换渠道」场景下逐个排查。
 ALTER TABLE route_attempts ADD COLUMN error_body TEXT NOT NULL DEFAULT '';
 ALTER TABLE route_requests ADD COLUMN error_body TEXT NOT NULL DEFAULT '';
-`, }, {
-		version: 23,
-		name:    "route-attempts-step-no-text",
-		sql: `
+`}, {
+	version: 23,
+	name:    "route-attempts-step-no-text",
+	sql: `
 -- step_no 从 INTEGER 改为 TEXT：支持点分层级编号（"1" 主请求、"1.1" 视觉识别、"1.2" 续流）。
 -- SQLite 不支持 ALTER COLUMN TYPE，重建表迁移。新表 = v1 建表列 + 之后所有加列：
 --   v3  stream/prompt_tokens/completion_tokens/cached_tokens
@@ -525,10 +525,10 @@ CREATE INDEX idx_route_attempts_channel_started_at ON route_attempts(channel_id,
 CREATE INDEX idx_route_attempts_model_started_at ON route_attempts(model, started_at DESC);
 CREATE INDEX idx_route_attempts_result_started_at ON route_attempts(result, started_at DESC);
 `,
-	}, {
-		version: 24,
-		name:    "route-requests-request-log-id",
-		sql: `
+}, {
+	version: 24,
+	name:    "route-requests-request-log-id",
+	sql: `
 -- request-log 插件的关联列：route_requests 行指向独立库 request-log.db 的
 -- request_logs 表主键 UUID。UUID 由 request-log 插件在 proxy:before-attempt
 -- （请求发出之前）生成并 UPDATE 本列；route-log 列表/详情带出，前端据此跳转。
@@ -536,19 +536,19 @@ CREATE INDEX idx_route_attempts_result_started_at ON route_attempts(result, star
 -- 天然唯一；SQLite 对 NULL 不做唯一性检查）。不加索引（无按此列查询需求）。
 ALTER TABLE route_requests ADD COLUMN request_log_id TEXT;
 `,
-	}, {
-		version: 25,
-		name:    "route-attempts-request-log-id",
-		sql: `
+}, {
+	version: 25,
+	name:    "route-attempts-request-log-id",
+	sql: `
 -- request-log 插件 per-attempt 关联列：route_attempts 行指向 request_logs 独立库
 -- 主键 UUID。UUID 由 request-log 插件在每次 proxy:before-attempt 生成并暂存
 -- pipe.Metadata[__request_log_attempt_id]，model-gateway 写 attempt 行时落本列。
 -- 可空：未命中 request_log 能力路由的 attempt（含视觉子段）为 NULL。
 ALTER TABLE route_attempts ADD COLUMN request_log_id TEXT;
-`,	}, {
-		version: 26,
-		name:    "process-history",
-		sql: `
+`}, {
+	version: 26,
+	name:    "process-history",
+	sql: `
 -- procreg 统一命令执行器的历史记录持久化：进程结束后写本表，后端重启不丢。
 -- 之前历史仅存内存（上限 50 条且重启清空），导致 UI 进程历史只有几行。
 -- log_json：进程完整日志行（JSON 数组字符串），UI 展开历史时展示。
@@ -569,40 +569,40 @@ CREATE TABLE process_history (
 CREATE UNIQUE INDEX idx_process_history_proc_ended ON process_history(proc_id, ended_at);
 CREATE INDEX idx_process_history_ended_at ON process_history(ended_at DESC);
 `,
-	}, {
-		version: 27,
-		name:    "settings-use-global-cmd",
-		sql: `
+}, {
+	version: 27,
+	name:    "settings-use-global-cmd",
+	sql: `
 -- 运行时设置缺 use_global_cmd 列：布尔开关被 PutSettings 静默丢弃，
 -- GetSettings 永远回读 false，导致前端 watch 回写触发重复保存。
 ALTER TABLE settings ADD COLUMN use_global_cmd INTEGER NOT NULL DEFAULT 0;
 `,
-	}, {
-		version: 28,
-		name:    "capability-routes-injections",
-		sql: `
+}, {
+	version: 28,
+	name:    "capability-routes-injections",
+	sql: `
 -- message_inject 能力插件：往请求 messages 注入自定义内容（夹装子内部分，与 via_options/replacements/field_rules 同模式）。
 ALTER TABLE capability_routes ADD COLUMN injections_json TEXT NOT NULL DEFAULT '[]';
 `,
-	}, {
-		version: 29,
-		name:    "mcp-servers-builtin",
-		sql: `
+}, {
+	version: 29,
+	name:    "mcp-servers-builtin",
+	sql: `
 -- 内置端点注册的自连 MCP server（如多模态 /mcp/multimodal）打内置标记，前端显示「内置」标签。
 ALTER TABLE mcp_servers ADD COLUMN builtin INTEGER NOT NULL DEFAULT 0;
 `,
-	}, {
-		version: 30,
-		name:    "channel-models-context",
-		sql: `
+}, {
+	version: 30,
+	name:    "channel-models-context",
+	sql: `
 -- /v1/models 输出需要每模型上下文：渠道探测 /v1/models 时读到的 context_length
 -- 落本列，HandleModels 据此给每个模型带 context_length（0 = 未探测到，输出时不写该字段）。
 ALTER TABLE channel_models ADD COLUMN context INTEGER NOT NULL DEFAULT 0;
 `,
-	}, {
-		version: 31,
-		name:    "settings-request-log-retention",
-		sql: `
+}, {
+	version: 31,
+	name:    "settings-request-log-retention",
+	sql: `
 -- 日志保留策略（转发日志页「日志大小」按钮旁的设置项）：
 --   request_log_max_age_days 只保留最近多少天的完整请求日志（0 = 不限）；
 --   request_log_max_size_mb  完整请求日志库最大占用 MB（0 = 不限），超限按时间从旧到新删（FIFO）。
@@ -610,7 +610,17 @@ ALTER TABLE channel_models ADD COLUMN context INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE settings ADD COLUMN request_log_max_age_days INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE settings ADD COLUMN request_log_max_size_mb INTEGER NOT NULL DEFAULT 0;
 `,
-	}}
+}, {
+	version: 32,
+	name:    "aggregate-model-config",
+	sql: `
+-- 聚合（虚拟）模型的「模型配置」：虚拟模型对外在 /v1/models 那一行的属性
+-- （上下文长度、最大输出、视觉/推理/工具调用能力）。
+-- 存 JSON（{context_length, max_output_tokens, capabilities[]}），NULL = 未配置：
+-- 输出只带 id/object，与改造前一致。
+ALTER TABLE aggregates ADD COLUMN config_json TEXT;
+`,
+}}
 
 // Migrate applies all pending schema migrations and rejects an incompatible
 // database instead of trying to infer a recovery path.
