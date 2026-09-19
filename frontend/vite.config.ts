@@ -3,7 +3,13 @@ import { fileURLToPath, URL } from 'node:url'
 import vue from '@vitejs/plugin-vue'
 import tailwindcss from '@tailwindcss/vite'
 
-const targetUrl = 'http://127.0.0.1:3000'
+// 后端地址可被环境变量覆盖（debug.ps1 / npm run dev 场景）：
+//   LOADOUT_SERVER_ADDR=:5009  或  VITE_BACKEND_PORT=5009
+const backendPort =
+  process.env.VITE_BACKEND_PORT ||
+  (process.env.LOADOUT_SERVER_ADDR || '').replace(/^:/, '') ||
+  '3000'
+const targetUrl = `http://127.0.0.1:${backendPort}`
 
 // https://vite.dev/config/
 export default defineConfig({

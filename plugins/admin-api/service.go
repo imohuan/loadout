@@ -248,7 +248,6 @@ func (s *Service) Routes() []plugin.RouteSpec {
 		{Method: http.MethodPost, Pattern: "POST /api/failure-rules/verify", Auth: plugin.AuthSession, Handler: s.session(s.handleFailureRuleVerify)},
 		{Method: http.MethodGet, Pattern: "GET /api/rule-decisions", Auth: plugin.AuthSession, Handler: s.session(s.handleRuleDecisionsList)},
 		{Method: http.MethodGet, Pattern: "GET /api/provider-frameworks", Auth: plugin.AuthSession, Handler: s.session(s.handleProviderFrameworks)},
-		{Method: http.MethodGet, Pattern: "GET /api/provider-frameworks", Auth: plugin.AuthSession, Handler: s.session(s.handleProviderFrameworks)},
 
 		{Method: http.MethodGet, Pattern: "GET /api/stats/mcp", Auth: plugin.AuthSession, Handler: s.session(s.handleStatsMcp)},
 		{Method: http.MethodGet, Pattern: "GET /api/stats/models", Auth: plugin.AuthSession, Handler: s.session(s.handleStatsModels)},
