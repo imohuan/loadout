@@ -446,13 +446,13 @@ func (s *Service) ListInvocations(ctx context.Context, q InvocationQuery) (*Invo
 	items := make([]InvocationRecord, 0, q.Size)
 	for rows.Next() {
 		var (
-			r            InvocationRecord
-			target, srv  sql.NullString
-			httpStatus   sql.NullInt64
-			errMsg       sql.NullString
-			inJSON, out  sql.NullString
-			auth         sql.NullString
-			finished     sql.NullString
+			r           InvocationRecord
+			target, srv sql.NullString
+			httpStatus  sql.NullInt64
+			errMsg      sql.NullString
+			inJSON, out sql.NullString
+			auth        sql.NullString
+			finished    sql.NullString
 		)
 		if err := rows.Scan(&r.ID, &r.StartedAt, &finished, &r.AggregateKind, &target, &r.ToolName,
 			&srv, &r.Result, &httpStatus, &r.DurationMS, &errMsg,

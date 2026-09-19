@@ -309,10 +309,10 @@ func resolveSkillDir(dir, skillName string) string {
 
 // 文件浏览上限：防止超大技能目录撑爆响应与前端渲染。
 const (
-	maxTreeEntries     = 5000       // 树条目数上限
-	maxTreeDepth       = 12         // 递归深度上限
-	maxSkillFileBytes  = 512 << 10  // 单文件预览读取上限 512 KiB
-	skillFileSniffSize = 8 << 10    // 二进制嗅探窗口 8 KiB
+	maxTreeEntries     = 5000      // 树条目数上限
+	maxTreeDepth       = 12        // 递归深度上限
+	maxSkillFileBytes  = 512 << 10 // 单文件预览读取上限 512 KiB
+	skillFileSniffSize = 8 << 10   // 二进制嗅探窗口 8 KiB
 )
 
 // treeSkipDirs 文件树里忽略的目录名（体积大且与技能内容无关）。

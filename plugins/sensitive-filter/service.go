@@ -287,4 +287,3 @@ func replaceAll(text string, rules []types.SensitiveReplacement) (string, error)
 func sensitiveError(msg string) *modelgateway.GatewayError {
 	return &modelgateway.GatewayError{Type: "sensitive_filter_error", Msg: msg}
 }
-

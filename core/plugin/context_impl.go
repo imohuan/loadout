@@ -105,12 +105,12 @@ func (c *contextImpl) Set(name string, svc any) Disposer {
 	c.mu.Unlock()
 
 	return c.track(owner, func() {
-			c.mu.Lock()
-			if c.services[name] == svc {
-				delete(c.services, name)
-				delete(c.provides, name)
-			}
-			c.mu.Unlock()
+		c.mu.Lock()
+		if c.services[name] == svc {
+			delete(c.services, name)
+			delete(c.provides, name)
+		}
+		c.mu.Unlock()
 	})
 }
 
@@ -122,20 +122,20 @@ func (c *contextImpl) On(event string, h Handler) Disposer {
 	c.mu.Unlock()
 
 	return c.trackCurrent(func() {
-			c.mu.Lock()
-			entries := c.events[event]
-			kept := entries[:0]
-			for _, e := range entries {
-				if e.id != id {
-					kept = append(kept, e)
-				}
+		c.mu.Lock()
+		entries := c.events[event]
+		kept := entries[:0]
+		for _, e := range entries {
+			if e.id != id {
+				kept = append(kept, e)
 			}
-			if len(kept) == 0 {
-				delete(c.events, event)
-			} else {
-				c.events[event] = kept
-			}
-			c.mu.Unlock()
+		}
+		if len(kept) == 0 {
+			delete(c.events, event)
+		} else {
+			c.events[event] = kept
+		}
+		c.mu.Unlock()
 	})
 }
 
@@ -218,11 +218,11 @@ func (c *contextImpl) RegisterRoute(spec RouteSpec) Disposer {
 	c.mu.Unlock()
 
 	return c.trackCurrent(func() {
-			c.mu.Lock()
-			if idx < len(c.routes) {
-				c.routes[idx] = RouteSpec{} // 清空；装配完成后由上层忽略空项
-			}
-			c.mu.Unlock()
+		c.mu.Lock()
+		if idx < len(c.routes) {
+			c.routes[idx] = RouteSpec{} // 清空；装配完成后由上层忽略空项
+		}
+		c.mu.Unlock()
 	})
 }
 

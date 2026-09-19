@@ -267,6 +267,13 @@ func fingerprint(ev Evidence) string {
 }
 
 // VerifyRule 单条规则对样本证据做 dry-run（UI 校验用，不写命中统计）。
+// Count 当前加载的规则数（调试用）。
+func (e *Engine) Count() int {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return len(e.cache)
+}
+
 func (e *Engine) VerifyRule(rule Rule, ev Evidence) bool {
 	if !rule.scopeMatches(ev) {
 		return false

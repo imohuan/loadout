@@ -40,6 +40,16 @@ func NewAIResolver(model, skKey, baseURL string) *AIResolver {
 // Enabled 返回 AI 兜底是否启用。
 func (a *AIResolver) Enabled() bool { return a != nil && a.model != "" }
 
+// SetModel 热更新 AI 模型（设置页保存后调用；空 = 关闭）。
+func (a *AIResolver) SetModel(model string) {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.model = strings.TrimSpace(model)
+}
+
 // cached 取缓存判定。
 func (a *AIResolver) cached(fp string) (Decision, bool) {
 	if v, ok := a.decisions.Load(fp); ok {

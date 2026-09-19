@@ -179,7 +179,7 @@ const (
 )
 
 var (
-	global    *Registry
+	global     *Registry
 	globalOnce sync.Once
 )
 

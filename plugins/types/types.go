@@ -44,14 +44,14 @@ type User struct {
 
 // APIKey 模型 API key。完整 key 只在创建时展示一次，落盘只存哈希。
 type APIKey struct {
-	ID        string   `json:"id"`         // 唯一 ID
-	Name      string   `json:"name"`       // 备注名，如「本机调用」
-	Prefix    string   `json:"prefix"`     // 展示用前缀，如 sk-abc
-	Hash      string   `json:"hash"`       // 完整 key 的 sha256 哈希
+	ID        string   `json:"id"`               // 唯一 ID
+	Name      string   `json:"name"`             // 备注名，如「本机调用」
+	Prefix    string   `json:"prefix"`           // 展示用前缀，如 sk-abc
+	Hash      string   `json:"hash"`             // 完整 key 的 sha256 哈希
 	Cipher    string   `json:"cipher,omitempty"` // 完整 key 的 AES 密文（仅服务端测试代理解密用，列表接口不返回）
-	Models    []string `json:"models"`     // 允许的模型；空或 ["*"] 表示不限制
-	Enabled   bool     `json:"enabled"`    // 是否启用
-	CreatedAt string   `json:"created_at"` // 创建时间（RFC3339）
+	Models    []string `json:"models"`           // 允许的模型；空或 ["*"] 表示不限制
+	Enabled   bool     `json:"enabled"`          // 是否启用
+	CreatedAt string   `json:"created_at"`       // 创建时间（RFC3339）
 }
 
 // ============ 5.3 MCP endpoint key ============
@@ -371,9 +371,9 @@ func normalizeBaseURL(url string) string {
 // ViaOption 视觉兜底候选：视觉模型 + 可选渠道，按数组顺序从上到下依次请求（failover）。
 // 渠道粒度：ChannelBaseURL（渠道级，按 base_url 组轮询 Key）> ChannelIDs（Key 多选）> ChannelID（兼容单 Key）。
 type ViaOption struct {
-	ViaModel       string   `json:"via_model"`            // 视觉模型名
-	ChannelID      string   `json:"channel_id,omitempty"` // 渠道 id；空 = 按 via_model 自动路由（走 /v1/models 探测兜底）
-	ChannelIDs     []string `json:"channel_ids,omitempty"` // 渠道 id 列表（Key 多选）
+	ViaModel       string   `json:"via_model"`                  // 视觉模型名
+	ChannelID      string   `json:"channel_id,omitempty"`       // 渠道 id；空 = 按 via_model 自动路由（走 /v1/models 探测兜底）
+	ChannelIDs     []string `json:"channel_ids,omitempty"`      // 渠道 id 列表（Key 多选）
 	ChannelBaseURL string   `json:"channel_base_url,omitempty"` // 渠道地址（渠道级）
 }
 
@@ -410,25 +410,25 @@ type MessageInjection struct {
 // （只保留，忽略同方向 Strip）；均无命中时原字节透传。
 // 请求/响应头按 CanonicalHeaderKey 大小写不敏感剔除。
 type FieldRules struct {
-	RequestStrip         []string `json:"request_strip,omitempty"`          // 请求体剔除的字段路径
-	RequestKeep          []string `json:"request_keep,omitempty"`           // 请求体白名单：只保留这些字段（顶层）
-	RequestHeaderStrip   []string `json:"request_header_strip,omitempty"`   // 请求头剔除（大小写不敏感；替代 proxy.go 写死的 stripAltAuth）
-	ResponseStrip        []string `json:"response_strip,omitempty"`         // 非流式响应体剔除的字段路径
-	ResponseKeep         []string `json:"response_keep,omitempty"`          // 非流式响应体白名单（顶层）
-	ResponseHeaderStrip  []string `json:"response_header_strip,omitempty"`  // 响应头剔除（大小写不敏感）
+	RequestStrip        []string `json:"request_strip,omitempty"`         // 请求体剔除的字段路径
+	RequestKeep         []string `json:"request_keep,omitempty"`          // 请求体白名单：只保留这些字段（顶层）
+	RequestHeaderStrip  []string `json:"request_header_strip,omitempty"`  // 请求头剔除（大小写不敏感；替代 proxy.go 写死的 stripAltAuth）
+	ResponseStrip       []string `json:"response_strip,omitempty"`        // 非流式响应体剔除的字段路径
+	ResponseKeep        []string `json:"response_keep,omitempty"`         // 非流式响应体白名单（顶层）
+	ResponseHeaderStrip []string `json:"response_header_strip,omitempty"` // 响应头剔除（大小写不敏感）
 }
 
 // CapabilityRoute 能力路由表条目：目标模型（可多个/通配符）× 渠道 × 能力 矩阵。
 type CapabilityRoute struct {
-	Models          []string               `json:"models"`                       // 目标模型列表，支持 `*` 通配与 `prefix*` 前缀匹配
-	ChannelIDs      []string               `json:"channel_ids,omitempty"`        // 目标模型绑定的渠道 Key 列表（Key 级）；空 = 全渠道生效
-	ChannelBaseURLs []string               `json:"channel_base_urls,omitempty"`  // 渠道级：按 base_url 绑定的渠道组（保存原意图，用于渠道级展示 + 新增 Key 仍命中）
-	Capability      string                 `json:"capability"`                   // 能力，如 vision / sensitive_filter
-	Route           string                 `json:"route"`                        // native / proxy / error
-	ViaOptions      []ViaOption            `json:"via_options,omitempty"`        // proxy 时的视觉候选，顺序即兜底优先级（vision 用）
-	Replacements    []SensitiveReplacement `json:"replacements,omitempty"`       // proxy 时的敏感词替换规则，顺序即替换顺序（sensitive_filter 用）
-	FieldRules      *FieldRules            `json:"field_rules,omitempty"`        // 字段过滤规则（field_filter 用；nil=未配置）
-	Injections      []MessageInjection     `json:"injections,omitempty"`         // 消息注入配置，顺序即注入顺序（message_inject 用）
+	Models          []string               `json:"models"`                      // 目标模型列表，支持 `*` 通配与 `prefix*` 前缀匹配
+	ChannelIDs      []string               `json:"channel_ids,omitempty"`       // 目标模型绑定的渠道 Key 列表（Key 级）；空 = 全渠道生效
+	ChannelBaseURLs []string               `json:"channel_base_urls,omitempty"` // 渠道级：按 base_url 绑定的渠道组（保存原意图，用于渠道级展示 + 新增 Key 仍命中）
+	Capability      string                 `json:"capability"`                  // 能力，如 vision / sensitive_filter
+	Route           string                 `json:"route"`                       // native / proxy / error
+	ViaOptions      []ViaOption            `json:"via_options,omitempty"`       // proxy 时的视觉候选，顺序即兜底优先级（vision 用）
+	Replacements    []SensitiveReplacement `json:"replacements,omitempty"`      // proxy 时的敏感词替换规则，顺序即替换顺序（sensitive_filter 用）
+	FieldRules      *FieldRules            `json:"field_rules,omitempty"`       // 字段过滤规则（field_filter 用；nil=未配置）
+	Injections      []MessageInjection     `json:"injections,omitempty"`        // 消息注入配置，顺序即注入顺序（message_inject 用）
 }
 
 // ============ 5.12 聚合模型（轮询） ============

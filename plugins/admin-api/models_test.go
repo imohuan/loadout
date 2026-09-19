@@ -17,8 +17,8 @@ import (
 	"loadout/plugins/admin-auth"
 	"loadout/plugins/gateway-keys"
 	"loadout/plugins/skills"
-	unifyai "loadout/plugins/unifyai"
 	"loadout/plugins/types"
+	unifyai "loadout/plugins/unifyai"
 )
 
 // newDBTestServer 组装带 DB（routing 非 nil）的完整服务，用于测 DB 版渠道模型编辑。

@@ -54,8 +54,8 @@ func TestProcessesStreamSnapshot(t *testing.T) {
 			continue
 		}
 		var ev struct {
-			Type string          `json:"type"`
-			Data []procreg.Proc  `json:"data"`
+			Type string         `json:"type"`
+			Data []procreg.Proc `json:"data"`
 		}
 		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &ev); err != nil {
 			continue

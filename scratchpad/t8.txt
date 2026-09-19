@@ -1,0 +1,10 @@
+# loadout/plugins/model-gateway [loadout/plugins/model-gateway.test]
+plugins\model-gateway\models_disabled_test.go:68:30: cannot use &mockHealth{…} (value of type *mockHealth) as contracts.ModelHealth value in argument to svc.SetRoutingServices: *mockHealth does not implement contracts.ModelHealth (missing method ConfirmFailureRule)
+plugins\model-gateway\models_disabled_test.go:100:30: cannot use &mockHealth{…} (value of type *mockHealth) as contracts.ModelHealth value in argument to svc.SetRoutingServices: *mockHealth does not implement contracts.ModelHealth (missing method ConfirmFailureRule)
+plugins\model-gateway\proxy_test.go:693:35: cannot use &mockHealth{} (value of type *mockHealth) as contracts.ModelHealth value in argument to svc.SetRoutingServices: *mockHealth does not implement contracts.ModelHealth (missing method ConfirmFailureRule)
+ok  	loadout/plugins/model-health	1.417s
+ok  	loadout/plugins/failure-rules	0.966s
+ok  	loadout/plugins/admin-api	9.475s
+ok  	loadout/plugins/aggregate	0.723s
+FAIL	loadout/plugins/model-gateway [build failed]
+FAIL

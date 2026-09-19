@@ -239,6 +239,15 @@ func (s *Service) Routes() []plugin.RouteSpec {
 		{Method: http.MethodDelete, Pattern: "DELETE /api/route-logs", Auth: plugin.AuthSession, Handler: s.session(s.handleRouteLogsClear)},
 
 		// 统计
+		// 失败规则引擎（规则管理页）
+		{Method: http.MethodGet, Pattern: "GET /api/failure-rules", Auth: plugin.AuthSession, Handler: s.session(s.handleFailureRulesList)},
+		{Method: http.MethodPost, Pattern: "POST /api/failure-rules", Auth: plugin.AuthSession, Handler: s.session(s.handleFailureRuleCreate)},
+		{Method: http.MethodPut, Pattern: "PUT /api/failure-rules/{id}", Auth: plugin.AuthSession, Handler: s.session(s.handleFailureRuleUpdate)},
+		{Method: http.MethodDelete, Pattern: "DELETE /api/failure-rules/{id}", Auth: plugin.AuthSession, Handler: s.session(s.handleFailureRuleDelete)},
+		{Method: http.MethodPatch, Pattern: "PATCH /api/failure-rules/{id}", Auth: plugin.AuthSession, Handler: s.session(s.handleFailureRulePatch)},
+		{Method: http.MethodPost, Pattern: "POST /api/failure-rules/verify", Auth: plugin.AuthSession, Handler: s.session(s.handleFailureRuleVerify)},
+		{Method: http.MethodGet, Pattern: "GET /api/rule-decisions", Auth: plugin.AuthSession, Handler: s.session(s.handleRuleDecisionsList)},
+
 		{Method: http.MethodGet, Pattern: "GET /api/stats/mcp", Auth: plugin.AuthSession, Handler: s.session(s.handleStatsMcp)},
 		{Method: http.MethodGet, Pattern: "GET /api/stats/models", Auth: plugin.AuthSession, Handler: s.session(s.handleStatsModels)},
 
@@ -2763,6 +2772,9 @@ func (s *Service) handleSettingsPut(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	deps.UseGlobal = req.UseGlobalCmd // 开关即时生效（unifyai/skills 后续执行按此选命令）
+	if s.health != nil {
+		s.health.SetRuleAIModel(req.RuleAIModel) // 失败规则引擎 AI 兜底热更新
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 

@@ -420,7 +420,6 @@ func TestHandleBeforeUpstreamErrorDataDegraded(t *testing.T) {
 	}
 }
 
-
 // TestDecideRouteScopeVirtualModel 验证虚拟模型（聚合）请求：路由配虚拟前缀 `git-*`，
 // 真实模型不匹配、但 virtualModel 命中时仍命中；virtualModel 为空时不命中。
 // vision 路由走 SQLite repo，故用 ReplaceCapabilityRoutes 写入。

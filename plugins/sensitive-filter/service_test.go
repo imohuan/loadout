@@ -38,7 +38,7 @@ func proxyPipe(t *testing.T, body any) *modelgateway.ProxyPipeline {
 		t.Fatalf("marshal body: %v", err)
 	}
 	return &modelgateway.ProxyPipeline{
-		Request: &modelgateway.ProxyRequest{Body: raw, Model: "deepseek-chat"},
+		Request:  &modelgateway.ProxyRequest{Body: raw, Model: "deepseek-chat"},
 		Metadata: map[string]any{},
 	}
 }
@@ -52,7 +52,6 @@ func runHook(svc *Service, payload any) (*modelgateway.ProxyPipeline, error) {
 	pipe, _ := out.(*modelgateway.ProxyPipeline)
 	return pipe, nil
 }
-
 
 // scopeFor 构造单渠道 scope（复用共享 routetest.ScopeWithChannelID）。
 func scopeFor(svc *Service, channelID string) types.ChannelRequestScope {
@@ -186,7 +185,7 @@ func TestNativePassthrough(t *testing.T) {
 		Models: []string{"deepseek-chat"}, Capability: capabilityName, Route: types.RouteNative,
 	})
 	pipe := proxyPipe(t, map[string]any{"messages": []any{
-		map[string]any{"role": "user", "content": "脏话"},  // 即使含敏感词，native 也不处理
+		map[string]any{"role": "user", "content": "脏话"}, // 即使含敏感词，native 也不处理
 	}})
 	before := append([]byte(nil), pipe.Request.Body...)
 	out, err := runHook(svc, pipe)
@@ -326,7 +325,7 @@ func TestNonJSONPassthrough(t *testing.T) {
 		Replacements: []types.SensitiveReplacement{{From: "abc", To: "xyz"}},
 	})
 	pipe := &modelgateway.ProxyPipeline{
-		Request: &modelgateway.ProxyRequest{Body: []byte("this is not json abc"), Model: "deepseek-chat"},
+		Request:  &modelgateway.ProxyRequest{Body: []byte("this is not json abc"), Model: "deepseek-chat"},
 		Metadata: map[string]any{},
 	}
 	before := append([]byte(nil), pipe.Request.Body...)
@@ -421,7 +420,7 @@ func TestEmptyFromSkipped(t *testing.T) {
 	seedRoute(t, st, types.CapabilityRoute{
 		Models: []string{"deepseek-chat"}, Capability: capabilityName, Route: types.RouteProxy,
 		Replacements: []types.SensitiveReplacement{
-			{From: "", To: "x"},     // 空 from：应跳过，否则逐字符插入破坏 JSON
+			{From: "", To: "x"}, // 空 from：应跳过，否则逐字符插入破坏 JSON
 			{From: "脏话", To: "***"},
 		},
 	})
@@ -610,15 +609,14 @@ func TestSubRequestSkipSecurity(t *testing.T) {
 	}
 }
 
-
 // TestDecideRoutesScopeVirtualModel 验证虚拟模型（聚合）请求：路由配虚拟前缀 `git-*`，
 // 真实模型不匹配、但 virtualModel 命中时仍命中；virtualModel 为空时不命中。
 func TestDecideRoutesScopeVirtualModel(t *testing.T) {
 	svc, st := newTestService(t)
 	routes := []types.CapabilityRoute{{
-		Models:     []string{"git-*"},
-		Capability: capabilityName,
-		Route:      types.RouteProxy,
+		Models:       []string{"git-*"},
+		Capability:   capabilityName,
+		Route:        types.RouteProxy,
 		Replacements: []types.SensitiveReplacement{{From: "dirty", To: "***"}},
 	}}
 	if err := st.Write(types.FileCapabilityRoutes, routes); err != nil {

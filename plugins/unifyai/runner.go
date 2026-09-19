@@ -77,4 +77,3 @@ func (r *RunRunner) run() {
 	}
 	r.finish(RunEvent{Type: "done", Data: "0"})
 }
-

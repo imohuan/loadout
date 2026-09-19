@@ -179,7 +179,7 @@ func (s *Service) HandleProxyUpstreamSucceeded(payload any) (any, error) {
 // local_remaining 下限 0（不出现负数）。
 //
 // v17 起 volc_quota_models 聚合表已删除，扣减只更新 volc_quota_packages
-//（UI 资源包明细表是唯一数据源）。
+// （UI 资源包明细表是唯一数据源）。
 //
 // 日志：每次成功扣减记 Info（含扣前/扣后余额），未匹配到任何资源包记 Warn
 // （说明该 API 模型没有对应的免费额度记录，本地扣减没生效，需要排查）。
@@ -1372,8 +1372,9 @@ func isAlpha(c byte) bool { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= '
 // modelNameFromConfigCode 从 configuration_code 提取模型名（扣减/拦截的匹配锚点）。
 //
 // 例："DeepSeek_V4_flash_0731_data_collaboration_resource_pack" → "deepseek-v4-flash-0731"
-//      "Doubao_Seed3D_1.0_pack_free_infer" → "doubao-seed3d-1.0"
-//      "ym-rodin-gen2-free" → "ym-rodin-gen2"
+//
+//	"Doubao_Seed3D_1.0_pack_free_infer" → "doubao-seed3d-1.0"
+//	"ym-rodin-gen2-free" → "ym-rodin-gen2"
 //
 // 策略：按 "_" 切段，从后往前逐个去掉"资源包类型后缀段"（段本身或其组合，
 // 如 data_collaboration、resource_pack、free_infer 等），剩余段用 "-" 拼接 + 归一化。
@@ -1493,10 +1494,10 @@ func sameBeijingDay(a, b time.Time) bool {
 // 分支：
 //  1. 首次写入（oldInitial == 0）→ = avail（建底数，全量额度）
 //  2. 已耗尽（oldLocal <= 0）：
-//       - 扣减发生在今天（北京日期相同）→ 保持 0（billing 可能结算滞后，不记）
-//       - 扣减发生在昨天或更早（跨天）且 avail > 0 → = avail（billing 有值即记上；
-//         是否"算恢复"由聚合层 config.VolcQuotaReviveThreshold 裁决）
-//       - 否则 → 保持 0
+//     - 扣减发生在今天（北京日期相同）→ 保持 0（billing 可能结算滞后，不记）
+//     - 扣减发生在昨天或更早（跨天）且 avail > 0 → = avail（billing 有值即记上；
+//     是否"算恢复"由聚合层 config.VolcQuotaReviveThreshold 裁决）
+//     - 否则 → 保持 0
 //  3. avail < oldLocal → = avail（billing 权威下降校准，防本地漏扣）
 //  4. 其余（billing 上升，含结算滞后回升）→ 保持 oldLocal（本地扣减为准，防回弹）
 func computeLocalRemaining(oldInitial, oldLocal int64, oldSyncedAt time.Time, avail int64, now time.Time) int64 {
@@ -1684,6 +1685,7 @@ func (s *Service) HandleSaveConfigs(w http.ResponseWriter, r *http.Request) {
 //   - channel_id 只刷该渠道；缺省/空则全量刷新。
 //   - force=true 强制把 local_remaining 拉回远程 available_amount（覆盖防回弹），
 //     前端"强制刷新"选项使用；缺省/非 true 保持原有只降不升语义。
+//
 // 返回 RefreshResult（含本次禁用/失败明细），前端据此展示。
 // 任一条渠道刷新失败 → HTTP 4xx/5xx + 明确错误（不再静默 200），前端 toast 直接可见。
 func (s *Service) HandleRefresh(w http.ResponseWriter, r *http.Request) {

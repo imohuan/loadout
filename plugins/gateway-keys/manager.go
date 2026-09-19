@@ -48,8 +48,8 @@ func AllowedModel(allowed []string, model string) bool {
 
 // Manager 管理 sk- key 与 MCP endpoint key（签发 + 校验中间件）。
 type Manager struct {
-	mu   sync.Mutex   // mu 串行化读-改-写，避免并发竞争。
-	st   *store.Store // st 数据目录。
+	mu   sync.Mutex     // mu 串行化读-改-写，避免并发竞争。
+	st   *store.Store   // st 数据目录。
 	repo *db.Repository // SQLite 密钥数据源（装配后注入；nil 时回退 JSON）
 }
 

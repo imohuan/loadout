@@ -54,7 +54,7 @@ type volcBillingClient struct {
 const volcBillingRegion = "cn-beijing"
 
 // newVolcBillingClient 构造账单客户端；region 固定 cn-beijing，maxPages 10 上限
-//（单页 20 条 → 最多 200 条，足够覆盖免费模型数量级）。翻页按 8 QPS 节流（接口上限 10）。
+// （单页 20 条 → 最多 200 条，足够覆盖免费模型数量级）。翻页按 8 QPS 节流（接口上限 10）。
 func newVolcBillingClient(lg *slog.Logger) *volcBillingClient {
 	return &volcBillingClient{
 		lg:           lg,
@@ -158,10 +158,10 @@ func (c *volcBillingClient) FetchPackages(ctx context.Context, accessKey, secret
 					}
 					added++
 					out = append(out, rawPackage{
-						Product:            ptrToString(p.Product),
-						ProductName:        ptrToString(p.ProductName),
-						TotalAmount:        ptrToString(p.TotalAmount),
-						AvailableAmount:    ptrToString(p.AvailableAmount),
+						Product:         ptrToString(p.Product),
+						ProductName:     ptrToString(p.ProductName),
+						TotalAmount:     ptrToString(p.TotalAmount),
+						AvailableAmount: ptrToString(p.AvailableAmount),
 						// SDK 不返回 UsedAmount，按 Total - Available 计算（同一单位，展示用）。
 						UsedAmount:          calcUsedAmount(ptrToString(p.TotalAmount), ptrToString(p.AvailableAmount)),
 						Unit:                ptrToString(p.Unit),
@@ -190,21 +190,21 @@ func (c *volcBillingClient) FetchPackages(ctx context.Context, accessKey, secret
 
 // rawPackage 资源包 SDK 输出的扁平化字段，避免直接暴露 SDK 类型到上层。
 type rawPackage struct {
-	Product            string
-	ProductName        string
-	TotalAmount        string
-	AvailableAmount    string
-	UsedAmount         string
-	Unit               string
-	Status             string
-	InstanceNo         string
-	ConfigurationCode  string
-	ConfigurationName  string
-	EffectiveTime      string
-	ExpiryTime         string
-	Specification      string
-	SpecificationUnit  string
-	ResetPeriod        string
+	Product             string
+	ProductName         string
+	TotalAmount         string
+	AvailableAmount     string
+	UsedAmount          string
+	Unit                string
+	Status              string
+	InstanceNo          string
+	ConfigurationCode   string
+	ConfigurationName   string
+	EffectiveTime       string
+	ExpiryTime          string
+	Specification       string
+	SpecificationUnit   string
+	ResetPeriod         string
 	ResetByNaturalMonth string
 }
 
@@ -234,8 +234,8 @@ func calcUsedAmount(total, available string) string {
 
 // looksLikeArkFreePackage 资源包是否疑似方舟免费模型：
 //
-//  - product 包含 "ark" / product_name 包含 "方舟" / "doubao" / "大模型" 任一关键字。
-//  - status 处于 Effective（有效）/ UsedUp（已用完）才会有后续处理；NotEffective/Expired/Refunded/FailedToCreate 直接跳过。
+//   - product 包含 "ark" / product_name 包含 "方舟" / "doubao" / "大模型" 任一关键字。
+//   - status 处于 Effective（有效）/ UsedUp（已用完）才会有后续处理；NotEffective/Expired/Refunded/FailedToCreate 直接跳过。
 //
 // 与 main.go 启发式一致；识别过宽不会导致禁用（exhausted 仍需 available<=0 才标耗尽），
 // 识别过窄会导致 UI 看不到该模型——所以采用宽口径。

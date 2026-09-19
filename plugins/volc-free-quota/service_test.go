@@ -38,8 +38,8 @@ func TestCalcUsedAmount(t *testing.T) {
 	}{
 		{"100.00", "40.00", "60"},
 		{"100", "100", "0"},
-		{"10", "20", "0"},   // 异常数据：available > total → 0
-		{"abc", "5", "0"},   // 解析失败 → 0
+		{"10", "20", "0"}, // 异常数据：available > total → 0
+		{"abc", "5", "0"}, // 解析失败 → 0
 		{"", "", "0"},
 	}
 	for _, c := range cases {
@@ -230,7 +230,10 @@ func TestDecrementLocalRemainingSharesAcrossPackages(t *testing.T) {
 		}
 	}
 	// 同 model（deepseek-v4-flash-0731）两个包，余额分别为 300 和 100。
-	for _, c := range []struct{ inst string; bal int64 }{
+	for _, c := range []struct {
+		inst string
+		bal  int64
+	}{
 		{"inst-a", 300}, {"inst-b", 100},
 	} {
 		mustExec(`INSERT INTO volc_quota_packages(account_id, instance_no, product, product_name, configuration_code,
@@ -317,7 +320,10 @@ func TestCheckAllCandidatesExhaustedAggregatesAcrossPackages(t *testing.T) {
 		}
 	}
 	// 同 model 两包：余额 500 和 400000。
-	for _, c := range []struct{ inst string; bal int64 }{
+	for _, c := range []struct {
+		inst string
+		bal  int64
+	}{
 		{"inst-x", 500}, {"inst-y", 400000},
 	} {
 		mustExec(`INSERT INTO volc_quota_packages(account_id, instance_no, product, product_name, configuration_code,
@@ -503,12 +509,12 @@ func beijingTime(y int, mo time.Month, d, h, mi int) time.Time {
 func TestComputeLocalRemaining(t *testing.T) {
 	now := beijingTime(2026, 8, 23, 10, 0) // 北京时间 2026-08-23 10:00（UTC 02:00）
 	cases := []struct {
-		name       string
-		oldInit    int64
-		oldLocal   int64
-		oldSynced  time.Time
-		avail      int64
-		want       int64
+		name      string
+		oldInit   int64
+		oldLocal  int64
+		oldSynced time.Time
+		avail     int64
+		want      int64
 	}{
 		{"首次写入=avail", 0, 0, beijingTime(2026, 8, 23, 0, 0), 500000, 500000},
 		{"今天扣完+avail有值→保持0", 500000, 0, beijingTime(2026, 8, 23, 9, 30), 500000, 0},
@@ -849,8 +855,8 @@ func TestSyncModelStatesByAggregateReviveThreshold(t *testing.T) {
 			t.Errorf("恢复后 disabled_until 应为 NULL, got %v", *disabledUntil)
 		}
 	}
-	check(449999, "cooling")  // < 45 万：中间态不动（保持冷却）
-	check(450000, "cooling")  // = 45 万：中间态不动（严格大于才恢复）
+	check(449999, "cooling")   // < 45 万：中间态不动（保持冷却）
+	check(450000, "cooling")   // = 45 万：中间态不动（严格大于才恢复）
 	check(450001, "available") // > 45 万：恢复
 }
 

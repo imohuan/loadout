@@ -145,10 +145,10 @@ func TestCapabilityRouteFieldRulesJSON(t *testing.T) {
 		Capability: "field_filter",
 		Route:      "proxy",
 		FieldRules: &FieldRules{
-			RequestStrip:  []string{"client_metadata", "a.b.c"},
-			RequestKeep:   []string{"model", "messages"},
-			ResponseStrip: []string{"choices.0.usage"},
-			ResponseHeaderStrip:   []string{"X-Internal"},
+			RequestStrip:        []string{"client_metadata", "a.b.c"},
+			RequestKeep:         []string{"model", "messages"},
+			ResponseStrip:       []string{"choices.0.usage"},
+			ResponseHeaderStrip: []string{"X-Internal"},
 		},
 	}
 	b, err := json.Marshal(in)

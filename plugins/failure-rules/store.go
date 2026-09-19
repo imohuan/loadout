@@ -151,6 +151,53 @@ func (s *Store) Get(ctx context.Context, id string) (Rule, error) {
 }
 
 // RecordDecision 记录一次裁决（引擎入口调用，含规则命中与 AI 判定）。
+
+// RuleDecision 一条判定日志（前端展示用）。
+type RuleDecision struct {
+	ID              int64  `json:"id"`
+	RequestID       string `json:"request_id"`
+	Model           string `json:"model"`
+	ProviderBaseURL string `json:"provider_base_url"`
+	StatusCode      int    `json:"status_code"`
+	ErrorExcerpt    string `json:"error_excerpt"`
+	MatchedRuleID   string `json:"matched_rule_id"`
+	MatchedRuleName string `json:"matched_rule_name"`
+	AIModel         string `json:"ai_model"`
+	AIRaw           string `json:"ai_raw"`
+	Verdict         string `json:"verdict"`
+	CreatedAt       string `json:"created_at"`
+}
+
+// ListDecisions 最近的判定日志（AI 路由 + 规则路由）。
+func (s *Store) ListDecisions(ctx context.Context, limit int) ([]map[string]any, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, COALESCE(request_id,''), model, COALESCE(provider_base_url,''), status_code,
+		       error_excerpt, matched_rule_id, matched_rule_name, COALESCE(ai_model,''),
+		       COALESCE(ai_raw,''), verdict, created_at
+		FROM rule_decisions ORDER BY id DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []map[string]any{}
+	for rows.Next() {
+		var d RuleDecision
+		if err := rows.Scan(&d.ID, &d.RequestID, &d.Model, &d.ProviderBaseURL, &d.StatusCode,
+			&d.ErrorExcerpt, &d.MatchedRuleID, &d.MatchedRuleName, &d.AIModel,
+			&d.AIRaw, &d.Verdict, &d.CreatedAt); err != nil {
+			return nil, err
+		}
+		b, _ := json.Marshal(d)
+		m := map[string]any{}
+		_ = json.Unmarshal(b, &m)
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) RecordDecision(ctx context.Context, ev Evidence, d Decision) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	_, _ = s.db.ExecContext(ctx, `

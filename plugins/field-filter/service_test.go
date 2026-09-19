@@ -190,8 +190,8 @@ func TestHandleProxyAfterUpstreamStrip(t *testing.T) {
 		Capability: capabilityName,
 		Route:      types.RouteProxy,
 		FieldRules: &types.FieldRules{
-			ResponseStrip: []string{"usage"},
-			ResponseHeaderStrip:   []string{"x-internal"}, // 小写验证大小写不敏感
+			ResponseStrip:       []string{"usage"},
+			ResponseHeaderStrip: []string{"x-internal"}, // 小写验证大小写不敏感
 		},
 	})
 	pipe := proxyPipe(t, map[string]any{"model": "gpt-4o"})
@@ -307,8 +307,8 @@ func TestHandleProxyAfterUpstreamReusesBeforeRoute(t *testing.T) {
 		Capability: capabilityName,
 		Route:      types.RouteProxy,
 		FieldRules: &types.FieldRules{
-			ResponseStrip: []string{"usage"},
-			ResponseHeaderStrip:   []string{"X-Internal"},
+			ResponseStrip:       []string{"usage"},
+			ResponseHeaderStrip: []string{"X-Internal"},
 		},
 	})
 	pipe := proxyPipe(t, map[string]any{"model": "gpt-4o"})
@@ -455,9 +455,9 @@ func TestDecideRoutesProxyStacked(t *testing.T) {
 		t.Fatal(err)
 	}
 	pipe := proxyPipe(t, map[string]any{
-		"model":                "gpt-4o",
-		"messages":             []any{},
-		"client_metadata":      map[string]any{"app": "codex"},
+		"model":                 "gpt-4o",
+		"messages":              []any{},
+		"client_metadata":       map[string]any{"app": "codex"},
 		"max_completion_tokens": 1048576,
 	})
 	out, err := svc.HandleProxyBeforeUpstream(pipe)
@@ -566,7 +566,6 @@ func TestSubRequestSkipSecurityResponse(t *testing.T) {
 		t.Fatalf("skip_security 子请求响应被删字段:\n got: %s\nwant: %s", got.Response.Body, after.Response.Body)
 	}
 }
-
 
 // TestDecideRoutesVirtualModel 验证虚拟模型（聚合）请求：路由配虚拟前缀 `git-*`，
 // 真实模型 gpt-4o 不匹配、但 virtualModel 命中时仍命中；virtualModel 为空时不命中。

@@ -47,7 +47,7 @@ func TestEnsureToolChat(t *testing.T) {
 
 	// 已有同名 function 嵌套工具 → 不重复（长度不变）
 	existing := []any{map[string]any{
-		"type": "function",
+		"type":     "function",
 		"function": map[string]any{"name": lookAtImageToolName},
 	}}
 	again, injected := ensureLookAtImageTool(existing, formatChat)

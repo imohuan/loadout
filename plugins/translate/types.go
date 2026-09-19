@@ -20,9 +20,9 @@ import (
 	"loadout/core/db"
 	"loadout/core/plugin"
 	"loadout/core/store"
-	modelgateway "loadout/plugins/model-gateway"
-	mcphub "loadout/plugins/mcp-hub"
 	gatewaykeys "loadout/plugins/gateway-keys"
+	mcphub "loadout/plugins/mcp-hub"
+	modelgateway "loadout/plugins/model-gateway"
 	skills "loadout/plugins/skills"
 )
 
@@ -91,15 +91,15 @@ type TranslateResponse struct {
 
 // SourceItem 一个可翻译来源（设置页来源清单）。
 type SourceItem struct {
-	SourceType  SourceType      `json:"source_type"`
-	SourceID    string          `json:"source_id"`
-	Name        string          `json:"name"`
-	Description string          `json:"description"`
+	SourceType  SourceType `json:"source_type"`
+	SourceID    string     `json:"source_id"`
+	Name        string     `json:"name"`
+	Description string     `json:"description"`
 	// InputSchema MCP 工具的完整 JSON Schema（参数配置）；skill 为空。
 	InputSchema map[string]any `json:"input_schema,omitempty"`
 	// Params 从 InputSchema 提取的可翻译参数项（name/title/description），用于参数翻译展示。
-	Params []ParamItem `json:"params,omitempty"`
-	Translated bool `json:"translated"` // 是否已有译文（缓存命中）
+	Params     []ParamItem `json:"params,omitempty"`
+	Translated bool        `json:"translated"` // 是否已有译文（缓存命中）
 }
 
 // ParamItem 一个可翻译的参数项。
@@ -113,12 +113,12 @@ type ParamItem struct {
 
 // ProgressEvent SSE 批量翻译进度事件。
 type ProgressEvent struct {
-	Done    int    `json:"done"`
-	Total   int    `json:"total"`
-	Index   int    `json:"index"`
-	Text    string `json:"text,omitempty"` // 该条译文（可选）
-	Error   string `json:"error,omitempty"`
-	Finished bool  `json:"finished"`
+	Done     int    `json:"done"`
+	Total    int    `json:"total"`
+	Index    int    `json:"index"`
+	Text     string `json:"text,omitempty"` // 该条译文（可选）
+	Error    string `json:"error,omitempty"`
+	Finished bool   `json:"finished"`
 }
 
 // Plugin 是 translate 插件的实现。

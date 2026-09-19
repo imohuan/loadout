@@ -51,8 +51,12 @@ func TestRunStreamsLogs(t *testing.T) {
 		if o.Cmd == "" || len(o.Args) == 0 {
 			t.Errorf("cmd empty")
 		}
-		if o.OnLog != nil { o.OnLog("line-a") }
-		if o.OnLog != nil { o.OnLog("line-b") }
+		if o.OnLog != nil {
+			o.OnLog("line-a")
+		}
+		if o.OnLog != nil {
+			o.OnLog("line-b")
+		}
 		return procreg.NewTestHandle(nil), nil
 	})
 	defer func() { procreg.SetRunFn(orig) }()
@@ -75,7 +79,9 @@ func TestRunStreamsLogs(t *testing.T) {
 // TestRunErrorPropagates 验证 Run 返回命令错误（非零退出）。
 func TestRunErrorPropagates(t *testing.T) {
 	orig := procreg.SetRunFn(func(_ *procreg.Registry, o procreg.Options) (*procreg.Handle, error) {
-		if o.OnLog != nil { o.OnLog("boom") }
+		if o.OnLog != nil {
+			o.OnLog("boom")
+		}
 		return procreg.NewTestHandle(errFake), nil
 	})
 	defer func() { procreg.SetRunFn(orig) }()
@@ -98,7 +104,9 @@ func (errFakeType) Error() string { return "fake command failed" }
 // TestRunnerSingleInstanceAndBroadcast 验证单实例 + 多订阅者广播 + 终态关闭。
 func TestRunnerSingleInstanceAndBroadcast(t *testing.T) {
 	orig := procreg.SetRunFn(func(_ *procreg.Registry, o procreg.Options) (*procreg.Handle, error) {
-		if o.OnLog != nil { o.OnLog("log-1") }
+		if o.OnLog != nil {
+			o.OnLog("log-1")
+		}
 		return procreg.NewTestHandle(nil), nil
 	})
 	defer func() { procreg.SetRunFn(orig) }()

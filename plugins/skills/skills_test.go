@@ -1068,7 +1068,6 @@ func TestInstallNpx(t *testing.T) {
 	}
 }
 
-
 // TestRemoveUnregisterDirNameMismatch verifies that when a skill dir name differs
 // from its SKILL.md frontmatter name, Remove/Unregister still find and delete the
 // real directory by matching the frontmatter name (regression: ask-matt copy dir

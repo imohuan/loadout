@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"loadout/core/db"
+	failure "loadout/plugins/failure-rules"
 )
 
 // DurationMS serializes a time.Duration as an integer millisecond count so the
@@ -19,7 +20,7 @@ func (d DurationMS) MarshalJSON() ([]byte, error) {
 	return json.Marshal(time.Duration(d).Milliseconds())
 }
 
-func (d DurationMS) Milliseconds() int64  { return time.Duration(d).Milliseconds() }
+func (d DurationMS) Milliseconds() int64     { return time.Duration(d).Milliseconds() }
 func (d DurationMS) Duration() time.Duration { return time.Duration(d) }
 
 type RoutingRepository interface {
@@ -65,6 +66,17 @@ type ModelHealth interface {
 	// PurgeChannelStates 删除某渠道下不在 keep 清单内的模型状态记录
 	// （编辑渠道全量替换模型清单后清理幽灵状态，保证模型状态与模型渠道一致）。
 	PurgeChannelStates(context.Context, string, []string) error
+
+	// ==== 失败规则引擎（failure-rules，admin-api 规则管理页） ====
+	ListFailureRules(context.Context) ([]failure.Rule, error)
+	CreateFailureRule(context.Context, failure.RuleInput) (failure.Rule, error)
+	UpdateFailureRule(context.Context, string, failure.RuleInput) (failure.Rule, error)
+	DeleteFailureRule(context.Context, string) error
+	SetFailureRuleEnabled(context.Context, string, bool) error
+	ConfirmFailureRule(context.Context, string) error
+	VerifyFailureRule(failure.Rule, failure.Evidence) bool
+	ListRuleDecisions(context.Context, int) ([]map[string]any, error)
+	SetRuleAIModel(string)
 }
 
 type ChannelStatus struct {
@@ -79,14 +91,14 @@ type ChannelStatus struct {
 }
 
 type ModelStatus struct {
-	Model         string        `json:"model"`
-	ManualEnabled bool          `json:"manual_enabled"`
-	Health        Availability  `json:"health"`
-	LastError     string        `json:"last_error"`
-	FailCount     int           `json:"fail_count"`
-	LastSuccessAt *time.Time    `json:"last_success_at,omitempty"`
-	DisabledUntil *time.Time    `json:"disabled_until,omitempty"`
-	Source        string        `json:"source,omitempty"`
+	Model         string       `json:"model"`
+	ManualEnabled bool         `json:"manual_enabled"`
+	Health        Availability `json:"health"`
+	LastError     string       `json:"last_error"`
+	FailCount     int          `json:"fail_count"`
+	LastSuccessAt *time.Time   `json:"last_success_at,omitempty"`
+	DisabledUntil *time.Time   `json:"disabled_until,omitempty"`
+	Source        string       `json:"source,omitempty"`
 }
 
 type RouteRequest struct {
@@ -97,47 +109,47 @@ type RouteRequest struct {
 }
 
 type RouteAttempt struct {
-	RequestID         string         `json:"request_id"`
-	PreviousAttemptID *int64         `json:"previous_attempt_id,omitempty"`
-	StepNo            string         `json:"step_no"`
-	Action            string         `json:"action"`
-	Model             string         `json:"model"`
+	RequestID         string `json:"request_id"`
+	PreviousAttemptID *int64 `json:"previous_attempt_id,omitempty"`
+	StepNo            string `json:"step_no"`
+	Action            string `json:"action"`
+	Model             string `json:"model"`
 	// Channel 三种粒度（与 AggregateTarget 对齐）：ChannelID（单 Key 兼容）>
 	// ChannelIDs（Key 多选）> ChannelBaseURL（渠道级，按 base_url 整组轮询 Key）。
 	// 聚合目标 rejected 时不再丢失 Key 多选 / 渠道级的渠道上下文，前端日志能渲染
 	// 完整的 "@ 渠道名(Key1, Key2)" 而非空 channel_id。
-	ChannelID         string         `json:"channel_id,omitempty"`
-	ChannelIDs        []string       `json:"channel_ids,omitempty"`
-	ChannelBaseURL    string         `json:"channel_base_url,omitempty"`
+	ChannelID      string   `json:"channel_id,omitempty"`
+	ChannelIDs     []string `json:"channel_ids,omitempty"`
+	ChannelBaseURL string   `json:"channel_base_url,omitempty"`
 	// ChannelName 渠道名称快照：Key 被删除后仍能显示「@渠道名(Unknown)」。
-	ChannelName       string         `json:"channel_name,omitempty"`
+	ChannelName string `json:"channel_name,omitempty"`
 	// RequestLogID 本次 attempt 的独立 request-log 主键（request-log.db request_logs.id）。
 	// 由 request-log 插件在 before-attempt 生成，model-gateway 写 attempt 行时落库；
 	// 为空表示该 attempt 未命中 request_log 能力路由（前端不显示日志入口）。
-	RequestLogID      string         `json:"request_log_id,omitempty"`
-	StartedAt         time.Time      `json:"started_at"`
-	FinishedAt        *time.Time     `json:"finished_at,omitempty"`
+	RequestLogID string     `json:"request_log_id,omitempty"`
+	StartedAt    time.Time  `json:"started_at"`
+	FinishedAt   *time.Time `json:"finished_at,omitempty"`
 	// FirstByteAt 流式尝试收到上游响应头的时刻（TTFB）。仅流式 attempt 有值，
 	// 运行中由 model-gateway 写入，前端据此展示"等待响应 Xs → 输出中 Ys"。
-	FirstByteAt       *time.Time     `json:"first_byte_at,omitempty"`
-	Result            string         `json:"result"`
-	FailureClass      string         `json:"failure_class,omitempty"`
-	StatusCode        int            `json:"status_code,omitempty"`
+	FirstByteAt  *time.Time `json:"first_byte_at,omitempty"`
+	Result       string     `json:"result"`
+	FailureClass string     `json:"failure_class,omitempty"`
+	StatusCode   int        `json:"status_code,omitempty"`
 	// ErrorMessage 上游错误摘要（解析后的 message 字段或网络错误一行说明）：
 	// 短文本，便于列表和折叠面板首屏展示完整信息。
-	ErrorMessage      string         `json:"error_message,omitempty"`
+	ErrorMessage string `json:"error_message,omitempty"`
 	// ErrorBody 上游原始错误响应体（截断 8KB），与 ErrorMessage 互补：ErrorMessage
 	// 只承载一行摘要，ErrorBody 保留厂商返回的完整 JSON（code/msg/extError/usage 等），
 	// 400/429/500 根因排查时不必再翻 slog 文件。前端折叠面板里 detail 渲染。
-	ErrorBody         string         `json:"error_body,omitempty"`
-	Duration          DurationMS     `json:"duration_ms"`
-	Stream            bool           `json:"stream,omitempty"`
-	PromptTokens      int            `json:"prompt_tokens,omitempty"`
-	CompletionTokens  int            `json:"completion_tokens,omitempty"`
-	CachedTokens      int            `json:"cached_tokens,omitempty"`
+	ErrorBody        string     `json:"error_body,omitempty"`
+	Duration         DurationMS `json:"duration_ms"`
+	Stream           bool       `json:"stream,omitempty"`
+	PromptTokens     int        `json:"prompt_tokens,omitempty"`
+	CompletionTokens int        `json:"completion_tokens,omitempty"`
+	CachedTokens     int        `json:"cached_tokens,omitempty"`
 	// Metadata 结构化扩展信息（如视觉识别的 called_via_tool/tool/image_id/prompt）。
 	// 序列化给前端：UI 据此渲染 MCP 工具调用标签；内容由各插件写入，应只放展示级字段。
-	Metadata          map[string]any `json:"metadata,omitempty"`
+	Metadata map[string]any `json:"metadata,omitempty"`
 }
 
 // TokenUsage 描述一次上游响应里的 usage 字段，四项均为 OpenAI 标准键名。
@@ -150,35 +162,35 @@ type TokenUsage struct {
 }
 
 type RouteFinish struct {
-	RequestID         string
-	FinishedAt        time.Time
-	Result            string
-	FinalModel        string
+	RequestID  string
+	FinishedAt time.Time
+	Result     string
+	FinalModel string
 	// Final 三种粒度（与 AggregateTarget / RouteAttempt 对齐）：ChannelID 单 Key 兼容、
 	// ChannelIDs Key 多选、ChannelBaseURL 渠道级。聚合目标被拦截（proxyRejectedLog）
 	// 时不再丢掉多选/渠道级渠道上下文，前端最终目标列渲染 "@ 渠道名(Key1, Key2)"。
-	FinalChannelID    string
-	FinalChannelIDs   []string
+	FinalChannelID      string
+	FinalChannelIDs     []string
 	FinalChannelBaseURL string
 	// FinalChannelName 最终渠道名称快照：Key 被删除后仍能显示「@渠道名(Unknown)」。
-	FinalChannelName  string
-	HTTPStatus        int
-	Duration          DurationMS
+	FinalChannelName string
+	HTTPStatus       int
+	Duration         DurationMS
 	// ErrorMessage 失败行一行摘要（与 RouteAttempt.ErrorMessage 同源）。
-	ErrorMessage      string
+	ErrorMessage string
 	// ErrorBody 最后一次渠道尝试的上游原始响应体（截断 8KB）。Finish 阶段锁定，
 	// 写入 route_requests.error_body 后 list 行也能直接展示，detail /api/route-logs/{id}
 	// 也会按 fail-over 顺序保留每个 attempt 的 raw body 供逐渠道对比。
-	ErrorBody         string
-	Stream            bool
-	PromptTokens      int
-	CompletionTokens  int
-	CachedTokens      int
+	ErrorBody        string
+	Stream           bool
+	PromptTokens     int
+	CompletionTokens int
+	CachedTokens     int
 }
 
 type RouteLogFilter struct {
-	Model         string
-	ChannelID     string
+	Model     string
+	ChannelID string
 	// ChannelName 渠道级名称过滤（同 base_url 一组共享一个渠道名）。
 	// 比 ChannelID（Key 粒度）更粗：日志按渠道名快照匹配，任一 attempt 命中即算。
 	ChannelName   string
@@ -205,32 +217,32 @@ type RouteLogPage struct {
 }
 
 type RouteRequestView struct {
-	RequestID            string         `json:"request_id"`
+	RequestID string `json:"request_id"`
 	// RequestLogID request-log 插件的关联主键（独立库 request-log.db 的 request_logs.id，
 	// UUID）。由 request-log 插件在请求发出前生成并 UPDATE 本列；为空表示未命中
 	// request_log 能力路由（前端据此决定是否显示"完整日志"入口）。
-	RequestLogID         string         `json:"request_log_id,omitempty"`
-	RequestedModel       string         `json:"requested_model"`
-	VirtualModel         string         `json:"virtual_model,omitempty"`
-	StartedAt            time.Time      `json:"started_at"`
-	FinishedAt           *time.Time     `json:"finished_at,omitempty"`
-	Result               string         `json:"result"`
-	FinalModel           string         `json:"final_model,omitempty"`
-	FinalChannelID       string         `json:"final_channel_id,omitempty"`
-	FinalChannelIDs      []string       `json:"final_channel_ids,omitempty"`
-	FinalChannelBaseURL  string         `json:"final_channel_base_url,omitempty"`
-	FinalChannelName     string         `json:"final_channel_name,omitempty"`
-	HTTPStatus           int            `json:"http_status,omitempty"`
-	Duration             DurationMS     `json:"duration_ms"`
-	ErrorMessage         string         `json:"error_message,omitempty"`
+	RequestLogID        string     `json:"request_log_id,omitempty"`
+	RequestedModel      string     `json:"requested_model"`
+	VirtualModel        string     `json:"virtual_model,omitempty"`
+	StartedAt           time.Time  `json:"started_at"`
+	FinishedAt          *time.Time `json:"finished_at,omitempty"`
+	Result              string     `json:"result"`
+	FinalModel          string     `json:"final_model,omitempty"`
+	FinalChannelID      string     `json:"final_channel_id,omitempty"`
+	FinalChannelIDs     []string   `json:"final_channel_ids,omitempty"`
+	FinalChannelBaseURL string     `json:"final_channel_base_url,omitempty"`
+	FinalChannelName    string     `json:"final_channel_name,omitempty"`
+	HTTPStatus          int        `json:"http_status,omitempty"`
+	Duration            DurationMS `json:"duration_ms"`
+	ErrorMessage        string     `json:"error_message,omitempty"`
 	// ErrorBody 最后一次渠道尝试的上游原始响应体（截断 8KB），
 	// 与 Attempts[*].ErrorBody 同源；list 视图无需逐条展开就能拿到完整 JSON 错误。
-	ErrorBody            string         `json:"error_body,omitempty"`
-	Stream               bool           `json:"stream,omitempty"`
-	PromptTokens         int            `json:"prompt_tokens,omitempty"`
-	CompletionTokens     int            `json:"completion_tokens,omitempty"`
-	CachedTokens         int            `json:"cached_tokens,omitempty"`
-	Attempts             []RouteAttempt `json:"attempts,omitempty"`
+	ErrorBody        string         `json:"error_body,omitempty"`
+	Stream           bool           `json:"stream,omitempty"`
+	PromptTokens     int            `json:"prompt_tokens,omitempty"`
+	CompletionTokens int            `json:"completion_tokens,omitempty"`
+	CachedTokens     int            `json:"cached_tokens,omitempty"`
+	Attempts         []RouteAttempt `json:"attempts,omitempty"`
 }
 
 type RouteLog interface {

@@ -22,8 +22,8 @@ import (
 	"loadout/plugins/admin-auth"
 	"loadout/plugins/gateway-keys"
 	"loadout/plugins/skills"
-	unifyai "loadout/plugins/unifyai"
 	"loadout/plugins/types"
+	unifyai "loadout/plugins/unifyai"
 )
 
 // newTransferService 构造带 SQLite routing repository 的 Service（渠道/聚合走 DB）。
@@ -780,7 +780,7 @@ func TestConfigImportOtherOverwrite(t *testing.T) {
 }
 
 // TestConfigImportSelectiveSkip 验证多选对话框语义：modes 中未列出的 section
-//（含其附带文件）整体跳过，不写库也不出现在结果里；列出的正常导入。
+// （含其附带文件）整体跳过，不写库也不出现在结果里；列出的正常导入。
 func TestConfigImportSelectiveSkip(t *testing.T) {
 	// source 用于导出（不预置本地独有数据），target 用于导入并预置 ch-local 等
 	// 不在 zip 内的本地数据，验证未勾选 section 不会写入也不会破坏。
