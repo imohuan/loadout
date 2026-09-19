@@ -76,6 +76,7 @@ const filterSource = ref('__all__') // '' 全部 | manual | ai_draft | ai_confir
 const filterVerdict = ref('__all__') // '' 全部 | verdict
 const filterEnabled = ref('__all__') // '' 全部 | on | off
 const logsSearch = ref('')
+const logsPlatform = ref('__all__')
 
 function sourceOf(rule: FailureRule): 'manual' | 'ai_draft' | 'ai_confirmed' {
   if (rule.source !== 'ai') return 'manual'
@@ -98,11 +99,39 @@ const filtered = computed(() => {
 
 const filteredLogs = computed(() => {
   const q = logsSearch.value.trim().toLowerCase()
-  if (!q) return decisions.value
-  return decisions.value.filter((d) =>
-    `${d.model} ${d.matched_rule_name} ${d.verdict} ${d.error_excerpt}`.toLowerCase().includes(q),
-  )
+  return decisions.value.filter((d) => {
+    if (logsPlatform.value !== '__all__' && d.provider_base_url !== logsPlatform.value) return false
+    if (!q) return true
+    const hay =
+      `${d.model} ${d.matched_rule_name} ${d.verdict} ${d.error_excerpt} ${platformLabel(d.provider_base_url)}`.toLowerCase()
+    return hay.includes(q)
+  })
 })
+
+// 日志里出现过的平台（按 base_url 去重），用于筛选下拉。
+const logPlatforms = computed(() => {
+  const seen = new Set<string>()
+  const out: Array<{ base_url: string; name: string }> = []
+  for (const d of decisions.value) {
+    const u = d.provider_base_url
+    if (!u || seen.has(u)) continue
+    seen.add(u)
+    out.push({ base_url: u, name: platformLabel(u) })
+  }
+  return out
+})
+
+// platformLabel base_url → 渠道组名（展示用；找不到则回退显示域名）。
+function platformLabel(url?: string) {
+  if (!url) return '—'
+  const hit = platforms.value.find((p) => p.base_url === url)
+  if (hit) return hit.name || url
+  try {
+    return new URL(url).host
+  } catch {
+    return url
+  }
+}
 
 function clearFilters() {
   search.value = ''
@@ -452,7 +481,7 @@ load()
                 <TableHead class="w-[220px]">名称</TableHead>
                 <TableHead class="w-[180px]">作用域</TableHead>
                 <TableHead>匹配条件</TableHead>
-                <TableHead class="w-[90px]">判定</TableHead>
+                <TableHead class="w-[84px]">判定</TableHead>
                 <TableHead class="w-[88px]">恢复</TableHead>
                 <TableHead class="w-[96px]">来源</TableHead>
                 <TableHead class="w-[64px]">优先</TableHead>
@@ -524,32 +553,50 @@ load()
 
       <!-- ===== 判定日志 ===== -->
       <TabsContent value="logs" class="space-y-3">
-        <div class="flex items-center gap-2">
-          <div class="relative">
-            <RiSearchLine size="15" class="text-muted-foreground absolute top-1/2 left-2.5 -translate-y-1/2" />
-            <Input v-model="logsSearch" placeholder="搜索模型 / 规则 / 错误" class="w-72 pl-8" />
+        <div class="flex flex-wrap items-end gap-3">
+          <div class="min-w-56 space-y-1">
+            <Label>搜索</Label>
+            <Input v-model="logsSearch" placeholder="模型 / 平台 / 规则 / 错误" />
           </div>
-          <span class="text-muted-foreground ml-auto text-xs">{{ filteredLogs.length }} 条</span>
+          <div class="min-w-40 space-y-1">
+            <Label>平台</Label>
+            <Select v-model="logsPlatform">
+              <SelectTrigger class="w-full"><SelectValue placeholder="全部平台" /></SelectTrigger>
+              <SelectContent position="popper" side="bottom" align="start" :side-offset="2">
+                <SelectGroup>
+                  <SelectItem value="__all__">全部平台</SelectItem>
+                  <SelectItem v-for="p in logPlatforms" :key="p.base_url" :value="p.base_url">{{ p.name }}</SelectItem>
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+          </div>
+          <span class="text-muted-foreground mb-1.5 ml-auto text-xs">{{ filteredLogs.length }} / {{ decisions.length }} 条</span>
         </div>
 
         <LoadingBlock v-if="loading" />
         <EmptyState v-else-if="!filteredLogs.length" title="暂无判定记录" description="请求失败后的规则/AI 裁决会记录在这里" />
 
         <div v-else class="overflow-x-auto rounded-lg border">
-          <Table class="min-w-[860px]">
+          <Table class="min-w-[880px] table-fixed">
             <TableHeader>
               <TableRow>
-                <TableHead class="w-[150px]">时间</TableHead>
-                <TableHead class="w-[160px]">模型</TableHead>
-                <TableHead class="w-[70px]">状态码</TableHead>
+                <TableHead class="w-[104px]">时间</TableHead>
+                <TableHead class="w-[120px]">平台</TableHead>
+                <TableHead class="w-[132px]">模型</TableHead>
+                <TableHead class="w-[64px]">状态码</TableHead>
                 <TableHead>错误摘要</TableHead>
-                <TableHead class="w-[110px]">路由依据</TableHead>
+                <TableHead class="w-[128px]">路由依据</TableHead>
                 <TableHead class="w-[90px]">判定</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               <TableRow v-for="d in filteredLogs" :key="d.id">
                 <TableCell class="text-muted-foreground font-mono text-[11px]">{{ d.created_at?.slice(5, 19) }}</TableCell>
+                <TableCell>
+                  <Badge variant="secondary" class="text-[11px]" :title="d.provider_base_url">
+                    {{ platformLabel(d.provider_base_url) }}
+                  </Badge>
+                </TableCell>
                 <TableCell class="font-mono text-xs">{{ d.model || '—' }}</TableCell>
                 <TableCell class="text-xs">{{ d.status_code || '—' }}</TableCell>
                 <TableCell>
