@@ -576,17 +576,18 @@ load()
         <LoadingBlock v-if="loading" />
         <EmptyState v-else-if="!filteredLogs.length" title="暂无判定记录" description="请求失败后的规则/AI 裁决会记录在这里" />
 
-        <div v-else class="overflow-x-auto rounded-lg border">
-          <Table class="min-w-[880px] table-fixed">
+        <TooltipProvider v-else>
+          <div class="overflow-x-auto rounded-lg border">
+          <Table class="table-fixed">
             <TableHeader>
               <TableRow>
-                <TableHead class="w-[104px]">时间</TableHead>
-                <TableHead class="w-[120px]">平台</TableHead>
-                <TableHead class="w-[132px]">模型</TableHead>
+                <TableHead class="w-[96px]">时间</TableHead>
+                <TableHead class="w-[112px]">平台</TableHead>
+                <TableHead class="w-[128px]">模型</TableHead>
                 <TableHead class="w-[64px]">状态码</TableHead>
                 <TableHead>错误摘要</TableHead>
-                <TableHead class="w-[128px]">路由依据</TableHead>
-                <TableHead class="w-[90px]">判定</TableHead>
+                <TableHead class="w-[180px]">路由依据</TableHead>
+                <TableHead class="w-[120px]">判定</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -600,22 +601,30 @@ load()
                 <TableCell class="font-mono text-xs">{{ d.model || '—' }}</TableCell>
                 <TableCell class="text-xs">{{ d.status_code || '—' }}</TableCell>
                 <TableCell>
-                  <div class="max-w-[360px] truncate text-xs" :title="d.error_excerpt">{{ d.error_excerpt || '—' }}</div>
+                  <Tooltip>
+                    <TooltipTrigger as-child>
+                      <div class="truncate text-xs">{{ d.error_excerpt || '—' }}</div>
+                    </TooltipTrigger>
+                    <TooltipContent class="max-w-[560px] break-all">
+                      {{ d.error_excerpt || '—' }}
+                    </TooltipContent>
+                  </Tooltip>
                 </TableCell>
                 <TableCell>
-                  <Badge v-if="d.matched_rule_id" variant="outline" class="text-[11px]" :title="d.matched_rule_name">
+                  <Badge v-if="d.matched_rule_id" variant="outline" class="text-[11px] whitespace-normal">
                     {{ d.matched_rule_name || d.matched_rule_id }}
                   </Badge>
                   <Badge v-else-if="d.ai_model" class="bg-blue-500/10 text-[11px] text-blue-600 dark:text-blue-400">AI</Badge>
                   <span v-else class="text-muted-foreground text-[11px]">默认</span>
                 </TableCell>
                 <TableCell>
-                  <Badge variant="outline" class="text-[11px]">{{ VERDICT_LABELS[d.verdict] || d.verdict }}</Badge>
+                  <Badge variant="outline" class="text-[11px] whitespace-normal">{{ VERDICT_LABELS[d.verdict] || d.verdict }}</Badge>
                 </TableCell>
               </TableRow>
             </TableBody>
           </Table>
-        </div>
+          </div>
+        </TooltipProvider>
       </TabsContent>
     </Tabs>
 
