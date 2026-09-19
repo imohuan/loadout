@@ -250,14 +250,20 @@ func TestVisionE2EFlushOnFail(t *testing.T) {
 	}
 }
 
-
-
 func (e2eHealth) ListFailureRules(ctx context.Context) ([]failure.Rule, error) { return nil, nil }
-func (e2eHealth) CreateFailureRule(ctx context.Context, in failure.RuleInput) (failure.Rule, error) { return failure.Rule{}, nil }
-func (e2eHealth) UpdateFailureRule(ctx context.Context, id string, in failure.RuleInput) (failure.Rule, error) { return failure.Rule{}, nil }
+func (e2eHealth) CreateFailureRule(ctx context.Context, in failure.RuleInput) (failure.Rule, error) {
+	return failure.Rule{}, nil
+}
+func (e2eHealth) UpdateFailureRule(ctx context.Context, id string, in failure.RuleInput) (failure.Rule, error) {
+	return failure.Rule{}, nil
+}
 func (e2eHealth) DeleteFailureRule(ctx context.Context, id string) error { return nil }
-func (e2eHealth) SetFailureRuleEnabled(ctx context.Context, id string, enabled bool) error { return nil }
-func (e2eHealth) ConfirmFailureRule(ctx context.Context, id string) error { return nil }
+func (e2eHealth) SetFailureRuleEnabled(ctx context.Context, id string, enabled bool) error {
+	return nil
+}
+func (e2eHealth) ConfirmFailureRule(ctx context.Context, id string) error       { return nil }
 func (e2eHealth) VerifyFailureRule(rule failure.Rule, ev failure.Evidence) bool { return false }
-func (e2eHealth) ListRuleDecisions(ctx context.Context, limit int) ([]map[string]any, error) { return nil, nil }
+func (e2eHealth) ListRuleDecisions(ctx context.Context, limit int) ([]map[string]any, error) {
+	return nil, nil
+}
 func (e2eHealth) SetRuleAIModel(model string) {}
