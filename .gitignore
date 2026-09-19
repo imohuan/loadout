@@ -65,4 +65,6 @@ frontend/build.out
 
 # 本地临时调试产物
 scratchpad/
+t2.txt
+t3.txt
 t.txt
