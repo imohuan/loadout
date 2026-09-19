@@ -18,12 +18,12 @@ type UpdateEvent struct {
 // 任务进行中保留已广播的 history，供中途加入的订阅者回放历史日志，
 // 让后连接也能看到从任务开始到当前的全部内容。
 type UpdateRunner struct {
-	svc     *Service
-	mu      sync.Mutex
-	running bool
+	svc       *Service
+	mu        sync.Mutex
+	running   bool
 	pendingID string // 本次更新任务的前端 task id（空=自动生成），经 procreg 透传
-	subs    map[chan UpdateEvent]bool
-	history []UpdateEvent
+	subs      map[chan UpdateEvent]bool
+	history   []UpdateEvent
 }
 
 func newUpdateRunner(svc *Service) *UpdateRunner {

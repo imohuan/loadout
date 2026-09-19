@@ -153,10 +153,10 @@ func (s *Service) runRecognition(ctx context.Context, toolName, action, model st
 	}
 
 	_ = s.route.Start(s.routeLogCtx(), contracts.RouteRequest{
-		RequestID:     reqID,
+		RequestID:      reqID,
 		RequestedModel: model,
-		StartedAt:     start,
-		VirtualModel:  "",
+		StartedAt:      start,
+		VirtualModel:   "",
 	})
 
 	res := recognize()
@@ -188,19 +188,19 @@ func (s *Service) routeLogAttempt(ctx context.Context, reqID, action, model stri
 		metaOut[k] = v
 	}
 	if _, err := s.route.Attempt(ctx, contracts.RouteAttempt{
-		RequestID:     reqID,
-		StepNo:        "1",
-		Action:        action,
-		Model:         model,
-		ChannelID:     res.channel,
-		RequestLogID:  res.reqLog,
-		StartedAt:     start,
-		FinishedAt:    ptrTime(time.Now()),
-		Result:        result,
-		ErrorMessage:  errMsg,
-		Duration:      contracts.DurationMS(dur),
-		Stream:        false,
-		Metadata:      metaOut,
+		RequestID:    reqID,
+		StepNo:       "1",
+		Action:       action,
+		Model:        model,
+		ChannelID:    res.channel,
+		RequestLogID: res.reqLog,
+		StartedAt:    start,
+		FinishedAt:   ptrTime(time.Now()),
+		Result:       result,
+		ErrorMessage: errMsg,
+		Duration:     contracts.DurationMS(dur),
+		Stream:       false,
+		Metadata:     metaOut,
 	}); err != nil {
 		s.lg.Warn("multimodal-mcp: route-log attempt 写入失败", "err", err)
 	}

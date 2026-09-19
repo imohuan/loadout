@@ -34,8 +34,8 @@ func toolHasName(tool map[string]any, format visionProxyFormat) bool {
 
 func toolSchema(format visionProxyFormat) map[string]any {
 	props := map[string]any{
-		"image_id": map[string]any{"type": "string", "description": "图片 id，取自 <vision_img_xxx> 标记中的 xxx"},
-		"prompt":   map[string]any{"type": "string", "description": "识别方向，说明要从图片中提取什么信息"},
+		"image_id":  map[string]any{"type": "string", "description": "图片 id，取自 <vision_img_xxx> 标记中的 xxx"},
+		"prompt":    map[string]any{"type": "string", "description": "识别方向，说明要从图片中提取什么信息"},
 		"image_ids": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "可选，多张图时传多个 id"},
 	}
 	required := []any{"image_id"}

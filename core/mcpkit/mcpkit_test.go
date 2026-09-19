@@ -156,11 +156,11 @@ func TestUpstreamStdioStderrCaptured(t *testing.T) {
 	}
 	hook, events, mu := collectHooks()
 	up := NewUpstream(UpstreamConfig{
-		Name:    "stderr-child",
+		Name:      "stderr-child",
 		Transport: "stdio",
-		Command: exe,
-		Env:     map[string]string{"MCPKIT_STDIO_CHILD": "stderr"},
-		LogHook: hook,
+		Command:   exe,
+		Env:       map[string]string{"MCPKIT_STDIO_CHILD": "stderr"},
+		LogHook:   hook,
 	})
 	defer up.Close()
 
@@ -259,11 +259,11 @@ func TestUpstreamStdioConnectDisconnect(t *testing.T) {
 	}
 	hook, events, mu := collectHooks()
 	up := NewUpstream(UpstreamConfig{
-		Name:    "stdio-server",
+		Name:      "stdio-server",
 		Transport: "stdio",
-		Command: exe,
-		Env:     map[string]string{"MCPKIT_STDIO_CHILD": "server"},
-		LogHook: hook,
+		Command:   exe,
+		Env:       map[string]string{"MCPKIT_STDIO_CHILD": "server"},
+		LogHook:   hook,
 	})
 	defer up.Close()
 

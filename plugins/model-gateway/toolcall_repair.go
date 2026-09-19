@@ -153,8 +153,8 @@ func repairToolCallSequenceMessages(messages []json.RawMessage) ([]json.RawMessa
 // 无法解析时返回空 role（按普通消息透传）。
 func peekToolMessage(raw json.RawMessage) (role string, toolCallIDs []string, toolCallID string) {
 	var m struct {
-		Role       string `json:"role"`
-		ToolCalls  []struct {
+		Role      string `json:"role"`
+		ToolCalls []struct {
 			ID string `json:"id"`
 		} `json:"tool_calls"`
 		ToolCallID string `json:"tool_call_id"`
@@ -184,8 +184,8 @@ func buildToolResultMessage(toolCallID string) json.RawMessage {
 // 用于给孤立的 role=tool 结果补上出处。
 func buildAssistantDeclMessage(toolCallID string) json.RawMessage {
 	b, _ := json.Marshal(map[string]any{
-		"role":      "assistant",
-		"content":   "",
+		"role":    "assistant",
+		"content": "",
 		"tool_calls": []map[string]any{{
 			"id":       toolCallID,
 			"type":     "function",
@@ -371,4 +371,3 @@ func removeID(ids []string, id string) []string {
 	}
 	return ids
 }
-

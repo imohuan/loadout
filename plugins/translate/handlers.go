@@ -13,10 +13,10 @@ import (
 
 // LookupRequest 只读查询请求。
 type LookupRequest struct {
-	SourceText string           `json:"source_text"`
-	TargetLang string           `json:"target_lang"`
-	Type       TranslationType  `json:"type"`
-	Items      []LookupItem     `json:"items"`
+	SourceText string          `json:"source_text"`
+	TargetLang string          `json:"target_lang"`
+	Type       TranslationType `json:"type"`
+	Items      []LookupItem    `json:"items"`
 }
 
 // LookupItem 批量只读查询的一项。
@@ -91,10 +91,10 @@ type BatchItem struct {
 
 // BatchRequest 批量翻译请求。
 type BatchRequest struct {
-	Items      []BatchItem    `json:"items"`
-	TargetLang string         `json:"target_lang"`
-	Model      string         `json:"model"`
-	Prompt     string         `json:"prompt"`
+	Items      []BatchItem     `json:"items"`
+	TargetLang string          `json:"target_lang"`
+	Model      string          `json:"model"`
+	Prompt     string          `json:"prompt"`
 	Type       TranslationType `json:"type"`
 	// Concurrency 并发翻译数量；<=0 时取默认值 5。
 	Concurrency int `json:"concurrency"`
@@ -111,26 +111,26 @@ type BatchStartResponse struct {
 
 // BatchStatusResponse 批量任务进度/状态。
 type BatchStatusResponse struct {
-	TaskID   string `json:"task_id"`
-	Done     int    `json:"done"`
-	Total    int    `json:"total"`
-	Running  bool   `json:"running"`
-	Finished bool   `json:"finished"`
-	Cancelled bool  `json:"cancelled"`
-	Error    string `json:"error,omitempty"`
+	TaskID    string `json:"task_id"`
+	Done      int    `json:"done"`
+	Total     int    `json:"total"`
+	Running   bool   `json:"running"`
+	Finished  bool   `json:"finished"`
+	Cancelled bool   `json:"cancelled"`
+	Error     string `json:"error,omitempty"`
 }
 
 // batchTask 一个后台批量翻译任务：脱离 HTTP 请求生命周期独立运行。
 type batchTask struct {
-	id       string
-	total    int
-	done     int
-	mu       sync.Mutex
-	cancel   context.CancelFunc
-	running  bool
-	finished bool
+	id        string
+	total     int
+	done      int
+	mu        sync.Mutex
+	cancel    context.CancelFunc
+	running   bool
+	finished  bool
 	cancelled bool
-	err      string
+	err       string
 	// results 按索引记录已完成的译文（供进度 SSE 订阅实时下发；done 完成后清理）
 	results map[int]ProgressEvent
 }

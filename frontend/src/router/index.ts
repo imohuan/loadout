@@ -6,6 +6,7 @@ const ChannelsView = () => import('@/views/ChannelsView.vue')
 const ModelTestView = () => import('@/views/ModelTestView.vue')
 const AggregatesView = () => import('@/views/AggregatesView.vue')
 const ModelStatusView = () => import('@/views/ModelStatusView.vue')
+const RulesView = () => import('@/views/RulesView.vue')
 const RouteLogsView = () => import('@/views/RouteLogsView.vue')
 const RequestLogDetailView = () => import('@/views/RequestLogDetailView.vue')
 const McpView = () => import('@/views/McpView.vue')
@@ -43,11 +44,17 @@ const router = createRouter({
           component: AggregatesView,
           meta: { title: '聚合模型' },
         },
+       {
+         path: 'model-status',
+         name: 'model-status',
+         component: ModelStatusView,
+         meta: { title: '模型状态' },
+       },
         {
-          path: 'model-status',
-          name: 'model-status',
-          component: ModelStatusView,
-          meta: { title: '模型状态' },
+          path: 'failure-rules',
+          name: 'failure-rules',
+          component: RulesView,
+          meta: { title: '失败规则' },
         },
         {
           path: 'route-logs',

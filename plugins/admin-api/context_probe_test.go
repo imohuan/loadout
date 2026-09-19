@@ -28,11 +28,11 @@ func TestFetchChannelModelDetailsContext(t *testing.T) {
 		t.Fatalf("fetchChannelModelDetails: %v", err)
 	}
 	want := map[string]int64{
-		"ctx-model":   1000000,
+		"ctx-model":    1000000,
 		"window-model": 128000,
-		"vllm-model":  32768,
-		"meta-model":  8192,
-		"nocontext":   0,
+		"vllm-model":   32768,
+		"meta-model":   8192,
+		"nocontext":    0,
 	}
 	if len(got) != len(want) {
 		t.Fatalf("模型数 = %d, want %d: %+v", len(got), len(want), got)
@@ -64,12 +64,12 @@ func TestFetchChannelModelDetailsStringForm(t *testing.T) {
 // TestParseLeadingInt64 前导整数解析。
 func TestParseLeadingInt64(t *testing.T) {
 	cases := map[string]int64{
-		"131072":        131072,
+		"131072":      131072,
 		"128000 (输入)": 128000,
-		"":              0,
-		"abc":           0,
-		"-5":            0,
-		"0":             0,
+		"":            0,
+		"abc":         0,
+		"-5":          0,
+		"0":           0,
 	}
 	for in, want := range cases {
 		if got := parseLeadingInt64(in); got != want {

@@ -16,8 +16,8 @@ import (
 	"loadout/core/db"
 	"loadout/plugins/contracts"
 	gatewaykeys "loadout/plugins/gateway-keys"
-	"loadout/plugins/types"
 	routelog "loadout/plugins/route-log"
+	"loadout/plugins/types"
 )
 
 // echoRecord 回显服务器记录的一次请求。
@@ -561,11 +561,11 @@ func TestSplitV2Model(t *testing.T) {
 		return false
 	}
 	cases := []struct {
-		name       string
-		model      string
-		wantHint   string
-		wantReal   string
-		wantOK     bool
+		name     string
+		model    string
+		wantHint string
+		wantReal string
+		wantOK   bool
 	}{
 		{"普通前缀", "newapi/gpt-4o", "newapi", "gpt-4o", true},
 		{"无前缀", "gpt-4o", "", "", false},
@@ -641,12 +641,15 @@ func TestRewriteModelField(t *testing.T) {
 
 // TestEstimateTokens 估算口径：CJK ≈ 1 token/字，其他 ≈ 4 字符/token（向上取整）。
 func TestEstimateTokens(t *testing.T) {
-	cases := []struct{ in string; want int }{
+	cases := []struct {
+		in   string
+		want int
+	}{
 		{"", 0},
-		{"你好世界", 4},       // 4 个 CJK
+		{"你好世界", 4},         // 4 个 CJK
 		{"hello", 2},        // 5 字符 / 4 = 1.25 → 2
 		{"hello world!", 3}, // 12 字符 / 4 = 3
-		{"你好 hello", 4},    // 2 CJK + 6 字符 → 2 + 2 = 4
+		{"你好 hello", 4},     // 2 CJK + 6 字符 → 2 + 2 = 4
 	}
 	for _, c := range cases {
 		if got := estimateTokens(c.in); got != c.want {

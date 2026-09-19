@@ -15,7 +15,7 @@ import (
 // 原因：route-log 在 Apply 里登记「完整日志存在性查询」安装器，request-log 装配完成
 // 后用 ctx.InstallRouteLogPresence 回填。装配顺序由 inject 拓扑排序决定、不看注册顺序——
 // request-log 若排在前面，回填时安装器还没登记，入口存在性校验会静默失效
-//（列表永远显示已失效的「进入日志」入口）。靠 request-log Manifest 里 Inject "route-log"
+// （列表永远显示已失效的「进入日志」入口）。靠 request-log Manifest 里 Inject "route-log"
 // 约束顺序；本测试防止将来有人顺手删掉那个 inject。
 func TestAssemblyOrderLogPlugins(t *testing.T) {
 	st, err := store.New(t.TempDir())

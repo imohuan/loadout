@@ -94,9 +94,9 @@ func dataURI(mime string, raw []byte) string {
 
 func TestParseDataURI(t *testing.T) {
 	cases := []struct {
-		in     string
-		mime   string
-		ok     bool
+		in   string
+		mime string
+		ok   bool
 	}{
 		{"data:image/png;base64,aGk=", "image/png", true},
 		{"data:image/jpeg;base64,aGk=", "image/jpeg", true},

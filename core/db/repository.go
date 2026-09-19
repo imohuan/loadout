@@ -417,22 +417,22 @@ func (r *Repository) ReplaceAggregates(ctx context.Context, aggregates []Aggrega
 				if target.ChannelID == "" && len(target.ChannelIDs) == 0 && target.ChannelBaseURL == "" {
 					return fmt.Errorf("db: aggregate %q targets[%d]: channel_id, channel_ids or channel_base_url is required", aggregate.Name, position)
 				}
-			channelIDsJSON := "[]"
-			if len(target.ChannelIDs) > 0 {
-				data, err := json.Marshal(target.ChannelIDs)
-				if err != nil {
-					return fmt.Errorf("db: marshal aggregate %q target %d channel_ids: %w", aggregate.Name, position, err)
+				channelIDsJSON := "[]"
+				if len(target.ChannelIDs) > 0 {
+					data, err := json.Marshal(target.ChannelIDs)
+					if err != nil {
+						return fmt.Errorf("db: marshal aggregate %q target %d channel_ids: %w", aggregate.Name, position, err)
+					}
+					channelIDsJSON = string(data)
 				}
-				channelIDsJSON = string(data)
-			}
-			// 渠道级 / Key 多选时 channel_id 为空：必须写 NULL（空字符串会被外键当有效值 → FK 失败）。
-			var channelID any
-			if target.ChannelID != "" {
-				channelID = target.ChannelID
-			}
-			if _, err := tx.ExecContext(ctx, "INSERT INTO aggregate_targets (aggregate_id, position, model, channel_id, channel_ids_json, channel_base_url) VALUES (?, ?, ?, ?, ?, ?)", id, position, target.Model, channelID, channelIDsJSON, target.ChannelBaseURL); err != nil {
-				return fmt.Errorf("db: replace aggregate %q target %d: %w", aggregate.Name, position, err)
-			}
+				// 渠道级 / Key 多选时 channel_id 为空：必须写 NULL（空字符串会被外键当有效值 → FK 失败）。
+				var channelID any
+				if target.ChannelID != "" {
+					channelID = target.ChannelID
+				}
+				if _, err := tx.ExecContext(ctx, "INSERT INTO aggregate_targets (aggregate_id, position, model, channel_id, channel_ids_json, channel_base_url) VALUES (?, ?, ?, ?, ?, ?)", id, position, target.Model, channelID, channelIDsJSON, target.ChannelBaseURL); err != nil {
+					return fmt.Errorf("db: replace aggregate %q target %d: %w", aggregate.Name, position, err)
+				}
 			}
 		}
 

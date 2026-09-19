@@ -1,0 +1,230 @@
+package failurerules
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+	"sync"
+	"time"
+
+	"loadout/core/config"
+)
+
+// headerRuleAI AI 兜底请求的标记 header（本机 loopback 专用）。
+const headerRuleAI = "X-Loadout-Rule-AI"
+
+// AI 缓存 TTL：cooldown 类短缓存（到期允许重新判定），disable 类长缓存。
+const (
+	aiCacheTTLCooldown = 2 * time.Minute
+	aiCacheTTLDisable  = 30 * time.Minute
+)
+
+// cachedDecision 带 TTL 的缓存条目。
+type cachedDecision struct {
+	d   Decision
+	at  time.Time
+	ttl time.Duration
+}
+
+// AIResolver AI 兜底判定器：调用网关自身 /v1/chat/completions（指定小模型）
+// 分析错误证据，返回裁决。失败/超时/未配置时 Resolve 返回 ok=false。
+type AIResolver struct {
+	mu          sync.Mutex
+	model       string // settings.rule_ai_model；空 = 关闭
+	skKey       string // 静态 SK key（兼容）
+	baseURL     string // 网关自身地址
+	timeout     time.Duration
+	decisions   sync.Map // fingerprint -> cachedDecision
+	keyProvider func() string // 动态 SK key 解析（优先于 skKey）
+}
+
+func NewAIResolver(model, skKey, baseURL string) *AIResolver {
+	return &AIResolver{model: model, skKey: skKey, baseURL: baseURL, timeout: 8 * time.Second}
+}
+
+// SetModel 热更新 AI 模型（设置页保存后调用；空 = 关闭）。
+func (a *AIResolver) SetModel(model string) {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.model = strings.TrimSpace(model)
+}
+
+// SetKeyProvider 注入 SK key 明文解析器（每次 Resolve 时调用，兼容 key 轮换）。
+func (a *AIResolver) SetKeyProvider(fn func() string) {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.keyProvider = fn
+}
+
+func (a *AIResolver) resolveKey() string {
+	if a.keyProvider != nil {
+		if k := a.keyProvider(); k != "" {
+			return k
+		}
+	}
+	return a.skKey
+}
+
+func (a *AIResolver) currentModel() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.model
+}
+
+// Enabled 返回 AI 兜底是否启用。
+func (a *AIResolver) Enabled() bool { return a != nil && a.currentModel() != "" }
+
+// cached 取缓存判定（带 TTL 过期）。
+func (a *AIResolver) cached(fp string) (Decision, bool) {
+	v, ok := a.decisions.Load(fp)
+	if !ok {
+		return Decision{}, false
+	}
+	c := v.(cachedDecision)
+	if time.Since(c.at) > c.ttl {
+		a.decisions.Delete(fp)
+		return Decision{}, false
+	}
+	return c.d, true
+}
+
+// aiVerdictSchema AI 返回的结构。
+type aiVerdictSchema struct {
+	Verdict         string `json:"verdict"`
+	CooldownSeconds int    `json:"cooldown_seconds,omitempty"`
+	Recover         string `json:"recover,omitempty"`
+	Reason          string `json:"reason"`
+}
+
+// Resolve 调用 AI 分析失败证据。
+func (a *AIResolver) Resolve(ctx context.Context, ev Evidence, fp string) (Decision, bool) {
+	model := a.currentModel()
+	if model == "" {
+		return Decision{}, false
+	}
+	if d, ok := a.cached(fp); ok {
+		return d, true
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, a.timeout)
+	defer cancel()
+
+	prompt := fmt.Sprintf(
+		"分析这次模型 API 调用失败，返回 JSON（不要 markdown 代码块）：\n"+
+		"{\"verdict\":\"disable_key|disable_model|cooldown|switch_next|ignore\","+
+		"\"cooldown_seconds\":数字,\"recover\":\"never|daily|fixed\",\"reason\":\"一句话\"}\n"+
+		"判定原则：额度用尽/余额不足→disable_key+daily；密钥无效→disable_key+never；"+
+		"限速→cooldown 120；超时/网络→cooldown 30 或 ignore；"+
+		"上下文超长→switch_next；参数错误(4xx)→ignore。\n"+
+		"HTTP状态码: %d\n业务码: %s\n错误信息: %s",
+		ev.StatusCode, ev.BodyCode, truncate(ev.Message, 500))
+
+	body, _ := json.Marshal(map[string]any{
+		"model":    model,
+		"messages": []map[string]string{{"role": "user", "content": prompt}},
+		"stream":   false,
+	})
+	skKey := a.resolveKey()
+	if skKey == "" {
+		// 无可用 SK key：AI 兜底不可用（调用方走默认动作）。
+		return Decision{}, false
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		strings.TrimRight(a.baseURL, "/")+"/v1/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return Decision{}, false
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+skKey)
+	req.Header.Set(headerRuleAI, "1")
+
+	resp, err := (&http.Client{Timeout: a.timeout}).Do(req)
+	if err != nil {
+		return Decision{}, false
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode != http.StatusOK {
+		return Decision{}, false
+	}
+
+	var chatResp struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(raw, &chatResp); err != nil || len(chatResp.Choices) == 0 {
+		return Decision{}, false
+	}
+	content := strings.TrimSpace(chatResp.Choices[0].Message.Content)
+	content = strings.TrimPrefix(content, "```json")
+	content = strings.TrimPrefix(content, "```")
+	content = strings.TrimSuffix(content, "```")
+	content = strings.TrimSpace(content)
+
+	var v aiVerdictSchema
+	if err := json.Unmarshal([]byte(content), &v); err != nil || v.Verdict == "" {
+		return Decision{}, false
+	}
+	if !validAIVerdict(v.Verdict) {
+		return Decision{}, false
+	}
+	d := Decision{
+		Verdict: v.Verdict,
+		Reason:  v.Reason,
+		AIModel: model,
+		AIRaw:   truncate(content, 4000),
+		// AI 附加参数直接进 Action（不再拼 Reason 字符串当数据总线）。
+		Action: Action{
+			Verdict:         v.Verdict,
+			Recover:         v.Recover,
+			CooldownSeconds: v.CooldownSeconds,
+		},
+	}
+	ttl := aiCacheTTLCooldown
+	if v.Verdict == VerdictDisableKey || v.Verdict == VerdictDisableModel || v.Verdict == VerdictDisableProvider {
+		ttl = aiCacheTTLDisable
+	}
+	a.decisions.Store(fp, cachedDecision{d: d, at: time.Now(), ttl: ttl})
+	return d, true
+}
+
+func validAIVerdict(v string) bool {
+	switch v {
+	case VerdictDisableKey, VerdictDisableModel, VerdictDisableProvider,
+		VerdictCooldown, VerdictIgnore, VerdictRetrySame, VerdictSwitchNext:
+		return true
+	}
+	return false
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n]
+}
+
+func hashString(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:8])
+}
+
+var _ = config.DataDir
+
+func jsonUnmarshal(data string, v any) error { return json.Unmarshal([]byte(data), &v) }
+

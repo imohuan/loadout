@@ -2,13 +2,11 @@ package aggregate
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"time"
 
-	"loadout/plugins/contracts"
 	modelgateway "loadout/plugins/model-gateway"
 	"loadout/plugins/types"
 )
@@ -116,17 +114,9 @@ func (s *Service) HandleProxyUpstreamFailed(payload any) (any, error) {
 
 	modelKey := fmt.Sprintf("%s@%s", failure.Model, failure.ChannelID)
 	if s.health != nil {
-		errorMessage := ""
-		if failure.Error != nil {
-			errorMessage = failure.Error.Error()
-		}
-		_, healthErr := s.health.RecordFailure(context.Background(), contracts.RouteFailure{
-			RequestID: failure.Pipe.RequestID, Model: failure.Model, ChannelID: failure.ChannelID,
-			StatusCode: failure.StatusCode, ErrorBody: failure.ErrorBody, Error: errorMessage,
-		})
-		if healthErr != nil {
-			s.lg.Warn("model health failure update failed", "err", healthErr)
-		}
+		// RecordFailure 已由 model-gateway 的 proxyAttempt 失败路径调用（唯一
+		// 公共咽喉，聚合/非聚合共用）。此处不再重复调用，修复聚合路径
+		// fail_count 双写 bug。规则引擎的裁决在 engine 内部完成。
 	} else {
 		s.updateHealth(modelKey, strategy, failure.Error)
 	}

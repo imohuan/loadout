@@ -377,7 +377,7 @@ func (r *Repository) GetSettings(ctx context.Context) (types.Settings, error) {
 	var settings types.Settings
 	var targetsJSON string
 	var useGlobalCmd int
-	err := r.database.QueryRowContext(ctx, `SELECT active_preset, active_preset_target, active_preset_targets_json, default_model, use_global_cmd, request_log_max_age_days, request_log_max_size_mb FROM settings WHERE id = 1`).Scan(&settings.ActivePreset, &settings.ActivePresetTarget, &targetsJSON, &settings.DefaultModel, &useGlobalCmd, &settings.RequestLogMaxAgeDays, &settings.RequestLogMaxSizeMB)
+	err := r.database.QueryRowContext(ctx, `SELECT active_preset, active_preset_target, active_preset_targets_json, default_model, use_global_cmd, request_log_max_age_days, request_log_max_size_mb, COALESCE(rule_ai_model, '') FROM settings WHERE id = 1`).Scan(&settings.ActivePreset, &settings.ActivePresetTarget, &targetsJSON, &settings.DefaultModel, &useGlobalCmd, &settings.RequestLogMaxAgeDays, &settings.RequestLogMaxSizeMB, &settings.RuleAIModel)
 	settings.UseGlobalCmd = useGlobalCmd == 1
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -397,7 +397,7 @@ func (r *Repository) PutSettings(ctx context.Context, settings types.Settings) e
 	if err != nil {
 		return fmt.Errorf("db: marshal settings targets: %w", err)
 	}
-	if _, err := r.database.ExecContext(ctx, `INSERT INTO settings (id, active_preset, active_preset_target, active_preset_targets_json, default_model, use_global_cmd, request_log_max_age_days, request_log_max_size_mb) VALUES (1, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET active_preset = excluded.active_preset, active_preset_target = excluded.active_preset_target, active_preset_targets_json = excluded.active_preset_targets_json, default_model = excluded.default_model, use_global_cmd = excluded.use_global_cmd, request_log_max_age_days = excluded.request_log_max_age_days, request_log_max_size_mb = excluded.request_log_max_size_mb`, settings.ActivePreset, settings.ActivePresetTarget, string(targets), settings.DefaultModel, boolInt(settings.UseGlobalCmd), settings.RequestLogMaxAgeDays, settings.RequestLogMaxSizeMB); err != nil {
+	if _, err := r.database.ExecContext(ctx, `INSERT INTO settings (id, active_preset, active_preset_target, active_preset_targets_json, default_model, use_global_cmd, request_log_max_age_days, request_log_max_size_mb, rule_ai_model) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET active_preset = excluded.active_preset, active_preset_target = excluded.active_preset_target, active_preset_targets_json = excluded.active_preset_targets_json, default_model = excluded.default_model, use_global_cmd = excluded.use_global_cmd, request_log_max_age_days = excluded.request_log_max_age_days, request_log_max_size_mb = excluded.request_log_max_size_mb, rule_ai_model = excluded.rule_ai_model`, settings.ActivePreset, settings.ActivePresetTarget, string(targets), settings.DefaultModel, boolInt(settings.UseGlobalCmd), settings.RequestLogMaxAgeDays, settings.RequestLogMaxSizeMB, settings.RuleAIModel); err != nil {
 		return fmt.Errorf("db: put settings: %w", err)
 	}
 	return nil

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"loadout/plugins/contracts"
+	"loadout/plugins/failure-rules"
 )
 
 const (
@@ -20,15 +21,32 @@ const (
 
 // Service implements the small cross-plugin model health contract.
 type Service struct {
-	db *sql.DB
-	lg *slog.Logger
+	db         *sql.DB
+	lg         *slog.Logger
+	rules      *failurerules.Engine     // 失败规则引擎（含 AI 兜底；替代 legacy classify）
+	executor   *failurerules.Executor   // 规则动作执行器（写 model_states / channel_states）
+	decisions  *failurerules.Store      // 规则 CRUD + 裁决日志
+	aiResolver *failurerules.AIResolver // AI 兜底（SetRuleAIModel 热更新）
+	keyResolver func() string           // SK key 明文解析器（AI 兜底请求鉴权）
 }
 
 func NewService(database *sql.DB, logger *slog.Logger) *Service {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Service{db: database, lg: logger}
+	svc := &Service{db: database, lg: logger}
+	svc.rules = failurerules.NewEngine(database, logger)
+	svc.executor = failurerules.NewExecutor(database, logger)
+	svc.decisions = failurerules.NewStore(database)
+	// AI 兜底默认关闭（model 空）；设置页保存 rule_ai_model 后热更新。
+	svc.aiResolver = failurerules.NewAIResolver("", "", internalBaseURL())
+	// S2 修复：启动时读取持久化的 rule_ai_model，避免重启后兜底状态丢失。
+	var savedModel string
+	_ = database.QueryRowContext(context.Background(),
+		`SELECT rule_ai_model FROM settings WHERE id = 1`).Scan(&savedModel)
+	svc.aiResolver.SetModel(savedModel)
+	svc.rules.SetAIResolver(svc.aiResolver)
+	return svc
 }
 
 func pluginError(name string) error { return fmt.Errorf("model-health: missing %s service", name) }
@@ -140,41 +158,7 @@ func (s *Service) RecordSuccess(ctx context.Context, channelID, model string) er
 }
 
 func (s *Service) RecordFailure(ctx context.Context, failure contracts.RouteFailure) (string, error) {
-	if ok, err := s.catalogAllows(ctx, failure.ChannelID, failure.Model); err != nil {
-		return "", err
-	} else if !ok {
-		s.lg.Debug("模型不在渠道目录，跳过健康状态记录", "channel_id", failure.ChannelID, "model", failure.Model)
-		return "", nil
-	}
-	if shouldIgnoreFailure(failure) {
-		s.lg.Debug("忽略非模型服务错误，不记录健康状态", "channel_id", failure.ChannelID, "model", failure.Model, "status_code", failure.StatusCode)
-		return "", nil
-	}
-	class := classify(failure)
-	now := time.Now().UTC()
-	status, until := failureState(class, now)
-	if _, err := s.db.ExecContext(ctx, `INSERT INTO model_states(channel_id, model, manual_enabled, status, disabled_until, fail_count, last_error, last_failure_class, last_checked_at, updated_at) VALUES (?, ?, 1, ?, ?, 1, ?, ?, ?, ?) ON CONFLICT(channel_id, model) DO UPDATE SET status=excluded.status, disabled_until=excluded.disabled_until, fail_count=model_states.fail_count+1, last_error=excluded.last_error, last_failure_class=excluded.last_failure_class, last_checked_at=excluded.last_checked_at, updated_at=excluded.updated_at`, failure.ChannelID, failure.Model, status, until, redact(failure.Error), class, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)); err != nil {
-		return class, fmt.Errorf("model-health: record model failure: %w", err)
-	}
-	var syncBilling bool
-	if err := s.db.QueryRowContext(ctx, `SELECT sync_billing FROM channels WHERE id = ?`, failure.ChannelID).Scan(&syncBilling); err != nil {
-		return class, fmt.Errorf("model-health: read channel billing policy: %w", err)
-	}
-	// 多 key 语义：auth(401 或明确 invalid api key) = 该 key 无效（过期/被删），除禁模型外
-	// 必须把整条 key 记录（channel_states）置 disabled，否则路由仍会把它当作候选。
-	// 纯 403（权限/封禁等）不连坐渠道，只按原逻辑禁模型，避免误伤。
-	if class == "auth" && (failure.StatusCode == 401 || strings.Contains(strings.ToLower(strings.Join([]string{failure.Error, failure.ErrorBody}, " ")), "invalid api key")) {
-		if _, err := s.db.ExecContext(ctx, `INSERT INTO channel_states(channel_id, status, disabled_until, fail_count, last_error, last_failure_class, last_checked_at, updated_at) VALUES (?, 'disabled', NULL, 1, ?, ?, ?, ?) ON CONFLICT(channel_id) DO UPDATE SET status='disabled', disabled_until=NULL, fail_count=channel_states.fail_count+1, last_error=excluded.last_error, last_failure_class=excluded.last_failure_class, last_checked_at=excluded.last_checked_at, updated_at=excluded.updated_at`, failure.ChannelID, redact(failure.Error), class, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)); err != nil {
-			return class, fmt.Errorf("model-health: record channel failure: %w", err)
-		}
-	}
-	if class == "channel_billing" && syncBilling {
-		_, err := s.db.ExecContext(ctx, `INSERT INTO channel_states(channel_id, status, disabled_until, fail_count, last_error, last_failure_class, last_checked_at, updated_at) VALUES (?, 'disabled', NULL, 1, ?, ?, ?, ?) ON CONFLICT(channel_id) DO UPDATE SET status='disabled', disabled_until=NULL, fail_count=channel_states.fail_count+1, last_error=excluded.last_error, last_failure_class=excluded.last_failure_class, last_checked_at=excluded.last_checked_at, updated_at=excluded.updated_at`, failure.ChannelID, redact(failure.Error), class, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
-		if err != nil {
-			return class, fmt.Errorf("model-health: record channel failure: %w", err)
-		}
-	}
-	return class, nil
+	return s.recordFailureRuled(ctx, failure)
 }
 
 func classify(failure contracts.RouteFailure) string {

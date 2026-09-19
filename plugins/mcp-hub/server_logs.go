@@ -43,14 +43,14 @@ type LogServerInfo struct {
 // ServerLog 一个 server 的会话日志：追加写，单文件达 maxSize 滚动到 -N 新文件。
 // mu 串行化 write 与 roll；Read/ListFiles 不经过本锁（独立 os.Open 读）。
 type ServerLog struct {
-	mu       sync.Mutex
-	f        *os.File
-	seq      int   // 当前段序号（1 = 无 -N 后缀）
-	size     int64 // 当前活跃段已写字节
-	base     string
-	name     string
-	root     string // 日志根目录 <root>/<name> 下的 root 部分
-	maxSize  int64
+	mu      sync.Mutex
+	f       *os.File
+	seq     int   // 当前段序号（1 = 无 -N 后缀）
+	size    int64 // 当前活跃段已写字节
+	base    string
+	name    string
+	root    string // 日志根目录 <root>/<name> 下的 root 部分
+	maxSize int64
 }
 
 // LogManager 管理全部 server 的会话日志。
@@ -424,7 +424,6 @@ func maskMap(m map[string]string) map[string]string {
 	}
 	return out
 }
-
 
 // segmentSeq 解析段序号：`main.log` → 1；`main-2.log` → 2；
 // 旧格式 `20260824-144325.log` → 1；`...-2.log` → 2。

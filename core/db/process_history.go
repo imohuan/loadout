@@ -71,14 +71,14 @@ func (r *ProcessHistoryRepository) List(limit int) ([]procreg.Proc, error) {
 	out := []procreg.Proc{}
 	for rows.Next() {
 		var (
-			p          procreg.Proc
-			pid        int
-			status     string
-			startedAt  string
-			endedAt    string
-			exitCode   sql.NullInt64
-			memBytes   uint64
-			logJSON    string
+			p         procreg.Proc
+			pid       int
+			status    string
+			startedAt string
+			endedAt   string
+			exitCode  sql.NullInt64
+			memBytes  uint64
+			logJSON   string
 		)
 		if err := rows.Scan(&p.ID, &p.Name, &p.Kind, &p.Cmd, &pid, &status,
 			&startedAt, &endedAt, &exitCode, &memBytes, &logJSON); err != nil {

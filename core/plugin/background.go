@@ -8,7 +8,7 @@ import (
 // RunBackground 在后台 goroutine 执行 fn，主流程立即返回、不被阻塞。
 //
 // 适用场景：启动装配路径上那些「重要但不该拖慢服务上线」的工作
-//（如 fsnotify 文件监听初始化、MCP 进程拉起）。调用方可任选：
+// （如 fsnotify 文件监听初始化、MCP 进程拉起）。调用方可任选：
 //   - 完全不等：_ = RunBackground(name, fn)
 //   - 带超时等：select { case err := <-ch: ... case <-time.After(d): 降级 }
 //

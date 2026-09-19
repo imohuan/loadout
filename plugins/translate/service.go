@@ -19,19 +19,19 @@ import (
 	"loadout/core/config"
 	"loadout/core/db"
 	"loadout/core/store"
-	modelgateway "loadout/plugins/model-gateway"
-	mcphub "loadout/plugins/mcp-hub"
 	gatewaykeys "loadout/plugins/gateway-keys"
+	mcphub "loadout/plugins/mcp-hub"
+	modelgateway "loadout/plugins/model-gateway"
 	skills "loadout/plugins/skills"
 )
 
 // Service 翻译服务。
 type Service struct {
-	st   *store.Store
-	repo *db.Repository
-	db   *sql.DB
-	lg   *slog.Logger
-	gw   *modelgateway.Service
+	st       *store.Store
+	repo     *db.Repository
+	db       *sql.DB
+	lg       *slog.Logger
+	gw       *modelgateway.Service
 	hub      *mcphub.Service
 	keys     *gatewaykeys.Manager
 	skillSvc *skills.Service

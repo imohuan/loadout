@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"loadout/plugins/contracts"
+	failure "loadout/plugins/failure-rules"
 	"loadout/plugins/types"
 )
 
@@ -131,3 +132,23 @@ func parseModelIDs(t *testing.T, rec *httptest.ResponseRecorder) map[string]bool
 	}
 	return ids
 }
+
+// ==== failure-rules interface stubs ====
+
+func (m *mockHealth) ListFailureRules(ctx context.Context) ([]failure.Rule, error) { return nil, nil }
+func (m *mockHealth) CreateFailureRule(ctx context.Context, in failure.RuleInput) (failure.Rule, error) {
+	return failure.Rule{}, nil
+}
+func (m *mockHealth) UpdateFailureRule(ctx context.Context, id string, in failure.RuleInput) (failure.Rule, error) {
+	return failure.Rule{}, nil
+}
+func (m *mockHealth) DeleteFailureRule(ctx context.Context, id string) error { return nil }
+func (m *mockHealth) SetFailureRuleEnabled(ctx context.Context, id string, enabled bool) error {
+	return nil
+}
+func (m *mockHealth) ConfirmFailureRule(ctx context.Context, id string) error       { return nil }
+func (m *mockHealth) VerifyFailureRule(rule failure.Rule, ev failure.Evidence) bool { return false }
+func (m *mockHealth) ListRuleDecisions(ctx context.Context, limit int) ([]map[string]any, error) {
+	return nil, nil
+}
+func (m *mockHealth) SetRuleAIModel(model string) {}

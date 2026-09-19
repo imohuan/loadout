@@ -15,8 +15,8 @@ import (
 	"loadout/core/config"
 	"loadout/core/db"
 	"loadout/core/store"
-	modelgateway "loadout/plugins/model-gateway"
 	"loadout/plugins/contracts"
+	modelgateway "loadout/plugins/model-gateway"
 	routelog "loadout/plugins/route-log"
 	"loadout/plugins/types"
 )

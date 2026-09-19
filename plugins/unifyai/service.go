@@ -21,9 +21,9 @@ import (
 	"sync"
 	"time"
 
-	"loadout/core/procreg"
 	"loadout/core/config"
 	"loadout/core/deps"
+	"loadout/core/procreg"
 )
 
 // OpenRouterMeta 对应 openrouter-models.json 中单个模型的元数据条目
@@ -154,13 +154,13 @@ func (s *Service) CatalogModels() []CatalogModel {
 
 // OpenCodexModel 对应 unifyai --list models --json 输出的单个模型。
 type OpenCodexModel struct {
-	Provider          string `json:"provider"`
-	ModelID           string `json:"modelId"`
-	DisplayName       string `json:"displayName"`
-	ContextWindow     int64  `json:"contextWindow"`
-	MaxOutputTokens   int64  `json:"maxOutputTokens"`
-	SupportsVision    bool   `json:"supportsVision"`
-	SupportsThinking  bool   `json:"supportsThinking"`
+	Provider         string `json:"provider"`
+	ModelID          string `json:"modelId"`
+	DisplayName      string `json:"displayName"`
+	ContextWindow    int64  `json:"contextWindow"`
+	MaxOutputTokens  int64  `json:"maxOutputTokens"`
+	SupportsVision   bool   `json:"supportsVision"`
+	SupportsThinking bool   `json:"supportsThinking"`
 }
 
 // OpenCodexModelsResult 对应 unifyai --list models --json 的完整输出。

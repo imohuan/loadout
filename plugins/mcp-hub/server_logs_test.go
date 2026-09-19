@@ -190,7 +190,7 @@ func TestLogManagerEnsureIdempotentAndRemove(t *testing.T) {
 // TestLogManagerConcurrentWriteAndRoll 验证并发写 + 滚动不丢行。
 // 注意：maxSize 不宜太小——Windows Defender 实时扫描新建 .log 文件，
 // 极端滚动频率（几十次 OpenFile 新文件）会偶发长时间阻塞，测试进程看似卡死
-//（实测 maxSize=512 滚 67 段挂 ~50%，4KB 滚 4 段 0 挂）。逻辑覆盖优先，频率适中。
+// （实测 maxSize=512 滚 67 段挂 ~50%，4KB 滚 4 段 0 挂）。逻辑覆盖优先，频率适中。
 func TestLogManagerConcurrentWriteAndRoll(t *testing.T) {
 	m := newTestLogMgr(t, 4*1024)
 	m.Ensure("s1", "github")
@@ -278,7 +278,6 @@ func TestMaskSecretAndSegmentHelpers(t *testing.T) {
 		t.Fatalf("firstTSFromSegment(-2) = %q", got)
 	}
 }
-
 
 func TestBuildLogLine(t *testing.T) {
 	line := buildLogLine("CONNECT", "transport", "http", "url", "http://x")

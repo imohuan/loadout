@@ -102,7 +102,7 @@ func TestHandleUpstreamSucceeded(t *testing.T) {
 	}
 
 	payload := &modelgateway.SuccessPayload{
-		Pipe: &modelgateway.Pipeline{Metadata: map[string]any{"__virtual_model": "auto-demo"}},
+		Pipe:      &modelgateway.Pipeline{Metadata: map[string]any{"__virtual_model": "auto-demo"}},
 		Model:     "deepseek-v4-pro-ga-260813",
 		ChannelID: "volcengine",
 	}
@@ -254,7 +254,7 @@ func TestSelectAvailableTargetChannelLevelAllDown(t *testing.T) {
 
 	targets := []types.AggregateTarget{
 		{Model: "m1", ChannelBaseURL: "https://volc.example/v1"}, // 组内两个 Key 都禁用
-		{Model: "m2", ChannelID: "c-ok"},                          // 无健康记录 → 可用
+		{Model: "m2", ChannelID: "c-ok"},                         // 无健康记录 → 可用
 	}
 	disabled := time.Now().Add(10 * time.Minute).Format(time.RFC3339)
 	svc.healthMap["m1@k1"] = &types.ModelHealth{Model: "m1@k1", Status: "disabled", DisabledUntil: &disabled}

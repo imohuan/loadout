@@ -338,4 +338,3 @@ func (s *Service) HandleProxyAfterUpstream(payload any) (any, error) {
 	}
 	return after, nil
 }
-
