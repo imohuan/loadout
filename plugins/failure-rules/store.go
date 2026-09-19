@@ -11,14 +11,17 @@ import (
 
 // RuleInput 前端提交的规则载荷（创建/更新共用）。
 type RuleInput struct {
-	Name            string `json:"name"`
-	Enabled         *bool  `json:"enabled,omitempty"`
-	Priority        int    `json:"priority"`
-	ProviderBaseURL string `json:"provider_base_url"`
-	Model           string `json:"model"`
-	Match           Match  `json:"match"`
-	Action          Action `json:"action"`
-	Confirm         bool   `json:"confirm,omitempty"` // AI 草稿转正
+	Name              string   `json:"name"`
+	Enabled           *bool    `json:"enabled,omitempty"`
+	Priority          int      `json:"priority"`
+	ProviderBaseURL   string   `json:"provider_base_url"`
+	ScopeMode         string   `json:"scope_mode,omitempty"`
+	ProviderBaseURLs  []string `json:"provider_base_urls,omitempty"`
+	ProviderFramework string   `json:"provider_framework,omitempty"`
+	Model             string   `json:"model"`
+	Match             Match    `json:"match"`
+	Action            Action   `json:"action"`
+	Confirm           bool     `json:"confirm,omitempty"` // AI 草稿转正
 }
 
 // Store failure_rules 表 CRUD。
@@ -30,7 +33,7 @@ func NewStore(database *sql.DB) *Store { return &Store{db: database} }
 // List 返回全部规则（含未确认草稿与禁用规则，UI 展示用）。
 func (s *Store) List(ctx context.Context) ([]Rule, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, name, enabled, source, confirmed, priority, provider_base_url, model,
+		SELECT id, name, enabled, source, confirmed, priority, provider_base_url, scope_mode, COALESCE(provider_base_urls_json, '[]'), COALESCE(provider_framework, ''), model,
 		       match_json, action_json, hit_count, COALESCE(last_hit_at,''), created_at, updated_at
 		FROM failure_rules ORDER BY priority ASC, rowid ASC`)
 	if err != nil {
@@ -60,10 +63,10 @@ func (s *Store) Create(ctx context.Context, in RuleInput) (Rule, error) {
 		enabled = *in.Enabled
 	}
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO failure_rules(id, name, enabled, source, confirmed, priority, provider_base_url, model,
+		INSERT INTO failure_rules(id, name, enabled, source, confirmed, priority, provider_base_url, scope_mode, provider_base_urls_json, provider_framework, model,
 		       match_json, action_json, created_at, updated_at)
-		VALUES (?, ?, ?, 'manual', 1, ?, ?, ?, ?, ?, ?, ?)`,
-		id, in.Name, b2i(enabled), in.Priority, in.ProviderBaseURL, in.Model,
+		VALUES (?, ?, ?, 'manual', 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		id, in.Name, b2i(enabled), in.Priority, in.ProviderBaseURL, in.ScopeMode, mustJSON(in.ProviderBaseURLs), in.ProviderFramework, in.Model,
 		mustJSON(in.Match), mustJSON(in.Action), now, now)
 	if err != nil {
 		return Rule{}, err
@@ -81,8 +84,8 @@ func (s *Store) CreateDraft(ctx context.Context, in RuleInput, aiModel, aiRaw st
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO failure_rules(id, name, enabled, source, confirmed, priority, provider_base_url, model,
 		       match_json, action_json, created_at, updated_at)
-		VALUES (?, ?, 1, 'ai', 0, ?, ?, ?, ?, ?, ?, ?)`,
-		id, in.Name, in.Priority, in.ProviderBaseURL, in.Model,
+		VALUES (?, ?, 1, 'ai', 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		id, in.Name, in.Priority, in.ProviderBaseURL, in.ScopeMode, mustJSON(in.ProviderBaseURLs), in.ProviderFramework, in.Model,
 		mustJSON(in.Match), mustJSON(in.Action), now, now)
 	if err != nil {
 		return Rule{}, err
@@ -106,9 +109,9 @@ func (s *Store) Update(ctx context.Context, id string, in RuleInput) (Rule, erro
 		enabled = 0
 	}
 	res, err := s.db.ExecContext(ctx, `
-		UPDATE failure_rules SET name=?, enabled=?, priority=?, provider_base_url=?, model=?,
+		UPDATE failure_rules SET name=?, enabled=?, priority=?, provider_base_url=?, scope_mode=?, provider_base_urls_json=?, provider_framework=?, model=?,
 		       match_json=?, action_json=?, updated_at=? WHERE id=?`,
-		in.Name, enabled, in.Priority, in.ProviderBaseURL, in.Model,
+		in.Name, enabled, in.Priority, in.ProviderBaseURL, in.ScopeMode, mustJSON(in.ProviderBaseURLs), in.ProviderFramework, in.Model,
 		mustJSON(in.Match), mustJSON(in.Action), now, id)
 	if err != nil {
 		return Rule{}, err
@@ -144,7 +147,7 @@ func (s *Store) Delete(ctx context.Context, id string) error {
 // Get 单条。
 func (s *Store) Get(ctx context.Context, id string) (Rule, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, name, enabled, source, confirmed, priority, provider_base_url, model,
+		SELECT id, name, enabled, source, confirmed, priority, provider_base_url, scope_mode, COALESCE(provider_base_urls_json, '[]'), COALESCE(provider_framework, ''), model,
 		       match_json, action_json, hit_count, COALESCE(last_hit_at,''), created_at, updated_at
 		FROM failure_rules WHERE id=?`, id)
 	return scanRule(row)
@@ -212,12 +215,14 @@ func (s *Store) RecordDecision(ctx context.Context, ev Evidence, d Decision) {
 func scanRule(row interface{ Scan(...any) error }) (Rule, error) {
 	var r Rule
 	var enabled, confirmed int
-	var matchJSON, actionJSON string
+	var matchJSON, actionJSON, urlsJSON string
 	if err := row.Scan(&r.ID, &r.Name, &enabled, &r.Source, &confirmed, &r.Priority,
-		&r.ProviderBaseURL, &r.Model, &matchJSON, &actionJSON, &r.HitCount, &r.LastHitAt,
+		&r.ProviderBaseURL, &r.ScopeMode, &urlsJSON, &r.ProviderFramework, &r.Model,
+		&matchJSON, &actionJSON, &r.HitCount, &r.LastHitAt,
 		&r.CreatedAt, &r.UpdatedAt); err != nil {
 		return Rule{}, err
 	}
+	_ = json.Unmarshal([]byte(urlsJSON), &r.ProviderBaseURLs)
 	r.Enabled = enabled == 1
 	r.Confirmed = confirmed == 1
 	if err := json.Unmarshal([]byte(matchJSON), &r.Match); err != nil {

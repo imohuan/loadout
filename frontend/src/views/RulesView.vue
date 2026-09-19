@@ -17,6 +17,7 @@ import {
   patchFailureRule,
   updateFailureRule,
   verifyFailureRule,
+  getProviderFrameworks,
  type FailureRule,
  type RuleDecision,
   type RuleEvidence,
@@ -56,6 +57,9 @@ const OPS = [
 
 const tab = ref<'rules' | 'logs'>('rules')
 const rules = ref<FailureRule[]>([])
+const frameworks = ref<string[]>([])
+const platforms = ref<Array<{ base_url: string; name: string; framework: string }>>([])
+const scopeUrlsText = ref('')
 const decisions = ref<RuleDecision[]>([])
 const loading = ref(false)
 const search = ref('')
@@ -81,6 +85,9 @@ async function load() {
   loading.value = true
   try {
     rules.value = await listFailureRules()
+    const info = await getProviderFrameworks()
+    frameworks.value = info.frameworks ?? []
+    platforms.value = info.platforms ?? []
     if (tab.value === 'logs') {
       decisions.value = (await listRuleDecisions(100)) ?? []
     }
@@ -107,15 +114,20 @@ const filtered = computed(() => {
 function openCreate() {
   editing.value = null
   form.value = emptyForm()
+  scopeUrlsText.value = ''
   showEditor.value = true
 }
 
 function openEdit(rule: FailureRule) {
   editing.value = rule
+  scopeUrlsText.value = (rule.provider_base_urls ?? []).join(', ')
   form.value = {
     name: rule.name,
     priority: rule.priority,
     provider_base_url: rule.provider_base_url,
+    scope_mode: rule.scope_mode ?? '',
+    provider_base_urls: rule.provider_base_urls ?? [],
+    provider_framework: rule.provider_framework ?? '',
     model: rule.model,
     match: JSON.parse(JSON.stringify(rule.match)),
     action: JSON.parse(JSON.stringify(rule.action)),
@@ -134,6 +146,20 @@ function removeCondition(kind: 'any' | 'all', idx: number) {
 }
 
 async function save() {
+  if (form.value.scope_mode === 'urls') {
+    form.value.provider_base_urls = scopeUrlsText.value
+      .split(/\n,]+/)
+      .map((s) => s.trim())
+      .filter(Boolean)
+    if (!form.value.provider_base_urls.length) {
+      toast.error('请至少填写一个平台地址')
+      return
+    }
+  }
+  if (form.value.scope_mode === 'framework' && !form.value.provider_framework) {
+    toast.error('请选择框架')
+    return
+  }
   if (!form.value.name.trim()) {
     toast.error('规则名不能为空')
     return
@@ -275,12 +301,38 @@ load()
           <label class="block text-sm">优先级（小者先）<input v-model.number="form.priority" type="number" class="input w-full" /></label>
           <label class="block text-sm">模型（空 = 全部）<input v-model="form.model" class="input w-full" /></label>
           <label class="col-span-2 block text-sm">
-            平台 base_url（空 = 全部）
+            作用范围
+            <select v-model="form.scope_mode" class="input w-full">
+              <option value="">全部平台</option>
+              <option value="urls">指定平台（多选）</option>
+              <option value="framework">按框架（New API 等）</option>
+            </select>
+          </label>
+          <label v-if="form.scope_mode !== 'urls' && form.scope_mode !== 'framework'" class="col-span-2 block text-sm">
+            单平台（兼容旧规则，通常留空）
             <input v-model="form.provider_base_url" list="channel-urls" class="input w-full" />
             <datalist id="channel-urls">
               <option v-for="c in channels" :key="c.base_url" :value="c.base_url" />
             </datalist>
           </label>
+          <div v-if="form.scope_mode === 'framework'" class="col-span-2">
+            <label class="block text-sm">
+              框架
+              <input v-model="form.provider_framework" list="framework-list" class="input w-full" placeholder="newapi / one-api / …" />
+              <datalist id="framework-list">
+                <option v-for="f in frameworks" :key="f" :value="f" />
+              </datalist>
+            </label>
+            <p class="mt-1 text-xs text-muted-foreground">渠道里标注了该框架的所有平台都会命中此规则（如所有 New API 站点共用一条额度规则）。</p>
+          </div>
+          <div v-if="form.scope_mode === 'urls'" class="col-span-2">
+            <label class="block text-sm">平台地址（每行一个或逗号分隔）
+              <textarea v-model="scopeUrlsText" class="input w-full" rows="3" placeholder="https://api.a.com/v1, https://b.newapi.top/v1"></textarea>
+            </label>
+            <div class="mt-1 flex flex-wrap gap-1">
+              <button v-for="pt in platforms" :key="pt.base_url" type="button" class="badge" @click="scopeUrlsText += (scopeUrlsText ? ', ' : '') + pt.base_url">{{ pt.name || pt.base_url }}</button>
+            </div>
+          </div>
         </div>
 
         <div v-for="kind in (['any', 'all'] as const)" :key="kind" class="mt-4">

@@ -46,26 +46,31 @@ type Rule struct {
 	Source          string `json:"source"`    // manual | ai
 	Confirmed       bool   `json:"confirmed"` // AI 草稿为 false
 	Priority        int    `json:"priority"`
-	ProviderBaseURL string `json:"provider_base_url"` // 空 = 全平台
-	Model           string `json:"model"`             // 空 = 全模型
-	Match           Match  `json:"match"`
-	Action          Action `json:"action"`
-	HitCount        int64  `json:"hit_count"`
-	LastHitAt       string `json:"last_hit_at,omitempty"`
-	CreatedAt       string `json:"created_at"`
-	UpdatedAt       string `json:"updated_at"`
+	ProviderBaseURL string `json:"provider_base_url"` // 单平台（scope_mode 空/urls 单值兼容旧数据）
+	// 作用域模式（v36）："" / "all" = 全部平台；"urls" = 多选平台；"framework" = 按框架。
+	ScopeMode         string   `json:"scope_mode,omitempty"`
+	ProviderBaseURLs  []string `json:"provider_base_urls,omitempty"`
+	ProviderFramework string   `json:"provider_framework,omitempty"`
+	Model             string   `json:"model"` // 空 = 全模型
+	Match             Match    `json:"match"`
+	Action            Action   `json:"action"`
+	HitCount          int64    `json:"hit_count"`
+	LastHitAt         string   `json:"last_hit_at,omitempty"`
+	CreatedAt         string   `json:"created_at"`
+	UpdatedAt         string   `json:"updated_at"`
 }
 
 // Evidence 一次失败的证据（求值输入）。
 type Evidence struct {
-	RequestID   string
-	Model       string
-	ChannelID   string
-	ProviderURL string // 渠道 base_url（组身份）
-	StatusCode  int
-	BodyCode    string // 错误体中的业务码（如 14018）
-	Message     string // error 文本 + error_body 合并（截断）
-	FailCount   int    // 该 key 连续失败次数（RecordSuccess 清零）
+	RequestID         string
+	Model             string
+	ChannelID         string
+	ProviderURL       string // 渠道 base_url（组身份）
+	ProviderFramework string // 渠道框架标签（newapi/one-api/…；空 = 自定义）
+	StatusCode        int
+	BodyCode          string // 错误体中的业务码（如 14018）
+	Message           string // error 文本 + error_body 合并（截断）
+	FailCount         int    // 该 key 连续失败次数（RecordSuccess 清零）
 }
 
 // Verdict 常量。
@@ -92,8 +97,32 @@ type Decision struct {
 
 // routeScope 作用域命中判断（引擎内部用）。
 func (r *Rule) scopeMatches(ev Evidence) bool {
-	if r.ProviderBaseURL != "" && r.ProviderBaseURL != ev.ProviderURL {
-		return false
+	// 作用域模式（v36）：urls = 多选平台；framework = 按框架；其余 = 全部或单平台。
+	switch r.ScopeMode {
+	case "urls":
+		// 多选平台：ProviderBaseURLs 任一命中；空列表 = 无限制。
+		if len(r.ProviderBaseURLs) > 0 {
+			hit := false
+			for _, u := range r.ProviderBaseURLs {
+				if u != "" && u == ev.ProviderURL {
+					hit = true
+					break
+				}
+			}
+			if !hit {
+				return false
+			}
+		}
+	case "framework":
+		// 按框架：渠道 framework 标签匹配（同框架平台共用规则）。
+		if r.ProviderFramework != "" && r.ProviderFramework != ev.ProviderFramework {
+			return false
+		}
+	default:
+		// 兼容旧数据：单平台 base_url 精确匹配。
+		if r.ProviderBaseURL != "" && r.ProviderBaseURL != ev.ProviderURL {
+			return false
+		}
 	}
 	if r.Model != "" && r.Model != ev.Model {
 		return false

@@ -3,6 +3,7 @@ package adminapi
 import (
 	"net/http"
 	"strconv"
+	"strings"
 
 	failure "loadout/plugins/failure-rules"
 )
@@ -137,4 +138,39 @@ func (s *Service) handleRuleDecisionsList(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeJSON(w, http.StatusOK, items)
+}
+
+// handleProviderFrameworks GET /api/provider-frameworks
+// 返回规则作用域选择器数据：去重框架列表 + 平台（base_url 组）清单。
+func (s *Service) handleProviderFrameworks(w http.ResponseWriter, r *http.Request) {
+	channels, err := s.listDBChannels(r.Context())
+	if err != nil {
+		s.writeServerError(w, err)
+		return
+	}
+	seenURL := map[string]bool{}
+	type platform struct {
+		BaseURL   string `json:"base_url"`
+		Name      string `json:"name"`
+		Framework string `json:"framework"`
+	}
+	platforms := []platform{}
+	frameworkSet := map[string]bool{}
+	for _, ch := range channels {
+		u := strings.TrimRight(ch.BaseURL, "/")
+		if u == "" || seenURL[u] {
+			continue
+		}
+		seenURL[u] = true
+		fw := strings.TrimSpace(ch.Framework)
+		if fw != "" {
+			frameworkSet[fw] = true
+		}
+		platforms = append(platforms, platform{BaseURL: u, Name: ch.ChannelName, Framework: fw})
+	}
+	frameworks := make([]string, 0, len(frameworkSet))
+	for fw := range frameworkSet {
+		frameworks = append(frameworks, fw)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"frameworks": frameworks, "platforms": platforms})
 }

@@ -22,6 +22,7 @@ const form = reactive<{
   api_key: string
   manual_enabled: boolean
   sync_billing: boolean
+  framework: string
   models: string[]
   model_candidates: string[]
 }>({
@@ -31,6 +32,7 @@ const form = reactive<{
   api_key: '',
   manual_enabled: true,
   sync_billing: false,
+  framework: '',
   models: [],
   model_candidates: [],
 })
@@ -48,6 +50,7 @@ function resetForm() {
     channel_name: channel?.channel_name || props.groupName || '',
     name: channel?.name || '',
     base_url: props.lockBaseUrl || channel?.base_url || '',
+    framework: channel?.framework ?? '',
     api_key: '',
     manual_enabled: channel?.manual_enabled ?? channel?.enabled ?? true,
     sync_billing: channel?.sync_billing ?? false,
@@ -270,6 +273,24 @@ function submit() {
           />
           <p class="text-xs text-muted-foreground">
             基础 URL 请填写到接口前缀的完整路径，如需 /v1 前缀请自行包含在 URL 中，系统不会自动补全。
+          </p>
+        </div>
+        <div class="space-y-2" v-if="!lockBaseUrl">
+          <Label for="channel-framework">平台框架（可选）</Label>
+          <Input
+            id="channel-framework"
+            v-model="form.framework"
+            list="framework-options"
+            placeholder="newapi / one-api / 自定义"
+          />
+          <datalist id="framework-options">
+            <option value="newapi" />
+            <option value="one-api" />
+            <option value="done-hub" />
+            <option value="voapi" />
+          </datalist>
+          <p class="text-xs text-muted-foreground">
+            标注框架后，失败规则可按框架匹配（同框架平台共用一条规则，如所有 New API 站的额度规则）。同组渠道自动继承标注。
           </p>
         </div>
         <div class="space-y-2">

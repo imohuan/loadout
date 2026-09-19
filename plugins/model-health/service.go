@@ -21,13 +21,13 @@ const (
 
 // Service implements the small cross-plugin model health contract.
 type Service struct {
-	db         *sql.DB
-	lg         *slog.Logger
-	rules      *failurerules.Engine     // 失败规则引擎（含 AI 兜底；替代 legacy classify）
-	executor   *failurerules.Executor   // 规则动作执行器（写 model_states / channel_states）
-	decisions  *failurerules.Store      // 规则 CRUD + 裁决日志
-	aiResolver *failurerules.AIResolver // AI 兜底（SetRuleAIModel 热更新）
-	keyResolver func() string           // SK key 明文解析器（AI 兜底请求鉴权）
+	db          *sql.DB
+	lg          *slog.Logger
+	rules       *failurerules.Engine     // 失败规则引擎（含 AI 兜底；替代 legacy classify）
+	executor    *failurerules.Executor   // 规则动作执行器（写 model_states / channel_states）
+	decisions   *failurerules.Store      // 规则 CRUD + 裁决日志
+	aiResolver  *failurerules.AIResolver // AI 兜底（SetRuleAIModel 热更新）
+	keyResolver func() string            // SK key 明文解析器（AI 兜底请求鉴权）
 }
 
 func NewService(database *sql.DB, logger *slog.Logger) *Service {

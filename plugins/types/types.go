@@ -71,6 +71,7 @@ type Channel struct {
 	Name          string               `json:"name"`                    // Key 名称（同一 Base URL 下多个 Key 各有名字）
 	ChannelName   string               `json:"channel_name,omitempty"`  // 渠道名称（Base URL 组级名称，同组 Key 同步一致）
 	BaseURL       string               `json:"base_url"`                // 地址，如 https://api.deepseek.com/v1
+	Framework     string               `json:"framework,omitempty"`     // 平台框架标签（newapi/one-api/…；空 = 自定义）
 	APIKeyCipher  string               `json:"api_key_cipher"`          // AES 密文（密钥在 .secret）
 	Enabled       bool                 `json:"enabled"`                 // 旧 JSON 兼容字段
 	ManualEnabled bool                 `json:"manual_enabled"`          // 手动开关的唯一来源

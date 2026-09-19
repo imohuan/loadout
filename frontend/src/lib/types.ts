@@ -19,6 +19,7 @@ export interface Channel {
   name: string
   channel_name?: string
   base_url: string
+  framework?: string
   enabled?: boolean
   manual_enabled?: boolean
   sync_billing?: boolean

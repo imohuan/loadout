@@ -31,6 +31,9 @@ export interface FailureRule {
   confirmed: boolean
   priority: number
   provider_base_url: string
+  scope_mode?: string
+  provider_base_urls?: string[]
+  provider_framework?: string
   model: string
   match: RuleMatch
   action: RuleAction
@@ -45,6 +48,9 @@ export interface RuleInput {
   enabled?: boolean
   priority: number
   provider_base_url: string
+  scope_mode?: string
+  provider_base_urls?: string[]
+  provider_framework?: string
   model: string
   match: RuleMatch
   action: RuleAction
@@ -90,3 +96,11 @@ export const verifyFailureRule = (rule: Partial<FailureRule>, sample: RuleEviden
   request<{ hit: boolean }>("/api/failure-rules/verify", "POST", { rule, sample })
 export const listRuleDecisions = (limit = 50) =>
   request<RuleDecision[]>(`/api/rule-decisions?limit=${limit}`, "GET")
+
+export interface ProviderFrameworkInfo {
+  frameworks: string[]
+  platforms: Array<{ base_url: string; name: string; framework: string }>
+}
+
+export const getProviderFrameworks = () =>
+  request<ProviderFrameworkInfo>("/api/provider-frameworks", "GET")

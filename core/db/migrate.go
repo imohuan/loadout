@@ -726,8 +726,20 @@ INSERT OR IGNORE INTO failure_rules(id, name, enabled, source, confirmed, priori
  '{"any":[{"field":"message_text","op":"contains","value":"no such host"},{"field":"message_text","op":"contains","value":"connection refused"},{"field":"message_text","op":"contains","value":"no route to host"},{"field":"message_text","op":"contains","value":"dial tcp"},{"field":"message_text","op":"contains","value":"lookup"}]}',
  '{"verdict":"ignore"}', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'),
 ('seed-012', 'EOF连接中断（忽略）', 1, 'manual', 1, 120,
- '{"any":[{"field":"message_text","op":"contains","value":"eof"}]}',
- '{"verdict":"ignore"}', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+'{"any":[{"field":"message_text","op":"contains","value":"eof"}]}',
+'{"verdict":"ignore"}', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+`,
+}, {
+	version: 36,
+	name:    "rule-multi-platform",
+	sql: `
+-- 规则作用域升级：支持多平台与按框架（New API / One API 等通用框架）匹配。
+-- channels.framework：渠道所属框架标签（newapi/one-api/…；空 = 自定义/未标注），
+--   同框架平台共用「框架规则」；渠道编辑页维护。
+ALTER TABLE channels ADD COLUMN framework TEXT NOT NULL DEFAULT '';
+ALTER TABLE failure_rules ADD COLUMN scope_mode TEXT NOT NULL DEFAULT '';
+ALTER TABLE failure_rules ADD COLUMN provider_base_urls_json TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE failure_rules ADD COLUMN provider_framework TEXT NOT NULL DEFAULT '';
 `,
 }}
 

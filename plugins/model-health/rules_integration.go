@@ -29,14 +29,15 @@ func (s *Service) recordFailureRuled(ctx context.Context, f contracts.RouteFailu
 
 	message := strings.TrimSpace(strings.Join([]string{f.Error, f.ErrorBody}, " "))
 	ev := failure.Evidence{
-		RequestID:   f.RequestID,
-		Model:       f.Model,
-		ChannelID:   f.ChannelID,
-		ProviderURL: s.providerURL(f.ChannelID),
-		StatusCode:  f.StatusCode,
-		BodyCode:    extractBodyCode(f.ErrorBody),
-		Message:     message,
-		FailCount:   s.currentFailCount(ctx, f.ChannelID, f.Model),
+		RequestID:         f.RequestID,
+		Model:             f.Model,
+		ChannelID:         f.ChannelID,
+		ProviderURL:       s.providerURL(f.ChannelID),
+		ProviderFramework: s.providerFramework(f.ChannelID),
+		StatusCode:        f.StatusCode,
+		BodyCode:          extractBodyCode(f.ErrorBody),
+		Message:           message,
+		FailCount:         s.currentFailCount(ctx, f.ChannelID, f.Model),
 	}
 
 	decision := s.rules.Evaluate(ctx, ev)
@@ -74,10 +75,12 @@ func (s *Service) spawnDraft(ev failure.Evidence, d failure.Decision) {
 	go func() {
 		ctx := context.WithoutCancel(context.Background())
 		in := failure.RuleInput{
-			Name:            "AI: " + truncateStr(d.Reason, 40) + " (" + ev.Model + " " + errStatusText(ev.StatusCode) + ")",
-			Priority:        150,
-			ProviderBaseURL: ev.ProviderURL,
-			Model:           ev.Model,
+			Name:             "AI: " + truncateStr(d.Reason, 40) + " (" + ev.Model + " " + errStatusText(ev.StatusCode) + ")",
+			Priority:         150,
+			ProviderBaseURL:  ev.ProviderURL,
+			ScopeMode:        "urls",
+			ProviderBaseURLs: []string{ev.ProviderURL},
+			Model:            ev.Model,
 			Match: failure.Match{Any: []failure.Condition{
 				{Field: "status_code", Op: "eq", Value: ev.StatusCode},
 				{Field: "message_text", Op: "contains", Value: firstToken(ev.Message, 24)},
@@ -169,6 +172,17 @@ func (s *Service) providerURL(channelID string) string {
 }
 
 // currentFailCount 当前连续失败计数（限速升级判断用）。
+// providerFramework 渠道框架标签（newapi/one-api/…；空 = 自定义）。
+func (s *Service) providerFramework(channelID string) string {
+	if channelID == "" {
+		return ""
+	}
+	var fw string
+	_ = s.db.QueryRowContext(context.WithoutCancel(context.Background()),
+		`SELECT COALESCE(framework,'') FROM channels WHERE id=?`, channelID).Scan(&fw)
+	return strings.TrimSpace(fw)
+}
+
 func (s *Service) currentFailCount(ctx context.Context, channelID, model string) int {
 	var n int
 	_ = s.db.QueryRowContext(ctx,

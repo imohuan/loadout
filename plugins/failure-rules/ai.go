@@ -40,7 +40,7 @@ type AIResolver struct {
 	skKey       string // 静态 SK key（兼容）
 	baseURL     string // 网关自身地址
 	timeout     time.Duration
-	decisions   sync.Map // fingerprint -> cachedDecision
+	decisions   sync.Map      // fingerprint -> cachedDecision
 	keyProvider func() string // 动态 SK key 解析（优先于 skKey）
 }
 
@@ -123,12 +123,12 @@ func (a *AIResolver) Resolve(ctx context.Context, ev Evidence, fp string) (Decis
 
 	prompt := fmt.Sprintf(
 		"分析这次模型 API 调用失败，返回 JSON（不要 markdown 代码块）：\n"+
-		"{\"verdict\":\"disable_key|disable_model|cooldown|switch_next|ignore\","+
-		"\"cooldown_seconds\":数字,\"recover\":\"never|daily|fixed\",\"reason\":\"一句话\"}\n"+
-		"判定原则：额度用尽/余额不足→disable_key+daily；密钥无效→disable_key+never；"+
-		"限速→cooldown 120；超时/网络→cooldown 30 或 ignore；"+
-		"上下文超长→switch_next；参数错误(4xx)→ignore。\n"+
-		"HTTP状态码: %d\n业务码: %s\n错误信息: %s",
+			"{\"verdict\":\"disable_key|disable_model|cooldown|switch_next|ignore\","+
+			"\"cooldown_seconds\":数字,\"recover\":\"never|daily|fixed\",\"reason\":\"一句话\"}\n"+
+			"判定原则：额度用尽/余额不足→disable_key+daily；密钥无效→disable_key+never；"+
+			"限速→cooldown 120；超时/网络→cooldown 30 或 ignore；"+
+			"上下文超长→switch_next；参数错误(4xx)→ignore。\n"+
+			"HTTP状态码: %d\n业务码: %s\n错误信息: %s",
 		ev.StatusCode, ev.BodyCode, truncate(ev.Message, 500))
 
 	body, _ := json.Marshal(map[string]any{
@@ -227,4 +227,3 @@ func hashString(s string) string {
 var _ = config.DataDir
 
 func jsonUnmarshal(data string, v any) error { return json.Unmarshal([]byte(data), &v) }
-

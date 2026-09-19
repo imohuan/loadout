@@ -20,6 +20,7 @@ type channelInput struct {
 	Name          string `json:"name"`
 	ChannelName   string `json:"channel_name"`
 	BaseURL       string `json:"base_url"`
+	Framework     string `json:"framework"`
 	APIKey        string `json:"api_key"`
 	Enabled       *bool  `json:"enabled"`
 	ManualEnabled *bool  `json:"manual_enabled"`
@@ -38,7 +39,7 @@ func channelAPI(channel db.Channel) types.Channel {
 			models = append(models, model.Model)
 		}
 	}
-	return types.Channel{ID: channel.ID, Name: channel.Name, ChannelName: channel.ChannelName, BaseURL: channel.BaseURL, APIKeyCipher: channel.APIKeyCipher, Enabled: channel.ManualEnabled, ManualEnabled: channel.ManualEnabled, SyncBilling: channel.SyncBilling, Models: models, ModelsDetail: detail, ModelsError: channel.ModelsError, CreatedAt: channel.CreatedAt, UpdatedAt: channel.UpdatedAt}
+	return types.Channel{ID: channel.ID, Name: channel.Name, ChannelName: channel.ChannelName, BaseURL: channel.BaseURL, Framework: channel.Framework, APIKeyCipher: channel.APIKeyCipher, Enabled: channel.ManualEnabled, ManualEnabled: channel.ManualEnabled, SyncBilling: channel.SyncBilling, Models: models, ModelsDetail: detail, ModelsError: channel.ModelsError, CreatedAt: channel.CreatedAt, UpdatedAt: channel.UpdatedAt}
 }
 
 func (s *Service) listDBChannels(ctx context.Context) ([]db.Channel, error) {
@@ -122,6 +123,7 @@ func (s *Service) handleChannelCreateDB(w http.ResponseWriter, r *http.Request) 
 	// 没带 → 自动请求上游 /v1/models 探测填充（source=probe）。
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	channel := db.Channel{ID: id, Name: input.Name, ChannelName: channelName, BaseURL: input.BaseURL, APIKeyCipher: cipher, ManualEnabled: manual, SyncBilling: input.SyncBilling, CreatedAt: now, UpdatedAt: now}
+	channel.Framework = strings.TrimSpace(input.Framework)
 	if len(input.Models) > 0 {
 		for _, model := range input.Models {
 			if strings.TrimSpace(model) == "" {
@@ -192,6 +194,8 @@ func (s *Service) handleChannelUpdateDB(w http.ResponseWriter, r *http.Request) 
 	if input.BaseURL != "" {
 		channel.BaseURL = input.BaseURL
 	}
+	// framework 随编辑提交（空 = 清除标注，自定义平台）。
+	channel.Framework = strings.TrimSpace(input.Framework)
 	if input.ManualEnabled != nil {
 		channel.ManualEnabled = *input.ManualEnabled
 	} else if input.Enabled != nil {
