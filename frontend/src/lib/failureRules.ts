@@ -72,6 +72,8 @@ export interface RuleDecision {
   id: number
   request_id: string
   model: string
+  channel_id: string
+  channel_name: string
   provider_base_url: string
   status_code: number
   error_excerpt: string

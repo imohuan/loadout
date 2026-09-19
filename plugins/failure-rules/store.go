@@ -160,6 +160,8 @@ type RuleDecision struct {
 	ID              int64  `json:"id"`
 	RequestID       string `json:"request_id"`
 	Model           string `json:"model"`
+	ChannelID       string `json:"channel_id"`
+	ChannelName     string `json:"channel_name"`
 	ProviderBaseURL string `json:"provider_base_url"`
 	StatusCode      int    `json:"status_code"`
 	ErrorExcerpt    string `json:"error_excerpt"`
@@ -177,7 +179,8 @@ func (s *Store) ListDecisions(ctx context.Context, limit int) ([]map[string]any,
 		limit = 50
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, COALESCE(request_id,''), model, COALESCE(provider_base_url,''), status_code,
+		SELECT id, COALESCE(request_id,''), model, COALESCE(channel_id,''), COALESCE(channel_name,''),
+		       COALESCE(provider_base_url,''), status_code,
 		       error_excerpt, matched_rule_id, matched_rule_name, COALESCE(ai_model,''),
 		       COALESCE(ai_raw,''), verdict, created_at
 		FROM rule_decisions ORDER BY id DESC LIMIT ?`, limit)
@@ -188,7 +191,8 @@ func (s *Store) ListDecisions(ctx context.Context, limit int) ([]map[string]any,
 	out := []map[string]any{}
 	for rows.Next() {
 		var d RuleDecision
-		if err := rows.Scan(&d.ID, &d.RequestID, &d.Model, &d.ProviderBaseURL, &d.StatusCode,
+		if err := rows.Scan(&d.ID, &d.RequestID, &d.Model, &d.ChannelID, &d.ChannelName,
+			&d.ProviderBaseURL, &d.StatusCode,
 			&d.ErrorExcerpt, &d.MatchedRuleID, &d.MatchedRuleName, &d.AIModel,
 			&d.AIRaw, &d.Verdict, &d.CreatedAt); err != nil {
 			return nil, err
@@ -205,11 +209,12 @@ func (s *Store) RecordDecision(ctx context.Context, ev Evidence, d Decision) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	_, _ = s.db.ExecContext(ctx, `
 		INSERT INTO rule_decisions(request_id, model, provider_base_url, status_code, error_excerpt,
-		       matched_rule_id, matched_rule_name, ai_model, ai_raw, verdict, next_action, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		       matched_rule_id, matched_rule_name, ai_model, ai_raw, verdict, next_action, created_at,
+		       channel_id, channel_name)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		ev.RequestID, ev.Model, ev.ProviderURL, ev.StatusCode, truncate(ev.Message, 400),
 		d.MatchedRuleID, d.MatchedRuleName, d.AIModel, truncate(d.AIRaw, 4000),
-		d.Verdict, "", now)
+		d.Verdict, "", now, ev.ChannelID, ev.ChannelName)
 }
 
 func scanRule(row interface{ Scan(...any) error }) (Rule, error) {

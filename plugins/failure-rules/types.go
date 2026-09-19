@@ -65,6 +65,7 @@ type Evidence struct {
 	RequestID         string
 	Model             string
 	ChannelID         string
+	ChannelName       string // Key 名（账号标识，如手机号；用于日志展示「平台+Key+模型」）
 	ProviderURL       string // 渠道 base_url（组身份）
 	ProviderFramework string // 渠道框架标签（newapi/one-api/…；空 = 自定义）
 	StatusCode        int

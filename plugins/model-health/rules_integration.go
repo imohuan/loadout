@@ -32,6 +32,7 @@ func (s *Service) recordFailureRuled(ctx context.Context, f contracts.RouteFailu
 		RequestID:         f.RequestID,
 		Model:             f.Model,
 		ChannelID:         f.ChannelID,
+		ChannelName:       s.channelKeyName(f.ChannelID),
 		ProviderURL:       s.providerURL(f.ChannelID),
 		ProviderFramework: s.providerFramework(f.ChannelID),
 		StatusCode:        f.StatusCode,
@@ -172,6 +173,18 @@ func (s *Service) providerURL(channelID string) string {
 }
 
 // currentFailCount 当前连续失败计数（限速升级判断用）。
+// channelKeyName 渠道记录的展示名（channels.name = Key 名/账号标识，如手机号）。
+// 日志展示「平台 + Key + 模型」中的 Key 就取这个值。
+func (s *Service) channelKeyName(channelID string) string {
+	if channelID == "" {
+		return ""
+	}
+	var name string
+	_ = s.db.QueryRowContext(context.WithoutCancel(context.Background()),
+		`SELECT COALESCE(name,'') FROM channels WHERE id=?`, channelID).Scan(&name)
+	return strings.TrimSpace(name)
+}
+
 // providerFramework 渠道框架标签（newapi/one-api/…；空 = 自定义）。
 func (s *Service) providerFramework(channelID string) string {
 	if channelID == "" {

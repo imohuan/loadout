@@ -136,7 +136,7 @@ const filteredLogs = computed(() => {
     if (logsPlatform.value !== '__all__' && d.provider_base_url !== logsPlatform.value) return false
     if (!q) return true
     const hay =
-      `${d.model} ${d.matched_rule_name} ${d.verdict} ${d.error_excerpt} ${platformLabel(d.provider_base_url)}`.toLowerCase()
+      `${d.model} ${d.channel_name} ${d.matched_rule_name} ${d.verdict} ${d.error_excerpt} ${platformLabel(d.provider_base_url)}`.toLowerCase()
     return hay.includes(q)
   })
 })
@@ -661,13 +661,14 @@ load()
           <Table class="table-fixed">
             <TableHeader>
               <TableRow>
-                <TableHead class="w-[96px]">时间</TableHead>
-                <TableHead class="w-[112px]">平台</TableHead>
-                <TableHead class="w-[128px]">模型</TableHead>
+                <TableHead class="w-[88px]">时间</TableHead>
+                <TableHead class="w-[100px]">平台</TableHead>
+                <TableHead class="w-[104px]">Key</TableHead>
+                <TableHead class="w-[116px]">模型</TableHead>
                 <TableHead class="w-[64px]">状态码</TableHead>
                 <TableHead>错误摘要</TableHead>
-                <TableHead class="w-[180px]">路由依据</TableHead>
-                <TableHead class="w-[120px]">判定</TableHead>
+                <TableHead class="w-[176px]">路由依据</TableHead>
+                <TableHead class="w-[104px]">判定</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -677,6 +678,9 @@ load()
                   <Badge variant="outline" class="border text-[11px]" :class="platformTone(d.provider_base_url)" :title="d.provider_base_url">
                     {{ platformLabel(d.provider_base_url) }}
                   </Badge>
+                </TableCell>
+                <TableCell class="font-mono text-xs" :title="d.channel_id">
+                  {{ d.channel_name || d.channel_id || '—' }}
                 </TableCell>
                 <TableCell class="font-mono text-xs">{{ d.model || '—' }}</TableCell>
                 <TableCell class="font-mono text-xs font-medium" :class="statusTone(d.status_code)">

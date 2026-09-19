@@ -741,6 +741,16 @@ ALTER TABLE failure_rules ADD COLUMN scope_mode TEXT NOT NULL DEFAULT '';
 ALTER TABLE failure_rules ADD COLUMN provider_base_urls_json TEXT NOT NULL DEFAULT '[]';
 ALTER TABLE failure_rules ADD COLUMN provider_framework TEXT NOT NULL DEFAULT '';
 `,
+}, {
+	version: 37,
+	name:    "rule-decision-channel",
+	sql: `
+-- 判定日志补充 Key 维度：一次失败发生在「哪个平台的哪个 Key 的哪个模型」上，
+-- 便于定位是某个账号额度耗尽还是整个平台故障。
+-- 同时冗余存 key 名（渠道编辑改名后日志仍保留当时快照）。
+ALTER TABLE rule_decisions ADD COLUMN channel_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE rule_decisions ADD COLUMN channel_name TEXT NOT NULL DEFAULT '';
+`,
 }}
 
 // Migrate applies all pending schema migrations and rejects an incompatible
