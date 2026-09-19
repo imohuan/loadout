@@ -40,7 +40,7 @@ const VERDICTS = [
   { value: 'switch_next', label: '换下一个' },
 ]
 const RECOVERS = [
-  { value: '', label: '不适用' },
+  { value: '__none__', label: '不适用' },
   { value: 'never', label: '永久禁用' },
   { value: 'daily', label: '每日恢复' },
   { value: 'fixed', label: '定时恢复' },
@@ -58,7 +58,7 @@ const OPS = [
   { value: 'regex', label: '正则' },
 ]
 const SCOPE_MODES = [
-  { value: '', label: '全部平台' },
+  { value: '__all__', label: '全部平台' },
   { value: 'urls', label: '指定平台' },
   { value: 'framework', label: '按框架' },
 ]
@@ -120,6 +120,27 @@ const saving = ref(false)
 
 const frameworks = ref<string[]>([])
 const platforms = ref<Array<{ base_url: string; name: string; framework: string }>>([])
+
+// Select 组件不允许空字符串选项值（reka-ui 把 "" 当"未选中"），故用哨兵值，
+// 提交前再映射回后端需要的空串。
+const scopeModeProxy = computed({
+  get: () => form.value.scope_mode || '__all__',
+  set: (v: string) => {
+    form.value.scope_mode = v === '__all__' ? '' : v
+  },
+})
+const singlePlatformProxy = computed({
+  get: () => form.value.provider_base_url || '__all__',
+  set: (v: string) => {
+    form.value.provider_base_url = v === '__all__' ? '' : v
+  },
+})
+const recoverProxy = computed({
+  get: () => form.value.action.recover || '__none__',
+  set: (v: string) => {
+    form.value.action.recover = v === '__none__' ? '' : v
+  },
+})
 
 function emptyForm(): RuleInput {
   return {
@@ -192,7 +213,6 @@ function removeCondition(kind: 'any' | 'all', idx: number) {
 }
 
 async function save() {
-  if (form.value.provider_base_url === '__all__') form.value.provider_base_url = ''
   if (!form.value.name.trim()) {
     toast.error('规则名不能为空')
     return
@@ -321,20 +341,23 @@ async function loadChannels() {
   }
 }
 
-const channels = ref<Array<{ base_url?: string; name?: string; models?: string[] }>>([])
+const channels = ref<
+  Array<{ base_url?: string; name?: string; channel_name?: string; models?: string[] }>
+>()
 const allModels = computed(() => {
   const set = new Set<string>()
-  for (const c of channels.value) for (const m of c.models || []) set.add(m)
+  for (const c of channels.value ?? []) for (const m of c.models || []) set.add(m)
   return [...set].sort()
 })
 const uniqueChannels = computed(() => {
   const seen = new Set<string>()
   const out: Array<{ base_url: string; name: string }> = []
-  for (const c of channels.value) {
+  for (const c of channels.value ?? []) {
     const u = (c.base_url || '').replace(/\/+$/, '')
     if (!u || seen.has(u)) continue
     seen.add(u)
-    out.push({ base_url: u, name: c.name || u })
+    // 展示优先渠道组名（channel_name），无则回退 base_url；name 是 Key 名，不代表平台。
+    out.push({ base_url: u, name: c.channel_name || u })
   }
   return out
 })
@@ -578,16 +601,18 @@ load()
           <div class="col-span-2 grid grid-cols-2 gap-3">
             <div class="space-y-1">
               <Label>作用范围</Label>
-              <Select v-model="form.scope_mode">
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem v-for="m in SCOPE_MODES" :key="m.value" :value="m.value">{{ m.label }}</SelectItem>
+              <Select v-model="scopeModeProxy">
+                <SelectTrigger class="w-full"><SelectValue placeholder="选择作用范围" /></SelectTrigger>
+                <SelectContent position="popper" side="bottom" align="start" :side-offset="2">
+                  <SelectGroup>
+                    <SelectItem v-for="m in SCOPE_MODES" :key="m.value" :value="m.value">{{ m.label }}</SelectItem>
+                  </SelectGroup>
                 </SelectContent>
               </Select>
             </div>
             <div v-if="form.scope_mode !== 'urls' && form.scope_mode !== 'framework'" class="space-y-1">
               <Label>单平台（兼容，通常留空）</Label>
-              <Select v-model="form.provider_base_url">
+              <Select v-model="singlePlatformProxy">
                 <SelectTrigger class="w-full"><SelectValue placeholder="全部平台" /></SelectTrigger>
                 <SelectContent position="popper" side="bottom" align="start" :side-offset="2">
                   <SelectGroup>
@@ -635,14 +660,16 @@ load()
           </div>
           <div v-for="(cond, i) in form.match[kind]" :key="i" class="flex items-center gap-2">
             <Select v-model="cond.field">
-              <SelectTrigger class="w-32"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem v-for="f in FIELDS" :key="f.value" :value="f.value">{{ f.label }}</SelectItem>
+              <SelectTrigger class="w-32"><SelectValue placeholder="字段" /></SelectTrigger>
+              <SelectContent position="popper" side="bottom" align="start" :side-offset="2">
+                <SelectGroup>
+                  <SelectItem v-for="f in FIELDS" :key="f.value" :value="f.value">{{ f.label }}</SelectItem>
+                </SelectGroup>
               </SelectContent>
             </Select>
             <Select v-model="cond.op">
-              <SelectTrigger class="w-28"><SelectValue /></SelectTrigger>
-              <SelectContent>
+              <SelectTrigger class="w-28"><SelectValue placeholder="操作" /></SelectTrigger>
+              <SelectContent position="popper" side="bottom" align="start" :side-offset="2">
                 <SelectItem v-for="o in OPS" :key="o.value" :value="o.value">{{ o.label }}</SelectItem>
               </SelectContent>
             </Select>
@@ -658,17 +685,17 @@ load()
           <div class="space-y-1">
             <Label>动作</Label>
             <Select v-model="form.action.verdict">
-              <SelectTrigger><SelectValue /></SelectTrigger>
-              <SelectContent>
+              <SelectTrigger class="w-full"><SelectValue placeholder="选择动作" /></SelectTrigger>
+              <SelectContent position="popper" side="bottom" align="start" :side-offset="2">
                 <SelectItem v-for="v in VERDICTS" :key="v.value" :value="v.value">{{ v.label }}</SelectItem>
               </SelectContent>
             </Select>
           </div>
           <div class="space-y-1">
             <Label>恢复策略</Label>
-            <Select v-model="form.action.recover">
-              <SelectTrigger><SelectValue /></SelectTrigger>
-              <SelectContent>
+            <Select v-model="recoverProxy">
+              <SelectTrigger class="w-full"><SelectValue placeholder="选择恢复策略" /></SelectTrigger>
+              <SelectContent position="popper" side="bottom" align="start" :side-offset="2">
                 <SelectItem v-for="r in RECOVERS" :key="r.value" :value="r.value">{{ r.label }}</SelectItem>
               </SelectContent>
             </Select>
