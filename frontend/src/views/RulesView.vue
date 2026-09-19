@@ -8,24 +8,27 @@ import {
   RiEditLine,
   RiFlaskLine,
   RiRefreshLine,
+  RiSearchLine,
+  RiCloseCircleLine,
 } from '@remixicon/vue'
 import {
   createFailureRule,
   deleteFailureRule,
+  getProviderFrameworks,
   listFailureRules,
   listRuleDecisions,
   patchFailureRule,
   updateFailureRule,
   verifyFailureRule,
-  getProviderFrameworks,
- type FailureRule,
- type RuleDecision,
+  type FailureRule,
+  type RuleDecision,
   type RuleEvidence,
   type RuleInput,
 } from '@/lib/failureRules'
 import { api } from '@/lib/api'
 import PageHeader from '@/components/PageHeader.vue'
 import LoadingBlock from '@/components/LoadingBlock.vue'
+import EmptyState from '@/components/EmptyState.vue'
 
 const VERDICTS = [
   { value: 'disable_key', label: '禁用 Key' },
@@ -54,27 +57,82 @@ const OPS = [
   { value: 'not_contains', label: '不包含' },
   { value: 'regex', label: '正则' },
 ]
+const SCOPE_MODES = [
+  { value: '', label: '全部平台' },
+  { value: 'urls', label: '指定平台' },
+  { value: 'framework', label: '按框架' },
+]
+
+const VERDICT_LABELS: Record<string, string> = Object.fromEntries(VERDICTS.map((v) => [v.value, v.label]))
 
 const tab = ref<'rules' | 'logs'>('rules')
 const rules = ref<FailureRule[]>([])
-const frameworks = ref<string[]>([])
-const platforms = ref<Array<{ base_url: string; name: string; framework: string }>>([])
-const scopeUrlsText = ref('')
 const decisions = ref<RuleDecision[]>([])
 const loading = ref(false)
-const search = ref('')
 
+// ===== 过滤/搜索（参考转发日志页的筛选约定）=====
+const search = ref('')
+const filterSource = ref('') // '' 全部 | manual | ai_draft | ai_confirmed
+const filterVerdict = ref('') // '' 全部 | verdict
+const filterEnabled = ref('') // '' 全部 | on | off
+const logsSearch = ref('')
+
+function sourceOf(rule: FailureRule): 'manual' | 'ai_draft' | 'ai_confirmed' {
+  if (rule.source !== 'ai') return 'manual'
+  return rule.confirmed ? 'ai_confirmed' : 'ai_draft'
+}
+
+const filtered = computed(() => {
+  const q = search.value.trim().toLowerCase()
+  return rules.value.filter((r) => {
+    if (q) {
+      const hay = `${r.name} ${r.model} ${r.provider_base_url} ${(r.provider_base_urls || []).join(' ')} ${r.provider_framework} ${r.id}`.toLowerCase()
+      if (!hay.includes(q)) return false
+    }
+    if (filterSource.value && sourceOf(r) !== filterSource.value) return false
+    if (filterVerdict.value && r.action.verdict !== filterVerdict.value) return false
+    if (filterEnabled.value === 'on' && !r.enabled) return false
+    if (filterEnabled.value === 'off' && r.enabled) return false
+    return true
+  })
+})
+
+const filteredLogs = computed(() => {
+  const q = logsSearch.value.trim().toLowerCase()
+  if (!q) return decisions.value
+  return decisions.value.filter((d) =>
+    `${d.model} ${d.matched_rule_name} ${d.verdict} ${d.error_excerpt}`.toLowerCase().includes(q),
+  )
+})
+
+const hasFilter = computed(
+  () => !!(search.value || filterSource.value || filterVerdict.value || filterEnabled.value),
+)
+function clearFilters() {
+  search.value = ''
+  filterSource.value = ''
+  filterVerdict.value = ''
+  filterEnabled.value = ''
+}
+
+// ===== 编辑器 =====
 const showEditor = ref(false)
 const editing = ref<FailureRule | null>(null)
 const form = ref<RuleInput>(emptyForm())
-const verifySample = ref<RuleEvidence>({ status_code: 429, message: '' })
-const verifyHit = ref<boolean | null>(null)
+const scopeUrlsText = ref('')
+const saving = ref(false)
+
+const frameworks = ref<string[]>([])
+const platforms = ref<Array<{ base_url: string; name: string; framework: string }>>([])
 
 function emptyForm(): RuleInput {
   return {
     name: '',
     priority: 100,
     provider_base_url: '',
+    scope_mode: '',
+    provider_base_urls: [],
+    provider_framework: '',
     model: '',
     match: { any: [{ field: 'status_code', op: 'eq', value: 429 }] },
     action: { verdict: 'cooldown', recover: 'fixed', cooldown_seconds: 120 },
@@ -100,16 +158,8 @@ async function load() {
 
 function switchTab(t: 'rules' | 'logs') {
   tab.value = t
-  if (t === 'logs') load()
+  load()
 }
-
-const filtered = computed(() => {
-  const q = search.value.trim().toLowerCase()
-  if (!q) return rules.value
-  return rules.value.filter(
-    (r) => r.name.toLowerCase().includes(q) || r.model.toLowerCase().includes(q) || r.provider_base_url.toLowerCase().includes(q),
-  )
-})
 
 function openCreate() {
   editing.value = null
@@ -146,9 +196,13 @@ function removeCondition(kind: 'any' | 'all', idx: number) {
 }
 
 async function save() {
+  if (!form.value.name.trim()) {
+    toast.error('规则名不能为空')
+    return
+  }
   if (form.value.scope_mode === 'urls') {
     form.value.provider_base_urls = scopeUrlsText.value
-      .split(/\n,]+/)
+      .split(/[\n,]+/)
       .map((s) => s.trim())
       .filter(Boolean)
     if (!form.value.provider_base_urls.length) {
@@ -160,10 +214,7 @@ async function save() {
     toast.error('请选择框架')
     return
   }
-  if (!form.value.name.trim()) {
-    toast.error('规则名不能为空')
-    return
-  }
+  saving.value = true
   try {
     if (editing.value) {
       await updateFailureRule(editing.value.id, form.value)
@@ -176,6 +227,8 @@ async function save() {
     load()
   } catch (e) {
     toast.error(String(e))
+  } finally {
+    saving.value = false
   }
 }
 
@@ -209,19 +262,58 @@ async function remove(rule: FailureRule) {
   }
 }
 
+// ===== 样本校验 =====
+const verifySample = ref<RuleEvidence>({ status_code: 429, message: '' })
+const verifyHit = ref<boolean | null>(null)
+const verifying = ref(false)
 async function runVerify() {
   verifyHit.value = null
+  verifying.value = true
   try {
     const res = await verifyFailureRule(form.value as Partial<FailureRule>, verifySample.value)
     verifyHit.value = res.hit
   } catch (e) {
     toast.error(String(e))
+  } finally {
+    verifying.value = false
   }
 }
 
+// ===== 展示辅助 =====
+function scopeText(rule: FailureRule) {
+  const model = rule.model || '全部模型'
+  if (rule.scope_mode === 'urls') {
+    const urls = rule.provider_base_urls || []
+    return `${urls.length} 个平台 · ${model}`
+  }
+  if (rule.scope_mode === 'framework') return `框架 ${rule.provider_framework} · ${model}`
+  if (rule.provider_base_url) return `${rule.provider_base_url} · ${model}`
+  return `全部平台 · ${model}`
+}
+
+function matchSummary(rule: FailureRule) {
+  const conds = rule.match.any || rule.match.all || []
+  return conds
+    .map((c) => {
+      const f = FIELDS.find((x) => x.value === c.field)?.label ?? c.field
+      return `${f}${c.op === 'eq' ? '=' : c.op === 'not_contains' ? '≠' : '∋'} ${c.value}`
+    })
+    .join(' 或 ')
+}
+
+function recoverText(rule: FailureRule) {
+  const a = rule.action
+  if (a.recover === 'daily') return `次日 ${a.daily_reset_hour || 12} 点`
+  if (a.recover === 'fixed') return `${a.cooldown_seconds || 0} 秒`
+  if (a.recover === 'never') return '不恢复'
+  return '—'
+}
+
 function sourceBadge(rule: FailureRule) {
-  if (rule.source === 'ai') return rule.confirmed ? 'AI 已确认' : 'AI 草稿'
-  return '内置/手动'
+  const s = sourceOf(rule)
+  if (s === 'ai_draft') return { text: 'AI 草稿', class: 'border-amber-500/40 text-amber-600 dark:text-amber-400' }
+  if (s === 'ai_confirmed') return { text: 'AI 已确认', class: 'border-blue-500/40 text-blue-600 dark:text-blue-400' }
+  return { text: '内置/手动', class: 'text-muted-foreground' }
 }
 
 async function loadChannels() {
@@ -238,158 +330,335 @@ load()
 </script>
 
 <template>
-  <div class="mx-auto w-full max-w-6xl space-y-4 p-4">
+  <div class="mx-auto flex h-full w-full max-w-7xl flex-col gap-4 overflow-y-auto p-4">
     <PageHeader title="失败规则" description="请求失败后的路由裁决规则；未命中规则时由 AI 兜底判定并生成草稿">
       <template #actions>
-        <button class="btn" @click="load"><RiRefreshLine size="15" /> 刷新</button>
-        <button class="btn btn-primary" @click="openCreate"><RiAddLine size="15" /> 新建规则</button>
+        <Button variant="outline" size="sm" @click="load">
+          <RiRefreshLine size="15" class="mr-1" /> 刷新
+        </Button>
+        <Button size="sm" @click="openCreate">
+          <RiAddLine size="15" class="mr-1" /> 新建规则
+        </Button>
       </template>
     </PageHeader>
 
-    <div class="flex gap-2">
-      <button class="tab" :class="{ active: tab === 'rules' }" @click="switchTab('rules')">规则列表</button>
-      <button class="tab" :class="{ active: tab === 'logs' }" @click="switchTab('logs')">AI / 规则路由日志</button>
-    </div>
+    <Tabs v-model="tab" class="space-y-3" @update:model-value="(v: unknown) => switchTab(v as 'rules' | 'logs')">
+      <TabsList class="h-auto w-fit">
+        <TabsTrigger value="rules">规则列表</TabsTrigger>
+        <TabsTrigger value="logs">路由判定日志</TabsTrigger>
+      </TabsList>
 
-    <LoadingBlock v-if="loading" />
-
-    <template v-else>
-      <div v-if="tab === 'rules'" class="space-y-3">
-        <input v-model="search" class="input max-w-xs" placeholder="搜索规则 / 模型 / 平台" />
-        <div v-if="!filtered.length" class="rounded-lg border p-8 text-center text-muted-foreground">暂无规则</div>
-        <div v-for="rule in filtered" :key="rule.id" class="rounded-lg border p-4">
-          <div class="flex items-center gap-3">
-            <input type="checkbox" :checked="rule.enabled" @change="toggle(rule)" />
-            <span class="font-medium">{{ rule.name }}</span>
-            <span class="badge" :class="rule.source === 'ai' ? 'badge-ai' : ''">{{ sourceBadge(rule) }}</span>
-            <span class="badge">P{{ rule.priority }}</span>
-            <span v-if="rule.hit_count" class="badge">命中 {{ rule.hit_count }}</span>
-            <span class="ml-auto text-sm text-muted-foreground">{{ rule.action.verdict }}</span>
-            <button v-if="rule.source === 'ai' && !rule.confirmed" class="btn" @click="confirmDraft(rule)"><RiCheckLine size="14" /> 确认</button>
-            <button class="btn" @click="openEdit(rule)"><RiEditLine size="14" /> 编辑</button>
-            <button class="btn btn-danger" @click="remove(rule)"><RiDeleteBinLine size="14" /></button>
+      <!-- ===== 规则列表 ===== -->
+      <TabsContent value="rules" class="space-y-3">
+        <!-- 过滤栏 -->
+        <div class="flex flex-wrap items-center gap-2">
+          <div class="relative">
+            <RiSearchLine size="15" class="text-muted-foreground absolute top-1/2 left-2.5 -translate-y-1/2" />
+            <Input v-model="search" placeholder="搜索名称 / 模型 / 平台 / ID" class="w-64 pl-8" />
           </div>
-          <div class="mt-2 text-sm text-muted-foreground">
-            作用域：{{ rule.provider_base_url || '全部平台' }} / {{ rule.model || '全部模型' }}
-            · 匹配：{{ (rule.match.any || rule.match.all || []).length }} 条件
-          </div>
+          <Select v-model="filterSource">
+            <SelectTrigger class="w-36"><SelectValue placeholder="来源" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">全部来源</SelectItem>
+              <SelectItem value="manual">内置/手动</SelectItem>
+              <SelectItem value="ai_draft">AI 草稿</SelectItem>
+              <SelectItem value="ai_confirmed">AI 已确认</SelectItem>
+            </SelectContent>
+          </Select>
+          <Select v-model="filterVerdict">
+            <SelectTrigger class="w-36"><SelectValue placeholder="动作" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">全部动作</SelectItem>
+              <SelectItem v-for="v in VERDICTS" :key="v.value" :value="v.value">{{ v.label }}</SelectItem>
+            </SelectContent>
+          </Select>
+          <Select v-model="filterEnabled">
+            <SelectTrigger class="w-32"><SelectValue placeholder="状态" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">全部状态</SelectItem>
+              <SelectItem value="on">已启用</SelectItem>
+              <SelectItem value="off">已停用</SelectItem>
+            </SelectContent>
+          </Select>
+          <Button v-if="hasFilter" variant="ghost" size="sm" @click="clearFilters">
+            <RiCloseCircleLine size="14" class="mr-1" /> 清除筛选
+          </Button>
+          <span class="text-muted-foreground ml-auto text-xs">{{ filtered.length }} / {{ rules.length }} 条</span>
         </div>
-      </div>
 
-      <div v-else class="space-y-2">
-        <div v-if="!decisions.length" class="rounded-lg border p-8 text-center text-muted-foreground">暂无判定记录</div>
-        <div v-for="d in decisions" :key="d.id" class="rounded-lg border p-3 text-sm">
-          <div class="flex items-center gap-2">
-            <span class="badge" :class="d.matched_rule_id ? '' : 'badge-ai'">{{ d.matched_rule_id ? '规则路由' : 'AI 路由' }}</span>
-            <span class="font-medium">{{ d.matched_rule_name || d.ai_model || '默认' }}</span>
-            <span class="badge">{{ d.verdict }}</span>
-            <span class="ml-auto text-xs text-muted-foreground">{{ d.created_at }}</span>
-          </div>
-          <div class="mt-1 text-muted-foreground">
-            {{ d.model }} · HTTP {{ d.status_code || '-' }} · {{ d.error_excerpt }}
-          </div>
+        <LoadingBlock v-if="loading" />
+        <EmptyState v-else-if="!filtered.length" title="暂无规则" description="没有匹配当前筛选条件的规则" />
+
+        <div v-else class="rounded-lg border">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead class="w-[220px]">名称</TableHead>
+                <TableHead class="w-[180px]">作用域</TableHead>
+                <TableHead>匹配条件</TableHead>
+                <TableHead class="w-[90px]">判定</TableHead>
+                <TableHead class="w-[88px]">恢复</TableHead>
+                <TableHead class="w-[96px]">来源</TableHead>
+                <TableHead class="w-[64px]">优先</TableHead>
+                <TableHead class="w-[64px]">命中</TableHead>
+                <TableHead class="w-[40px]">开</TableHead>
+                <TableHead class="w-[110px] text-right">操作</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              <TableRow v-for="rule in filtered" :key="rule.id" :class="{ 'opacity-50': !rule.enabled }">
+                <TableCell>
+                  <div class="font-medium">{{ rule.name }}</div>
+                  <div class="text-muted-foreground font-mono text-[10px]">{{ rule.id }}</div>
+                </TableCell>
+                <TableCell>
+                  <div class="text-xs">{{ scopeText(rule) }}</div>
+                  <div v-if="rule.scope_mode" class="text-muted-foreground text-[10px]">
+                    {{ rule.scope_mode === 'framework' ? '按框架' : '多平台' }}
+                  </div>
+                </TableCell>
+                <TableCell>
+                  <div class="max-w-[300px] truncate font-mono text-[11px]" :title="matchSummary(rule)">
+                    {{ matchSummary(rule) }}
+                  </div>
+                </TableCell>
+                <TableCell>
+                  <Badge variant="outline" class="text-[11px]">{{ VERDICT_LABELS[rule.action.verdict] || rule.action.verdict }}</Badge>
+                </TableCell>
+                <TableCell class="text-muted-foreground text-xs">{{ recoverText(rule) }}</TableCell>
+                <TableCell>
+                  <span class="text-[11px]" :class="sourceBadge(rule).class">{{ sourceBadge(rule).text }}</span>
+                </TableCell>
+                <TableCell class="font-mono text-xs">{{ rule.priority }}</TableCell>
+                <TableCell class="text-xs">{{ rule.hit_count || '—' }}</TableCell>
+                <TableCell>
+                  <Switch :model-value="rule.enabled" @update:model-value="toggle(rule)" />
+                </TableCell>
+                <TableCell class="text-right">
+                  <div class="flex items-center justify-end gap-0.5">
+                    <Tooltip>
+                      <TooltipTrigger as-child>
+                        <Button v-if="rule.source === 'ai' && !rule.confirmed" variant="ghost" size="icon" class="size-7" @click="confirmDraft(rule)">
+                          <RiCheckLine size="15" class="text-green-600" />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>确认 AI 草稿</TooltipContent>
+                    </Tooltip>
+                    <Tooltip>
+                      <TooltipTrigger as-child>
+                        <Button variant="ghost" size="icon" class="size-7" @click="openEdit(rule)">
+                          <RiEditLine size="15" />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>编辑</TooltipContent>
+                    </Tooltip>
+                    <Tooltip>
+                      <TooltipTrigger as-child>
+                        <Button variant="ghost" size="icon" class="size-7 text-red-500 hover:text-red-600" @click="remove(rule)">
+                          <RiDeleteBinLine size="15" />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>删除</TooltipContent>
+                    </Tooltip>
+                  </div>
+                </TableCell>
+              </TableRow>
+            </TableBody>
+          </Table>
         </div>
-      </div>
-    </template>
+      </TabsContent>
 
-    <!-- 编辑弹窗 -->
-    <div v-if="showEditor" class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" @click.self="showEditor = false">
-      <div class="max-h-[90vh] w-full max-w-2xl overflow-auto rounded-xl bg-background p-5 shadow-xl">
-        <h3 class="mb-4 text-lg font-semibold">{{ editing ? '编辑规则' : '新建规则' }}</h3>
+      <!-- ===== 判定日志 ===== -->
+      <TabsContent value="logs" class="space-y-3">
+        <div class="flex items-center gap-2">
+          <div class="relative">
+            <RiSearchLine size="15" class="text-muted-foreground absolute top-1/2 left-2.5 -translate-y-1/2" />
+            <Input v-model="logsSearch" placeholder="搜索模型 / 规则 / 错误" class="w-72 pl-8" />
+          </div>
+          <span class="text-muted-foreground ml-auto text-xs">{{ filteredLogs.length }} 条</span>
+        </div>
+
+        <LoadingBlock v-if="loading" />
+        <EmptyState v-else-if="!filteredLogs.length" title="暂无判定记录" description="请求失败后的规则/AI 裁决会记录在这里" />
+
+        <div v-else class="rounded-lg border">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead class="w-[150px]">时间</TableHead>
+                <TableHead class="w-[160px]">模型</TableHead>
+                <TableHead class="w-[70px]">状态码</TableHead>
+                <TableHead>错误摘要</TableHead>
+                <TableHead class="w-[110px]">路由依据</TableHead>
+                <TableHead class="w-[90px]">判定</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              <TableRow v-for="d in filteredLogs" :key="d.id">
+                <TableCell class="text-muted-foreground font-mono text-[11px]">{{ d.created_at?.slice(5, 19) }}</TableCell>
+                <TableCell class="font-mono text-xs">{{ d.model || '—' }}</TableCell>
+                <TableCell class="text-xs">{{ d.status_code || '—' }}</TableCell>
+                <TableCell>
+                  <div class="max-w-[360px] truncate text-xs" :title="d.error_excerpt">{{ d.error_excerpt || '—' }}</div>
+                </TableCell>
+                <TableCell>
+                  <Badge v-if="d.matched_rule_id" variant="outline" class="text-[11px]" :title="d.matched_rule_name">
+                    {{ d.matched_rule_name || d.matched_rule_id }}
+                  </Badge>
+                  <Badge v-else-if="d.ai_model" class="bg-blue-500/10 text-[11px] text-blue-600 dark:text-blue-400">AI</Badge>
+                  <span v-else class="text-muted-foreground text-[11px]">默认</span>
+                </TableCell>
+                <TableCell>
+                  <Badge variant="outline" class="text-[11px]">{{ VERDICT_LABELS[d.verdict] || d.verdict }}</Badge>
+                </TableCell>
+              </TableRow>
+            </TableBody>
+          </Table>
+        </div>
+      </TabsContent>
+    </Tabs>
+
+    <!-- ===== 编辑弹窗（shadcn Dialog）===== -->
+    <Dialog v-model:open="showEditor">
+      <DialogContent class="max-h-[90vh] max-w-2xl overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>{{ editing ? '编辑规则' : '新建规则' }}</DialogTitle>
+          <DialogDescription>规则按优先级从小到大匹配，首个命中生效</DialogDescription>
+        </DialogHeader>
+
         <div class="grid grid-cols-2 gap-3">
-          <label class="col-span-2 block text-sm">规则名 <input v-model="form.name" class="input w-full" /></label>
-          <label class="block text-sm">优先级（小者先）<input v-model.number="form.priority" type="number" class="input w-full" /></label>
-          <label class="block text-sm">模型（空 = 全部）<input v-model="form.model" class="input w-full" /></label>
-          <label class="col-span-2 block text-sm">
-            作用范围
-            <select v-model="form.scope_mode" class="input w-full">
-              <option value="">全部平台</option>
-              <option value="urls">指定平台（多选）</option>
-              <option value="framework">按框架（New API 等）</option>
-            </select>
-          </label>
-          <label v-if="form.scope_mode !== 'urls' && form.scope_mode !== 'framework'" class="col-span-2 block text-sm">
-            单平台（兼容旧规则，通常留空）
-            <input v-model="form.provider_base_url" list="channel-urls" class="input w-full" />
-            <datalist id="channel-urls">
-              <option v-for="c in channels" :key="c.base_url" :value="c.base_url" />
-            </datalist>
-          </label>
-          <div v-if="form.scope_mode === 'framework'" class="col-span-2">
-            <label class="block text-sm">
-              框架
-              <input v-model="form.provider_framework" list="framework-list" class="input w-full" placeholder="newapi / one-api / …" />
-              <datalist id="framework-list">
-                <option v-for="f in frameworks" :key="f" :value="f" />
-              </datalist>
-            </label>
-            <p class="mt-1 text-xs text-muted-foreground">渠道里标注了该框架的所有平台都会命中此规则（如所有 New API 站点共用一条额度规则）。</p>
+          <div class="col-span-2 space-y-1">
+            <Label>规则名</Label>
+            <Input v-model="form.name" placeholder="如：额度用尽（次日恢复）" />
           </div>
-          <div v-if="form.scope_mode === 'urls'" class="col-span-2">
-            <label class="block text-sm">平台地址（每行一个或逗号分隔）
-              <textarea v-model="scopeUrlsText" class="input w-full" rows="3" placeholder="https://api.a.com/v1, https://b.newapi.top/v1"></textarea>
-            </label>
-            <div class="mt-1 flex flex-wrap gap-1">
-              <button v-for="pt in platforms" :key="pt.base_url" type="button" class="badge" @click="scopeUrlsText += (scopeUrlsText ? ', ' : '') + pt.base_url">{{ pt.name || pt.base_url }}</button>
+          <div class="space-y-1">
+            <Label>优先级（小者先）</Label>
+            <Input v-model.number="form.priority" type="number" />
+          </div>
+          <div class="space-y-1">
+            <Label>模型（空 = 全部）</Label>
+            <Input v-model="form.model" placeholder="glm-5.3-flash" />
+          </div>
+          <div class="col-span-2 grid grid-cols-2 gap-3">
+            <div class="space-y-1">
+              <Label>作用范围</Label>
+              <Select v-model="form.scope_mode">
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem v-for="m in SCOPE_MODES" :key="m.value" :value="m.value">{{ m.label }}</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div v-if="form.scope_mode !== 'urls' && form.scope_mode !== 'framework'" class="space-y-1">
+              <Label>单平台（兼容，通常留空）</Label>
+              <Input v-model="form.provider_base_url" list="channel-urls" placeholder="全部平台" />
+              <datalist id="channel-urls">
+                <option v-for="c in channels" :key="c.base_url" :value="c.base_url" />
+              </datalist>
+            </div>
+          </div>
+          <div v-if="form.scope_mode === 'framework'" class="col-span-2 space-y-1">
+            <Label>框架（同框架平台共用此规则）</Label>
+            <Input v-model="form.provider_framework" list="framework-list" placeholder="newapi / one-api / …" />
+            <datalist id="framework-list">
+              <option v-for="f in frameworks" :key="f" :value="f" />
+            </datalist>
+            <p class="text-muted-foreground text-xs">渠道编辑里标注了该框架的所有平台都会命中。</p>
+          </div>
+          <div v-if="form.scope_mode === 'urls'" class="col-span-2 space-y-1">
+            <Label>平台地址（每行一个或逗号分隔）</Label>
+            <Textarea v-model="scopeUrlsText" :rows="3" placeholder="https://api.a.com/v1, https://b.newapi.top/v1" />
+            <div class="flex flex-wrap gap-1">
+              <Badge
+                v-for="pt in platforms"
+                :key="pt.base_url"
+                variant="outline"
+                class="cursor-pointer select-none"
+                @click="scopeUrlsText += (scopeUrlsText ? ', ' : '') + pt.base_url"
+              >{{ pt.name || pt.base_url }}</Badge>
             </div>
           </div>
         </div>
 
-        <div v-for="kind in (['any', 'all'] as const)" :key="kind" class="mt-4">
-          <div class="mb-1 flex items-center gap-2 text-sm font-medium">
-            {{ kind === 'any' ? '任一命中（any）' : '全部命中（all）' }}
-            <button class="btn btn-sm" @click="addCondition(kind)"><RiAddLine size="12" /> 加条件</button>
+        <!-- 匹配条件 -->
+        <div v-for="kind in (['any', 'all'] as const)" :key="kind" class="space-y-2">
+          <div class="flex items-center gap-2">
+            <span class="text-sm font-medium">{{ kind === 'any' ? '任一命中（any）' : '全部命中（all）' }}</span>
+            <Button variant="outline" size="sm" @click="addCondition(kind)">
+              <RiAddLine size="12" class="mr-1" /> 加条件
+            </Button>
           </div>
-          <div v-for="(cond, i) in form.match[kind]" :key="i" class="mb-2 flex gap-2">
-            <select v-model="cond.field" class="input">
-              <option v-for="f in FIELDS" :key="f.value" :value="f.value">{{ f.label }}</option>
-            </select>
-            <select v-model="cond.op" class="input">
-              <option v-for="o in OPS" :key="o.value" :value="o.value">{{ o.label }}</option>
-            </select>
-            <input v-model="cond.value" class="input flex-1" placeholder="匹配值" />
-            <button class="btn btn-danger" @click="removeCondition(kind, i)"><RiDeleteBinLine size="14" /></button>
+          <div v-for="(cond, i) in form.match[kind]" :key="i" class="flex items-center gap-2">
+            <Select v-model="cond.field">
+              <SelectTrigger class="w-32"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem v-for="f in FIELDS" :key="f.value" :value="f.value">{{ f.label }}</SelectItem>
+              </SelectContent>
+            </Select>
+            <Select v-model="cond.op">
+              <SelectTrigger class="w-28"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem v-for="o in OPS" :key="o.value" :value="o.value">{{ o.label }}</SelectItem>
+              </SelectContent>
+            </Select>
+            <Input v-model="cond.value" class="flex-1" placeholder="匹配值" />
+            <Button variant="ghost" size="icon" class="text-red-500 hover:text-red-600" @click="removeCondition(kind, i)">
+              <RiDeleteBinLine size="15" />
+            </Button>
           </div>
         </div>
 
-        <div class="mt-4 grid grid-cols-3 gap-3">
-          <label class="block text-sm">动作
-            <select v-model="form.action.verdict" class="input w-full">
-              <option v-for="v in VERDICTS" :key="v.value" :value="v.value">{{ v.label }}</option>
-            </select>
-          </label>
-          <label class="block text-sm">恢复策略
-            <select v-model="form.action.recover" class="input w-full">
-              <option v-for="r in RECOVERS" :key="r.value" :value="r.value">{{ r.label }}</option>
-            </select>
-          </label>
-          <label class="block text-sm">冷却秒数
-            <input v-model.number="form.action.cooldown_seconds" type="number" class="input w-full" :disabled="form.action.recover !== 'fixed'" />
-          </label>
-          <label v-if="form.action.recover === 'daily'" class="block text-sm">每日恢复点（小时）
-            <input v-model.number="form.action.daily_reset_hour" type="number" min="0" max="23" class="input w-full" />
-          </label>
+        <!-- 动作 -->
+        <div class="grid grid-cols-3 gap-3">
+          <div class="space-y-1">
+            <Label>动作</Label>
+            <Select v-model="form.action.verdict">
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem v-for="v in VERDICTS" :key="v.value" :value="v.value">{{ v.label }}</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div class="space-y-1">
+            <Label>恢复策略</Label>
+            <Select v-model="form.action.recover">
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem v-for="r in RECOVERS" :key="r.value" :value="r.value">{{ r.label }}</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div class="space-y-1">
+            <Label>冷却秒数</Label>
+            <Input v-model.number="form.action.cooldown_seconds" type="number" :disabled="form.action.recover !== 'fixed'" />
+          </div>
+          <div v-if="form.action.recover === 'daily'" class="space-y-1">
+            <Label>每日恢复点（小时）</Label>
+            <Input v-model.number="form.action.daily_reset_hour" type="number" :min="0" :max="23" />
+          </div>
         </div>
 
         <!-- 样本校验 -->
-        <div class="mt-4 rounded-lg border p-3">
-          <div class="mb-2 flex items-center gap-2 text-sm font-medium"><RiFlaskLine size="14" /> 样本校验</div>
+        <div class="rounded-lg border p-3">
+          <div class="mb-2 flex items-center gap-1.5 text-sm font-medium">
+            <RiFlaskLine size="14" /> 样本校验（dry-run）
+          </div>
           <div class="flex gap-2">
-            <input v-model.number="verifySample.status_code" type="number" class="input w-28" placeholder="状态码" />
-            <input v-model="verifySample.body_code" class="input w-28" placeholder="业务码" />
-            <input v-model="verifySample.message" class="input flex-1" placeholder="错误文案" />
-            <button class="btn btn-primary" @click="runVerify">测试</button>
+            <Input v-model.number="verifySample.status_code" type="number" class="w-24" placeholder="状态码" />
+            <Input v-model="verifySample.body_code" class="w-28" placeholder="业务码" />
+            <Input v-model="verifySample.message" class="flex-1" placeholder="错误文案" />
+            <Button variant="secondary" :disabled="verifying" @click="runVerify">测试</Button>
           </div>
-          <div v-if="verifyHit !== null" class="mt-2 text-sm" :class="verifyHit ? 'text-green-600' : 'text-red-500'">
+          <p v-if="verifyHit !== null" class="mt-2 text-sm" :class="verifyHit ? 'text-green-600' : 'text-red-500'">
             {{ verifyHit ? '✓ 命中该规则' : '✗ 未命中' }}
-          </div>
+          </p>
         </div>
 
-        <div class="mt-5 flex justify-end gap-2">
-          <button class="btn" @click="showEditor = false">取消</button>
-          <button class="btn btn-primary" @click="save">保存</button>
-        </div>
-      </div>
-    </div>
+        <DialogFooter>
+          <Button variant="outline" @click="showEditor = false">取消</Button>
+          <Button :disabled="saving" @click="save">保存</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   </div>
 </template>
