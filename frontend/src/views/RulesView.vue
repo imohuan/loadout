@@ -63,6 +63,39 @@ const SCOPE_MODES = [
   { value: 'framework', label: '按框架' },
 ]
 
+// 配色对齐项目规范（RouteLogTable 同款 tone 写法）：
+//   red=破坏性禁用 / amber=冷却等待 / blue=切换重试 / slate=忽略，emerald=恢复成功
+const VERDICT_TONES: Record<string, string> = {
+  disable_key: 'bg-red-500/15 text-red-700 dark:text-red-300 border-red-500/20',
+  disable_model: 'bg-red-500/15 text-red-700 dark:text-red-300 border-red-500/20',
+  disable_provider: 'bg-red-500/15 text-red-700 dark:text-red-300 border-red-500/20',
+  cooldown: 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/20',
+  ignore: 'bg-slate-500/15 text-slate-700 dark:text-slate-300 border-slate-500/20',
+  retry_same: 'bg-blue-500/15 text-blue-700 dark:text-blue-300 border-blue-500/20',
+  switch_next: 'bg-blue-500/15 text-blue-700 dark:text-blue-300 border-blue-500/20',
+}
+function verdictTone(v?: string) {
+  return VERDICT_TONES[v || ''] || ''
+}
+
+// 恢复策略配色：永久禁用=red（不可逆）/ 每日=amber / 定时=blue / 不适用=slate
+const RECOVER_TONES: Record<string, string> = {
+  never: 'bg-red-500/15 text-red-700 dark:text-red-300 border-red-500/20',
+  daily: 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/20',
+  fixed: 'bg-blue-500/15 text-blue-700 dark:text-blue-300 border-blue-500/20',
+}
+function recoverTone(recover?: string) {
+  return RECOVER_TONES[recover || ''] || 'bg-slate-500/15 text-slate-700 dark:text-slate-300 border-slate-500/20'
+}
+
+// 状态码配色：2xx=emerald 成功 / 4xx=amber 客户端 / 5xx=red 服务端
+function statusTone(code?: number) {
+  if (!code) return 'text-muted-foreground'
+  if (code < 300) return 'text-emerald-600 dark:text-emerald-400'
+  if (code < 500) return 'text-amber-600 dark:text-amber-400'
+  return 'text-red-600 dark:text-red-400'
+}
+
 const VERDICT_LABELS: Record<string, string> = Object.fromEntries(VERDICTS.map((v) => [v.value, v.label]))
 
 const tab = ref<'rules' | 'logs'>('rules')
@@ -120,6 +153,22 @@ const logPlatforms = computed(() => {
   }
   return out
 })
+
+// 平台配色：按 base_url 稳定散列到 6 色，同一平台始终同色（便于扫读区分）。
+const PLATFORM_TONES = [
+  'bg-blue-500/15 text-blue-700 dark:text-blue-300 border-blue-500/20',
+  'bg-violet-500/15 text-violet-700 dark:text-violet-300 border-violet-500/20',
+  'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/20',
+  'bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/20',
+  'bg-rose-500/15 text-rose-700 dark:text-rose-300 border-rose-500/20',
+  'bg-cyan-500/15 text-cyan-700 dark:text-cyan-300 border-cyan-500/20',
+]
+function platformTone(url?: string) {
+  if (!url) return PLATFORM_TONES[0]
+  let h = 0
+  for (let i = 0; i < url.length; i++) h = (h * 31 + url.charCodeAt(i)) >>> 0
+  return PLATFORM_TONES[h % PLATFORM_TONES.length]
+}
 
 // platformLabel base_url → 渠道组名（展示用；找不到则回退显示域名）。
 function platformLabel(url?: string) {
@@ -357,9 +406,20 @@ function recoverText(rule: FailureRule) {
 
 function sourceBadge(rule: FailureRule) {
   const s = sourceOf(rule)
-  if (s === 'ai_draft') return { text: 'AI 草稿', class: 'border-amber-500/40 text-amber-600 dark:text-amber-400' }
-  if (s === 'ai_confirmed') return { text: 'AI 已确认', class: 'border-blue-500/40 text-blue-600 dark:text-blue-400' }
-  return { text: '内置/手动', class: 'text-muted-foreground' }
+  if (s === 'ai_draft')
+    return {
+      text: 'AI 草稿',
+      class: 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/20',
+    }
+  if (s === 'ai_confirmed')
+    return {
+      text: 'AI 已确认',
+      class: 'bg-violet-500/15 text-violet-700 dark:text-violet-300 border-violet-500/20',
+    }
+  return {
+    text: '内置/手动',
+    class: 'bg-slate-500/15 text-slate-700 dark:text-slate-300 border-slate-500/20',
+  }
 }
 
 async function loadChannels() {
@@ -498,9 +558,16 @@ load()
                 </TableCell>
                 <TableCell>
                   <div class="text-xs">{{ scopeText(rule) }}</div>
-                  <div v-if="rule.scope_mode" class="text-muted-foreground text-[10px]">
+                  <Badge
+                    v-if="rule.scope_mode"
+                    variant="outline"
+                    class="mt-0.5 border text-[10px]"
+                    :class="rule.scope_mode === 'framework'
+                      ? 'bg-violet-500/15 text-violet-700 dark:text-violet-300 border-violet-500/20'
+                      : 'bg-blue-500/15 text-blue-700 dark:text-blue-300 border-blue-500/20'"
+                  >
                     {{ rule.scope_mode === 'framework' ? '按框架' : '多平台' }}
-                  </div>
+                  </Badge>
                 </TableCell>
                 <TableCell>
                   <div class="max-w-[300px] truncate font-mono text-[11px]" :title="matchSummary(rule)">
@@ -508,14 +575,27 @@ load()
                   </div>
                 </TableCell>
                 <TableCell>
-                  <Badge variant="outline" class="text-[11px]">{{ VERDICT_LABELS[rule.action.verdict] || rule.action.verdict }}</Badge>
+                  <Badge variant="outline" class="border text-[11px]" :class="verdictTone(rule.action.verdict)">
+                    {{ VERDICT_LABELS[rule.action.verdict] || rule.action.verdict }}
+                  </Badge>
                 </TableCell>
-                <TableCell class="text-muted-foreground text-xs">{{ recoverText(rule) }}</TableCell>
                 <TableCell>
-                  <span class="text-[11px]" :class="sourceBadge(rule).class">{{ sourceBadge(rule).text }}</span>
+                  <Badge variant="outline" class="border text-[11px]" :class="recoverTone(rule.action.recover)">
+                    {{ recoverText(rule) }}
+                  </Badge>
+                </TableCell>
+                <TableCell>
+                  <Badge variant="outline" class="border text-[11px]" :class="sourceBadge(rule).class">
+                    {{ sourceBadge(rule).text }}
+                  </Badge>
                 </TableCell>
                 <TableCell class="font-mono text-xs">{{ rule.priority }}</TableCell>
-                <TableCell class="text-xs">{{ rule.hit_count || '—' }}</TableCell>
+                <TableCell class="text-xs">
+                  <span v-if="rule.hit_count" class="font-medium text-emerald-600 dark:text-emerald-400">
+                    {{ rule.hit_count }}
+                  </span>
+                  <span v-else class="text-muted-foreground">—</span>
+                </TableCell>
                 <TableCell>
                   <Switch :model-value="rule.enabled" @update:model-value="toggle(rule)" />
                 </TableCell>
@@ -594,12 +674,14 @@ load()
               <TableRow v-for="d in filteredLogs" :key="d.id">
                 <TableCell class="text-muted-foreground font-mono text-[11px]">{{ d.created_at?.slice(5, 19) }}</TableCell>
                 <TableCell>
-                  <Badge variant="secondary" class="text-[11px]" :title="d.provider_base_url">
+                  <Badge variant="outline" class="border text-[11px]" :class="platformTone(d.provider_base_url)" :title="d.provider_base_url">
                     {{ platformLabel(d.provider_base_url) }}
                   </Badge>
                 </TableCell>
                 <TableCell class="font-mono text-xs">{{ d.model || '—' }}</TableCell>
-                <TableCell class="text-xs">{{ d.status_code || '—' }}</TableCell>
+                <TableCell class="font-mono text-xs font-medium" :class="statusTone(d.status_code)">
+                  {{ d.status_code || '—' }}
+                </TableCell>
                 <TableCell>
                   <Tooltip>
                     <TooltipTrigger as-child>
@@ -614,11 +696,13 @@ load()
                   <Badge v-if="d.matched_rule_id" variant="outline" class="text-[11px] whitespace-normal">
                     {{ d.matched_rule_name || d.matched_rule_id }}
                   </Badge>
-                  <Badge v-else-if="d.ai_model" class="bg-blue-500/10 text-[11px] text-blue-600 dark:text-blue-400">AI</Badge>
+                  <Badge v-else-if="d.ai_model" variant="outline" class="border border-violet-500/20 bg-violet-500/15 text-[11px] text-violet-700 dark:text-violet-300">AI 判定</Badge>
                   <span v-else class="text-muted-foreground text-[11px]">默认</span>
                 </TableCell>
                 <TableCell>
-                  <Badge variant="outline" class="text-[11px] whitespace-normal">{{ VERDICT_LABELS[d.verdict] || d.verdict }}</Badge>
+                  <Badge variant="outline" class="border text-[11px] whitespace-normal" :class="verdictTone(d.verdict)">
+                    {{ VERDICT_LABELS[d.verdict] || d.verdict }}
+                  </Badge>
                 </TableCell>
               </TableRow>
             </TableBody>
