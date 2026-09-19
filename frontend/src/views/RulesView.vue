@@ -8,8 +8,7 @@ import {
   RiEditLine,
   RiFlaskLine,
   RiRefreshLine,
-  RiSearchLine,
-  RiCloseCircleLine,
+  RiFilter3Line,
 } from '@remixicon/vue'
 import {
   createFailureRule,
@@ -26,6 +25,7 @@ import {
   type RuleInput,
 } from '@/lib/failureRules'
 import { api } from '@/lib/api'
+import TargetModelPicker from '@/components/TargetModelPicker.vue'
 import PageHeader from '@/components/PageHeader.vue'
 import LoadingBlock from '@/components/LoadingBlock.vue'
 import EmptyState from '@/components/EmptyState.vue'
@@ -72,9 +72,9 @@ const loading = ref(false)
 
 // ===== 过滤/搜索（参考转发日志页的筛选约定）=====
 const search = ref('')
-const filterSource = ref('') // '' 全部 | manual | ai_draft | ai_confirmed
-const filterVerdict = ref('') // '' 全部 | verdict
-const filterEnabled = ref('') // '' 全部 | on | off
+const filterSource = ref('__all__') // '' 全部 | manual | ai_draft | ai_confirmed
+const filterVerdict = ref('__all__') // '' 全部 | verdict
+const filterEnabled = ref('__all__') // '' 全部 | on | off
 const logsSearch = ref('')
 
 function sourceOf(rule: FailureRule): 'manual' | 'ai_draft' | 'ai_confirmed' {
@@ -89,9 +89,8 @@ const filtered = computed(() => {
       const hay = `${r.name} ${r.model} ${r.provider_base_url} ${(r.provider_base_urls || []).join(' ')} ${r.provider_framework} ${r.id}`.toLowerCase()
       if (!hay.includes(q)) return false
     }
-    if (filterSource.value && sourceOf(r) !== filterSource.value) return false
-    if (filterVerdict.value && r.action.verdict !== filterVerdict.value) return false
-    if (filterEnabled.value === 'on' && !r.enabled) return false
+    if (filterSource.value !== '__all__' && sourceOf(r) !== filterSource.value) return false
+    if (filterVerdict.value !== '__all__' && r.action.verdict !== filterVerdict.value) return false
     if (filterEnabled.value === 'off' && r.enabled) return false
     return true
   })
@@ -105,14 +104,11 @@ const filteredLogs = computed(() => {
   )
 })
 
-const hasFilter = computed(
-  () => !!(search.value || filterSource.value || filterVerdict.value || filterEnabled.value),
-)
 function clearFilters() {
   search.value = ''
-  filterSource.value = ''
-  filterVerdict.value = ''
-  filterEnabled.value = ''
+  filterSource.value = '__all__'
+  filterVerdict.value = '__all__'
+  filterEnabled.value = '__all__'
 }
 
 // ===== 编辑器 =====
@@ -196,6 +192,7 @@ function removeCondition(kind: 'any' | 'all', idx: number) {
 }
 
 async function save() {
+  if (form.value.provider_base_url === '__all__') form.value.provider_base_url = ''
   if (!form.value.name.trim()) {
     toast.error('规则名不能为空')
     return
@@ -324,7 +321,28 @@ async function loadChannels() {
   }
 }
 
-const channels = ref<Array<{ base_url?: string }>>([])
+const channels = ref<Array<{ base_url?: string; name?: string; models?: string[] }>>([])
+const allModels = computed(() => {
+  const set = new Set<string>()
+  for (const c of channels.value) for (const m of c.models || []) set.add(m)
+  return [...set].sort()
+})
+const uniqueChannels = computed(() => {
+  const seen = new Set<string>()
+  const out: Array<{ base_url: string; name: string }> = []
+  for (const c of channels.value) {
+    const u = (c.base_url || '').replace(/\/+$/, '')
+    if (!u || seen.has(u)) continue
+    seen.add(u)
+    out.push({ base_url: u, name: c.name || u })
+  }
+  return out
+})
+const FRAMEWORK_PRESETS = ['newapi', 'one-api', 'done-hub', 'voapi']
+const frameworkOptions = computed(() => {
+  const set = new Set<string>([...FRAMEWORK_PRESETS, ...frameworks.value])
+  return [...set].filter(Boolean).sort()
+})
 loadChannels()
 load()
 </script>
@@ -351,39 +369,54 @@ load()
       <!-- ===== 规则列表 ===== -->
       <TabsContent value="rules" class="space-y-3">
         <!-- 过滤栏 -->
-        <div class="flex flex-wrap items-center gap-2">
-          <div class="relative">
-            <RiSearchLine size="15" class="text-muted-foreground absolute top-1/2 left-2.5 -translate-y-1/2" />
-            <Input v-model="search" placeholder="搜索名称 / 模型 / 平台 / ID" class="w-64 pl-8" />
+        <div class="flex flex-wrap items-end gap-3">
+          <div class="min-w-56 space-y-1">
+            <Label>搜索</Label>
+            <Input v-model="search" placeholder="名称 / 模型 / 平台 / ID" />
           </div>
-          <Select v-model="filterSource">
-            <SelectTrigger class="w-36"><SelectValue placeholder="来源" /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">全部来源</SelectItem>
-              <SelectItem value="manual">内置/手动</SelectItem>
-              <SelectItem value="ai_draft">AI 草稿</SelectItem>
-              <SelectItem value="ai_confirmed">AI 已确认</SelectItem>
-            </SelectContent>
-          </Select>
-          <Select v-model="filterVerdict">
-            <SelectTrigger class="w-36"><SelectValue placeholder="动作" /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">全部动作</SelectItem>
-              <SelectItem v-for="v in VERDICTS" :key="v.value" :value="v.value">{{ v.label }}</SelectItem>
-            </SelectContent>
-          </Select>
-          <Select v-model="filterEnabled">
-            <SelectTrigger class="w-32"><SelectValue placeholder="状态" /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">全部状态</SelectItem>
-              <SelectItem value="on">已启用</SelectItem>
-              <SelectItem value="off">已停用</SelectItem>
-            </SelectContent>
-          </Select>
-          <Button v-if="hasFilter" variant="ghost" size="sm" @click="clearFilters">
-            <RiCloseCircleLine size="14" class="mr-1" /> 清除筛选
+          <div class="min-w-36 space-y-1">
+            <Label>来源</Label>
+            <Select v-model="filterSource">
+              <SelectTrigger class="w-full"><SelectValue placeholder="全部来源" /></SelectTrigger>
+              <SelectContent position="popper" side="bottom" align="start" :side-offset="2">
+                <SelectGroup>
+                  <SelectItem value="__all__">全部来源</SelectItem>
+                  <SelectItem value="manual">内置/手动</SelectItem>
+                  <SelectItem value="ai_draft">AI 草稿</SelectItem>
+                  <SelectItem value="ai_confirmed">AI 已确认</SelectItem>
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+          </div>
+          <div class="min-w-36 space-y-1">
+            <Label>动作</Label>
+            <Select v-model="filterVerdict">
+              <SelectTrigger class="w-full"><SelectValue placeholder="全部动作" /></SelectTrigger>
+              <SelectContent position="popper" side="bottom" align="start" :side-offset="2">
+                <SelectGroup>
+                  <SelectItem value="__all__">全部动作</SelectItem>
+                  <SelectItem v-for="v in VERDICTS" :key="v.value" :value="v.value">{{ v.label }}</SelectItem>
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+          </div>
+          <div class="min-w-32 space-y-1">
+            <Label>状态</Label>
+            <Select v-model="filterEnabled">
+              <SelectTrigger class="w-full"><SelectValue placeholder="全部状态" /></SelectTrigger>
+              <SelectContent position="popper" side="bottom" align="start" :side-offset="2">
+                <SelectGroup>
+                  <SelectItem value="__all__">全部状态</SelectItem>
+                  <SelectItem value="on">已启用</SelectItem>
+                  <SelectItem value="off">已停用</SelectItem>
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+          </div>
+          <Button variant="outline" class="mb-0.5" @click="clearFilters">
+            <RiFilter3Line size="15" class="mr-1" /> 重置
           </Button>
-          <span class="text-muted-foreground ml-auto text-xs">{{ filtered.length }} / {{ rules.length }} 条</span>
+          <span class="text-muted-foreground mb-1.5 ml-auto text-xs">{{ filtered.length }} / {{ rules.length }} 条</span>
         </div>
 
         <LoadingBlock v-if="loading" />
@@ -436,30 +469,28 @@ load()
                 </TableCell>
                 <TableCell class="text-right">
                   <div class="flex items-center justify-end gap-0.5">
-                    <Tooltip>
-                      <TooltipTrigger as-child>
-                        <Button v-if="rule.source === 'ai' && !rule.confirmed" variant="ghost" size="icon" class="size-7" @click="confirmDraft(rule)">
-                          <RiCheckLine size="15" class="text-green-600" />
-                        </Button>
-                      </TooltipTrigger>
-                      <TooltipContent>确认 AI 草稿</TooltipContent>
-                    </Tooltip>
-                    <Tooltip>
-                      <TooltipTrigger as-child>
-                        <Button variant="ghost" size="icon" class="size-7" @click="openEdit(rule)">
-                          <RiEditLine size="15" />
-                        </Button>
-                      </TooltipTrigger>
-                      <TooltipContent>编辑</TooltipContent>
-                    </Tooltip>
-                    <Tooltip>
-                      <TooltipTrigger as-child>
-                        <Button variant="ghost" size="icon" class="size-7 text-red-500 hover:text-red-600" @click="remove(rule)">
-                          <RiDeleteBinLine size="15" />
-                        </Button>
-                      </TooltipTrigger>
-                      <TooltipContent>删除</TooltipContent>
-                    </Tooltip>
+                    <Button
+                      v-if="rule.source === 'ai' && !rule.confirmed"
+                      variant="ghost"
+                      size="icon"
+                      class="size-7"
+                      title="确认 AI 草稿"
+                      @click="confirmDraft(rule)"
+                    >
+                      <RiCheckLine size="15" class="text-green-600" />
+                    </Button>
+                    <Button variant="ghost" size="icon" class="size-7" title="编辑" @click="openEdit(rule)">
+                      <RiEditLine size="15" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      class="size-7 text-red-500 hover:text-red-600"
+                      title="删除"
+                      @click="remove(rule)"
+                    >
+                      <RiDeleteBinLine size="15" />
+                    </Button>
                   </div>
                 </TableCell>
               </TableRow>
@@ -537,7 +568,12 @@ load()
           </div>
           <div class="space-y-1">
             <Label>模型（空 = 全部）</Label>
-            <Input v-model="form.model" placeholder="glm-5.3-flash" />
+            <TargetModelPicker
+              v-model="form.model"
+              :models="allModels"
+              :multiple="false"
+              allow-custom
+            />
           </div>
           <div class="col-span-2 grid grid-cols-2 gap-3">
             <div class="space-y-1">
@@ -551,18 +587,27 @@ load()
             </div>
             <div v-if="form.scope_mode !== 'urls' && form.scope_mode !== 'framework'" class="space-y-1">
               <Label>单平台（兼容，通常留空）</Label>
-              <Input v-model="form.provider_base_url" list="channel-urls" placeholder="全部平台" />
-              <datalist id="channel-urls">
-                <option v-for="c in channels" :key="c.base_url" :value="c.base_url" />
-              </datalist>
+              <Select v-model="form.provider_base_url">
+                <SelectTrigger class="w-full"><SelectValue placeholder="全部平台" /></SelectTrigger>
+                <SelectContent position="popper" side="bottom" align="start" :side-offset="2">
+                  <SelectGroup>
+                    <SelectItem value="__all__">全部平台</SelectItem>
+                    <SelectItem v-for="c in uniqueChannels" :key="c.base_url" :value="c.base_url">{{ c.name || c.base_url }}</SelectItem>
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
             </div>
           </div>
           <div v-if="form.scope_mode === 'framework'" class="col-span-2 space-y-1">
             <Label>框架（同框架平台共用此规则）</Label>
-            <Input v-model="form.provider_framework" list="framework-list" placeholder="newapi / one-api / …" />
-            <datalist id="framework-list">
-              <option v-for="f in frameworks" :key="f" :value="f" />
-            </datalist>
+            <Select v-model="form.provider_framework">
+              <SelectTrigger class="w-full"><SelectValue placeholder="选择框架" /></SelectTrigger>
+              <SelectContent position="popper" side="bottom" align="start" :side-offset="2">
+                <SelectGroup>
+                  <SelectItem v-for="f in frameworkOptions" :key="f" :value="f">{{ f }}</SelectItem>
+                </SelectGroup>
+              </SelectContent>
+            </Select>
             <p class="text-muted-foreground text-xs">渠道编辑里标注了该框架的所有平台都会命中。</p>
           </div>
           <div v-if="form.scope_mode === 'urls'" class="col-span-2 space-y-1">
