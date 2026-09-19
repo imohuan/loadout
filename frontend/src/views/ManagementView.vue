@@ -52,8 +52,9 @@ const settingsForm = reactive({
   active_preset: '',
   default_model: '',
   use_global_cmd: false,
-  request_log_max_age_days: 0,
-  request_log_max_size_mb: 0,
+ request_log_max_age_days: 0,
+ request_log_max_size_mb: 0,
+  rule_ai_model: "",
 })
 watch(
   settingsData,
@@ -310,6 +311,27 @@ onMounted(() => {
         </TabsList>
         <TabsContent value="runtime" class="space-y-4">
           <VolcQuotaCard ref="quotaCardRef" />
+          <Card class="rounded-md">
+            <CardHeader>
+              <CardTitle class="text-base">失败规则 AI 兜底</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <form class="flex items-end gap-2" @submit.prevent="saveSettings">
+                <div class="flex-1 space-y-1">
+                  <Label for="rule-ai-model">兜底判定模型（留空 = 关闭）</Label>
+                  <Input
+                    id="rule-ai-model"
+                    v-model="settingsForm.rule_ai_model"
+                    placeholder="例如 gemini-flash / gpt-4o-mini"
+                  />
+                </div>
+                <Button type="submit" variant="outline">保存</Button>
+              </form>
+              <p class="mt-2 text-xs text-muted-foreground">
+                失败未命中任何规则时，用该模型分析错误并自动生成规则草稿；在「失败规则」页确认后生效。
+              </p>
+            </CardContent>
+          </Card>
           <LogRetentionCard
             ref="logRetentionRef"
             v-model:max-age-days="settingsForm.request_log_max_age_days"
