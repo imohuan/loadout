@@ -217,7 +217,7 @@ func TestBillingPropagationRequiresExplicitClassification(t *testing.T) {
 	database := healthDB(t)
 	service := NewService(database, nil)
 	ctx := context.Background()
-	if class, err := service.RecordFailure(ctx, contracts.RouteFailure{ChannelID: "c", Model: "m", StatusCode: 402, Error: "quota exceeded"}); err != nil || class != "model_quota" {
+	if class, err := service.RecordFailure(ctx, contracts.RouteFailure{ChannelID: "c", Model: "m", StatusCode: 402, Error: "quota exceeded"}); err != nil || class != "disable_key" {
 		t.Fatalf("model quota classification: %q %v", class, err)
 	}
 	var channelStatus sql.NullString
@@ -227,7 +227,7 @@ func TestBillingPropagationRequiresExplicitClassification(t *testing.T) {
 	if channelStatus.Valid {
 		t.Fatalf("model quota unexpectedly disabled channel: %q", channelStatus.String)
 	}
-	if class, err := service.RecordFailure(ctx, contracts.RouteFailure{ChannelID: "c", Model: "m2", StatusCode: 402, Error: "account balance is empty"}); err != nil || class != "channel_billing" {
+	if class, err := service.RecordFailure(ctx, contracts.RouteFailure{ChannelID: "c", Model: "m2", StatusCode: 402, Error: "account balance is empty"}); err != nil || class != "disable_key" {
 		t.Fatalf("channel billing classification: %q %v", class, err)
 	}
 	if err := database.QueryRow(`SELECT status FROM channel_states WHERE channel_id='c'`).Scan(&channelStatus); err != nil {
@@ -323,7 +323,7 @@ func TestRecordSkipsModelsOutsideCatalog(t *testing.T) {
 	ctx := context.Background()
 
 	// 渠道未探测（目录为空）：放行，保持历史行为。
-	if class, err := service.RecordFailure(ctx, contracts.RouteFailure{ChannelID: "c", Model: "m-probe", StatusCode: 429, Error: "rate limit"}); err != nil || class != "rate_limit" {
+	if class, err := service.RecordFailure(ctx, contracts.RouteFailure{ChannelID: "c", Model: "m-probe", StatusCode: 429, Error: "rate limit"}); err != nil || class != "cooldown" {
 		t.Fatalf("unprobed channel must still record, class=%q err=%v", class, err)
 	}
 
@@ -348,7 +348,7 @@ func TestRecordSkipsModelsOutsideCatalog(t *testing.T) {
 	}
 
 	// 目录内模型照常记录。
-	if class, err := service.RecordFailure(ctx, contracts.RouteFailure{ChannelID: "c", Model: "m1", StatusCode: 429, Error: "rate limit"}); err != nil || class != "rate_limit" {
+	if class, err := service.RecordFailure(ctx, contracts.RouteFailure{ChannelID: "c", Model: "m1", StatusCode: 429, Error: "rate limit"}); err != nil || class != "cooldown" {
 		t.Fatalf("catalog model must be recorded, class=%q err=%v", class, err)
 	}
 	if err := database.QueryRow(`SELECT COUNT(*) FROM model_states WHERE channel_id='c' AND model='m1'`).Scan(&count); err != nil {
@@ -550,7 +550,7 @@ func TestRecordFailureAuthDisablesChannel(t *testing.T) {
 	ctx := context.Background()
 
 	// auth：模型级 + 渠道级（key 记录）都应禁用。
-	if class, err := service.RecordFailure(ctx, contracts.RouteFailure{ChannelID: "c", Model: "m", StatusCode: 401, Error: "invalid api key"}); err != nil || class != "auth" {
+	if class, err := service.RecordFailure(ctx, contracts.RouteFailure{ChannelID: "c", Model: "m", StatusCode: 401, Error: "invalid api key"}); err != nil || class != "disable_key" {
 		t.Fatalf("auth classification: %q %v", class, err)
 	}
 	var channelStatus string
@@ -569,7 +569,7 @@ func TestRecordFailureAuthDisablesChannel(t *testing.T) {
 	}
 
 	// 429：只冷却模型，不碰渠道状态（另一个 key 不受影响）。
-	if class, err := service.RecordFailure(ctx, contracts.RouteFailure{ChannelID: "c", Model: "m2", StatusCode: 429, Error: "rate limit"}); err != nil || class != "rate_limit" {
+	if class, err := service.RecordFailure(ctx, contracts.RouteFailure{ChannelID: "c", Model: "m2", StatusCode: 429, Error: "rate limit"}); err != nil || class != "cooldown" {
 		t.Fatalf("rate limit classification: %q %v", class, err)
 	}
 	var channelStatusAfter string
@@ -585,7 +585,7 @@ func TestRecordFailureAuthDisablesChannel(t *testing.T) {
 	if _, err := database.Exec(`INSERT INTO channels(id, name, base_url, manual_enabled, sync_billing, created_at, updated_at) VALUES ('c2','C2','http://c2',1,0,'now','now')`); err != nil {
 		t.Fatal(err)
 	}
-	if class, err := service.RecordFailure(ctx, contracts.RouteFailure{ChannelID: "c2", Model: "m", StatusCode: 402, Error: "quota exceeded"}); err != nil || class != "model_quota" {
+	if class, err := service.RecordFailure(ctx, contracts.RouteFailure{ChannelID: "c2", Model: "m", StatusCode: 402, Error: "quota exceeded"}); err != nil || class != "disable_key" {
 		t.Fatalf("model quota classification: %q %v", class, err)
 	}
 	var c2Status sql.NullString
@@ -610,7 +610,7 @@ func TestRecordFailureAuthScope(t *testing.T) {
 	ctx := context.Background()
 
 	// 纯 403：不禁渠道。
-	if class, err := service.RecordFailure(ctx, contracts.RouteFailure{ChannelID: "c", Model: "m", StatusCode: 403, Error: "permission denied"}); err != nil || class != "auth" {
+	if class, err := service.RecordFailure(ctx, contracts.RouteFailure{ChannelID: "c", Model: "m", StatusCode: 403, Error: "permission denied"}); err != nil || class != "cooldown" {
 		t.Fatalf("403 classification: %q %v", class, err)
 	}
 	var channelStatus sql.NullString
@@ -619,7 +619,7 @@ func TestRecordFailureAuthScope(t *testing.T) {
 	}
 
 	// 401：禁渠道。
-	if class, err := service.RecordFailure(ctx, contracts.RouteFailure{ChannelID: "c", Model: "m2", StatusCode: 401, Error: "invalid api key"}); err != nil || class != "auth" {
+	if class, err := service.RecordFailure(ctx, contracts.RouteFailure{ChannelID: "c", Model: "m2", StatusCode: 401, Error: "invalid api key"}); err != nil || class != "disable_key" {
 		t.Fatalf("401 classification: %q %v", class, err)
 	}
 	if err := database.QueryRow(`SELECT status FROM channel_states WHERE channel_id='c'`).Scan(&channelStatus); err != nil {

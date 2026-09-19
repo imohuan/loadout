@@ -1,0 +1,41 @@
+2026/09/19 17:14:26 INFO failure-rules: 规则已加载 count=12
+2026/09/19 17:14:26 INFO failure-rules: 状态已写入 model=m channel=c verdict=cooldown status=cooling until=2026-09-19T09:16:26.420132Z rule=限速（冷却2分钟，连续5次升级为次日恢复）
+2026/09/19 17:14:26 INFO failure-rules: 裁决 request_id="" model=m channel=c rule=限速（冷却2分钟，连续5次升级为次日恢复） ai_model="" verdict=cooldown executed=true reason=""
+2026/09/19 17:14:26 INFO failure-rules: 规则已加载 count=12
+2026/09/19 17:14:26 INFO failure-rules: 规则已加载 count=12
+2026/09/19 17:14:26 INFO failure-rules: 规则已加载 count=12
+2026/09/19 17:14:26 INFO failure-rules: 规则已加载 count=12
+2026/09/19 17:14:26 INFO failure-rules: 规则已加载 count=12
+2026/09/19 17:14:26 INFO failure-rules: 状态已写入 model=m channel=c verdict=disable_key status=disabled until=<nil> rule=账户余额不足（禁用key）
+2026/09/19 17:14:26 INFO failure-rules: 裁决 request_id="" model=m channel=c rule=账户余额不足（禁用key） ai_model="" verdict=disable_key executed=true reason=""
+--- FAIL: TestBillingPropagationRequiresExplicitClassification (0.06s)
+    service_test.go:221: model quota classification: "disable_key" <nil>
+2026/09/19 17:14:26 INFO failure-rules: 规则已加载 count=12
+2026/09/19 17:14:26 INFO failure-rules: 规则已加载 count=12
+2026/09/19 17:14:26 INFO failure-rules: 规则已加载 count=12
+2026/09/19 17:14:26 INFO failure-rules: 状态已写入 model=m-probe channel=c verdict=cooldown status=cooling until=2026-09-19T09:16:26.7843407Z rule=限速（冷却2分钟，连续5次升级为次日恢复）
+2026/09/19 17:14:26 INFO failure-rules: 裁决 request_id="" model=m-probe channel=c rule=限速（冷却2分钟，连续5次升级为次日恢复） ai_model="" verdict=cooldown executed=true reason=""
+--- FAIL: TestRecordSkipsModelsOutsideCatalog (0.06s)
+    service_test.go:327: unprobed channel must still record, class="cooldown" err=<nil>
+2026/09/19 17:14:26 INFO failure-rules: 规则已加载 count=12
+2026/09/19 17:14:26 INFO failure-rules: 规则已加载 count=12
+2026/09/19 17:14:26 INFO failure-rules: 规则已加载 count=12
+2026/09/19 17:14:26 INFO failure-rules: 规则已加载 count=12
+2026/09/19 17:14:27 INFO failure-rules: 规则已加载 count=12
+2026/09/19 17:14:27 INFO failure-rules: 规则已加载 count=12
+2026/09/19 17:14:27 INFO failure-rules: 状态已写入 model=m channel=c verdict=disable_key status=disabled until=<nil> rule=无效API密钥（禁用key并连坐渠道）
+2026/09/19 17:14:27 INFO failure-rules: 渠道连坐禁用（auth 永久） channel=c
+2026/09/19 17:14:27 INFO failure-rules: 裁决 request_id="" model=m channel=c rule=无效API密钥（禁用key并连坐渠道） ai_model="" verdict=disable_key executed=true reason=""
+2026/09/19 17:14:27 INFO failure-rules: 状态已写入 model=m2 channel=c verdict=cooldown status=cooling until=2026-09-19T09:16:27.0796627Z rule=限速（冷却2分钟，连续5次升级为次日恢复）
+2026/09/19 17:14:27 INFO failure-rules: 裁决 request_id="" model=m2 channel=c rule=限速（冷却2分钟，连续5次升级为次日恢复） ai_model="" verdict=cooldown executed=true reason=""
+2026/09/19 17:14:27 INFO failure-rules: 状态已写入 model=m channel=c2 verdict=disable_key status=disabled until=<nil> rule=账户余额不足（禁用key）
+2026/09/19 17:14:27 INFO failure-rules: 裁决 request_id="" model=m channel=c2 rule=账户余额不足（禁用key） ai_model="" verdict=disable_key executed=true reason=""
+2026/09/19 17:14:27 INFO failure-rules: 规则已加载 count=12
+2026/09/19 17:14:27 INFO failure-rules: 状态已写入 model=m channel=c verdict=cooldown status=cooling until=2026-09-19T09:16:27.1196039Z rule=""
+2026/09/19 17:14:27 INFO failure-rules: 裁决 request_id="" model=m channel=c rule="" ai_model="" verdict=cooldown executed=true reason=no_rule_matched_default
+2026/09/19 17:14:27 INFO failure-rules: 状态已写入 model=m2 channel=c verdict=disable_key status=disabled until=<nil> rule=无效API密钥（禁用key并连坐渠道）
+2026/09/19 17:14:27 INFO failure-rules: 渠道连坐禁用（auth 永久） channel=c
+2026/09/19 17:14:27 INFO failure-rules: 裁决 request_id="" model=m2 channel=c rule=无效API密钥（禁用key并连坐渠道） ai_model="" verdict=disable_key executed=true reason=""
+FAIL
+FAIL	loadout/plugins/model-health	1.468s
+FAIL

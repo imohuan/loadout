@@ -644,6 +644,91 @@ CREATE TABLE route_stats_archive (
   snapshot_json TEXT NOT NULL
 );
 `,
+}, {
+	version: 35,
+	name:    "failure-rules",
+	sql: `
+-- 失败规则引擎：规则表 + AI 判定日志表 + settings 加 AI 兜底模型列。
+-- 规则 = 作用域(provider_base_url/model) + 匹配条件(any/all) + 动作
+-- (verdict + 恢复策略)。引擎挂在 model-health.RecordFailure 内部，统一
+-- 聚合/非聚合两条失败路径的禁用/冷却裁决（替代双轨硬编码分类）。
+-- 时间限定的禁用写 status='cooling' + disabled_until（复用 CheckNow 过期
+-- 恢复语义）；status='disabled' 仅永久禁用（recover=never）。
+CREATE TABLE failure_rules (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  source TEXT NOT NULL DEFAULT 'manual',
+  confirmed INTEGER NOT NULL DEFAULT 1,
+  priority INTEGER NOT NULL DEFAULT 100,
+  provider_base_url TEXT NOT NULL DEFAULT '',
+  model TEXT NOT NULL DEFAULT '',
+  match_json TEXT NOT NULL,
+  action_json TEXT NOT NULL,
+  hit_count INTEGER NOT NULL DEFAULT 0,
+  last_hit_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX idx_failure_rules_priority ON failure_rules(priority, enabled);
+CREATE TABLE rule_decisions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  request_id TEXT NOT NULL DEFAULT '',
+  model TEXT NOT NULL DEFAULT '',
+  provider_base_url TEXT NOT NULL DEFAULT '',
+  status_code INTEGER NOT NULL DEFAULT 0,
+  error_excerpt TEXT NOT NULL DEFAULT '',
+  matched_rule_id TEXT NOT NULL DEFAULT '',
+  matched_rule_name TEXT NOT NULL DEFAULT '',
+  ai_model TEXT NOT NULL DEFAULT '',
+  ai_raw TEXT NOT NULL DEFAULT '',
+  verdict TEXT NOT NULL DEFAULT '',
+  next_action TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX idx_rule_decisions_created ON rule_decisions(created_at DESC);
+ALTER TABLE settings ADD COLUMN rule_ai_model TEXT NOT NULL DEFAULT '';
+
+-- 内置种子规则（仅迁移时写入一次；INSERT OR IGNORE 保证与既有数据不冲突。
+-- 种子 id 固定，用户可编辑/删除，应用启动不做 upsert）。
+INSERT OR IGNORE INTO failure_rules(id, name, enabled, source, confirmed, priority, match_json, action_json, created_at, updated_at) VALUES
+('seed-001', '客户端取消请求（不记失败）', 1, 'manual', 1, 10,
+ '{"any":[{"field":"message_text","op":"contains","value":"context canceled"}]}',
+ '{"verdict":"ignore"}', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'),
+('seed-002', '每日额度用尽（次日恢复）', 1, 'manual', 1, 20,
+ '{"any":[{"field":"body_code","op":"eq","value":"14018"},{"field":"message_text","op":"contains","value":"额度已用尽"},{"field":"message_text","op":"contains","value":"quota exhausted"}]}',
+ '{"verdict":"disable_key","recover":"daily","daily_reset_hour":12}', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'),
+('seed-003', '账户余额不足（禁用key）', 1, 'manual', 1, 30,
+ '{"any":[{"field":"status_code","op":"eq","value":402}]}',
+ '{"verdict":"disable_key","recover":"never"}', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'),
+('seed-004', '无效API密钥（禁用key并连坐渠道）', 1, 'manual', 1, 40,
+ '{"any":[{"field":"status_code","op":"eq","value":401},{"field":"message_text","op":"contains","value":"invalid api key"}]}',
+ '{"verdict":"disable_key","recover":"never","switch_account":true}', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'),
+('seed-005', '限速（冷却2分钟，连续5次升级为次日恢复）', 1, 'manual', 1, 50,
+ '{"all":[{"field":"status_code","op":"eq","value":429},{"field":"message_text","op":"not_contains","value":"额度"}]}',
+ '{"verdict":"cooldown","cooldown_seconds":120,"recover":"fixed","fail_upgrade_count":5,"fail_upgrade_recover":"daily"}', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'),
+('seed-006', '服务过载（冷却1分钟）', 1, 'manual', 1, 60,
+ '{"any":[{"field":"status_code","op":"eq","value":503},{"field":"message_text","op":"contains","value":"overloaded"}]}',
+ '{"verdict":"cooldown","cooldown_seconds":60,"recover":"fixed"}', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'),
+('seed-007', '上下文超长（跳过该模型）', 1, 'manual', 1, 70,
+ '{"any":[{"field":"message_text","op":"contains","value":"context length"},{"field":"message_text","op":"contains","value":"maximum context"}]}',
+ '{"verdict":"switch_next"}', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'),
+('seed-008', '网络超时（冷却30秒）', 1, 'manual', 1, 80,
+ '{"any":[{"field":"message_text","op":"contains","value":"timeout"},{"field":"message_text","op":"contains","value":"connection reset"}]}',
+ '{"verdict":"cooldown","cooldown_seconds":30,"recover":"fixed"}', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'),
+('seed-009', '模型不存在（禁用该模型）', 1, 'manual', 1, 90,
+ '{"all":[{"field":"status_code","op":"eq","value":404},{"field":"message_text","op":"contains","value":"model"}]}',
+ '{"verdict":"disable_model","recover":"never"}', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'),
+('seed-010', '客户端参数错误（忽略）', 1, 'manual', 1, 100,
+ '{"any":[{"field":"status_code","op":"eq","value":400},{"field":"status_code","op":"eq","value":404},{"field":"status_code","op":"eq","value":405}]}',
+ '{"verdict":"ignore"}', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'),
+('seed-011', '连接失败（忽略）', 1, 'manual', 1, 110,
+ '{"any":[{"field":"message_text","op":"contains","value":"no such host"},{"field":"message_text","op":"contains","value":"connection refused"},{"field":"message_text","op":"contains","value":"no route to host"},{"field":"message_text","op":"contains","value":"dial tcp"},{"field":"message_text","op":"contains","value":"lookup"}]}',
+ '{"verdict":"ignore"}', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'),
+('seed-012', 'EOF连接中断（忽略）', 1, 'manual', 1, 120,
+ '{"any":[{"field":"message_text","op":"contains","value":"eof"}]}',
+ '{"verdict":"ignore"}', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+`,
 }}
 
 // Migrate applies all pending schema migrations and rejects an incompatible

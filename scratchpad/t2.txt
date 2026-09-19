@@ -1,0 +1,9 @@
+=== RUN   TestRecordFailureAuthDisablesChannel
+2026/09/19 17:12:13 INFO failure-rules: 规则已加载 count=12
+2026/09/19 17:12:13 INFO failure-rules: 状态已写入 model=m channel=c verdict=disable_key status=cooling until=2026-09-19T09:14:13.7293377Z rule=无效API密钥（禁用key并连坐渠道）
+2026/09/19 17:12:13 INFO failure-rules: 裁决 request_id="" model=m channel=c rule=无效API密钥（禁用key并连坐渠道） ai_model="" verdict=disable_key executed=true reason=""
+    service_test.go:554: auth classification: "disable_key" <nil>
+--- FAIL: TestRecordFailureAuthDisablesChannel (0.06s)
+FAIL
+FAIL	loadout/plugins/model-health	0.720s
+FAIL

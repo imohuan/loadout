@@ -587,6 +587,8 @@ type Settings struct {
 	RequestLogMaxAgeDays int `json:"request_log_max_age_days"`
 	// RequestLogMaxSizeMB 完整请求日志库最大占用（MB，<=0 = 不限）；超限按时间从旧到新删除。
 	RequestLogMaxSizeMB int `json:"request_log_max_size_mb"`
+	// RuleAIModel 失败规则引擎的 AI 兜底模型名（空 = 关闭 AI 兜底）。
+	RuleAIModel string `json:"rule_ai_model"`
 }
 
 // ============ 5.12 模型健康状态（aggregate 插件） ============
