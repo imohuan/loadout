@@ -1,4 +1,0 @@
-ok  	loadout/plugins/model-health	1.825s
-ok  	loadout/plugins/failure-rules	(cached)
-ok  	loadout/plugins/aggregate	(cached)
-ok  	loadout/plugins/model-gateway	1.627s
