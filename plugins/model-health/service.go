@@ -455,7 +455,7 @@ type channelStatusRow struct {
 	SyncBilling bool
 	Status      string
 	Until       sql.NullString
-	LastClass   string // 渠道级失败分类（rule_disable/auth/channel_billing…）
+	LastClass   string // 渠道级失败分类（rule_disable_provider / rule_disable / auth / channel_billing…）
 }
 
 // modelStateRow 模型自动状态的扁平行。
@@ -465,7 +465,7 @@ type modelStateRow struct {
 	Until       sql.NullString
 	FailCount   int
 	LastError   string
-	LastClass   string // 最近一次失败分类（rate_limit / auth / model_quota / free_quota_exhausted …）
+	LastClass   string // 最近一次失败分类（rate_limit / auth / model_quota / free_quota_exhausted / rule_<verdict>_<recover> …）
 	LastSuccess sql.NullString
 }
 

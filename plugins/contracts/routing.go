@@ -86,7 +86,7 @@ type ChannelStatus struct {
 	BaseURL       string        `json:"base_url"`
 	ManualEnabled bool          `json:"manual_enabled"`
 	SyncBilling   bool          `json:"sync_billing"`
-	// FailureClass 渠道级最近失败分类（auth / channel_billing / rule_disable…）
+	// FailureClass 渠道级最近失败分类（auth / channel_billing / rule_disable_provider…）
 	FailureClass  string        `json:"failure_class,omitempty"`
 	Health        Availability  `json:"health"`
 	Models        []ModelStatus `json:"models"`
@@ -99,7 +99,8 @@ type ModelStatus struct {
 	LastError     string `json:"last_error"`
 	// FailureClass 最近一次失败分类：rate_limit / auth / model_quota /
 	// free_quota_exhausted / capability / network / temporary / unknown /
-	// rule_disable*（规则引擎写入）。前端据此展示不同状态提示。
+	// rule_<verdict>_<recover>（规则引擎写入，如 rule_disable_key_daily）。
+	// 前端据此展示不同状态提示。
 	FailureClass  string `json:"failure_class,omitempty"`
 	FailCount     int    `json:"fail_count"`
 	LastSuccessAt *time.Time   `json:"last_success_at,omitempty"`

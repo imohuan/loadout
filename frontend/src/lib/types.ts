@@ -71,7 +71,7 @@ export interface ModelStatus {
   effective_available: boolean
   reason?: string
   last_error?: string
-  /** 失败分类（rate_limit/auth/model_quota/free_quota_exhausted/rule_disable*…） */
+  /** 失败分类（rate_limit/auth/model_quota/free_quota_exhausted/rule_<verdict>_<recover>…） */
   failure_class?: string
   fail_count?: number
   last_success_at?: string
@@ -82,7 +82,7 @@ export interface ModelStatus {
 export interface ChannelStatus {
   channel: Channel
   manual_enabled: boolean
-  /** 渠道级失败分类（auth/channel_billing/rule_disable*…） */
+  /** 渠道级失败分类（auth/channel_billing/rule_disable_provider…） */
   failure_class?: string
   health_status: 'available' | 'cooling' | 'disabled' | string
   effective_available: boolean

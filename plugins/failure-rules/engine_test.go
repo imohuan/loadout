@@ -30,6 +30,29 @@ func TestEngineMatchesBodyCodeDailyQuota(t *testing.T) {
 	}
 }
 
+// TestStateClassEncodesVerdictAndRecover 固定写入 last_failure_class 的命名格式：
+// 前端按 `rule_<verdict>_<recover>` 区分「永久禁用 / 次日恢复 / 定时冷却」，
+// 一旦退化成裸 verdict，所有成因又会被显示成同一个「冷却中」。
+func TestStateClassEncodesVerdictAndRecover(t *testing.T) {
+	cases := []struct {
+		verdict string
+		action  Action
+		want    string
+	}{
+		{"disable_key", Action{Recover: "daily", DailyResetHour: 12}, "rule_disable_key_daily"},
+		{"disable_key", Action{Recover: "never"}, "rule_disable_key_never"},
+		{"cooldown", Action{Recover: "fixed", CooldownSeconds: 120}, "rule_cooldown_fixed"},
+		{"disable_model", Action{Recover: "never"}, "rule_disable_model_never"},
+		// recover 缺省时按执行层默认 fixed 处理，不能留下裸 verdict。
+		{"cooldown", Action{}, "rule_cooldown_fixed"},
+	}
+	for _, c := range cases {
+		if got := stateClass(c.verdict, c.action); got != c.want {
+			t.Errorf("stateClass(%q, %+v) = %q, want %q", c.verdict, c.action, got, c.want)
+		}
+	}
+}
+
 func TestEngineIgnoreClientCancel(t *testing.T) {
 	e, _ := newTestEngine(t)
 	d := e.Evaluate(context.Background(), Evidence{

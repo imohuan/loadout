@@ -82,6 +82,17 @@ func nextRecovery(a Action, now time.Time) (time.Time, bool) {
 	}
 }
 
+// stateClass 生成写入 last_failure_class 的语义化分类：rule_<verdict>_<recover>。
+// 前端据此区分「永久禁用 / 次日恢复 / 定时冷却」，而不是把不同成因一律
+// 显示成「冷却中」。recover 为空时按执行层实际默认值 fixed 处理。
+func stateClass(verdict string, a Action) string {
+	recover := a.Recover
+	if recover == "" {
+		recover = "fixed"
+	}
+	return "rule_" + verdict + "_" + recover
+}
+
 // applyCooldown / applyDisableKey：时间限定禁用统一写 cooling + until。
 func (x *Executor) applyCooldown(ctx context.Context, ac ActionContext) error {
 	a := ac.Action
@@ -97,11 +108,11 @@ func (x *Executor) applyCooldown(ctx context.Context, ac ActionContext) error {
 			"fail_count", ac.Evidence.FailCount+1, "upgrade", upgrade.Recover)
 		a = upgrade
 	}
-	return x.writeModelState(ctx, ac, a, "cooldown")
+	return x.writeModelState(ctx, ac, a, stateClass("cooldown", a))
 }
 
 func (x *Executor) applyDisableKey(ctx context.Context, ac ActionContext) error {
-	if err := x.writeModelState(ctx, ac, ac.Action, "disable_key"); err != nil {
+	if err := x.writeModelState(ctx, ac, ac.Action, stateClass("disable_key", ac.Action)); err != nil {
 		return err
 	}
 	// 连坐：recover=never + switch_account → 整个 key（channel_states）禁用。
@@ -136,13 +147,13 @@ func (x *Executor) applyDisableModel(ctx context.Context, ac ActionContext) erro
 	_, err := x.db.ExecContext(ctx, `
 		INSERT INTO model_states(channel_id, model, manual_enabled, status, disabled_until, fail_count,
 		       last_error, last_failure_class, updated_at)
-		VALUES (?, ?, 1, ?, ?, 1, ?, 'rule_disable_model', ?)
+		VALUES (?, ?, 1, ?, ?, 1, ?, ?, ?)
 		ON CONFLICT(channel_id, model) DO UPDATE SET
 		       status=excluded.status, disabled_until=excluded.disabled_until,
 		       fail_count=model_states.fail_count+1, last_error=excluded.last_error,
 		       last_failure_class=excluded.last_failure_class, updated_at=excluded.updated_at`,
 		ac.Evidence.ChannelID, ac.Evidence.Model, status, untilAny,
-		truncate(ac.Evidence.Message, 500), now)
+		truncate(ac.Evidence.Message, 500), stateClass("disable_model", ac.Action), now)
 	return err
 }
 
