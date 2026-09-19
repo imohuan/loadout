@@ -389,8 +389,8 @@ load()
         <LoadingBlock v-if="loading" />
         <EmptyState v-else-if="!filtered.length" title="暂无规则" description="没有匹配当前筛选条件的规则" />
 
-        <div v-else class="rounded-lg border">
-          <Table>
+        <div v-else class="overflow-x-auto rounded-lg border">
+          <Table class="min-w-[1080px]">
             <TableHeader>
               <TableRow>
                 <TableHead class="w-[220px]">名称</TableHead>
@@ -481,8 +481,8 @@ load()
         <LoadingBlock v-if="loading" />
         <EmptyState v-else-if="!filteredLogs.length" title="暂无判定记录" description="请求失败后的规则/AI 裁决会记录在这里" />
 
-        <div v-else class="rounded-lg border">
-          <Table>
+        <div v-else class="overflow-x-auto rounded-lg border">
+          <Table class="min-w-[860px]">
             <TableHeader>
               <TableRow>
                 <TableHead class="w-[150px]">时间</TableHead>
@@ -520,7 +520,7 @@ load()
 
     <!-- ===== 编辑弹窗（shadcn Dialog）===== -->
     <Dialog v-model:open="showEditor">
-      <DialogContent class="max-h-[90vh] max-w-2xl overflow-y-auto">
+      <DialogContent class="max-h-[92vh] w-[calc(100vw-2rem)] sm:max-w-2xl! overflow-y-auto">
         <DialogHeader>
           <DialogTitle>{{ editing ? '编辑规则' : '新建规则' }}</DialogTitle>
           <DialogDescription>规则按优先级从小到大匹配，首个命中生效</DialogDescription>
