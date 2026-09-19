@@ -29,6 +29,8 @@ const props = defineProps<{
   modelSource: ModelSourceStatus
   /** OpenCodex 代理模型列表（--list-models） */
   opencodexModels: OpenCodexModelsResult
+  /** 模型列表仍在后台补取中（首屏不等它，避免为它卡住整页） */
+  modelsLoading?: boolean
   /** 强制视觉开关（--enable-vision），仅在显示时必传（默认显示，顶部已独立放置时传 false 隐藏） */
   enableVision: boolean
   /** 切换强制视觉后重新拉取模型列表 */
@@ -142,12 +144,19 @@ const opencodexExpanded = ref(false)
           <div class="min-w-0 flex-1">
             <div class="flex flex-wrap items-center gap-1.5 text-sm">
               <span class="font-medium">OpenCodex 模型</span>
-              <Badge variant="secondary" class="font-normal">{{ opencodexModels.count }} 个模型</Badge>
-              <Badge variant="outline" class="font-normal"
-                >{{ opencodexModels.enabledProviderCount }} 个 provider</Badge
+              <Badge v-if="modelsLoading" variant="secondary" class="animate-pulse font-normal"
+                >加载中…</Badge
               >
+              <template v-else>
+                <Badge variant="secondary" class="font-normal"
+                  >{{ opencodexModels.count }} 个模型</Badge
+                >
+                <Badge variant="outline" class="font-normal"
+                  >{{ opencodexModels.enabledProviderCount }} 个 provider</Badge
+                >
+              </template>
               <Badge
-                v-if="opencodexModels.orMatchedCount != null"
+                v-if="!modelsLoading && opencodexModels.orMatchedCount != null"
                 variant="outline"
                 class="border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
               >
@@ -164,10 +173,13 @@ const opencodexExpanded = ref(false)
             <p class="mt-0.5 truncate font-mono text-xs text-muted-foreground">
               {{ opencodexModels.proxyUrl }}
             </p>
-            <p v-if="opencodexModels.degraded" class="mt-0.5 text-xs text-amber-600">
+            <p
+              v-if="!modelsLoading && opencodexModels.degraded"
+              class="mt-0.5 text-xs text-amber-600"
+            >
               {{ opencodexModels.degradedReason }}
             </p>
-            <template v-else-if="opencodexModels.count > 0">
+            <template v-else-if="!modelsLoading && opencodexModels.count > 0">
               <button
                 type="button"
                 class="mt-1 flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"

@@ -539,6 +539,11 @@ type Service struct {
 	pendingArgs []string
 	// pendingID 保存前端传入的任务进程 ID（空=自动生成），与 pendingArgs 一并透传。
 	pendingID string
+	// fastMu / fastCache / fastAt 是 ListAllFast 的短 TTL 缓存，
+	// 避免页面来回切换时重复跑 CLI（见 ListAllFast 注释）。
+	fastMu    sync.Mutex
+	fastCache AllConfigResult
+	fastAt    time.Time
 }
 
 // NewService 创建服务。
@@ -667,6 +672,74 @@ func (s *Service) listAllOnce(enableVision bool) (res AllConfigResult, retryable
 		}
 	}
 	return res, retryable
+}
+
+// listAllFastTTL 是首屏快速路径的缓存有效期。
+// 做成 var 便于测试缩短/延长。
+var listAllFastTTL = 15 * time.Second
+
+// ListAllFast 只查「首屏能不能操作」必需的数据：平台能力、MCP 矩阵、元数据缓存状态。
+//
+// 为什么不复用 ListAll（`--list all`）：
+// `all` 会连带查模型列表，而模型列表必须去连 OpenCodex 代理（localhost:10100），
+// 该代理冷启动实测要 10 秒以上，且热态只维持约 3 秒——用户每次进页面都要重新等一遍，
+// 这正是「进入 UnifyAI 卡片卡 10 秒」的根因。
+// 而 platforms + mcp + metadata 三者合计只要约 1.3 秒，且完全不碰代理。
+// 模型列表纯展示（「数据预览 → OpenCodex 模型」），与用户能否操作无关，
+// 因此挪到首屏之后由前端异步补（见 /api/unifyai/opencodex-models）。
+//
+// 另叠加一个短 TTL 缓存：页面来回切换时不重复跑 CLI（CLI 每次启动都要约 1 秒 Node 冷启动）。
+// fresh=true 穿透缓存，供「导入 MCP」等改完配置需要立刻看到新数据的场景使用。
+func (s *Service) ListAllFast(fresh bool) AllConfigResult {
+	if !fresh {
+		if cached, ok := s.cachedListAllFast(); ok {
+			return cached
+		}
+	}
+	res := s.listAllFastOnce()
+	s.storeListAllFast(res)
+	return res
+}
+
+// listAllFastOnce 执行一次快速查询（不含 models）。
+// 与 ListAll 不同，这里不预热代理、不重试：查询本身不碰代理，没有冷启动可吃。
+func (s *Service) listAllFastOnce() AllConfigResult {
+	args := []string{"--list", "platforms,mcp,metadata", "--json"}
+	if source := s.sourceFromSync(); source != "" {
+		args = append(args, "--source", source)
+	}
+	lines, err := runCollect(args)
+	if err != nil {
+		s.lg.Warn("unifyai: --list platforms,mcp,metadata 执行失败", "err", err)
+		return AllConfigResult{}
+	}
+	var res AllConfigResult
+	if err := json.Unmarshal([]byte(strings.Join(lines, "\n")), &res); err != nil {
+		s.lg.Warn("unifyai: 解析快速查询 JSON 失败", "err", err)
+		return AllConfigResult{}
+	}
+	return res
+}
+
+// cachedListAllFast 读取 TTL 内的缓存；未命中返回 ok=false。
+func (s *Service) cachedListAllFast() (AllConfigResult, bool) {
+	s.fastMu.Lock()
+	defer s.fastMu.Unlock()
+	if s.fastAt.IsZero() || time.Since(s.fastAt) > listAllFastTTL {
+		return AllConfigResult{}, false
+	}
+	return s.fastCache, true
+}
+
+// storeListAllFast 写入缓存（只缓存成功结果，避免把一次失败钉进 TTL）。
+func (s *Service) storeListAllFast(res AllConfigResult) {
+	if len(res.Platforms) == 0 && len(res.Mcp.Platforms) == 0 {
+		return
+	}
+	s.fastMu.Lock()
+	defer s.fastMu.Unlock()
+	s.fastCache = res
+	s.fastAt = time.Now()
 }
 
 // syncConfigPath 返回同步配置文件路径（前端把当前 UI 状态落盘后以 --config 引用）。

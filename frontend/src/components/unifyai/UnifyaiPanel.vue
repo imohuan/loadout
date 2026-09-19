@@ -38,13 +38,12 @@ import {
   buildCommand,
   buildConfigObject,
   buildMatrixConfig,
-  fetchAllConfig,
+  fetchBootstrapConfig,
   fetchManagedMcpServers,
   fetchModelSource,
   fetchSyncConfig,
   fetchOpenCodexModels,
   importKindBadgeClass,
-  normalizeOpenCodexModels,
   saveMcpServers,
   saveSourcePath,
   saveSyncConfig,
@@ -666,8 +665,9 @@ function applyMatrix(res: McpMatrixResult) {
 }
 
 async function reloadMatrix() {
-  const all = await fetchAllConfig(enableVision.value)
-  applyMatrix(all.mcp)
+  // fresh=true 穿透后端短 TTL 缓存：刚导入/同步完必须看到新数据，不能被缓存糊住。
+  const boot = await fetchBootstrapConfig(true)
+  applyMatrix(boot.mcp)
 }
 
 /** 后端平台列表（--list all → platforms）→ 前端 Platform（保留内置 color） */
@@ -696,6 +696,8 @@ function applyPlatforms(list: BackendPlatform[]) {
 // ---------- 数据源状态 ----------
 const modelSource = ref<ModelSourceStatus>({ ...INITIAL_MODEL_SOURCE })
 const opencodexModels = ref<OpenCodexModelsResult>({ ...INITIAL_OPENCODEX_MODELS })
+/** 首屏之后仍在补取模型列表（这一步要连冷启动的 OpenCodex 代理，可能慢十几秒）。 */
+const modelsLoading = ref(false)
 /** 强制视觉（--enable-vision）：切换后重新拉取 OpenCodex 模型列表 */
 const enableVision = ref(false)
 async function reloadOpenCodexModels() {
@@ -995,9 +997,10 @@ async function handleUpdateMetadata() {
 }
 
 // ---------- 初始化 ----------
+// 首屏只等「能不能开始操作」必需的数据（平台能力 + MCP 矩阵 + 元数据缓存状态，约 1.3 秒）。
+// 模型列表要连 OpenCodex 代理，冷启动实测 10 秒以上，属于纯展示，
+// 因此交给 applyModelsInBackground 异步补，绝不让它挡住整页渲染。
 onMounted(async () => {
-  // 一次拉全（--list all → platforms + models + mcp 矩阵 + metadata 缓存状态）
-  // 骨架屏最小展示时长：all 接口可能很快返回，太短用户看不到加载效果。
   const startedAt = performance.now()
   // 读回 sync.json 持久化的 source（模型源路径），避免每次进页面都重置为默认值
   fetchSyncConfig()
@@ -1007,24 +1010,21 @@ onMounted(async () => {
     })
     .catch(() => {})
   try {
-    const all = await fetchAllConfig(enableVision.value)
-    applyPlatforms(all.platforms)
-    applyMatrix(all.mcp)
-    // models 有值而 count 缺失时归一化，避免「数据预览」显示 0 个模型
-    if (all.models?.models?.length) opencodexModels.value = normalizeOpenCodexModels(all.models)
-    if (all.metadata?.modelCount > 0) {
+    const boot = await fetchBootstrapConfig()
+    applyPlatforms(boot.platforms)
+    applyMatrix(boot.mcp)
+    if (boot.metadata?.modelCount > 0) {
       modelSource.value = {
         ...modelSource.value,
         kind: 'openrouter',
         baseUrl: 'https://openrouter.ai/api/v1',
-        modelCount: all.metadata.modelCount,
-        cachedAt: all.metadata.cachedAt || '',
+        modelCount: boot.metadata.modelCount,
+        cachedAt: boot.metadata.cachedAt || '',
       }
     }
-    // 兜底：--list all 无数据（CLI 不可用）时用独立接口再试，保证页面有内容
-    if (!all.mcp?.platforms?.length) {
+    // 兜底：快速查询无数据（CLI 不可用）时用独立接口再试，保证页面有内容
+    if (!boot.mcp?.platforms?.length) {
       fetchModelSource().then((source) => (modelSource.value = source))
-      reloadOpenCodexModels()
       fetch('/api/unifyai/platforms')
         .then((res) => (res.ok ? res.json() : null))
         .then((data: { platforms?: BackendPlatform[] } | null) => {
@@ -1038,7 +1038,19 @@ onMounted(async () => {
     if (rest > 0) await new Promise((r) => setTimeout(r, rest))
     initialLoading.value = false
   }
+  // 首屏已经可见、可操作，再去补那份慢的模型列表。
+  applyModelsInBackground()
 })
+
+/** 首屏之后的模型列表补取（唯一会碰慢代理的一步，不阻塞任何交互）。 */
+async function applyModelsInBackground() {
+  modelsLoading.value = true
+  try {
+    await reloadOpenCodexModels()
+  } finally {
+    modelsLoading.value = false
+  }
+}
 </script>
 
 <template>
@@ -1154,6 +1166,7 @@ onMounted(async () => {
         :config-data="configPreview"
         :model-source="modelSource"
         :opencodex-models="opencodexModels"
+        :models-loading="modelsLoading"
         :enable-vision="enableVision"
         :on-toggle-vision="handleToggleVision"
         :show-vision="false"

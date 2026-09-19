@@ -11,7 +11,7 @@ import {
   RiCloseLine,
 } from '@remixicon/vue'
 import type { ChannelStatus, ModelStatus } from '@/lib/types'
-import StatusBadge from '@/components/StatusBadge.vue'
+import ModelHealthBadge from '@/components/model-status/ModelHealthBadge.vue'
 import BulkSelectButtons from '@/components/BulkSelectButtons.vue'
 import { formatDate } from '@/lib/format'
 
@@ -118,9 +118,12 @@ function busy(action: string) {
               </p>
             </div>
           </div>
-          <StatusBadge
+          <ModelHealthBadge
             :status="item.health_status"
             :available="item.effective_available"
+            :manual-enabled="item.manual_enabled"
+            :failure-class="item.failure_class"
+            :last-error="item.reason"
             hide-when-available
           />
           <!--
@@ -307,9 +310,13 @@ function busy(action: string) {
                     />
                   </TableCell>
                   <TableCell>
-                    <StatusBadge
+                    <ModelHealthBadge
                       :status="model.health_status"
                       :available="model.effective_available"
+                      :manual-enabled="model.manual_enabled"
+                      :failure-class="model.failure_class"
+                      :disabled-until="model.disabled_until"
+                      :last-error="model.last_error || model.reason"
                       hide-when-available
                     />
                   </TableCell>
@@ -376,9 +383,13 @@ function busy(action: string) {
               @click="toggleSelect(model.model)"
             >
               <span class="font-mono">{{ model.model }}</span>
-              <StatusBadge
+              <ModelHealthBadge
                 :status="model.health_status"
                 :available="model.effective_available"
+                :manual-enabled="model.manual_enabled"
+                :failure-class="model.failure_class"
+                :disabled-until="model.disabled_until"
+                :last-error="model.last_error || model.reason"
                 hide-when-available
               />
               <Tooltip v-if="model.source === 'manual'">

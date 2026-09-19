@@ -455,6 +455,7 @@ type channelStatusRow struct {
 	SyncBilling bool
 	Status      string
 	Until       sql.NullString
+	LastClass   string // 渠道级失败分类（rule_disable/auth/channel_billing…）
 }
 
 // modelStateRow 模型自动状态的扁平行。
@@ -464,6 +465,7 @@ type modelStateRow struct {
 	Until       sql.NullString
 	FailCount   int
 	LastError   string
+	LastClass   string // 最近一次失败分类（rate_limit / auth / model_quota / free_quota_exhausted …）
 	LastSuccess sql.NullString
 }
 
@@ -494,6 +496,7 @@ func (s *Service) List(ctx context.Context) ([]contracts.ChannelStatus, error) {
 			BaseURL:       channel.BaseURL,
 			ManualEnabled: channel.Manual,
 			SyncBilling:   channel.SyncBilling,
+			FailureClass:  channel.LastClass,
 			Health:        availabilityOf(channel.Manual, channel.Status, channel.Until.String, "channel"),
 		}
 		for _, model := range catalog[channel.ID] {
@@ -504,10 +507,12 @@ func (s *Service) List(ctx context.Context) ([]contracts.ChannelStatus, error) {
 			var failCount int
 			var lastError string
 			var lastSuccess, disabledUntil sql.NullString
+			var failureClass string
 			if ok {
 				manual, status, until = row.Manual, row.Status, row.Until.String
 				failCount, lastError = row.FailCount, row.LastError
 				lastSuccess, disabledUntil = row.LastSuccess, row.Until
+				failureClass = row.LastClass
 			}
 			availability := availabilityOf(manual, status, until, "model")
 			modelStatus := contracts.ModelStatus{
@@ -515,6 +520,7 @@ func (s *Service) List(ctx context.Context) ([]contracts.ChannelStatus, error) {
 				ManualEnabled: availability.ManualEnabled,
 				Health:        availability,
 				LastError:     lastError,
+				FailureClass:  failureClass,
 				FailCount:     failCount,
 				Source:        model.Source,
 			}
@@ -536,7 +542,7 @@ func (s *Service) List(ctx context.Context) ([]contracts.ChannelStatus, error) {
 }
 
 func (s *Service) listChannelStatus(ctx context.Context) ([]channelStatusRow, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT c.id, c.name, c.channel_name, c.base_url, c.manual_enabled, c.sync_billing, COALESCE(cs.status, 'available'), cs.disabled_until FROM channels c LEFT JOIN channel_states cs ON cs.channel_id = c.id ORDER BY c.id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT c.id, c.name, c.channel_name, c.base_url, c.manual_enabled, c.sync_billing, COALESCE(cs.status, 'available'), cs.disabled_until, COALESCE(cs.last_failure_class, '') FROM channels c LEFT JOIN channel_states cs ON cs.channel_id = c.id ORDER BY c.id`)
 	if err != nil {
 		return nil, err
 	}
@@ -544,7 +550,7 @@ func (s *Service) listChannelStatus(ctx context.Context) ([]channelStatusRow, er
 	var result []channelStatusRow
 	for rows.Next() {
 		var row channelStatusRow
-		if err := rows.Scan(&row.ID, &row.Name, &row.ChannelName, &row.BaseURL, &row.Manual, &row.SyncBilling, &row.Status, &row.Until); err != nil {
+		if err := rows.Scan(&row.ID, &row.Name, &row.ChannelName, &row.BaseURL, &row.Manual, &row.SyncBilling, &row.Status, &row.Until, &row.LastClass); err != nil {
 			return nil, err
 		}
 		result = append(result, row)
@@ -613,7 +619,7 @@ func (s *Service) PurgeChannelStates(ctx context.Context, channelID string, keep
 }
 
 func (s *Service) listModelStates(ctx context.Context) (map[string]map[string]modelStateRow, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT channel_id, model, manual_enabled, status, disabled_until, fail_count, last_error, last_success_at FROM model_states`)
+	rows, err := s.db.QueryContext(ctx, `SELECT channel_id, model, manual_enabled, status, disabled_until, fail_count, last_error, COALESCE(last_failure_class, ''), last_success_at FROM model_states`)
 	if err != nil {
 		return nil, err
 	}
@@ -622,7 +628,7 @@ func (s *Service) listModelStates(ctx context.Context) (map[string]map[string]mo
 	for rows.Next() {
 		var channelID, model string
 		var row modelStateRow
-		if err := rows.Scan(&channelID, &model, &row.Manual, &row.Status, &row.Until, &row.FailCount, &row.LastError, &row.LastSuccess); err != nil {
+		if err := rows.Scan(&channelID, &model, &row.Manual, &row.Status, &row.Until, &row.FailCount, &row.LastError, &row.LastClass, &row.LastSuccess); err != nil {
 			return nil, err
 		}
 		if states[channelID] == nil {

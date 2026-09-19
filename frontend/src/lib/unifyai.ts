@@ -547,6 +547,47 @@ export interface AllConfigResult {
 }
 
 /**
+ * 首屏快速路径的返回：只有「能不能开始操作」必需的数据，不含模型列表。
+ * 模型列表要连 OpenCodex 代理（冷启动 10 秒以上），属于纯展示，故不进首屏。
+ */
+export interface BootstrapConfigResult {
+  platforms: BackendPlatform[]
+  mcp: McpMatrixResult
+  metadata: McpMetadataStatus
+}
+
+/**
+ * 首屏快速获取配置（后端调 unifyai --list platforms,mcp,metadata --json）：
+ * 平台能力 + MCP 矩阵 + 元数据缓存状态，约 1.3 秒且完全不碰慢的 OpenCodex 代理。
+ *
+ * 为什么要拆出来：原先首屏走 `--list all`，其中模型列表必须去连代理，
+ * 而代理冷启动实测 10 秒以上、热态只维持约 3 秒，导致每次进页面都卡约 10 秒。
+ * 模型列表由页面随后调用 fetchOpenCodexModels 异步补，不再挡住首屏。
+ *
+ * fresh=true 穿透后端短 TTL 缓存（改完配置需立刻看到新数据时用）。
+ * 失败回落内置默认，保证页面可用。
+ */
+export async function fetchBootstrapConfig(fresh = false): Promise<BootstrapConfigResult> {
+  try {
+    const res = await fetch(`/api/unifyai/all${fresh ? '?fresh=1' : ''}`)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const data = (await res.json()) as Partial<BootstrapConfigResult>
+    return {
+      platforms: data.platforms ?? [],
+      mcp: data.mcp ?? { source: null, platforms: [] },
+      metadata: data.metadata ?? { path: '', modelCount: 0, cachedAt: null },
+    }
+  } catch (err) {
+    console.warn('[unifyai] 获取首屏配置失败，使用内置默认', err)
+    return {
+      platforms: [],
+      mcp: { source: null, platforms: [] },
+      metadata: { path: '', modelCount: 0, cachedAt: null, degraded: '后端接口不可用' },
+    }
+  }
+}
+
+/**
  * 一次获取全部配置（后端调 unifyai --list all --json）：
  * 平台能力 + 模型列表 + MCP 矩阵 + 元数据缓存状态。
  * enableVision 与「强制视觉」开关保持一致（后端不再从 sync.json 读可能过期的旧值）。

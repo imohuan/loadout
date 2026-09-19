@@ -2557,9 +2557,19 @@ func (s *Service) handleUnifyaiOpenCodexModelsLive(w http.ResponseWriter, r *htt
 // handleUnifyaiAll 返回全部配置（调 unifyai --list all --json）：
 // 平台能力 + 模型列表 + MCP 矩阵 + 元数据缓存状态，前端初始化一次拉全。
 // 支持 ?enableVision=1：与「强制视觉」开关保持一致（不从 sync.json 读旧值）。
+// 支持 ?fast=1：走「首屏快速路径」——只查平台能力 + MCP 矩阵 + 元数据缓存状态
+// （约 1.3 秒，完全不碰慢的 OpenCodex 代理），模型列表由前端随后异步补。
+// 默认快路径：进入页面时不该为纯展示的模型列表等代理冷启动（实测 10 秒以上）。
+// ?fresh=1 穿透后端短 TTL 缓存（改完配置需立刻看到新数据时用）。
 func (s *Service) handleUnifyaiAll(w http.ResponseWriter, r *http.Request) {
 	enableVision := r.URL.Query().Get("enableVision") == "1" ||
 		r.URL.Query().Get("enableVision") == "true"
+	// 只有显式传 full=1 才走原来的「一次拉全（含 models）」。
+	if r.URL.Query().Get("full") != "1" {
+		fresh := r.URL.Query().Get("fresh") == "1"
+		writeJSON(w, http.StatusOK, s.unify.ListAllFast(fresh))
+		return
+	}
 	res, err := s.unify.ListAll(enableVision)
 	if err != nil {
 		s.writeServerError(w, err)
