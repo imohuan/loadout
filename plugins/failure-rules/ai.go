@@ -16,29 +16,37 @@ import (
 	"loadout/core/config"
 )
 
-// headerRuleAI AI 兜底请求的标记 header（网关侧识别用，防递归由 engine 的
-// 求值入口不暴露给带该 header 的请求保证——AI 请求走内部 loopback，不经过
-// RecordFailure 求值入口）。
+// headerRuleAI AI 兜底请求的标记 header（本机 loopback 专用）。
 const headerRuleAI = "X-Loadout-Rule-AI"
+
+// AI 缓存 TTL：cooldown 类短缓存（到期允许重新判定），disable 类长缓存。
+const (
+	aiCacheTTLCooldown = 2 * time.Minute
+	aiCacheTTLDisable  = 30 * time.Minute
+)
+
+// cachedDecision 带 TTL 的缓存条目。
+type cachedDecision struct {
+	d   Decision
+	at  time.Time
+	ttl time.Duration
+}
 
 // AIResolver AI 兜底判定器：调用网关自身 /v1/chat/completions（指定小模型）
 // 分析错误证据，返回裁决。失败/超时/未配置时 Resolve 返回 ok=false。
 type AIResolver struct {
-	mu        sync.Mutex
-	model     string // settings.rule_ai_model；空 = 关闭
-	skKey     string // 网关 SK key
-	baseURL   string // 网关自身地址
-	timeout   time.Duration
-	decisions sync.Map // fingerprint -> decision（短 TTL 语义由进程生命周期兜底）
+	mu          sync.Mutex
+	model       string // settings.rule_ai_model；空 = 关闭
+	skKey       string // 静态 SK key（兼容）
+	baseURL     string // 网关自身地址
+	timeout     time.Duration
+	decisions   sync.Map // fingerprint -> cachedDecision
+	keyProvider func() string // 动态 SK key 解析（优先于 skKey）
 }
 
-// NewAIResolver 创建 AI 解析器。model 为空时 Resolve 永远返回 false。
 func NewAIResolver(model, skKey, baseURL string) *AIResolver {
 	return &AIResolver{model: model, skKey: skKey, baseURL: baseURL, timeout: 8 * time.Second}
 }
-
-// Enabled 返回 AI 兜底是否启用。
-func (a *AIResolver) Enabled() bool { return a != nil && a.model != "" }
 
 // SetModel 热更新 AI 模型（设置页保存后调用；空 = 关闭）。
 func (a *AIResolver) SetModel(model string) {
@@ -50,12 +58,46 @@ func (a *AIResolver) SetModel(model string) {
 	a.model = strings.TrimSpace(model)
 }
 
-// cached 取缓存判定。
-func (a *AIResolver) cached(fp string) (Decision, bool) {
-	if v, ok := a.decisions.Load(fp); ok {
-		return v.(Decision), true
+// SetKeyProvider 注入 SK key 明文解析器（每次 Resolve 时调用，兼容 key 轮换）。
+func (a *AIResolver) SetKeyProvider(fn func() string) {
+	if a == nil {
+		return
 	}
-	return Decision{}, false
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.keyProvider = fn
+}
+
+func (a *AIResolver) resolveKey() string {
+	if a.keyProvider != nil {
+		if k := a.keyProvider(); k != "" {
+			return k
+		}
+	}
+	return a.skKey
+}
+
+func (a *AIResolver) currentModel() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.model
+}
+
+// Enabled 返回 AI 兜底是否启用。
+func (a *AIResolver) Enabled() bool { return a != nil && a.currentModel() != "" }
+
+// cached 取缓存判定（带 TTL 过期）。
+func (a *AIResolver) cached(fp string) (Decision, bool) {
+	v, ok := a.decisions.Load(fp)
+	if !ok {
+		return Decision{}, false
+	}
+	c := v.(cachedDecision)
+	if time.Since(c.at) > c.ttl {
+		a.decisions.Delete(fp)
+		return Decision{}, false
+	}
+	return c.d, true
 }
 
 // aiVerdictSchema AI 返回的结构。
@@ -68,7 +110,8 @@ type aiVerdictSchema struct {
 
 // Resolve 调用 AI 分析失败证据。
 func (a *AIResolver) Resolve(ctx context.Context, ev Evidence, fp string) (Decision, bool) {
-	if !a.Enabled() {
+	model := a.currentModel()
+	if model == "" {
 		return Decision{}, false
 	}
 	if d, ok := a.cached(fp); ok {
@@ -80,28 +123,31 @@ func (a *AIResolver) Resolve(ctx context.Context, ev Evidence, fp string) (Decis
 
 	prompt := fmt.Sprintf(
 		"分析这次模型 API 调用失败，返回 JSON（不要 markdown 代码块）：\n"+
-			"{\"verdict\":\"disable_key|disable_model|cooldown|switch_next|ignore\","+
-			"\"cooldown_seconds\":数字,\"recover\":\"never|daily|fixed\",\"reason\":\"一句话\"}\n"+
-			"判定原则：额度用尽/余额不足→disable_key+daily；密钥无效→disable_key+never；"+
-			"限速→cooldown 120；超时/网络→cooldown 30 或 ignore；"+
-			"上下文超长→switch_next；参数错误(4xx)→ignore。\n"+
-			"HTTP状态码: %d\n业务码: %s\n错误信息: %s",
+		"{\"verdict\":\"disable_key|disable_model|cooldown|switch_next|ignore\","+
+		"\"cooldown_seconds\":数字,\"recover\":\"never|daily|fixed\",\"reason\":\"一句话\"}\n"+
+		"判定原则：额度用尽/余额不足→disable_key+daily；密钥无效→disable_key+never；"+
+		"限速→cooldown 120；超时/网络→cooldown 30 或 ignore；"+
+		"上下文超长→switch_next；参数错误(4xx)→ignore。\n"+
+		"HTTP状态码: %d\n业务码: %s\n错误信息: %s",
 		ev.StatusCode, ev.BodyCode, truncate(ev.Message, 500))
 
 	body, _ := json.Marshal(map[string]any{
-		"model": a.model,
-		"messages": []map[string]string{
-			{"role": "user", "content": prompt},
-		},
-		"stream": false,
+		"model":    model,
+		"messages": []map[string]string{{"role": "user", "content": prompt}},
+		"stream":   false,
 	})
+	skKey := a.resolveKey()
+	if skKey == "" {
+		// 无可用 SK key：AI 兜底不可用（调用方走默认动作）。
+		return Decision{}, false
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		strings.TrimRight(a.baseURL, "/")+"/v1/chat/completions", bytes.NewReader(body))
 	if err != nil {
 		return Decision{}, false
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+a.skKey)
+	req.Header.Set("Authorization", "Bearer "+skKey)
 	req.Header.Set(headerRuleAI, "1")
 
 	resp, err := (&http.Client{Timeout: a.timeout}).Do(req)
@@ -140,17 +186,20 @@ func (a *AIResolver) Resolve(ctx context.Context, ev Evidence, fp string) (Decis
 	d := Decision{
 		Verdict: v.Verdict,
 		Reason:  v.Reason,
-		AIModel: a.model,
+		AIModel: model,
 		AIRaw:   truncate(content, 4000),
+		// AI 附加参数直接进 Action（不再拼 Reason 字符串当数据总线）。
+		Action: Action{
+			Verdict:         v.Verdict,
+			Recover:         v.Recover,
+			CooldownSeconds: v.CooldownSeconds,
+		},
 	}
-	// recover/cooldown 从 AI 结果透传到动作执行层（extra 字段）。
-	if v.Recover != "" {
-		d.Reason = d.Reason + "|recover=" + v.Recover
-		if v.CooldownSeconds > 0 {
-			d.Reason = d.Reason + "|cooldown_seconds=" + fmt.Sprint(v.CooldownSeconds)
-		}
+	ttl := aiCacheTTLCooldown
+	if v.Verdict == VerdictDisableKey || v.Verdict == VerdictDisableModel || v.Verdict == VerdictDisableProvider {
+		ttl = aiCacheTTLDisable
 	}
-	a.decisions.Store(fp, d)
+	a.decisions.Store(fp, cachedDecision{d: d, at: time.Now(), ttl: ttl})
 	return d, true
 }
 
@@ -175,8 +224,7 @@ func hashString(s string) string {
 	return hex.EncodeToString(sum[:8])
 }
 
-// ensure config import used (baseURL defaults documented); config 包引用保留给
-// 后续读取默认端口等能力。
 var _ = config.DataDir
 
 func jsonUnmarshal(data string, v any) error { return json.Unmarshal([]byte(data), &v) }
+

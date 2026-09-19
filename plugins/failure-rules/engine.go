@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -249,9 +250,11 @@ func toInt(v any) (int, bool) {
 	case int:
 		return t, true
 	case string:
-		var n int
-		_, err := fmt.Sscanf(t, "%d", &n)
-		return n, err == nil
+		n, err := strconv.ParseInt(strings.TrimSpace(t), 10, 64)
+		if err != nil {
+			return 0, false
+		}
+		return int(n), true
 	default:
 		return 0, false
 	}

@@ -68,6 +68,14 @@ func (s *Service) VerifyFailureRule(rule failure.Rule, ev failure.Evidence) bool
 
 // ListRuleDecisions AI 判定日志。
 // SetRuleAIModel 更新 AI 兜底模型（设置保存后调用；空 = 关闭 AI 兜底）。
+// SetKeyResolver 注入 SK key 明文解析器（plugin.go 装配时注入）。
+func (s *Service) SetKeyResolver(fn func() string) {
+	s.keyResolver = fn
+	if s.aiResolver != nil {
+		s.aiResolver.SetKeyProvider(fn)
+	}
+}
+
 func (s *Service) SetRuleAIModel(model string) {
 	if s.aiResolver != nil {
 		s.aiResolver.SetModel(model)

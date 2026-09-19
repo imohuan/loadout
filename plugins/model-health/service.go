@@ -27,6 +27,7 @@ type Service struct {
 	executor   *failurerules.Executor   // 规则动作执行器（写 model_states / channel_states）
 	decisions  *failurerules.Store      // 规则 CRUD + 裁决日志
 	aiResolver *failurerules.AIResolver // AI 兜底（SetRuleAIModel 热更新）
+	keyResolver func() string           // SK key 明文解析器（AI 兜底请求鉴权）
 }
 
 func NewService(database *sql.DB, logger *slog.Logger) *Service {
@@ -39,6 +40,11 @@ func NewService(database *sql.DB, logger *slog.Logger) *Service {
 	svc.decisions = failurerules.NewStore(database)
 	// AI 兜底默认关闭（model 空）；设置页保存 rule_ai_model 后热更新。
 	svc.aiResolver = failurerules.NewAIResolver("", "", internalBaseURL())
+	// S2 修复：启动时读取持久化的 rule_ai_model，避免重启后兜底状态丢失。
+	var savedModel string
+	_ = database.QueryRowContext(context.Background(),
+		`SELECT rule_ai_model FROM settings WHERE id = 1`).Scan(&savedModel)
+	svc.aiResolver.SetModel(savedModel)
 	svc.rules.SetAIResolver(svc.aiResolver)
 	return svc
 }

@@ -42,11 +42,17 @@ func (s *Service) recordFailureRuled(ctx context.Context, f contracts.RouteFailu
 	decision := s.rules.Evaluate(ctx, ev)
 	// AI 裁决的附加参数（recover/cooldown_seconds）从 Reason 透传字段解析。
 	action := actionFromDecision(decision)
-	// legacy 兼容：渠道连坐语义（channel_billing + sync_billing → 渠道禁用）。
-	if !executedCompat(ctx, s, f, ev, decision, action) {
-		s.recordDecisionLog(ctx, ev, decision, true)
-		return decision.Verdict, nil
+	// S3 修复：AI 兜底裁决不做永久禁用——硬动作降级为 cooldown 5 分钟（保底
+	// 路由正确），同时异步生成草稿规则（confirmed=0）等人工确认。
+	if decision.MatchedRuleID == "" && decision.AIModel != "" {
+		switch decision.Verdict {
+		case failure.VerdictDisableKey, failure.VerdictDisableModel, failure.VerdictDisableProvider:
+			action = failure.Action{Verdict: failure.VerdictCooldown, Recover: "fixed", CooldownSeconds: 300}
+			s.spawnDraft(ev, decision)
+		}
 	}
+	// legacy 兼容：channel_billing（402+余额文案+sync_billing）→ 渠道级连坐。
+	s.legacyChannelBilling(ctx, f)
 	executed, err := s.executor.Execute(ctx, failure.ActionContext{
 		Evidence: ev, Decision: decision, Action: action,
 	})
@@ -62,20 +68,69 @@ func (s *Service) recordFailureRuled(ctx context.Context, f contracts.RouteFailu
 }
 
 // actionFromDecision 裁决 → 动作（规则命中时用规则动作；AI 时从透传字段构造）。
-// executedCompat legacy 渠道连坐兜底：channel_billing（402 + 账户余额文案）且
+// spawnDraft AI 判定后异步生成草稿规则（confirmed=0），人工确认后才参与匹配。
+// 硬动作（disable_*）已在调用侧降级为 cooldown，这里只落草稿。
+func (s *Service) spawnDraft(ev failure.Evidence, d failure.Decision) {
+	go func() {
+		ctx := context.WithoutCancel(context.Background())
+		in := failure.RuleInput{
+			Name:            "AI: " + truncateStr(d.Reason, 40) + " (" + ev.Model + " " + errStatusText(ev.StatusCode) + ")",
+			Priority:        150,
+			ProviderBaseURL: ev.ProviderURL,
+			Model:           ev.Model,
+			Match: failure.Match{Any: []failure.Condition{
+				{Field: "status_code", Op: "eq", Value: ev.StatusCode},
+				{Field: "message_text", Op: "contains", Value: firstToken(ev.Message, 24)},
+			}},
+			Action: failure.Action{Verdict: d.Verdict, Recover: d.Action.Recover, CooldownSeconds: d.Action.CooldownSeconds},
+		}
+		if _, err := s.decisions.CreateDraft(ctx, in, d.AIModel, d.AIRaw); err != nil {
+			s.lg.Warn("failure-rules: 草稿生成失败", "err", err)
+		} else {
+			s.lg.Info("failure-rules: AI 草稿已生成（待确认）", "model", ev.Model, "verdict", d.Verdict)
+		}
+	}()
+}
+
+func truncateStr(s string, n int) string {
+	runes := []rune(s)
+	if len(runes) <= n {
+		return s
+	}
+	return string(runes[:n])
+}
+
+func errStatusText(code int) string {
+	if code == 0 {
+		return "net"
+	}
+	return "http" + fmt.Sprint(code)
+}
+
+// firstToken 取错误消息首段（业务码/短语）作为草稿匹配锚点。
+func firstToken(msg string, n int) string {
+	msg = strings.TrimSpace(msg)
+	for _, sep := range []string{":", "，", ",", "（", "("} {
+		if i := strings.Index(msg, sep); i > 0 {
+			msg = msg[:i]
+		}
+	}
+	return truncateStr(msg, n)
+}
+
+// legacyChannelBilling legacy 渠道连坐兜底：channel_billing（402 + 账户余额文案）且
 // 渠道开了 sync_billing 时，除 key 禁用外把整个渠道（channel_states）置 disabled。
-// 返回 true = 继续常规动作；false = 已执行连坐，跳过常规动作。
-func executedCompat(ctx context.Context, s *Service, f contracts.RouteFailure, ev failure.Evidence, d failure.Decision, a failure.Action) bool {
+func (s *Service) legacyChannelBilling(ctx context.Context, f contracts.RouteFailure) {
 	if f.StatusCode != 402 {
-		return true
+		return
 	}
 	msg := strings.ToLower(strings.Join([]string{f.Error, f.ErrorBody}, " "))
 	if !strings.Contains(msg, "account balance") && !strings.Contains(msg, "账户余额") && !strings.Contains(msg, "channel billing") {
-		return true
+		return
 	}
 	var syncBilling bool
 	if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(sync_billing,0) FROM channels WHERE id = ?`, f.ChannelID).Scan(&syncBilling); err != nil || !syncBilling {
-		return true
+		return
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	_, err := s.db.ExecContext(ctx, `INSERT INTO channel_states(channel_id, status, disabled_until, fail_count, last_error, last_failure_class, last_checked_at, updated_at) VALUES (?, 'disabled', NULL, 1, ?, 'channel_billing', ?, ?) ON CONFLICT(channel_id) DO UPDATE SET status='disabled', disabled_until=NULL, fail_count=channel_states.fail_count+1, last_error=excluded.last_error, last_failure_class=excluded.last_failure_class, last_checked_at=excluded.last_checked_at, updated_at=excluded.updated_at`,
@@ -83,7 +138,6 @@ func executedCompat(ctx context.Context, s *Service, f contracts.RouteFailure, e
 	if err != nil {
 		s.lg.Warn("failure-rules: channel_billing 连坐失败", "err", err)
 	}
-	return true
 }
 
 func actionFromDecision(d failure.Decision) failure.Action {
@@ -92,16 +146,9 @@ func actionFromDecision(d failure.Decision) failure.Action {
 		// 规则命中：使用规则配置的完整动作（recover/switch_account/cooldown）。
 		return d.Action
 	}
-	// AI 裁决：reason 附加 "recover=xxx" / "cooldown_seconds=n"。
-	if d.Reason != "" {
-		for _, part := range strings.Split(d.Reason, "|") {
-			if v, ok := strings.CutPrefix(part, "recover="); ok {
-				a.Recover = v
-			}
-			if v, ok := strings.CutPrefix(part, "cooldown_seconds="); ok {
-				fmt.Sscanf(v, "%d", &a.CooldownSeconds)
-			}
-		}
+	// AI 裁决：附加参数已在 Resolver 中填入 d.Action。
+	if d.Action.Recover != "" {
+		return d.Action
 	}
 	if a.Recover == "" {
 		a.Recover = "fixed"
