@@ -119,3 +119,51 @@ func TestListAllFastFreshBypassesCache(t *testing.T) {
 		t.Errorf("fresh 穿透后 CLI 调用次数 = %d, want 2", n)
 	}
 }
+
+// TestListAllFastServesStaleAndRefreshes 缓存过期后仍立刻返回旧值，并在后台刷新。
+//
+// 回归背景：用户反馈「每次进入这个页面都卡」。即便快速路径只要 1~4 秒，
+// 每次进页面都同步等一次 CLI 仍然明显。这里改成 stale-while-revalidate：
+// 有旧值就先返回旧值（页面立刻可用），新值在后台取，下次进入自然就新了。
+func TestListAllFastServesStaleAndRefreshes(t *testing.T) {
+	oldTTL := listAllFastTTL
+	listAllFastTTL = 0 // 立即过期，模拟「隔一会儿再进页面」
+	t.Cleanup(func() { listAllFastTTL = oldTTL })
+
+	var callsN int64
+	restore := procreg.SetRunCollectFn(func(_ *procreg.Registry, name, kind, cmd string, args, env []string) ([]string, error) {
+		n := atomic.AddInt64(&callsN, 1)
+		if n == 1 {
+			return []string{`{"platforms":[{"id":"first"}],"mcp":{"platforms":[]},"metadata":{}}`}, nil
+		}
+		return []string{`{"platforms":[{"id":"second"}],"mcp":{"platforms":[]},"metadata":{}}`}, nil
+	})
+	t.Cleanup(func() { procreg.SetRunCollectFn(restore) })
+
+	svc := NewService(slog.Default())
+	first := svc.ListAllFast(false)
+	if len(first.Platforms) != 1 || first.Platforms[0].ID != "first" {
+		t.Fatalf("首次应同步取到 first，实际 %+v", first.Platforms)
+	}
+
+	// 缓存已过期：必须立刻返回旧值（first），不能阻塞等 CLI。
+	start := time.Now()
+	second := svc.ListAllFast(false)
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("过期后仍同步等待 %v，应当直接返回旧值", elapsed)
+	}
+	if len(second.Platforms) != 1 || second.Platforms[0].ID != "first" {
+		t.Errorf("过期后应立刻返回旧值 first，实际 %+v", second.Platforms)
+	}
+
+	// 后台刷新完成后，再取就能看到新值。
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		got := svc.ListAllFast(false)
+		if len(got.Platforms) == 1 && got.Platforms[0].ID == "second" {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Error("后台刷新后仍未取到新值 second")
+}

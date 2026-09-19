@@ -544,6 +544,8 @@ type Service struct {
 	fastMu    sync.Mutex
 	fastCache AllConfigResult
 	fastAt    time.Time
+	// fastRefreshing 标记后台刷新是否在跑，避免并发重复刷新。
+	fastRefreshing bool
 }
 
 // NewService 创建服务。
@@ -688,17 +690,61 @@ var listAllFastTTL = 15 * time.Second
 // 模型列表纯展示（「数据预览 → OpenCodex 模型」），与用户能否操作无关，
 // 因此挪到首屏之后由前端异步补（见 /api/unifyai/opencodex-models）。
 //
-// 另叠加一个短 TTL 缓存：页面来回切换时不重复跑 CLI（CLI 每次启动都要约 1 秒 Node 冷启动）。
-// fresh=true 穿透缓存，供「导入 MCP」等改完配置需要立刻看到新数据的场景使用。
+// 缓存策略是 stale-while-revalidate：
+//   - TTL 内（listAllFastTTL）→ 直接返回缓存，不碰 CLI；
+//   - 已过期但仍有旧值 → 立刻返回旧值，同时后台刷新（用户不等）；
+//   - 完全无缓存（首次进页面）→ 同步查一次。
+// 这样「第二次及以后进页面」都是毫秒级，首次才真正跑一次 CLI。
+// fresh=true 穿透缓存并同步等待，供「导入 MCP」等改完配置必须立刻看到新数据的场景使用。
 func (s *Service) ListAllFast(fresh bool) AllConfigResult {
-	if !fresh {
-		if cached, ok := s.cachedListAllFast(); ok {
-			return cached
-		}
+	if fresh {
+		res := s.listAllFastOnce()
+		s.storeListAllFast(res)
+		return res
 	}
+	if cached, ok := s.cachedListAllFast(); ok {
+		return cached
+	}
+	// 缓存过期但手上有旧值：先给旧值，别让用户等（后台刷新的结果供下次用）。
+	if stale, ok := s.staleListAllFast(); ok {
+		s.refreshListAllFastAsync()
+		return stale
+	}
+	// 首次进页面：没有旧值可用，只能同步查一次。
 	res := s.listAllFastOnce()
 	s.storeListAllFast(res)
 	return res
+}
+
+// refreshListAllFastAsync 在后台重跑一次快速查询并写回缓存（同一时间只允许一个在跑，
+// 避免多个页面同时进来时把 CLI 打出一串并发进程）。
+func (s *Service) refreshListAllFastAsync() {
+	s.fastMu.Lock()
+	if s.fastRefreshing {
+		s.fastMu.Unlock()
+		return
+	}
+	s.fastRefreshing = true
+	s.fastMu.Unlock()
+
+	go func() {
+		defer func() {
+			s.fastMu.Lock()
+			s.fastRefreshing = false
+			s.fastMu.Unlock()
+		}()
+		s.storeListAllFast(s.listAllFastOnce())
+	}()
+}
+
+// staleListAllFast 返回任何已缓存的结果（不看 TTL）；无缓存时 ok=false。
+func (s *Service) staleListAllFast() (AllConfigResult, bool) {
+	s.fastMu.Lock()
+	defer s.fastMu.Unlock()
+	if s.fastAt.IsZero() {
+		return AllConfigResult{}, false
+	}
+	return s.fastCache, true
 }
 
 // listAllFastOnce 执行一次快速查询（不含 models）。
