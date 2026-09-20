@@ -763,6 +763,42 @@ ALTER TABLE model_states ADD COLUMN last_rule_name TEXT NOT NULL DEFAULT '';
 ALTER TABLE channel_states ADD COLUMN last_rule_id TEXT NOT NULL DEFAULT '';
 ALTER TABLE channel_states ADD COLUMN last_rule_name TEXT NOT NULL DEFAULT '';
 `,
+}, {
+	version: 39,
+	name:    "seed-content-blocked-and-model-missing",
+	sql: `
+-- 基于上游实测（2026-09-20 直连探测各账号）：错误语义不止「额度用尽」一种：
+--   403 + code 11140「request illegal / 内容未通过安全审核」：账号正常、请求内容
+--     被平台风控拦截，与 Key 健康无关。此前落进 no_rule_matched 默认 2 分钟冷却，
+--     同一账号换模型继续报，白白把健康 Key 冷却掉。
+--     → 规则：ignore（不记状态、不计失败），下一轮直接换下一个 Key/模型。
+--   400 + code 11102「model [x] service info not found」：该平台没有这个模型。
+--     此前被 seed-010（400/404/405 一律 ignore）盖住，导致每次请求都重新试一遍
+--     这个「平台不存在的模型」（鞭尸）。
+--     → 规则：disable_model + never（该 Key 上禁用此模型，需手动恢复；其他模型不受影响）。
+--   另修 seed-010 与 seed-009 的优先级矛盾：seed-009（404+含 model → disable_model）
+--     优先级 90 高于 seed-010（100），但上游 404 往往不带 "model" 一词，会落到
+--     seed-010 被 ignore。这里把 404 从 seed-010 移除（它已有专门规则）。
+-- 注意：仅对「数据库里不存在 seed-013/seed-014」的库插入（新装库由 v35 建表后
+-- 在此一并插入；已存在同名规则的库不动，尊重用户修改）。
+INSERT OR IGNORE INTO failure_rules(id, name, enabled, source, confirmed, priority, match_json, action_json, created_at, updated_at) VALUES
+('seed-013', '内容未过安全审核（忽略，换下一个Key）', 1, 'manual', 1, 45,
+ '{"all":[{"field":"status_code","op":"eq","value":403},{"field":"body_code","op":"eq","value":"11140"}]}',
+ '{"verdict":"ignore"}', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'),
+('seed-014', '平台不支持该模型（禁用该模型）', 1, 'manual', 1, 55,
+ '{"all":[{"field":"body_code","op":"eq","value":"11102"}]}',
+ '{"verdict":"disable_model","recover":"never"}', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+
+-- seed-010 移除 404：404 由 seed-009/seed-014 处理。仅当用户未改过该规则
+-- （match_json 仍是 v35 原始值）时才收紧，避免覆盖用户自定义。
+UPDATE failure_rules
+SET match_json = '{"any":[{"field":"status_code","op":"eq","value":400},{"field":"status_code","op":"eq","value":405}]}',
+    updated_at = '2026-01-01T00:00:00Z'
+WHERE id = 'seed-010'
+  AND match_json = '{"any":[{"field":"status_code","op":"eq","value":400},{"field":"status_code","op":"eq","value":404},{"field":"status_code","op":"eq","value":405}]}'
+  AND enabled = 1
+  AND priority = 100;
+`,
 }}
 
 // Migrate applies all pending schema migrations and rejects an incompatible

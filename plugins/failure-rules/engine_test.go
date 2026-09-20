@@ -127,3 +127,44 @@ func TestMatchJSONRoundTrip(t *testing.T) {
 		t.Fatalf("roundtrip mismatch: %s", b)
 	}
 }
+
+func TestEngineUpstreamErrorTaxonomy(t *testing.T) {
+	e, _ := newTestEngine(t)
+
+	// 403 + 11140 内容未过安全审核：账号正常，与 Key 健康无关 → ignore（不写状态）。
+	d := e.Evaluate(context.Background(), Evidence{
+		Model: "m", ChannelID: "ch1", StatusCode: 403, BodyCode: "11140",
+		Message: "request illegal 内容未通过安全审核",
+	})
+	if d.Verdict != VerdictIgnore {
+		t.Fatalf("content blocked should ignore, got %s (rule=%s)", d.Verdict, d.MatchedRuleID)
+	}
+
+	// 400 + 11102 平台没有该模型：只禁当前模型，不能禁 Key。
+	d = e.Evaluate(context.Background(), Evidence{
+		Model: "m", ChannelID: "ch1", StatusCode: 400, BodyCode: "11102",
+		Message: "model [m] service info not found",
+	})
+	if d.Verdict != VerdictDisableModel {
+		t.Fatalf("model not on platform should disable_model, got %s (rule=%s)", d.Verdict, d.MatchedRuleID)
+	}
+
+	// 404（不带 model 字样，seed-010 已移除 404）→ seed-014 不命中（body_code 不符），
+	// 回落默认 cooldown；404+model 仍由 seed-009 disable_model。
+	d = e.Evaluate(context.Background(), Evidence{
+		Model: "m", ChannelID: "ch1", StatusCode: 404,
+		Message: "The requested resource was not found",
+	})
+	if d.Verdict == VerdictIgnore {
+		t.Fatalf("plain 404 should not be silently ignored, got ignore")
+	}
+
+	// 429 + 14018 额度用尽：账号级，禁 Key（既有行为，防止回归）。
+	d = e.Evaluate(context.Background(), Evidence{
+		Model: "m", ChannelID: "ch1", StatusCode: 429, BodyCode: "14018",
+		Message: "额度已用尽",
+	})
+	if d.Verdict != VerdictDisableKey {
+		t.Fatalf("quota exhausted should disable_key, got %s", d.Verdict)
+	}
+}
