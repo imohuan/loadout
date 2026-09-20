@@ -9,6 +9,10 @@ import (
 	"time"
 )
 
+// beijingTZ 北京时间固定 +8 时区（中国无夏令时；FixedZone 零依赖，
+// Windows 上不依赖系统 tzdata）。与 volc-free-quota 的同名时区口径一致。
+var beijingTZ = time.FixedZone("Asia/Shanghai", 8*3600)
+
 // Executor 把裁决写入 model_states / channel_states。
 //
 // 恢复语义（与 CheckNow 对齐）：
@@ -68,11 +72,14 @@ func nextRecovery(a Action, now time.Time) (time.Time, bool) {
 		if hour == 0 {
 			hour = 12
 		}
-		next := time.Date(now.Year(), now.Month(), now.Day(), hour, 0, 0, 0, time.Local)
-		if !next.After(now) {
-			next = next.AddDate(0, 0, 1)
-		}
-		return next, true
+		// 「每日额度」的语义是：今天用尽后今天不再可用，要等明天刷新。
+		// 因此恢复点必须是「明天」的刷新时刻，而不是今天尚未到的那个时刻——
+		// 后者会让早上 10 点失败、12 点就自动恢复（UI 显示「2 小时后恢复」），
+		// 与「次日恢复」的承诺矛盾，也让同一个额度耗尽的账号当天又被选中。
+		// 用固定北京时间算「明天」（与 volc-free-quota 的 untilNextDayRecovery 一致，
+		// 不依赖机器时区；中国无夏令时，FixedZone 零依赖）。
+		local := now.In(beijingTZ)
+		return time.Date(local.Year(), local.Month(), local.Day()+1, hour, 0, 0, 0, beijingTZ), true
 	default: // fixed
 		secs := a.CooldownSeconds
 		if secs <= 0 {
@@ -91,6 +98,23 @@ func stateClass(verdict string, a Action) string {
 		recover = "fixed"
 	}
 	return "rule_" + verdict + "_" + recover
+}
+
+// ruleAttribution 从裁决里取出「是哪条规则把它判掉的」，写入状态表供 UI 溯源：
+// 模型状态页据此展示命中规则，并可一键跳到规则页改那条规则。
+// AI 兜底没有具体规则（草稿是异步补生成的），只给一个说明性名称。
+func ruleAttribution(d Decision) (string, string) {
+	if d.MatchedRuleID == "" {
+		if d.AIModel != "" {
+			return "", "AI 兜底判定"
+		}
+		return "", ""
+	}
+	name := d.MatchedRuleName
+	if name == "" {
+		name = d.MatchedRuleID
+	}
+	return d.MatchedRuleID, name
 }
 
 // applyCooldown / applyDisableKey：时间限定禁用统一写 cooling + until。
@@ -112,24 +136,54 @@ func (x *Executor) applyCooldown(ctx context.Context, ac ActionContext) error {
 }
 
 func (x *Executor) applyDisableKey(ctx context.Context, ac ActionContext) error {
-	if err := x.writeModelState(ctx, ac, ac.Action, stateClass("disable_key", ac.Action)); err != nil {
+	// disable_key 语义 = 这条 Key（账号）整体不可用，不只是当前这一次请求的模型。
+	// 「额度用尽/余额不足/密钥失效」都是账号级的：只禁单个模型会导致同一个额度
+	// 耗尽的账号在下一个模型上继续被选中，反复失败（用户反馈的「死掉的模型反复鞭尸」）。
+	// 因此这里必须同时写 channel_states，让路由整体跳过这条 Key。
+	class := stateClass("disable_key", ac.Action)
+	if err := x.writeModelState(ctx, ac, ac.Action, class); err != nil {
 		return err
 	}
-	// 连坐：recover=never + switch_account → 整个 key（channel_states）禁用。
-	if ac.Action.SwitchAccount && ac.Action.Recover == "never" {
-		now := time.Now().UTC().Format(time.RFC3339Nano)
-		_, err := x.db.ExecContext(ctx, `
-			INSERT INTO channel_states(channel_id, status, fail_count, last_error, last_failure_class, updated_at)
-			VALUES (?, 'disabled', 1, ?, 'rule_disable', ?)
-			ON CONFLICT(channel_id) DO UPDATE SET status='disabled', disabled_until=NULL,
-			       fail_count=channel_states.fail_count+1, last_error=excluded.last_error,
-			       last_failure_class=excluded.last_failure_class, updated_at=excluded.updated_at`,
-			ac.Evidence.ChannelID, truncate(ac.Evidence.Message, 500), now)
-		if err != nil {
-			return err
-		}
-		x.lg.Info("failure-rules: 渠道连坐禁用（auth 永久）", "channel", ac.Evidence.ChannelID)
+	return x.writeChannelState(ctx, ac, ac.Action, class)
+}
+
+// writeChannelState 写整条 Key（channel_states）的状态。
+//
+// 恢复语义与 model_states 对齐（CheckNow 同时清理两者）：
+//   - recover=never  → status='disabled'（需手动恢复）
+//   - recover=daily  → status='cooling' + disabled_until=次日刷新点
+//   - recover=fixed  → status='cooling' + disabled_until=now+cooldown
+//
+// 历史实现只在 switch_account（auth 永久）时才写渠道状态，且固定写 'disabled'，
+// 于是「每日额度用尽」既没禁 Key，也没法到期自动恢复。
+func (x *Executor) writeChannelState(ctx context.Context, ac ActionContext, a Action, class string) error {
+	now := time.Now().UTC()
+	until, timed := nextRecovery(a, now)
+	status := "disabled"
+	var untilAny any
+	if timed {
+		status = "cooling"
+		untilAny = until.UTC().Format(time.RFC3339Nano)
 	}
+	ruleID, ruleName := ruleAttribution(ac.Decision)
+	_, err := x.db.ExecContext(ctx, `
+		INSERT INTO channel_states(channel_id, status, disabled_until, fail_count, last_error,
+		       last_failure_class, last_rule_id, last_rule_name, updated_at)
+		VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?)
+		ON CONFLICT(channel_id) DO UPDATE SET
+		       status=excluded.status, disabled_until=excluded.disabled_until,
+		       fail_count=channel_states.fail_count+1, last_error=excluded.last_error,
+		       last_failure_class=excluded.last_failure_class,
+		       last_rule_id=excluded.last_rule_id, last_rule_name=excluded.last_rule_name,
+		       updated_at=excluded.updated_at`,
+		ac.Evidence.ChannelID, status, untilAny, truncate(ac.Evidence.Message, 500), class,
+		ruleID, ruleName, now.Format(time.RFC3339Nano))
+	if err != nil {
+		return err
+	}
+	x.lg.Info("failure-rules: Key 状态已写入",
+		"channel", ac.Evidence.ChannelID, "verdict", ac.Decision.Verdict,
+		"status", status, "until", untilAny, "rule", ac.Decision.MatchedRuleName)
 	return nil
 }
 
@@ -144,16 +198,19 @@ func (x *Executor) applyDisableModel(ctx context.Context, ac ActionContext) erro
 		status = "cooling"
 		untilAny = until.UTC().Format(time.RFC3339Nano)
 	}
+	ruleID, ruleName := ruleAttribution(ac.Decision)
 	_, err := x.db.ExecContext(ctx, `
 		INSERT INTO model_states(channel_id, model, manual_enabled, status, disabled_until, fail_count,
-		       last_error, last_failure_class, updated_at)
-		VALUES (?, ?, 1, ?, ?, 1, ?, ?, ?)
+		       last_error, last_failure_class, last_rule_id, last_rule_name, updated_at)
+		VALUES (?, ?, 1, ?, ?, 1, ?, ?, ?, ?, ?)
 		ON CONFLICT(channel_id, model) DO UPDATE SET
 		       status=excluded.status, disabled_until=excluded.disabled_until,
 		       fail_count=model_states.fail_count+1, last_error=excluded.last_error,
-		       last_failure_class=excluded.last_failure_class, updated_at=excluded.updated_at`,
+		       last_failure_class=excluded.last_failure_class,
+		       last_rule_id=excluded.last_rule_id, last_rule_name=excluded.last_rule_name,
+		       updated_at=excluded.updated_at`,
 		ac.Evidence.ChannelID, ac.Evidence.Model, status, untilAny,
-		truncate(ac.Evidence.Message, 500), stateClass("disable_model", ac.Action), now)
+		truncate(ac.Evidence.Message, 500), stateClass("disable_model", ac.Action), ruleID, ruleName, now)
 	return err
 }
 
@@ -164,14 +221,18 @@ func (x *Executor) applyDisableProvider(ctx context.Context, ac ActionContext) e
 	if err != nil {
 		return err
 	}
+	ruleID, ruleName := ruleAttribution(ac.Decision)
 	for _, id := range ids {
 		if _, err := x.db.ExecContext(ctx, `
-			INSERT INTO channel_states(channel_id, status, fail_count, last_error, last_failure_class, updated_at)
-			VALUES (?, 'disabled', 1, ?, 'rule_disable_provider', ?)
+			INSERT INTO channel_states(channel_id, status, fail_count, last_error, last_failure_class,
+			       last_rule_id, last_rule_name, updated_at)
+			VALUES (?, 'disabled', 1, ?, 'rule_disable_provider', ?, ?, ?)
 			ON CONFLICT(channel_id) DO UPDATE SET status='disabled', disabled_until=NULL,
 			       fail_count=channel_states.fail_count+1, last_error=excluded.last_error,
-			       last_failure_class=excluded.last_failure_class, updated_at=excluded.updated_at`,
-			id, truncate(ac.Evidence.Message, 500), now); err != nil {
+			       last_failure_class=excluded.last_failure_class,
+			       last_rule_id=excluded.last_rule_id, last_rule_name=excluded.last_rule_name,
+			       updated_at=excluded.updated_at`,
+			id, truncate(ac.Evidence.Message, 500), ruleID, ruleName, now); err != nil {
 			return err
 		}
 	}
@@ -189,16 +250,19 @@ func (x *Executor) writeModelState(ctx context.Context, ac ActionContext, a Acti
 		status = "cooling"
 		untilAny = until.UTC().Format(time.RFC3339Nano)
 	}
+	ruleID, ruleName := ruleAttribution(ac.Decision)
 	_, err := x.db.ExecContext(ctx, `
 		INSERT INTO model_states(channel_id, model, manual_enabled, status, disabled_until, fail_count,
-		       last_error, last_failure_class, updated_at)
-		VALUES (?, ?, 1, ?, ?, 1, ?, ?, ?)
+		       last_error, last_failure_class, last_rule_id, last_rule_name, updated_at)
+		VALUES (?, ?, 1, ?, ?, 1, ?, ?, ?, ?, ?)
 		ON CONFLICT(channel_id, model) DO UPDATE SET
 		       status=excluded.status, disabled_until=excluded.disabled_until,
 		       fail_count=model_states.fail_count+1, last_error=excluded.last_error,
-		       last_failure_class=excluded.last_failure_class, updated_at=excluded.updated_at`,
+		       last_failure_class=excluded.last_failure_class,
+		       last_rule_id=excluded.last_rule_id, last_rule_name=excluded.last_rule_name,
+		       updated_at=excluded.updated_at`,
 		ac.Evidence.ChannelID, ac.Evidence.Model, status, untilAny,
-		truncate(ac.Evidence.Message, 500), class, now.UTC().Format(time.RFC3339Nano))
+		truncate(ac.Evidence.Message, 500), class, ruleID, ruleName, now.UTC().Format(time.RFC3339Nano))
 	if err != nil {
 		return err
 	}

@@ -123,6 +123,8 @@ function busy(action: string) {
             :available="item.effective_available"
             :manual-enabled="item.manual_enabled"
             :failure-class="item.failure_class"
+            :rule-id="item.last_rule_id"
+            :rule-name="item.last_rule_name"
             :last-error="item.reason"
             hide-when-available
           />
@@ -316,6 +318,8 @@ function busy(action: string) {
                       :manual-enabled="model.manual_enabled"
                       :failure-class="model.failure_class"
                       :disabled-until="model.disabled_until"
+                      :rule-id="model.last_rule_id"
+                      :rule-name="model.last_rule_name"
                       :last-error="model.last_error || model.reason"
                       hide-when-available
                     />
@@ -389,6 +393,8 @@ function busy(action: string) {
                 :manual-enabled="model.manual_enabled"
                 :failure-class="model.failure_class"
                 :disabled-until="model.disabled_until"
+                :rule-id="model.last_rule_id"
+                :rule-name="model.last_rule_name"
                 :last-error="model.last_error || model.reason"
                 hide-when-available
               />

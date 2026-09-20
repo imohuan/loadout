@@ -5,7 +5,8 @@
 // 状态优先级（从强到弱）：
 //   手动关闭 > 规则禁用（永久） > 规则禁用（次日恢复） > 免费额度耗尽 >
 //   鉴权失效 > 余额/额度 > 冷却中（含剩余时间） > 限速冷却 > 可用
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import {
   RiForbidLine,
   RiTimeLine,
@@ -13,7 +14,10 @@ import {
   RiCheckboxCircleLine,
   RiKey2Line,
 } from '@remixicon/vue'
-import { Tooltip, TooltipContent, TooltipTrigger } from 'shadcn-vue-cdn'
+import { HoverCard, HoverCardContent, HoverCardTrigger } from 'shadcn-vue-cdn'
+import ErrorJsonPreview from '@/components/route-logs/ErrorJsonPreview.vue'
+
+const router = useRouter()
 
 const props = withDefaults(
   defineProps<{
@@ -27,6 +31,9 @@ const props = withDefaults(
     disabledUntil?: string
     /** 最近错误（tooltip 详情） */
     lastError?: string
+    /** 命中并禁用该对象的失败规则（展示用名称 + 跳转用 id） */
+    ruleId?: string
+    ruleName?: string
     /** available 时是否隐藏（密集列表用） */
     hideWhenAvailable?: boolean
   }>(),
@@ -243,19 +250,123 @@ const view = computed<{ label: string; tone: Tone; icon: unknown; hint: string }
 const show = computed(
   () => !(props.hideWhenAvailable && props.available !== false && props.status === "available"),
 )
+
+// 后端的 last_error 常是「摘要 + 上游响应体」拼接的一行，例如：
+//   上游返回错误(429) {"error":{"data":{"code":14018,"msg":"额度已用尽"}}}
+// 直接塞进 tooltip 会挤成一坨。这里把前导摘要与 JSON 正文拆开，正文交给
+// ErrorJsonPreview 做彩色高亮（与转发日志的错误悬浮卡一致）。
+const errorParts = computed<{ summary: string; body: string }>(() => {
+  const raw = (props.lastError || "").trim()
+  if (!raw) return { summary: "", body: "" }
+  const at = raw.search(/[[{]/)
+  if (at < 0) return { summary: raw, body: "" }
+  const head = raw.slice(0, at).trim()
+  const tail = raw.slice(at).trim()
+  // 仅当尾部确实是可解析的 JSON 时才当正文，否则整段按纯文本展示。
+  try {
+    JSON.parse(tail)
+  } catch {
+    return { summary: raw, body: "" }
+  }
+  return { summary: head, body: tail }
+})
+
+// 卡片里「复制」按钮复制的内容：优先完整错误原文（摘要 + 响应体）。
+const copyText = computed(() => (props.lastError || "").trim())
+const copied = ref(false)
+async function copyError() {
+  if (!copyText.value) return
+  try {
+    await navigator.clipboard.writeText(copyText.value)
+    copied.value = true
+    setTimeout(() => (copied.value = false), 1500)
+  } catch {
+    /* 非安全上下文等场景静默忽略 */
+  }
+}
+
+// goToRule 跳到「失败规则」页并直接打开这条规则的编辑器，用户可当场改阈值/
+// 恢复策略。规则页读 query.rule 自动展开（见 RulesView 的 openRuleFromQuery）。
+function goToRule() {
+  if (!props.ruleId) return
+  router.push({ name: 'failure-rules', query: { rule: props.ruleId } })
+}
+
+// 规则名已知但 id 缺失（历史数据只落了分类，没落规则 id）：至少把用户送到规则页，
+// 让他能按名称搜索并修改，而不是完全没有入口。
+function goToRulesPage() {
+  router.push({ name: 'failure-rules' })
+}
+
+// hasRuleRef 卡片是否要显示「命中规则」行：有 id 或名称都算。
+const hasRuleRef = computed(() => Boolean(props.ruleId || props.ruleName))
 </script>
 
 <template>
-  <Tooltip v-if="show">
-    <TooltipTrigger as-child>
-      <Badge variant="outline" class="gap-1 border text-[11px] font-medium" :class="TONE_CLASS[view.tone]">
+  <!-- 状态徽标 + 悬停详情卡。
+       卡片与「转发日志」的错误悬浮卡（RouteLogErrorCell）保持同一套观感：
+       标题行 + 复制按钮 + 彩色 JSON 正文。Tooltip 只能显示一行小字，
+       遇到 429/14018 这种带完整响应体的错误会挤成一坨，看不清也复制不了。 -->
+  <HoverCard v-if="show" :open-delay="150" :close-delay="100">
+    <HoverCardTrigger as-child>
+      <Badge
+        variant="outline"
+        class="cursor-default gap-1 border text-[11px] font-medium"
+        :class="TONE_CLASS[view.tone]"
+      >
         <component :is="view.icon" size="12" class="shrink-0" />
         {{ view.label }}
       </Badge>
-    </TooltipTrigger>
-    <TooltipContent class="max-w-sm space-y-1 whitespace-normal">
-      <p>{{ view.hint }}</p>
-      <p v-if="lastError" class="text-muted-foreground break-words">{{ lastError }}</p>
-    </TooltipContent>
-  </Tooltip>
+    </HoverCardTrigger>
+    <HoverCardContent align="start" :side-offset="6" class="w-[min(420px,calc(100vw-2rem))] p-0">
+      <div class="space-y-2 rounded-md border border-border/60 bg-muted/40 px-3 py-2">
+        <div class="flex items-center justify-between gap-2">
+          <span class="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+            {{ view.label }}
+          </span>
+          <button
+            v-if="copyText"
+            type="button"
+            class="rounded border border-border/60 px-1.5 py-0.5 text-[10px] text-foreground hover:bg-muted"
+            @click.stop="copyError"
+          >
+            {{ copied ? '已复制' : '复制' }}
+          </button>
+        </div>
+        <!-- 成因说明：告诉用户「为什么不可用 / 什么时候恢复」 -->
+        <p class="text-xs leading-relaxed text-foreground/90">{{ view.hint }}</p>
+        <!-- 命中规则：让用户知道「是哪条规则判的」，一键跳到规则页改它 -->
+        <div
+          v-if="hasRuleRef"
+          class="flex items-center justify-between gap-2 rounded border border-border/60 bg-background/60 px-2 py-1"
+        >
+          <span class="min-w-0 flex-1 truncate text-[11px] text-foreground/80">
+            命中规则：{{ ruleName || ruleId }}
+          </span>
+          <button
+            type="button"
+            class="shrink-0 rounded border border-border/60 px-1.5 py-0.5 text-[10px] text-foreground hover:bg-muted"
+            @click.stop="ruleId ? goToRule() : goToRulesPage()"
+          >
+            查看规则
+          </button>
+        </div>
+        <!-- 最近错误：摘要一行 + 响应体彩色预览 -->
+        <div v-if="errorParts.summary || errorParts.body" class="border-t border-border/60 pt-2">
+          <p
+            v-if="errorParts.summary"
+            class="mb-1 font-mono text-[11px] leading-snug text-muted-foreground break-all"
+          >
+            {{ errorParts.summary }}
+          </p>
+          <ErrorJsonPreview
+            v-if="errorParts.body"
+            :body="errorParts.body"
+            :compact="true"
+            max-height-class="max-h-64"
+          />
+        </div>
+      </div>
+    </HoverCardContent>
+  </HoverCard>
 </template>

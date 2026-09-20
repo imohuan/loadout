@@ -838,10 +838,21 @@ func flattenStatus(values []contracts.ChannelStatus) []map[string]any {
 				"health_status": model.Health.HealthStatus, "effective_available": model.Health.EffectiveAvailable,
 				"reason": model.Health.Reason, "last_error": model.LastError, "fail_count": model.FailCount,
 				"failure_class": model.FailureClass,
+				"last_rule_id":  model.LastRuleID, "last_rule_name": model.LastRuleName,
 				"last_success_at": model.LastSuccessAt, "disabled_until": model.DisabledUntil, "source": model.Source,
 			})
 		}
-		result = append(result, map[string]any{"channel": map[string]any{"id": value.ID, "name": value.Name, "channel_name": value.ChannelName, "base_url": value.BaseURL, "manual_enabled": value.ManualEnabled, "sync_billing": value.SyncBilling}, "manual_enabled": value.ManualEnabled, "health_status": value.Health.HealthStatus, "effective_available": value.Health.EffectiveAvailable, "failure_class": value.FailureClass, "reason": value.Health.Reason, "models": models})
+		result = append(result, map[string]any{
+			"channel":             map[string]any{"id": value.ID, "name": value.Name, "channel_name": value.ChannelName, "base_url": value.BaseURL, "manual_enabled": value.ManualEnabled, "sync_billing": value.SyncBilling},
+			"manual_enabled":      value.ManualEnabled,
+			"health_status":       value.Health.HealthStatus,
+			"effective_available": value.Health.EffectiveAvailable,
+			"failure_class":       value.FailureClass,
+			"last_rule_id":        value.LastRuleID,
+			"last_rule_name":      value.LastRuleName,
+			"reason":              value.Health.Reason,
+			"models":              models,
+		})
 	}
 	return result
 }

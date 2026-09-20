@@ -80,32 +80,38 @@ type ModelHealth interface {
 }
 
 type ChannelStatus struct {
-	ID            string        `json:"id"`
-	Name          string        `json:"name"`
-	ChannelName   string        `json:"channel_name,omitempty"`
-	BaseURL       string        `json:"base_url"`
-	ManualEnabled bool          `json:"manual_enabled"`
-	SyncBilling   bool          `json:"sync_billing"`
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	ChannelName   string `json:"channel_name,omitempty"`
+	BaseURL       string `json:"base_url"`
+	ManualEnabled bool   `json:"manual_enabled"`
+	SyncBilling   bool   `json:"sync_billing"`
 	// FailureClass 渠道级最近失败分类（auth / channel_billing / rule_disable_provider…）
-	FailureClass  string        `json:"failure_class,omitempty"`
-	Health        Availability  `json:"health"`
-	Models        []ModelStatus `json:"models"`
+	FailureClass string `json:"failure_class,omitempty"`
+	// LastRuleID / LastRuleName 命中的失败规则（UI 溯源 + 跳转规则页用）。
+	LastRuleID   string        `json:"last_rule_id,omitempty"`
+	LastRuleName string        `json:"last_rule_name,omitempty"`
+	Health       Availability  `json:"health"`
+	Models       []ModelStatus `json:"models"`
 }
 
 type ModelStatus struct {
 	Model         string       `json:"model"`
 	ManualEnabled bool         `json:"manual_enabled"`
 	Health        Availability `json:"health"`
-	LastError     string `json:"last_error"`
+	LastError     string       `json:"last_error"`
 	// FailureClass 最近一次失败分类：rate_limit / auth / model_quota /
 	// free_quota_exhausted / capability / network / temporary / unknown /
 	// rule_<verdict>_<recover>（规则引擎写入，如 rule_disable_key_daily）。
 	// 前端据此展示不同状态提示。
-	FailureClass  string `json:"failure_class,omitempty"`
-	FailCount     int    `json:"fail_count"`
-	LastSuccessAt *time.Time   `json:"last_success_at,omitempty"`
-	DisabledUntil *time.Time   `json:"disabled_until,omitempty"`
-	Source        string       `json:"source,omitempty"`
+	FailureClass string `json:"failure_class,omitempty"`
+	// LastRuleID / LastRuleName 命中的失败规则（UI 溯源 + 跳转规则页用）。
+	LastRuleID    string     `json:"last_rule_id,omitempty"`
+	LastRuleName  string     `json:"last_rule_name,omitempty"`
+	FailCount     int        `json:"fail_count"`
+	LastSuccessAt *time.Time `json:"last_success_at,omitempty"`
+	DisabledUntil *time.Time `json:"disabled_until,omitempty"`
+	Source        string     `json:"source,omitempty"`
 }
 
 type RouteRequest struct {

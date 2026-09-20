@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { toast } from 'vue-sonner'
 import {
   RiAddLine,
@@ -25,6 +26,7 @@ import {
   type RuleInput,
 } from '@/lib/failureRules'
 import { api } from '@/lib/api'
+import { formatDateTimeCN } from '@/lib/format'
 import TargetModelPicker from '@/components/TargetModelPicker.vue'
 import PageHeader from '@/components/PageHeader.vue'
 import LoadingBlock from '@/components/LoadingBlock.vue'
@@ -457,6 +459,34 @@ const frameworkOptions = computed(() => {
 })
 loadChannels()
 load()
+
+// ===== 深链：从模型状态页「查看规则」跳进来 =====
+// URL 形如 /failure-rules?rule=<id>。打开后自动切到规则列表、清空筛选并打开该规则
+// 的编辑器，用户可当场改恢复策略（例如把「额度用尽」从禁模型改成禁 Key）。
+const route = useRoute()
+const router = useRouter()
+
+async function openRuleFromQuery() {
+  const id = typeof route.query.rule === 'string' ? route.query.rule : ''
+  if (!id) return
+  tab.value = 'rules'
+  if (!rules.value.length) {
+    await load()
+  }
+  const rule = rules.value.find((r) => r.id === id)
+  if (rule) {
+    clearFilters()
+    openEdit(rule)
+  } else {
+    toast.error(`未找到规则 ${id}（可能已被删除）`)
+  }
+  // 用完即清：避免用户手动关闭编辑器后又因为 query 还在被反复打开。
+  const next = { ...route.query }
+  delete next.rule
+  router.replace({ query: next })
+}
+
+openRuleFromQuery()
 </script>
 
 <template>
@@ -661,7 +691,7 @@ load()
           <Table class="table-fixed">
             <TableHeader>
               <TableRow>
-                <TableHead class="w-[88px]">时间</TableHead>
+                <TableHead class="w-[150px]">时间</TableHead>
                 <TableHead class="w-[100px]">平台</TableHead>
                 <TableHead class="w-[104px]">Key</TableHead>
                 <TableHead class="w-[116px]">模型</TableHead>
@@ -673,7 +703,7 @@ load()
             </TableHeader>
             <TableBody>
               <TableRow v-for="d in filteredLogs" :key="d.id">
-                <TableCell class="text-muted-foreground font-mono text-[11px]">{{ d.created_at?.slice(5, 19) }}</TableCell>
+                <TableCell class="text-muted-foreground font-mono text-[11px] whitespace-nowrap">{{ formatDateTimeCN(d.created_at) }}</TableCell>
                 <TableCell>
                   <Badge variant="outline" class="border text-[11px]" :class="platformTone(d.provider_base_url)" :title="d.provider_base_url">
                     {{ platformLabel(d.provider_base_url) }}

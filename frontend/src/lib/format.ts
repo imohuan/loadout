@@ -6,6 +6,34 @@ export function formatDate(value?: string) {
     : '-'
 }
 
+/**
+ * formatDateTimeCN 把 ISO 时间串格式化成北京时间（Asia/Shanghai）的
+ * 「YYYY-MM-DD HH:mm:ss」。
+ *
+ * 后端统一以 UTC 存/传时间（RFC3339，如 2026-09-19T19:13:13Z），直接对字符串
+ * 做 slice 会显示成 UTC 时刻，比北京时间早 8 小时；这里显式指定时区格式化，
+ * 保证用户在任何机器时区下看到的都是北京时间。
+ */
+export function formatDateTimeCN(value?: string) {
+  if (!value) return '-'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '-'
+  const parts = new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).formatToParts(date)
+  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? ''
+  // zh-CN 的 hour 在 hour12:false 下可能出现 '24'（表示午夜），归一成 '00'。
+  const hour = get('hour') === '24' ? '00' : get('hour')
+  return `${get('year')}-${get('month')}-${get('day')} ${hour}:${get('minute')}:${get('second')}`
+}
+
 export function formatDuration(value?: number) {
   if (value === undefined || value === null) return '-'
   return value < 1000 ? `${value} ms` : `${(value / 1000).toFixed(2)} s`

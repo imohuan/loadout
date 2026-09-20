@@ -213,6 +213,8 @@ func TestPurgeChannelStates(t *testing.T) {
 	}
 }
 
+// TestBillingPropagationRequiresExplicitClassification 账号级 402（额度/余额不足）
+// 必须禁用整条 Key：只禁单个模型会让同一额度耗尽的账号在下一个模型上继续被选中。
 func TestBillingPropagationRequiresExplicitClassification(t *testing.T) {
 	database := healthDB(t)
 	service := NewService(database, nil)
@@ -221,11 +223,11 @@ func TestBillingPropagationRequiresExplicitClassification(t *testing.T) {
 		t.Fatalf("model quota classification: %q %v", class, err)
 	}
 	var channelStatus sql.NullString
-	if err := database.QueryRow(`SELECT status FROM channel_states WHERE channel_id='c'`).Scan(&channelStatus); err != sql.ErrNoRows {
-		t.Fatalf("model quota created unexpected channel state: %v", err)
+	if err := database.QueryRow(`SELECT status FROM channel_states WHERE channel_id='c'`).Scan(&channelStatus); err != nil {
+		t.Fatalf("model quota should disable channel: %v", err)
 	}
-	if channelStatus.Valid {
-		t.Fatalf("model quota unexpectedly disabled channel: %q", channelStatus.String)
+	if !channelStatus.Valid || channelStatus.String != statusDisabled {
+		t.Fatalf("model quota should disable channel, got %q", channelStatus.String)
 	}
 	if class, err := service.RecordFailure(ctx, contracts.RouteFailure{ChannelID: "c", Model: "m2", StatusCode: 402, Error: "account balance is empty"}); err != nil || class != "disable_key" {
 		t.Fatalf("channel billing classification: %q %v", class, err)
@@ -541,9 +543,10 @@ func TestDeleteModelsBatch(t *testing.T) {
 	}
 }
 
-// TestRecordFailureAuthDisablesChannel 多 key 语义：401/403(auth) 说明该 key 无效，
-// 除模型级禁用外，必须把整条 key 记录（channel_states）置 disabled，否则路由仍会选它。
-// 429/402(model_quota) 不得触发渠道级禁用（key 级冷却/禁模型，不连坐）。
+// TestRecordFailureAuthDisablesChannel 多 key 语义：
+//   - 401(auth) / 402(账户余额) 都是「这条 Key 不可用」→ 除模型级外，必须把整条
+//     key 记录（channel_states）置不可用，否则路由仍会在下一个模型上选中它。
+//   - 429(限速) 是模型级瞬时冷却 → 只冷却模型，不碰渠道状态。
 func TestRecordFailureAuthDisablesChannel(t *testing.T) {
 	database := healthDB(t)
 	service := NewService(database, nil)
@@ -581,7 +584,7 @@ func TestRecordFailureAuthDisablesChannel(t *testing.T) {
 		t.Fatalf("rate limit 不得覆盖渠道状态, got %q", channelStatusAfter)
 	}
 
-	// 新渠道上 402 model_quota：不产生渠道级禁用。
+	// 新渠道上 402（额度/余额不足）：属于账号级，必须禁用整条 Key。
 	if _, err := database.Exec(`INSERT INTO channels(id, name, base_url, manual_enabled, sync_billing, created_at, updated_at) VALUES ('c2','C2','http://c2',1,0,'now','now')`); err != nil {
 		t.Fatal(err)
 	}
@@ -589,8 +592,11 @@ func TestRecordFailureAuthDisablesChannel(t *testing.T) {
 		t.Fatalf("model quota classification: %q %v", class, err)
 	}
 	var c2Status sql.NullString
-	if err := database.QueryRow(`SELECT status FROM channel_states WHERE channel_id='c2'`).Scan(&c2Status); err != sql.ErrNoRows {
-		t.Fatalf("model_quota 不应写入 channel_states: %v", err)
+	if err := database.QueryRow(`SELECT status FROM channel_states WHERE channel_id='c2'`).Scan(&c2Status); err != nil {
+		t.Fatalf("402 应写入 channel_states: %v", err)
+	}
+	if c2Status.String != statusDisabled {
+		t.Fatalf("402（额度不足）应禁用整条 Key, got %q", c2Status.String)
 	}
 	availability, err = service.Check(ctx, "c2", "m")
 	if err != nil {

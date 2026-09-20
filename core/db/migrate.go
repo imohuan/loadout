@@ -751,6 +751,18 @@ ALTER TABLE failure_rules ADD COLUMN provider_framework TEXT NOT NULL DEFAULT ''
 ALTER TABLE rule_decisions ADD COLUMN channel_id TEXT NOT NULL DEFAULT '';
 ALTER TABLE rule_decisions ADD COLUMN channel_name TEXT NOT NULL DEFAULT '';
 `,
+}, {
+	version: 38,
+	name:    "state-rule-attribution",
+	sql: `
+-- 状态归属：记录「是哪条规则把这条 Key / 模型 判为不可用的」。
+-- 模型状态页据此展示命中规则，并可一键跳转到规则页改那条规则，
+-- 否则用户只看到「额度用尽」却不知道该去哪调阈值/恢复策略。
+ALTER TABLE model_states ADD COLUMN last_rule_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE model_states ADD COLUMN last_rule_name TEXT NOT NULL DEFAULT '';
+ALTER TABLE channel_states ADD COLUMN last_rule_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE channel_states ADD COLUMN last_rule_name TEXT NOT NULL DEFAULT '';
+`,
 }}
 
 // Migrate applies all pending schema migrations and rejects an incompatible

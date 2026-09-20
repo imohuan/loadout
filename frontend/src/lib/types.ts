@@ -73,6 +73,9 @@ export interface ModelStatus {
   last_error?: string
   /** 失败分类（rate_limit/auth/model_quota/free_quota_exhausted/rule_<verdict>_<recover>…） */
   failure_class?: string
+  /** 命中并禁用该模型的失败规则（空 = 无规则命中/AI 兜底） */
+  last_rule_id?: string
+  last_rule_name?: string
   fail_count?: number
   last_success_at?: string
   disabled_until?: string
@@ -84,6 +87,9 @@ export interface ChannelStatus {
   manual_enabled: boolean
   /** 渠道级失败分类（auth/channel_billing/rule_disable_provider…） */
   failure_class?: string
+  /** 命中并禁用该 Key 的失败规则 */
+  last_rule_id?: string
+  last_rule_name?: string
   health_status: 'available' | 'cooling' | 'disabled' | string
   effective_available: boolean
   reason?: string
