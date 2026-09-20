@@ -522,6 +522,10 @@ export function importKindBadgeClass(kind: McpImportKind): string {
 export interface McpMetadataStatus {
   path: string
   modelCount: number
+  /** 支持视觉的模型数（后端按缓存文件统计；「模型来源」卡片展示用）。 */
+  visionCount?: number
+  /** 支持推理/思考的模型数（同上）。 */
+  reasoningCount?: number
   cachedAt: string | null
   degraded?: string
 }

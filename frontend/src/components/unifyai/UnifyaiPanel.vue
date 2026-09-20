@@ -1019,6 +1019,10 @@ onMounted(async () => {
         kind: 'openrouter',
         baseUrl: 'https://openrouter.ai/api/v1',
         modelCount: boot.metadata.modelCount,
+        // 视觉/思考计数由后端按缓存文件统计（CLI 的 metadata 状态不含这两项）。
+        // 不填就会出现「447 个模型 / 👁 0 视觉 / 🧠 0 思考」，只有点过「更新元数据」才对。
+        visionCount: boot.metadata.visionCount ?? 0,
+        reasoningCount: boot.metadata.reasoningCount ?? 0,
         cachedAt: boot.metadata.cachedAt || '',
       }
     }

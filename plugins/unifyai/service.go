@@ -764,7 +764,58 @@ func (s *Service) listAllFastOnce() AllConfigResult {
 		s.lg.Warn("unifyai: 解析快速查询 JSON 失败", "err", err)
 		return AllConfigResult{}
 	}
+	// CLI 的 metadata 状态只给 path / modelCount / cachedAt，不含视觉与思考计数。
+	// 「模型来源」卡片需要「N 视觉 / N 思考」，缺了就会显示 0（用户反馈的实际现象）。
+	// 后端自己按缓存文件补上——与「更新元数据」走的 ModelSource() 同一口径，
+	// 保证首屏与刷新后看到的数字一致。
+	if md, ok := enrichMetadataStatusCounts(res.Metadata); ok {
+		res.Metadata = md
+	}
 	return res
+}
+
+// enrichMetadataStatusCounts 给 CLI 返回的 metadata 状态补上视觉/思考计数。
+// 返回 ok=false 表示无需替换（元数据为空、无法解析，或本来就已带计数）。
+func enrichMetadataStatusCounts(raw json.RawMessage) (json.RawMessage, bool) {
+	if len(raw) == 0 {
+		return raw, false
+	}
+	var status map[string]any
+	if err := json.Unmarshal(raw, &status); err != nil {
+		return raw, false
+	}
+	// 已经有计数（CLI 未来补齐时）就不覆盖，以 CLI 为准。
+	if _, hasVision := status["visionCount"]; hasVision {
+		return raw, false
+	}
+	data, err := os.ReadFile(metadataCachePath())
+	if err != nil {
+		return raw, false
+	}
+	var metas []OpenRouterMeta
+	if err := json.Unmarshal(data, &metas); err != nil {
+		return raw, false
+	}
+	vision, reasoning := 0, 0
+	for _, m := range metas {
+		if m.Vision {
+			vision++
+		}
+		if m.Reasoning {
+			reasoning++
+		}
+	}
+	status["visionCount"] = vision
+	status["reasoningCount"] = reasoning
+	// 缓存里有模型而 CLI 未报数量时，用缓存条数兜底。
+	if n, ok := status["modelCount"].(float64); !ok || n == 0 {
+		status["modelCount"] = len(metas)
+	}
+	out, err := json.Marshal(status)
+	if err != nil {
+		return raw, false
+	}
+	return out, true
 }
 
 // cachedListAllFast 读取 TTL 内的缓存；未命中返回 ok=false。

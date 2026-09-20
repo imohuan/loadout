@@ -1,7 +1,10 @@
 package unifyai
 
 import (
+	"encoding/json"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -26,6 +29,58 @@ func fastStub(t *testing.T, output string) (restore func(), calls func() int, ar
 	restore = func() { procreg.SetRunCollectFn(old) }
 	t.Cleanup(restore)
 	return restore, func() int { return int(atomic.LoadInt64(&callsN)) }, func() []string { return last }
+}
+
+// TestListAllFastIncludesMetadataCounts 锁定首屏「模型来源」卡片的视觉/思考计数。
+//
+// 回归背景（用户反馈）：进页面时「模型来源 OpenRouter」显示「447 个模型」，
+// 紧跟的却是「👁 0 视觉 / 🧠 0 思考」，只有点过「更新元数据」才显示真实数字。
+// 根因：首屏走 --list platforms,mcp,metadata，CLI 的 metadata 状态只给
+// path / modelCount / cachedAt，不含视觉与思考计数；而「更新元数据」之后页面读的是
+// /api/unifyai/model-source（后端自己按缓存文件统计），所以那时才有值。
+func TestListAllFastIncludesMetadataCounts(t *testing.T) {
+	cache := filepath.Join(t.TempDir(), "openrouter-models.json")
+	content := `[
+		{"id":"a","name":"A","context":1000,"output":10,"vision":true,"reasoning":true},
+		{"id":"b","name":"B","context":1000,"output":10,"vision":true,"reasoning":false},
+		{"id":"c","name":"C","context":1000,"output":10,"vision":false,"reasoning":false}
+	]`
+	if err := os.WriteFile(cache, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oldPath := metadataCachePath
+	metadataCachePath = func() string { return cache }
+	t.Cleanup(func() { metadataCachePath = oldPath })
+
+	// CLI 的 metadata 状态（不含视觉/思考计数）——就是线上那份形状。
+	_, _, _ = fastStub(t, `{"platforms":[],"mcp":{"platforms":[]},`+
+		`"metadata":{"path":"`+escapeJSON(cache)+`","modelCount":3,"cachedAt":"2026-01-01T00:00:00Z"}}`)
+
+	res := NewService(slog.Default()).ListAllFast(false)
+
+	var md struct {
+		ModelCount     int `json:"modelCount"`
+		VisionCount    int `json:"visionCount"`
+		ReasoningCount int `json:"reasoningCount"`
+	}
+	if err := json.Unmarshal(res.Metadata, &md); err != nil {
+		t.Fatalf("解析 metadata 失败: %v (%s)", err, string(res.Metadata))
+	}
+	if md.ModelCount != 3 {
+		t.Errorf("modelCount = %d, want 3", md.ModelCount)
+	}
+	if md.VisionCount != 2 {
+		t.Errorf("visionCount = %d, want 2（首屏不该是 0）", md.VisionCount)
+	}
+	if md.ReasoningCount != 1 {
+		t.Errorf("reasoningCount = %d, want 1（首屏不该是 0）", md.ReasoningCount)
+	}
+}
+
+// escapeJSON 把路径里的反斜杠转义，便于拼进测试用的 JSON 字符串。
+func escapeJSON(s string) string {
+	b, _ := json.Marshal(s)
+	return strings.Trim(string(b), `"`)
 }
 
 // TestListAllFastSkipsModelsQuery 锁定「首屏查询不碰模型列表」这条性能约束。
