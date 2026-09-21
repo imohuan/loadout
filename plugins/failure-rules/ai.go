@@ -45,8 +45,15 @@ type AIResolver struct {
 }
 
 func NewAIResolver(model, skKey, baseURL string) *AIResolver {
-	return &AIResolver{model: model, skKey: skKey, baseURL: baseURL, timeout: 8 * time.Second}
+	return &AIResolver{model: model, skKey: skKey, baseURL: baseURL, timeout: defaultAITimeout}
 }
+
+// defaultAITimeout AI 兜底判定超时。实测推理型小模型（如 glm-5.3-flash）返回
+// 完整 JSON 需要 9~40s，早期写死的 8s 会让每次判定都超时被丢弃（表现为
+// 「AI 兜底永远 ok=false」，看起来像功能没接上）。这里给足余量。
+// 失败路径上的等待有代价：调用方（RecordFailure）是同步的，超时过长会拖慢
+// 用户请求的失败返回。30s 是「够推理模型答完」与「不把请求挂太久」的折中。
+const defaultAITimeout = 30 * time.Second
 
 // SetModel 热更新 AI 模型（设置页保存后调用；空 = 关闭）。
 func (a *AIResolver) SetModel(model string) {

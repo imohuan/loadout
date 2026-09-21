@@ -99,6 +99,10 @@ export const verifyFailureRule = (rule: Partial<FailureRule>, sample: RuleEviden
 export const listRuleDecisions = (limit = 50) =>
   request<RuleDecision[]>(`/api/rule-decisions?limit=${limit}`, "GET")
 
+// restoreDefaultFailureRules 把 14 条内置默认规则恢复成出厂状态（用户删掉/改坏后一键还原）。
+export const restoreDefaultFailureRules = () =>
+  request<{ ok: boolean; restored: number }>("/api/failure-rules-defaults/restore", "POST")
+
 export interface ProviderFrameworkInfo {
   frameworks: string[]
   platforms: Array<{ base_url: string; name: string; framework: string }>

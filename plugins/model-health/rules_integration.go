@@ -75,6 +75,16 @@ func (s *Service) recordFailureRuled(ctx context.Context, f contracts.RouteFailu
 func (s *Service) spawnDraft(ev failure.Evidence, d failure.Decision) {
 	go func() {
 		ctx := context.WithoutCancel(context.Background())
+		// 匹配条件优先用「状态码 + 业务码」这对稳定信号：
+		// 同一种上游故障，不同请求的 error 文案可能略有差异（requestId、措辞），
+		// 用消息片段当锚点会让「同一个问题」裂成多个指纹，既重复调 AI、
+		// 又生成多条内容雷同的草稿。业务码是平台自己标的病因，最稳。
+		conds := []failure.Condition{{Field: "status_code", Op: "eq", Value: ev.StatusCode}}
+		if ev.BodyCode != "" {
+			conds = append(conds, failure.Condition{Field: "body_code", Op: "eq", Value: ev.BodyCode})
+		} else if tok := firstToken(ev.Message, 24); tok != "" {
+			conds = append(conds, failure.Condition{Field: "message_text", Op: "contains", Value: tok})
+		}
 		in := failure.RuleInput{
 			Name:             "AI: " + truncateStr(d.Reason, 40) + " (" + ev.Model + " " + errStatusText(ev.StatusCode) + ")",
 			Priority:         150,
@@ -82,11 +92,8 @@ func (s *Service) spawnDraft(ev failure.Evidence, d failure.Decision) {
 			ScopeMode:        "urls",
 			ProviderBaseURLs: []string{ev.ProviderURL},
 			Model:            ev.Model,
-			Match: failure.Match{Any: []failure.Condition{
-				{Field: "status_code", Op: "eq", Value: ev.StatusCode},
-				{Field: "message_text", Op: "contains", Value: firstToken(ev.Message, 24)},
-			}},
-			Action: failure.Action{Verdict: d.Verdict, Recover: d.Action.Recover, CooldownSeconds: d.Action.CooldownSeconds},
+			Match:            failure.Match{All: conds},
+			Action:           failure.Action{Verdict: d.Verdict, Recover: d.Action.Recover, CooldownSeconds: d.Action.CooldownSeconds},
 		}
 		if _, err := s.decisions.CreateDraft(ctx, in, d.AIModel, d.AIRaw); err != nil {
 			s.lg.Warn("failure-rules: 草稿生成失败", "err", err)

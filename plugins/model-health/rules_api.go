@@ -82,6 +82,16 @@ func (s *Service) SetRuleAIModel(model string) {
 	}
 }
 
+// RestoreDefaultFailureRules 恢复内置默认规则并热重载引擎（UI「恢复默认规则」）。
+func (s *Service) RestoreDefaultFailureRules(ctx context.Context) (int, error) {
+	n, err := s.decisions.RestoreDefaults(ctx)
+	if err != nil {
+		return n, err
+	}
+	s.rules.Reload(ctx)
+	return n, nil
+}
+
 func (s *Service) ListRuleDecisions(ctx context.Context, limit int) ([]map[string]any, error) {
 	return s.decisions.ListDecisions(ctx, limit)
 }

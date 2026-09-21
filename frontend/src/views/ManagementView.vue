@@ -25,6 +25,9 @@ import ConfigExportDialog from '@/components/config-transfer/ConfigExportDialog.
 import ConfigImportDialog from '@/components/config-transfer/ConfigImportDialog.vue'
 import TranslateView from '@/views/TranslateView.vue'
 import MultimodalView from '@/views/MultimodalView.vue'
+import TargetModelPicker from '@/components/TargetModelPicker.vue'
+import { useChannels } from '@/composables/useChannels'
+import { useAggregates } from '@/composables/useAggregates'
 
 const api = useManagementApi()
 const requestLogApi = useRequestLogs()
@@ -64,6 +67,25 @@ watch(
   { immediate: true },
 )
 const loading = computed(() => keysLoading.value || pluginsLoading.value || settingsLoading.value)
+// AI 兜底模型候选：渠道模型 + 聚合虚拟模型（与多模态/翻译页同源），喂给下拉选择器。
+const channelApi = useChannels()
+const aggregateApi = useAggregates()
+const aiModelOptions = ref<string[]>([])
+const aiModelsLoading = ref(false)
+async function loadAiModelOptions() {
+  aiModelsLoading.value = true
+  try {
+    const [chs, aggs] = await Promise.all([channelApi.list(), aggregateApi.list()])
+    const set = new Set<string>()
+    for (const ch of chs) for (const m of ch.models || []) set.add(m)
+    for (const a of aggs) set.add(a.name)
+    aiModelOptions.value = [...set].sort()
+  } catch {
+    // 候选拉取失败不阻塞页面：下拉仍可自定义填模型名。
+  } finally {
+    aiModelsLoading.value = false
+  }
+}
 const translateRef = ref<InstanceType<typeof TranslateView> | null>(null)
 const multimodalRef = ref<InstanceType<typeof MultimodalView> | null>(null)
 const quotaCardRef = ref<InstanceType<typeof VolcQuotaCard> | null>(null)
@@ -262,6 +284,7 @@ watch(
 )
 onMounted(() => {
   refreshDeps()
+  void loadAiModelOptions()
 })
 </script>
 
@@ -318,11 +341,12 @@ onMounted(() => {
             <CardContent>
               <form class="flex items-end gap-2" @submit.prevent="saveSettings">
                 <div class="flex-1 space-y-1">
-                  <Label for="rule-ai-model">兜底判定模型（留空 = 关闭）</Label>
-                  <Input
-                    id="rule-ai-model"
+                  <Label>兜底判定模型（留空 = 关闭）</Label>
+                  <TargetModelPicker
                     v-model="settingsForm.rule_ai_model"
-                    placeholder="例如 gemini-flash / gpt-4o-mini"
+                    :models="aiModelOptions"
+                    :multiple="false"
+                    :loading="aiModelsLoading"
                   />
                 </div>
                 <Button type="submit" variant="outline">保存</Button>

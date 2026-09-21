@@ -246,6 +246,8 @@ func (s *Service) Routes() []plugin.RouteSpec {
 		{Method: http.MethodDelete, Pattern: "DELETE /api/failure-rules/{id}", Auth: plugin.AuthSession, Handler: s.session(s.handleFailureRuleDelete)},
 		{Method: http.MethodPatch, Pattern: "PATCH /api/failure-rules/{id}", Auth: plugin.AuthSession, Handler: s.session(s.handleFailureRulePatch)},
 		{Method: http.MethodPost, Pattern: "POST /api/failure-rules/verify", Auth: plugin.AuthSession, Handler: s.session(s.handleFailureRuleVerify)},
+		// 恢复默认规则：放在独立前缀下，避免与 /api/failure-rules/{id} 冲突。
+		{Method: http.MethodPost, Pattern: "POST /api/failure-rules-defaults/restore", Auth: plugin.AuthSession, Handler: s.session(s.handleFailureRulesRestoreDefaults)},
 		{Method: http.MethodGet, Pattern: "GET /api/rule-decisions", Auth: plugin.AuthSession, Handler: s.session(s.handleRuleDecisionsList)},
 		{Method: http.MethodGet, Pattern: "GET /api/provider-frameworks", Auth: plugin.AuthSession, Handler: s.session(s.handleProviderFrameworks)},
 

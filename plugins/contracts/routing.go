@@ -77,6 +77,8 @@ type ModelHealth interface {
 	VerifyFailureRule(failure.Rule, failure.Evidence) bool
 	ListRuleDecisions(context.Context, int) ([]map[string]any, error)
 	SetRuleAIModel(string)
+	// RestoreDefaultFailureRules 恢复内置默认规则（出厂状态），返回写入条数。
+	RestoreDefaultFailureRules(context.Context) (int, error)
 }
 
 type ChannelStatus struct {

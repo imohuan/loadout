@@ -31,6 +31,10 @@ type Engine struct {
 
 	// 同一错误指纹的 AI 判定在飞去重（singleflight 语义）。
 	inflight sync.Map // fingerprint -> *sync.WaitGroup 风格的 channel
+
+	// onAIDecided 异步 AI 判定完成后的回调（调用方用它落草稿规则 / 记日志）。
+	// 不设则只写缓存，不影响正确性。
+	onAIDecided func(Evidence, Decision)
 }
 
 // NewEngine 创建引擎。database 为 loadout.db（failure_rules 所在库）。
@@ -48,6 +52,13 @@ func (e *Engine) SetAIResolver(ai *AIResolver) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.ai = ai
+}
+
+// SetOnAIDecided 注册「异步 AI 判定完成」回调（只注册一次，装配期调用）。
+func (e *Engine) SetOnAIDecided(fn func(Evidence, Decision)) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.onAIDecided = fn
 }
 
 // Reload 重新加载启用且已确认的规则（按 priority 升序）。
@@ -126,31 +137,42 @@ func (e *Engine) Evaluate(ctx context.Context, ev Evidence) Decision {
 // evaluateAIOnce 同指纹去重后的 AI 判定。
 func (e *Engine) evaluateAIOnce(ctx context.Context, ai *AIResolver, ev Evidence) (Decision, bool) {
 	fp := fingerprint(ev)
-	if ch, loaded := e.inflight.LoadOrStore(fp, make(chan struct{})); loaded {
-		// 已有同指纹判定在飞：等待其结果（最多 10s）。
-		select {
-		case <-ch.(chan struct{}):
-		case <-time.After(10 * time.Second):
-			return Decision{}, false
-		}
-		if cached, ok := ai.cached(fp); ok {
-			return cached, true
-		}
+	// 已有同指纹的 AI 判定 → 立即复用（这是「第二次遇到同样问题就走对」的关键）。
+	if d, ok := ai.cached(fp); ok {
+		return d, true
+	}
+	// 未命中缓存：**异步**发起判定，本次请求不等它。
+	//
+	// 为什么不等：实测推理型模型返回完整裁决要 9~40s，而这条路径在用户请求的
+	// 失败链路上同步执行——等下去就是让用户的请求白挂十几秒。这里立即返回 false
+	// （调用方走默认动作，保证本次路由正确），AI 结果写进缓存与草稿规则，
+	// 同指纹的下一次失败即可秒用。
+	if _, loaded := e.inflight.LoadOrStore(fp, struct{}{}); loaded {
+		// 同指纹已有判定在飞：不重复调用，也不等待。
 		return Decision{}, false
 	}
-	defer func() {
-		close(e.inflightRaw(fp))
-		e.inflight.Delete(fp)
+	go func() {
+		defer e.inflight.Delete(fp)
+		// 请求上下文可能在用户断连后取消，但判定结果仍然有价值 → 剥掉取消。
+		bg, cancel := context.WithTimeout(context.WithoutCancel(ctx), defaultAITimeout+10*time.Second)
+		defer cancel()
+		d, ok := ai.Resolve(bg, ev, fp)
+		if !ok {
+			e.lg.Warn("failure-rules: AI 兜底判定失败（超时/鉴权/解析），下次同指纹仍走默认动作",
+				"model", ev.Model, "status", ev.StatusCode, "body_code", ev.BodyCode)
+			return
+		}
+		e.mu.RLock()
+		cb := e.onAIDecided
+		e.mu.RUnlock()
+		if cb != nil {
+			// 回调里落草稿规则（异步，不阻塞任何请求）。
+			cb(ev, d)
+		}
+		e.lg.Info("failure-rules: AI 兜底判定完成（已缓存，下次同指纹直接复用）",
+			"model", ev.Model, "verdict", d.Verdict, "ai_model", d.AIModel)
 	}()
-	d, ok := ai.Resolve(ctx, ev, fp)
-	return d, ok
-}
-
-func (e *Engine) inflightRaw(fp string) chan struct{} {
-	if v, ok := e.inflight.Load(fp); ok {
-		return v.(chan struct{})
-	}
-	return make(chan struct{})
+	return Decision{}, false
 }
 
 func (e *Engine) recordHit(ruleID string) {

@@ -46,6 +46,9 @@ func NewService(database *sql.DB, logger *slog.Logger) *Service {
 		`SELECT rule_ai_model FROM settings WHERE id = 1`).Scan(&savedModel)
 	svc.aiResolver.SetModel(savedModel)
 	svc.rules.SetAIResolver(svc.aiResolver)
+	// 异步 AI 判定完成后落草稿规则（confirmed=0，人工确认后生效）。
+	// 判定本身在后台跑，不阻塞用户请求；这里只负责把结果转成可复用的规则。
+	svc.rules.SetOnAIDecided(svc.spawnDraft)
 	return svc
 }
 

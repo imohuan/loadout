@@ -10,6 +10,7 @@ import {
   RiFlaskLine,
   RiRefreshLine,
   RiFilter3Line,
+  RiHistoryLine,
 } from '@remixicon/vue'
 import {
   createFailureRule,
@@ -18,6 +19,7 @@ import {
   listFailureRules,
   listRuleDecisions,
   patchFailureRule,
+  restoreDefaultFailureRules,
   updateFailureRule,
   verifyFailureRule,
   type FailureRule,
@@ -28,9 +30,13 @@ import {
 import { api } from '@/lib/api'
 import { formatDateTimeCN } from '@/lib/format'
 import TargetModelPicker from '@/components/TargetModelPicker.vue'
+import AxTable from '@/components/ui/AxTable.vue'
 import PageHeader from '@/components/PageHeader.vue'
 import LoadingBlock from '@/components/LoadingBlock.vue'
 import EmptyState from '@/components/EmptyState.vue'
+import { useConfirm } from '@/composables/useConfirm'
+
+const { confirmDialog } = useConfirm()
 
 const VERDICTS = [
   { value: 'disable_key', label: '禁用 Key' },
@@ -292,6 +298,27 @@ function removeCondition(kind: 'any' | 'all', idx: number) {
   if (list) list.splice(idx, 1)
 }
 
+// restoreDefaults 一键把内置默认规则还原成出厂状态（含被删掉的 seed-001..014）。
+// 用户自建/AI 草稿不受影响；这里是破坏性操作，先二次确认。
+async function restoreDefaults() {
+  const ok = await confirmDialog({
+    title: '恢复默认规则？',
+    description:
+      '将 14 条内置默认规则还原为出厂设置（被删除的会重新加回，被改过的会改回默认）。你自建和 AI 生成的规则不受影响。',
+    confirmText: '恢复',
+    destructive: true,
+  })
+  if (!ok) return
+  try {
+    const res = await restoreDefaultFailureRules()
+    toast.success(`已恢复 ${res.restored} 条默认规则`)
+    clearFilters()
+    await load()
+  } catch (e) {
+    toast.error(String(e))
+  }
+}
+
 async function save() {
   if (!form.value.name.trim()) {
     toast.error('规则名不能为空')
@@ -496,6 +523,9 @@ openRuleFromQuery()
         <Button variant="outline" size="sm" @click="load">
           <RiRefreshLine size="15" class="mr-1" /> 刷新
         </Button>
+        <Button variant="outline" size="sm" @click="restoreDefaults">
+          <RiHistoryLine size="15" class="mr-1" /> 恢复默认规则
+        </Button>
         <Button size="sm" @click="openCreate">
           <RiAddLine size="15" class="mr-1" /> 新建规则
         </Button>
@@ -687,18 +717,20 @@ openRuleFromQuery()
         <EmptyState v-else-if="!filteredLogs.length" title="暂无判定记录" description="请求失败后的规则/AI 裁决会记录在这里" />
 
         <TooltipProvider v-else>
-          <div class="overflow-x-auto rounded-lg border">
-          <Table class="table-fixed">
+          <!-- 判定日志表：列宽由内容自己决定，只给「错误摘要」一个最大宽度（超出换行，
+               不再被裁掉）。表头列边界可拖拽调宽，双击恢复自动宽度。 -->
+          <AxTable class="rounded-lg border">
+          <Table>
             <TableHeader>
               <TableRow>
-                <TableHead class="w-[150px]">时间</TableHead>
-                <TableHead class="w-[100px]">平台</TableHead>
-                <TableHead class="w-[104px]">Key</TableHead>
-                <TableHead class="w-[116px]">模型</TableHead>
-                <TableHead class="w-[64px]">状态码</TableHead>
-                <TableHead>错误摘要</TableHead>
-                <TableHead class="w-[176px]">路由依据</TableHead>
-                <TableHead class="w-[104px]">判定</TableHead>
+                <TableHead class="min-w-[130px]">时间</TableHead>
+                <TableHead>平台</TableHead>
+                <TableHead>Key</TableHead>
+                <TableHead>模型</TableHead>
+                <TableHead>状态码</TableHead>
+                <TableHead class="max-w-[320px]">错误摘要</TableHead>
+                <TableHead>路由依据</TableHead>
+                <TableHead>判定</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -741,7 +773,7 @@ openRuleFromQuery()
               </TableRow>
             </TableBody>
           </Table>
-          </div>
+          </AxTable>
         </TooltipProvider>
       </TabsContent>
     </Tabs>

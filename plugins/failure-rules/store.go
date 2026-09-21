@@ -79,14 +79,24 @@ func (s *Store) CreateDraft(ctx context.Context, in RuleInput, aiModel, aiRaw st
 	if err := validateInput(in); err != nil {
 		return Rule{}, err
 	}
+	// 去重：同一条 AI 判定反复触发（并发请求 / 缓存过期）时，不重复堆草稿。
+	// 判据 = 同样的匹配条件 + 同样的动作 + 同一个模型，命中已有草稿就直接复用。
+	matchJSON, actionJSON := mustJSON(in.Match), mustJSON(in.Action)
+	var existingID string
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT id FROM failure_rules
+		WHERE source='ai' AND confirmed=0 AND model=? AND match_json=? AND action_json=?
+		LIMIT 1`, in.Model, matchJSON, actionJSON).Scan(&existingID); err == nil && existingID != "" {
+		return s.Get(ctx, existingID)
+	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	id := fmt.Sprintf("ai-%d", time.Now().UTC().UnixNano())
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO failure_rules(id, name, enabled, source, confirmed, priority, provider_base_url, model,
-		       match_json, action_json, created_at, updated_at)
+		INSERT INTO failure_rules(id, name, enabled, source, confirmed, priority, provider_base_url, scope_mode,
+		       provider_base_urls_json, provider_framework, model, match_json, action_json, created_at, updated_at)
 		VALUES (?, ?, 1, 'ai', 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, in.Name, in.Priority, in.ProviderBaseURL, in.ScopeMode, mustJSON(in.ProviderBaseURLs), in.ProviderFramework, in.Model,
-		mustJSON(in.Match), mustJSON(in.Action), now, now)
+		matchJSON, actionJSON, now, now)
 	if err != nil {
 		return Rule{}, err
 	}
@@ -136,6 +146,46 @@ func (s *Store) SetEnabled(ctx context.Context, id string, enabled bool) error {
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE failure_rules SET enabled=?, updated_at=? WHERE id=?`, b2i(enabled), now, id)
 	return err
+}
+
+// RestoreDefaults 把内置默认规则恢复成出厂状态：按固定 ID upsert（覆盖
+// name/enabled/priority/match/action/scope），已存在的行原地更新、被删掉的
+// 行重新插入。用户自建的 rule-*/ai-* 规则不受影响。返回写入条数。
+func (s *Store) RestoreDefaults(ctx context.Context) (int, error) {
+	defaults := DefaultRules()
+	if len(defaults) != len(DefaultRuleIDs) {
+		return 0, fmt.Errorf("failure-rules: default rules/ids length mismatch: %d vs %d", len(defaults), len(DefaultRuleIDs))
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	n := 0
+	for i, in := range defaults {
+		if err := validateInput(in); err != nil {
+			return n, fmt.Errorf("failure-rules: default rule %s invalid: %w", DefaultRuleIDs[i], err)
+		}
+		enabled := 1
+		if in.Enabled != nil && !*in.Enabled {
+			enabled = 0
+		}
+		_, err := s.db.ExecContext(ctx, `
+			INSERT INTO failure_rules(id, name, enabled, source, confirmed, priority, provider_base_url,
+			       scope_mode, provider_base_urls_json, provider_framework, model, match_json, action_json, created_at, updated_at)
+			VALUES (?, ?, ?, 'manual', 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(id) DO UPDATE SET
+			       name=excluded.name, enabled=excluded.enabled, priority=excluded.priority,
+			       provider_base_url=excluded.provider_base_url, scope_mode=excluded.scope_mode,
+			       provider_base_urls_json=excluded.provider_base_urls_json,
+			       provider_framework=excluded.provider_framework, model=excluded.model,
+			       match_json=excluded.match_json, action_json=excluded.action_json,
+			       updated_at=excluded.updated_at`,
+			DefaultRuleIDs[i], in.Name, enabled, in.Priority, in.ProviderBaseURL, in.ScopeMode,
+			mustJSON(in.ProviderBaseURLs), in.ProviderFramework, in.Model,
+			mustJSON(in.Match), mustJSON(in.Action), now, now)
+		if err != nil {
+			return n, fmt.Errorf("failure-rules: restore default %s: %w", DefaultRuleIDs[i], err)
+		}
+		n++
+	}
+	return n, nil
 }
 
 // Delete 删除。

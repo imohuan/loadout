@@ -151,4 +151,5 @@ func (m *mockHealth) VerifyFailureRule(rule failure.Rule, ev failure.Evidence) b
 func (m *mockHealth) ListRuleDecisions(ctx context.Context, limit int) ([]map[string]any, error) {
 	return nil, nil
 }
-func (m *mockHealth) SetRuleAIModel(model string) {}
+func (m *mockHealth) SetRuleAIModel(model string)                                 {}
+func (m *mockHealth) RestoreDefaultFailureRules(ctx context.Context) (int, error) { return 0, nil }

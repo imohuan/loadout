@@ -266,4 +266,5 @@ func (e2eHealth) VerifyFailureRule(rule failure.Rule, ev failure.Evidence) bool 
 func (e2eHealth) ListRuleDecisions(ctx context.Context, limit int) ([]map[string]any, error) {
 	return nil, nil
 }
-func (e2eHealth) SetRuleAIModel(model string) {}
+func (e2eHealth) SetRuleAIModel(model string)                             {}
+func (e2eHealth) RestoreDefaultFailureRules(context.Context) (int, error) { return 0, nil }

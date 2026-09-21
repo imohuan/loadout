@@ -122,6 +122,22 @@ func (s *Service) handleFailureRuleVerify(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, map[string]any{"hit": hit})
 }
 
+// handleFailureRulesRestoreDefaults POST /api/failure-rules-defaults/restore
+// 把 14 条内置默认规则恢复成出厂状态（用户删掉/改坏后一键还原）。
+// 用户自建的 rule-*/ai-* 规则不受影响。
+func (s *Service) handleFailureRulesRestoreDefaults(w http.ResponseWriter, r *http.Request) {
+	if s.health == nil {
+		writeError(w, http.StatusServiceUnavailable, "model-health 未装配")
+		return
+	}
+	n, err := s.health.RestoreDefaultFailureRules(r.Context())
+	if err != nil {
+		s.writeServerError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "restored": n})
+}
+
 // handleRuleDecisionsList GET /api/rule-decisions?limit=50（AI/规则路由日志）
 func (s *Service) handleRuleDecisionsList(w http.ResponseWriter, r *http.Request) {
 	if s.health == nil {
