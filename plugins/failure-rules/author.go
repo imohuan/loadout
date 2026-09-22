@@ -114,18 +114,18 @@ func (s *AuthorStore) ListRecent(ctx context.Context, limit int) ([]AuthorSessio
 	return out, nil
 }
 
-// Author 用指定样本驱动 AI「多轮」生成一条规则草稿。
+// Author 在**已创建**的会话上跑多轮生成。
 //
 // 一轮 = 让 AI 出草稿 → 用样本回放自检 → 不通过就把失败原因带回下一轮修订。
 // 收敛（自检通过）或达到上限即停。产出永远是 confirmed=0 的草稿，必须人工确认。
+//
+// 注意：会话必须由调用方先建（AuthorRuleFromSample 已建），这里**不能**再 Create——
+// 早期版本在这里又建了一次，导致一次点击产生两条会话记录。
 // 同步执行：调用方应在后台 goroutine 里跑（每轮是一次完整推理，9~40s）。
-func (e *Engine) Author(ctx context.Context, ai *AIResolver, drafts *Store, store *AuthorStore, sm Sample) (AuthorSession, error) {
+func (e *Engine) AuthorRun(ctx context.Context, ai *AIResolver, drafts *Store, store *AuthorStore, sess AuthorSession, sm Sample) (AuthorSession, error) {
 	if ai == nil || !ai.Enabled() {
-		return AuthorSession{}, fmt.Errorf("failure-rules: AI 未配置，无法生成规则")
-	}
-	sess, err := store.Create(ctx, sm.ID, ai.currentModel(), authorMaxRounds)
-	if err != nil {
-		return AuthorSession{}, err
+		_ = store.Update(ctx, sess.ID, "failed", sess.Rounds, nil, "", "AI 未配置，无法生成规则")
+		return store.Get(ctx, sess.ID)
 	}
 	return e.authorRun(ctx, ai, drafts, store, sess, sm)
 }

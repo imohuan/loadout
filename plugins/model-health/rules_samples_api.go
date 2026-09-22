@@ -82,15 +82,15 @@ func (s *Service) AuthorRuleFromSample(ctx context.Context, sampleID string) (fa
 		return failure.AuthorSession{}, err
 	}
 	// 后台跑多轮（每轮一次完整推理 9~40s），不阻塞 HTTP 请求。
-	go func(sessID string, sample failure.Sample) {
+	go func(session failure.AuthorSession, sample failure.Sample) {
 		// 每轮是一次完整推理（实测 9~40s），最多 authorMaxRounds 轮；
 		// 总超时按「轮数 × 单轮上限」给足余量，避免跑到一半被整体掐断。
 		bg, cancel := context.WithTimeout(context.WithoutCancel(context.Background()), 10*time.Minute)
 		defer cancel()
-		if _, err := s.rules.Author(bg, s.aiResolver, s.decisions, s.authors, sample); err != nil {
-			s.lg.Warn("failure-rules: AI 生成规则失败", "session", sessID, "err", err)
+		if _, err := s.rules.AuthorRun(bg, s.aiResolver, s.decisions, s.authors, session, sample); err != nil {
+			s.lg.Warn("failure-rules: AI 生成规则失败", "session", session.ID, "err", err)
 		}
-	}(sess.ID, sm)
+	}(sess, sm)
 	return sess, nil
 }
 
