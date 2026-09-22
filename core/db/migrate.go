@@ -852,6 +852,34 @@ CREATE TABLE rule_author_sessions (
 );
 CREATE INDEX idx_rule_author_created ON rule_author_sessions(created_at DESC);
 `,
+}, {
+	version: 41,
+	name:    "ai-draft-dedup-index",
+	sql: `
+-- AI 草稿去重的数据库级保证。
+--
+-- Store.CreateDraft 会先查「同模型 + 同 match + 同 action 的未确认草稿」是否已存在，
+-- 存在就复用。但「先查后插」在并发下有 TOCTOU 窗口：两个 goroutine 同时查不到、
+-- 同时插入，就会留下两条内容相同的草稿。SQLite 单连接让这个窗口很小，但
+-- 用唯一索引把它彻底关掉更稳妥（插入冲突时由调用方忽略即可）。
+--
+-- 索引只约束 AI 未确认草稿（confirmed=0），已确认的正式规则不受影响
+-- （用户完全可能有意保留两条相同规则）。
+-- 建索引前先清理历史遗留的重复草稿（保留最早一条），否则建索引会失败。
+DELETE FROM failure_rules
+WHERE id IN (
+  SELECT id FROM (
+    SELECT id, ROW_NUMBER() OVER (
+      PARTITION BY model, match_json, action_json, provider_base_urls_json
+      ORDER BY created_at ASC, rowid ASC
+    ) AS rn
+    FROM failure_rules WHERE source='ai' AND confirmed=0
+  ) WHERE rn > 1
+);
+CREATE UNIQUE INDEX idx_ai_draft_dedup
+  ON failure_rules(model, match_json, action_json, provider_base_urls_json)
+  WHERE source='ai' AND confirmed=0;
+`,
 }}
 
 // Migrate applies all pending schema migrations and rejects an incompatible
