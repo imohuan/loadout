@@ -77,6 +77,12 @@ func (s *Service) SetKeyResolver(fn func() string) {
 }
 
 func (s *Service) SetRuleAIModel(model string) {
+	// 空串 = 用户在设置页关掉 AI 兜底：记「关过」，否则重启会被内置模型重新打开。
+	if model == "" {
+		s.aiFallbackOff = true
+	} else {
+		s.aiFallbackOff = false
+	}
 	if s.aiResolver != nil {
 		s.aiResolver.SetModel(model)
 	}
@@ -89,6 +95,12 @@ func (s *Service) SetRuleAIModel(model string) {
 // 不必再去设置页手动选一遍。
 func (s *Service) SetBuiltinFallbackModel(model string) {
 	if s.aiResolver == nil || model == "" {
+		return
+	}
+	// 用户显式关过（存了关闭哨兵）就不要再自动打开：
+	// 否则「设置页清空 = 关闭」只能撑到本次进程结束，重启又被内置模型顶开，
+	// 用户无法持久关闭 AI 兜底。
+	if s.aiFallbackOff {
 		return
 	}
 	if s.aiResolver.Enabled() {

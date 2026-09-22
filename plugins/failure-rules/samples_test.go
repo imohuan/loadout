@@ -3,6 +3,7 @@ package failurerules
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -330,4 +331,33 @@ func TestAuthorRunExhaustsWhenNeverMatching(t *testing.T) {
 	if n != 0 {
 		t.Fatalf("未收敛不应落草稿，实际 %d 条", n)
 	}
+}
+
+// TestAIResolverKeyProviderRace 回归（审查建议 6）：resolveKey 与 SetKeyProvider
+// 并发时必须无数据竞态。用 -race 跑本测试即可验证。
+func TestAIResolverKeyProviderRace(t *testing.T) {
+	a := NewAIResolver("m", "static-key", "http://127.0.0.1:1")
+	var wg sync.WaitGroup
+	// 写方：不断替换 key provider（模拟热更新 / key 轮换）。
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 200; i++ {
+			a.SetKeyProvider(func() string { return "k" })
+		}
+	}()
+	// 读方：并发解析 key。
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 200; j++ {
+				if got := a.resolveKey(); got == "" {
+					t.Errorf("resolveKey 不应返回空（有静态 key 兜底）")
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
 }

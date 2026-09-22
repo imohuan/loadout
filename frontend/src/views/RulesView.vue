@@ -459,6 +459,13 @@ function pollAuthor(sampleId: string, sessionId: string) {
           void load()
         } else if (sess.status === 'failed') {
           toast.error(`AI 生成失败：${sess.error ?? '未知错误'}`)
+        } else if (sess.status === 'exhausted') {
+          // 跑满轮次仍未自检通过：不落草稿，必须明确告知，否则用户只看到按钮
+          // 文案变成「N 轮未收敛」却不知道发生了什么。
+          toast.warning(
+            `AI 生成 ${sess.rounds} 轮仍未收敛（草稿无法命中该样本），已放弃；` +
+              '可调整兜底模型或手动新建规则',
+          )
         }
       }
     } catch {

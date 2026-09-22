@@ -76,12 +76,20 @@ func (a *AIResolver) SetKeyProvider(fn func() string) {
 }
 
 func (a *AIResolver) resolveKey() string {
-	if a.keyProvider != nil {
-		if k := a.keyProvider(); k != "" {
+	// 在锁内取出函数值，调用放到锁外：keyProvider 通常是查库解密，
+	// 持锁调用会把它拖进临界区。直接读 a.keyProvider 与 SetKeyProvider 的写
+	// 构成数据竞态（go test -race 会报），而 SetKeyProvider 是装配后仍可能
+	// 调用的热更新路径。
+	a.mu.Lock()
+	fn := a.keyProvider
+	sk := a.skKey
+	a.mu.Unlock()
+	if fn != nil {
+		if k := fn(); k != "" {
 			return k
 		}
 	}
-	return a.skKey
+	return sk
 }
 
 func (a *AIResolver) currentModel() string {

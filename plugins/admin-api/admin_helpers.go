@@ -3,6 +3,7 @@ package adminapi
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"loadout/core/store"
 	"loadout/plugins/types"
@@ -187,7 +188,7 @@ func (s *Service) readSettings(ctx context.Context) (types.Settings, error) {
 	if s.routing != nil {
 		settings, err := s.routing.GetSettings(ctx)
 		if err == nil {
-			return settings, nil
+			return decodeAIModelSentinel(settings), nil
 		}
 		s.lg.Warn("admin-api: 从 SQLite 读设置失败，回退 JSON", "err", err)
 	}
@@ -198,10 +199,33 @@ func (s *Service) readSettings(ctx context.Context) (types.Settings, error) {
 		}
 		return types.Settings{}, err
 	}
-	return settings, nil
+	return decodeAIModelSentinel(settings), nil
+}
+
+// aiModelOffSentinel 与 model-health 的 aiModelOff 同值：设置页「关掉 AI 兜底」
+// 需要在数据库里留痕，否则重启会被「内置模型兜底」自动顶开，用户无法持久关闭。
+// 空串对用户语义是「关闭」，对存储语义却是「从没配过」，故用哨兵区分；
+// 这对 API/前端完全透明（读出去仍是空串）。
+const aiModelOffSentinel = "__off__"
+
+// decodeAIModelSentinel 对外把哨兵还原成空串。
+func decodeAIModelSentinel(s types.Settings) types.Settings {
+	if s.RuleAIModel == aiModelOffSentinel {
+		s.RuleAIModel = ""
+	}
+	return s
+}
+
+// encodeAIModelSentinel 入库前把「用户主动关闭」（空串）写成哨兵。
+func encodeAIModelSentinel(s types.Settings) types.Settings {
+	if strings.TrimSpace(s.RuleAIModel) == "" {
+		s.RuleAIModel = aiModelOffSentinel
+	}
+	return s
 }
 
 func (s *Service) writeSettings(ctx context.Context, settings types.Settings) error {
+	settings = encodeAIModelSentinel(settings)
 	if s.routing != nil {
 		if err := s.routing.PutSettings(ctx, settings); err == nil {
 			return nil

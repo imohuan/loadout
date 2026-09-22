@@ -30,7 +30,16 @@ type Service struct {
 	authors     *failurerules.AuthorStore  // AI 多轮生成规则会话
 	aiResolver  *failurerules.AIResolver   // AI 兜底（SetRuleAIModel 热更新）
 	keyResolver func() string              // SK key 明文解析器（AI 兜底请求鉴权）
+	// aiFallbackOff 用户在设置页显式关闭过 AI 兜底（rule_ai_model 存了关闭哨兵）。
+	// 用来阻止启动时「内置模型兜底」把它重新打开。
+	aiFallbackOff bool
 }
+
+// aiModelOff 设置页「显式关闭 AI 兜底」的哨兵值。
+//
+// 为什么不用空串：空串同时表示「从没配置过」和「用户主动关掉」，两者必须区分——
+// 前者应自动启用内置模型兜底（开箱即用），后者必须尊重用户、重启也不再打开。
+const aiModelOff = "__off__"
 
 func NewService(database *sql.DB, logger *slog.Logger) *Service {
 	if logger == nil {
@@ -48,7 +57,12 @@ func NewService(database *sql.DB, logger *slog.Logger) *Service {
 	var savedModel string
 	_ = database.QueryRowContext(context.Background(),
 		`SELECT rule_ai_model FROM settings WHERE id = 1`).Scan(&savedModel)
-	svc.aiResolver.SetModel(savedModel)
+	// 哨兵 = 用户显式关闭过：不设模型，并记住「关过」，避免内置兜底把它顶开。
+	if savedModel == aiModelOff {
+		svc.aiFallbackOff = true
+	} else {
+		svc.aiResolver.SetModel(savedModel)
+	}
 	svc.rules.SetAIResolver(svc.aiResolver)
 	// 异步 AI 判定完成后落草稿规则（confirmed=0，人工确认后生效）。
 	// 判定本身在后台跑，不阻塞用户请求；这里只负责把结果转成可复用的规则。
