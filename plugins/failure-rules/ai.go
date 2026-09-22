@@ -93,6 +93,9 @@ func (a *AIResolver) currentModel() string {
 // Enabled 返回 AI 兜底是否启用。
 func (a *AIResolver) Enabled() bool { return a != nil && a.currentModel() != "" }
 
+// AIModel 返回当前使用的兜底模型名（空 = 未配置）。供上层记录/展示用。
+func (a *AIResolver) AIModel() string { return a.currentModel() }
+
 // cached 取缓存判定（带 TTL 过期）。
 func (a *AIResolver) cached(fp string) (Decision, bool) {
 	v, ok := a.decisions.Load(fp)

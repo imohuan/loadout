@@ -76,7 +76,8 @@ func (s *Service) AuthorRuleFromSample(ctx context.Context, sampleID string) (fa
 	if err != nil {
 		return failure.AuthorSession{}, fmt.Errorf("model-health: 样本不存在: %w", err)
 	}
-	sess, err := s.authors.Create(ctx, sm.ID, "", 0)
+	// 记下实际使用的兜底模型：排障时能一眼看出这条草稿是哪个模型生成的。
+	sess, err := s.authors.Create(ctx, sm.ID, s.aiResolver.AIModel(), 0)
 	if err != nil {
 		return failure.AuthorSession{}, err
 	}
