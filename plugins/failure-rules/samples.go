@@ -93,28 +93,41 @@ func sampleFingerprint(statusCode int, bodyCode, message string) string {
 // 引号用 0x22 码值比较，不写字面量，避免多层转义。
 func stripQuotedValue(s, key string) string {
 	const quote = 0x22
+	var b strings.Builder
+	searchFrom := 0
 	for {
-		lower := strings.ToLower(s)
+		lower := strings.ToLower(s[searchFrom:])
 		i := strings.Index(lower, key)
 		if i < 0 {
-			return s
+			b.WriteString(s[searchFrom:])
+			return b.String()
 		}
+		i += searchFrom
+		// 先把 key 之前的原文原样保留。
+		b.WriteString(s[searchFrom:i])
 		rest := s[i+len(key):]
 		colon := strings.IndexByte(rest, 0x3a)
 		if colon < 0 {
-			return s
+			b.WriteString(s[i:])
+			return b.String()
 		}
 		q1 := strings.IndexByte(rest[colon:], quote)
 		if q1 < 0 {
-			return s
+			b.WriteString(s[i:])
+			return b.String()
 		}
 		q1 += colon
 		q2 := strings.IndexByte(rest[q1+1:], quote)
 		if q2 < 0 {
-			return s
+			b.WriteString(s[i:])
+			return b.String()
 		}
 		q2 += q1 + 1
-		s = s[:i+len(key)] + rest[q2+1:]
+		// 保留 key 本身（便于人眼识别是哪一段被剥掉了），删掉它的值，
+		// 然后从「值之后」继续往后扫——不能回到 s 开头重扫，否则会把
+		// 后面字段的值也一并吃掉（requestId 出现在 JSON 中间时尤甚）。
+		b.WriteString(s[i : i+len(key)])
+		searchFrom = i + len(key) + q2 + 1
 	}
 }
 
@@ -198,20 +211,21 @@ func (s *SamplesStore) ImportFromDecisions(ctx context.Context, limit int) (int,
 //
 // 导入样本时手上只有 rule_decisions.error_excerpt 这段**已拼接的文本**
 // （形如 `上游返回错误(429) {"error":{"data":{"code":14018,...}}}`），
-// 不是结构化 error_body，所以这里自带一个轻量解析：截出第一个 JSON 对象后
-// 依次看 error.data.code → error.code → code。与 model-health 的
+// 不是结构化 error_body，所以这里自带一个轻量解析：截出**第一个完整的**
+// JSON 对象后依次看 error.data.code → error.code → code。与 model-health 的
 // extractBodyCode 同一口径（那边拿的是原始 body，这里拿的是摘要文本）。
+//
+// 必须按括号配平找对象结尾，不能取「最后一个 }」：摘要里可能再跟一段 JSON
+// （或多组花括号），取最后一个会让整段解析失败并静默丢码，进而把同类故障
+// 拆成不同指纹、让 body_code 规则在回放里误判未命中。
 func extractBodyCodeFromText(text string) string {
 	i := strings.IndexByte(text, 0x7b)
 	if i < 0 {
 		return ""
 	}
-	j := strings.LastIndexByte(text, 0x7d)
-	if j <= i {
-		if j = strings.IndexByte(text[i:], 0x7d); j < 0 {
-			return ""
-		}
-		j += i
+	j, ok := firstJSONObjectEnd(text, i)
+	if !ok {
+		return ""
 	}
 	// 用 map 逐层取，避免为各种上游格式各写一个 struct。
 	var raw map[string]any
@@ -229,6 +243,39 @@ func extractBodyCodeFromText(text string) string {
 		}
 	}
 	return ""
+}
+
+// firstJSONObjectEnd 从 start（指向 '{'）起找配平的 '}' 下标（含引号内的转义处理）。
+func firstJSONObjectEnd(s string, start int) (int, bool) {
+	depth := 0
+	inStr := false
+	escaped := false
+	for i := start; i < len(s); i++ {
+		c := s[i]
+		if inStr {
+			switch {
+			case escaped:
+				escaped = false
+			case c == 0x5c: // \
+				escaped = true
+			case c == 0x22: // "
+				inStr = false
+			}
+			continue
+		}
+		switch c {
+		case 0x22:
+			inStr = true
+		case 0x7b, 0x5b: // { [
+			depth++
+		case 0x7d, 0x5d: // } ]
+			depth--
+			if depth == 0 {
+				return i, true
+			}
+		}
+	}
+	return 0, false
 }
 
 // digCode 按 key 路径在嵌套 map 里取值。
@@ -281,7 +328,9 @@ func (s *SamplesStore) List(ctx context.Context, source, model string, limit int
 // ListByIDs 按 id 取样本；ids 为空取全部。
 func (s *SamplesStore) ListByIDs(ctx context.Context, ids []string) ([]Sample, error) {
 	if len(ids) == 0 {
-		return s.List(ctx, "", "", 500)
+		// 「回放全部」的上限与导入上限保持一致（都是 2000）：早期这里写 500，
+		// 样本超过 500 条后「批量回放」会静默只回放最新 500 条，UI 却显示成全量。
+		return s.List(ctx, "", "", 2000)
 	}
 	ph := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
 	args := make([]any, 0, len(ids))
@@ -320,7 +369,14 @@ func (s *SamplesStore) CreateBuiltin(ctx context.Context, sm Sample) (Sample, er
 	}
 	fp := sampleFingerprint(sm.StatusCode, sm.BodyCode, sm.Message)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	ins := "INSERT OR REPLACE INTO rule_samples(id, provider_base_url, model, status_code, body_code, message, channel_id, channel_name, provider_framework, fingerprint, source, expected_verdict, confirmed, note, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'builtin', ?, ?, ?, ?, ?)"
+	// 同指纹重复新增时**保留已有的人工标注**（expected_verdict/confirmed/note）。
+	// 早期用 INSERT OR REPLACE 会整体覆盖，把用户标过的预期静默洗掉，
+	// 「不一致」统计随之失真。这里改成 upsert：存在则只更新内容字段。
+	ins := "INSERT INTO rule_samples(id, provider_base_url, model, status_code, body_code, message, channel_id, channel_name, provider_framework, fingerprint, source, expected_verdict, confirmed, note, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'builtin', ?, ?, ?, ?, ?) " +
+		"ON CONFLICT(id) DO UPDATE SET provider_base_url=excluded.provider_base_url, model=excluded.model, " +
+		"status_code=excluded.status_code, body_code=excluded.body_code, message=excluded.message, " +
+		"channel_id=excluded.channel_id, channel_name=excluded.channel_name, provider_framework=excluded.provider_framework, " +
+		"updated_at=excluded.updated_at"
 	_, err := s.db.ExecContext(ctx, ins,
 		"sm-"+fp, sm.ProviderBaseURL, sm.Model, sm.StatusCode, sm.BodyCode, truncate(sm.Message, 2000),
 		sm.ChannelID, sm.ChannelName, sm.ProviderFramework, fp, sm.ExpectedVerdict, b2i(sm.Confirmed), sm.Note, now, now)

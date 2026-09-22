@@ -135,3 +135,199 @@ func TestSampleImportDedupAndReplay(t *testing.T) {
 		t.Fatalf("502 预期 ignore 与实际 cooldown 不一致，应被标出，实际 %v", sum2.InconsistentIDs)
 	}
 }
+
+// TestStripQuotedValueKeepsLaterFields 回归（审查发现 #2）：
+// stripQuotedValue 早期实现保留 key 后回开头重扫，会把**后面字段**整段吃掉，
+// 导致指纹误合（不同故障被并成一条样本）。
+func TestStripQuotedValueKeepsLaterFields(t *testing.T) {
+	in := `{"requestId":"r1","model":"glm-5.3-flash","code":14018}`
+	got := stripQuotedValue(in, "requestid")
+	if strings.Contains(got, "r1") {
+		t.Fatalf("requestId 的值应被剥掉: %s", got)
+	}
+	// 关键：后面的 model / code 必须还在。
+	if !strings.Contains(got, "glm-5.3-flash") || !strings.Contains(got, "14018") {
+		t.Fatalf("后面的字段被误删: %s", got)
+	}
+}
+
+// TestExtractBodyCodeFromTextMultiJSON 回归（审查发现 #3）：
+// 摘要里跟了多段 JSON 时，必须取**第一个完整对象**的 code，
+// 取「最后一个 }」会解析失败并静默丢码。
+func TestExtractBodyCodeFromTextMultiJSON(t *testing.T) {
+	single := `上游返回错误(429): 额度已用尽 {"error":{"code":14018}}`
+	if got := extractBodyCodeFromText(single); got != "14018" {
+		t.Fatalf("单段 JSON 应解析出 14018，实际 %q", got)
+	}
+	multi := `上游返回错误(429) {"error":{"code":14018}} extra {"x":1}`
+	if got := extractBodyCodeFromText(multi); got != "14018" {
+		t.Fatalf("多段 JSON 应取第一个对象的 14018，实际 %q", got)
+	}
+	// 嵌套里带 } 的字符串不该让配平算错。
+	nested := `err {"msg":"a}b","error":{"code":"11140"}}`
+	if got := extractBodyCodeFromText(nested); got != "11140" {
+		t.Fatalf("含转义花括号的 JSON 应解析出 11140，实际 %q", got)
+	}
+	if got := extractBodyCodeFromText(""); got != "" {
+		t.Fatalf("空串应为空，实际 %q", got)
+	}
+}
+
+// TestDraftRuleInputScopeMatchesSelfCheck 回归（审查发现 #4）：
+// 自检用的规则必须与落库的作用域一致，且样本 provider 为空时降级全局——
+// 否则会出现「自检通过、落库后永不命中」。
+func TestDraftRuleInputScopeMatchesSelfCheck(t *testing.T) {
+	draft := authorDraftSchema{Name: "x", Match: Match{All: []Condition{{Field: "status_code", Op: "eq", Value: 502}}}}
+	// provider 为空 → 全局作用域（不留 urls + 空列表）。
+	empty := Sample{ID: "s1", StatusCode: 502}
+	in := draftRuleInput(draft, empty)
+	if in.ScopeMode != "" || len(in.ProviderBaseURLs) != 0 {
+		t.Fatalf("provider 为空应降级为全局作用域，实际 scope=%q urls=%v", in.ScopeMode, in.ProviderBaseURLs)
+	}
+	// 降级后的规则必须能命中该样本。
+	e := &Engine{}
+	rule := Rule{ID: "draft", Name: in.Name, Enabled: true, Confirmed: true, ScopeMode: in.ScopeMode,
+		ProviderBaseURLs: in.ProviderBaseURLs, ProviderBaseURL: in.ProviderBaseURL, Model: in.Model,
+		Match: in.Match, Action: in.Action}
+	if !e.VerifyRule(rule, empty.Evidence()) {
+		t.Fatal("provider 为空的样本，草稿规则应能命中（全局作用域）")
+	}
+	// provider 非空 → 锁该平台，且同样能命中。
+	withURL := Sample{ID: "s2", StatusCode: 502, ProviderBaseURL: "https://p.example/v1"}
+	in2 := draftRuleInput(draft, withURL)
+	if in2.ScopeMode != "urls" || len(in2.ProviderBaseURLs) != 1 {
+		t.Fatalf("provider 非空应锁定该平台，实际 scope=%q urls=%v", in2.ScopeMode, in2.ProviderBaseURLs)
+	}
+	rule2 := Rule{ID: "draft", Name: in2.Name, Enabled: true, Confirmed: true, ScopeMode: in2.ScopeMode,
+		ProviderBaseURLs: in2.ProviderBaseURLs, ProviderBaseURL: in2.ProviderBaseURL, Model: in2.Model,
+		Match: in2.Match, Action: in2.Action}
+	if !e.VerifyRule(rule2, withURL.Evidence()) {
+		t.Fatal("provider 非空的样本，草稿规则应能命中（锁该平台）")
+	}
+	// 同样的规则对「另一个平台」的样本不该命中。
+	other := Sample{ID: "s3", StatusCode: 502, ProviderBaseURL: "https://other.example/v1"}
+	if e.VerifyRule(rule2, other.Evidence()) {
+		t.Fatal("锁定平台的规则不应命中其他平台")
+	}
+}
+
+// TestAuthorRunHandlesBadJSONThenConverges 覆盖 author 多轮的关键分支：
+// 第 1 轮 AI 返回非法 JSON → 记一轮失败并进入第 2 轮；第 2 轮返回合法草稿
+// → 自检通过 → 落 confirmed=0 草稿且会话状态 done。
+//
+// 审查指出 author 的多轮/失败/耗尽分支此前完全没有测试覆盖。
+func TestAuthorRunHandlesBadJSONThenConverges(t *testing.T) {
+	database, err := openMemory(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	samples := NewSamplesStore(database)
+	authors := NewAuthorStore(database)
+	drafts := NewStore(database)
+
+	sm, err := samples.CreateBuiltin(ctx, Sample{
+		ID: "sm-author", StatusCode: 502, ProviderBaseURL: "https://p.example/v1",
+		Message: `上游返回错误(502): upstream temporarily unavailable`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := authors.Create(ctx, sm.ID, "stub-model", 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// stubAI 直接实现「AI 说什么」：第 1 轮给非法 JSON，第 2 轮给合法草稿。
+	// 用一个最小的 AIResolver 替身：只替换 chat 的行为不可行（chat 是方法），
+	// 因此这里用「预先写好的两个响应」驱动一个本地 chatFn。
+	calls := 0
+	chatFn := func(string) (string, error) {
+		calls++
+		if calls == 1 {
+			return "这不是 JSON", nil
+		}
+		return `{"name":"502 冷却","match":{"all":[{"field":"status_code","op":"eq","value":502}]},"action":{"verdict":"cooldown","recover":"fixed","cooldown_seconds":120},"reason":"瞬时故障"}`, nil
+	}
+
+	e := NewEngine(database, nil)
+	out, err := e.authorRunWith(ctx, chatFn, drafts, authors, sess, sm)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 {
+		t.Fatalf("应调用 AI 2 轮（第 1 轮非法 JSON、第 2 轮成功），实际 %d", calls)
+	}
+	if out.Status != "done" {
+		t.Fatalf("会话状态应为 done，实际 %q（error=%s）", out.Status, out.Error)
+	}
+	if out.DraftRuleID == "" {
+		t.Fatal("收敛时应落一条草稿规则")
+	}
+	// 草稿必须是未确认状态（人工确认才生效）。
+	var confirmed int
+	var matchJSON string
+	if err := database.QueryRow(`SELECT confirmed, match_json FROM failure_rules WHERE id=?`, out.DraftRuleID).Scan(&confirmed, &matchJSON); err != nil {
+		t.Fatal(err)
+	}
+	if confirmed != 0 {
+		t.Fatalf("AI 草稿必须 confirmed=0（待人工确认），实际 %d", confirmed)
+	}
+	// 落库的规则要真能命中该样本（与自检一致）。
+	if !e.VerifyRule(Rule{ID: "x", Name: "x", Enabled: true, Confirmed: true,
+		ProviderBaseURL: sm.ProviderBaseURL, ScopeMode: "urls", ProviderBaseURLs: []string{sm.ProviderBaseURL},
+		Match: Match{All: []Condition{{Field: "status_code", Op: "eq", Value: 502}}}, Action: Action{Verdict: VerdictCooldown}},
+		sm.Evidence()) {
+		t.Fatal("落库草稿的匹配条件应能命中原样本")
+	}
+}
+
+// TestAuthorRunExhaustsWhenNeverMatching 覆盖「一直不通过」的耗尽分支：
+// AI 每轮都返回「匹配不上该样本」的规则 → 跑满 max_rounds → 状态 exhausted。
+func TestAuthorRunExhaustsWhenNeverMatching(t *testing.T) {
+	database, err := openMemory(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	samples := NewSamplesStore(database)
+	authors := NewAuthorStore(database)
+	drafts := NewStore(database)
+
+	sm, err := samples.CreateBuiltin(ctx, Sample{
+		ID: "sm-exhaust", StatusCode: 502, Message: "上游返回错误(502)",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := authors.Create(ctx, sm.ID, "stub-model", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 每轮都给出一个「匹配不上 502 样本」的规则（条件写 599）。
+	chatFn := func(string) (string, error) {
+		return `{"name":"错的条件","match":{"all":[{"field":"status_code","op":"eq","value":599}]},"action":{"verdict":"ignore"},"reason":"x"}`, nil
+	}
+	e := NewEngine(database, nil)
+	out, err := e.authorRunWith(ctx, chatFn, drafts, authors, sess, sm)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Status != "exhausted" {
+		t.Fatalf("一直不通过应标 exhausted，实际 %q", out.Status)
+	}
+	if out.Rounds != 2 {
+		t.Fatalf("应跑满 2 轮，实际 %d", out.Rounds)
+	}
+	if len(out.RoundDetail) != 2 || out.RoundDetail[0].OK || out.RoundDetail[1].OK {
+		t.Fatalf("两轮都该记为不通过，实际 %+v", out.RoundDetail)
+	}
+	// 未收敛不应落草稿。
+	var n int
+	if err := database.QueryRow(`SELECT COUNT(*) FROM failure_rules WHERE source='ai'`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("未收敛不应落草稿，实际 %d 条", n)
+	}
+}

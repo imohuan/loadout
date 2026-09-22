@@ -132,12 +132,23 @@ func (e *Engine) AuthorRun(ctx context.Context, ai *AIResolver, drafts *Store, s
 
 // authorRun 跑多轮循环并落库。
 func (e *Engine) authorRun(ctx context.Context, ai *AIResolver, drafts *Store, store *AuthorStore, sess AuthorSession, sm Sample) (AuthorSession, error) {
+	return e.authorLoop(ctx, func(prompt string) (string, error) { return ai.chat(ctx, prompt) }, drafts, store, sess, sm)
+}
+
+// authorRunWith 用可注入的对话函数跑多轮（测试用：无需真实 AI 即可覆盖
+// 「非法 JSON → 修订 → 收敛」「一直不通过 → 耗尽」等分支）。
+func (e *Engine) authorRunWith(ctx context.Context, chatFn func(prompt string) (string, error), drafts *Store, store *AuthorStore, sess AuthorSession, sm Sample) (AuthorSession, error) {
+	return e.authorLoop(ctx, chatFn, drafts, store, sess, sm)
+}
+
+// authorLoop 多轮生成主循环（与具体 AI 通道解耦，便于测试）。
+func (e *Engine) authorLoop(ctx context.Context, chatFn func(prompt string) (string, error), drafts *Store, store *AuthorStore, sess AuthorSession, sm Sample) (AuthorSession, error) {
 	var detail []AuthorRound
 	var lastReason string
 	var draftRuleID string
 	for round := 1; round <= sess.MaxRounds; round++ {
 		prompt := buildAuthorPrompt(sm, e.rulesBrief(ctx), round, lastReason)
-		content, err := ai.chat(ctx, prompt)
+		content, err := chatFn(prompt)
 		if err != nil {
 			_ = store.Update(ctx, sess.ID, "failed", round-1, detail, draftRuleID, err.Error())
 			return store.Get(ctx, sess.ID)
@@ -150,7 +161,18 @@ func (e *Engine) authorRun(ctx context.Context, ai *AIResolver, drafts *Store, s
 			continue
 		}
 		// 自检：草稿规则能否正确命中本样本。
-		rule := Rule{ID: "draft", Name: draft.Name, Enabled: true, Confirmed: true, Match: draft.Match, Action: draft.Action}
+		//
+		// 自检必须用「落库时那份同样的作用域」，否则会出现「自检通过、落库后
+		// 永不命中」：样本 provider 为空时，落库写成 scope_mode=urls +
+		// provider_base_urls=[""]，而 scopeMatches 对「列表非空但没有非空项命中」
+		// 恒返回 false——用户确认后拿到一条死规则。
+		in := draftRuleInput(draft, sm)
+		rule := Rule{
+			ID: "draft", Name: in.Name, Enabled: true, Confirmed: true,
+			ScopeMode: in.ScopeMode, ProviderBaseURLs: in.ProviderBaseURLs,
+			ProviderBaseURL: in.ProviderBaseURL, ProviderFramework: in.ProviderFramework,
+			Model: in.Model, Match: in.Match, Action: in.Action,
+		}
 		hit := e.VerifyRule(rule, sm.Evidence())
 		note := draft.Reason
 		if !hit {
@@ -161,16 +183,6 @@ func (e *Engine) authorRun(ctx context.Context, ai *AIResolver, drafts *Store, s
 
 		// 命中即收敛：把草稿入库（confirmed=0 待人工确认）。
 		if hit {
-			in := RuleInput{
-				Name:             draftAuthorName(draft, sm),
-				Priority:         150,
-				ProviderBaseURL:  sm.ProviderBaseURL,
-				ScopeMode:        "urls",
-				ProviderBaseURLs: []string{sm.ProviderBaseURL},
-				Model:            sm.Model,
-				Match:            draft.Match,
-				Action:           draft.Action,
-			}
 			created, err := drafts.CreateDraft(ctx, in, sess.AIModel, content)
 			if err != nil {
 				_ = store.Update(ctx, sess.ID, "failed", round, detail, "", err.Error())
@@ -234,6 +246,26 @@ func buildAuthorPrompt(sm Sample, rules string, round int, lastReason string) st
 	b.WriteString(fmt.Sprintf("%d", round))
 	b.WriteString(" 轮。")
 	return b.String()
+}
+
+// draftRuleInput 由 AI 草稿 + 样本构造落库用的规则输入（自检与落库共用同一份）。
+//
+// 作用域规则：样本有 provider_base_url → 锁该平台；没有 → 退化成全局
+// （不留 scope_mode=urls + 空列表，否则规则永远匹配不上，见 authorRun 注释）。
+func draftRuleInput(draft authorDraftSchema, sm Sample) RuleInput {
+	in := RuleInput{
+		Name:     draftAuthorName(draft, sm),
+		Priority: 150,
+		Model:    sm.Model,
+		Match:    draft.Match,
+		Action:   draft.Action,
+	}
+	if sm.ProviderBaseURL != "" {
+		in.ProviderBaseURL = sm.ProviderBaseURL
+		in.ScopeMode = "urls"
+		in.ProviderBaseURLs = []string{sm.ProviderBaseURL}
+	}
+	return in
 }
 
 // draftAuthorName 草稿名：AI 给的名字为空时用可读兜底。

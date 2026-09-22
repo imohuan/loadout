@@ -123,8 +123,12 @@ func (e *Engine) Evaluate(ctx context.Context, ev Evidence) Decision {
 		}
 	}
 
-	// AI 兜底（配置了模型才启用；防递归由调用方保证 —— AI 请求本身不带
-	// 规则求值入口）。
+	// AI 兜底（配置了模型才启用）。
+	//
+	// 防递归：AI 请求带 X-Loadout-Rule-AI 标记，model-gateway 见到该标记就
+	// **不**把这次失败写回规则引擎（见 model-gateway.isRuleAIRequest）。
+	// 早期这里注释写「由调用方保证」但没有任何地方真的读那个 header，属于
+	// 注释与实现不符；现在标记真正生效。
 	if ai != nil {
 		d, ok := e.evaluateAIOnce(ctx, ai, ev)
 		if ok {

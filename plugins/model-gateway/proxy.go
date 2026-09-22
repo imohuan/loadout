@@ -389,7 +389,7 @@ func (s *Service) proxyAttempt(w http.ResponseWriter, r *http.Request, pipe *Pro
 			"error", err.Error(),
 			"duration_ms", time.Since(attemptStarted).Milliseconds(),
 		)
-		if s.health != nil {
+		if s.health != nil && !isRuleAIRequest(r) {
 			_, _ = s.health.RecordFailure(r.Context(), contracts.RouteFailure{RequestID: pipe.RequestID, Model: model, ChannelID: ch.ID, Error: err.Error()})
 		}
 		return pipe, false
@@ -423,7 +423,7 @@ func (s *Service) proxyAttempt(w http.ResponseWriter, r *http.Request, pipe *Pro
 			"response_body", preview,
 			"duration_ms", time.Since(attemptStarted).Milliseconds(),
 		)
-		if s.health != nil {
+		if s.health != nil && !isRuleAIRequest(r) {
 			_, _ = s.health.RecordFailure(r.Context(), contracts.RouteFailure{RequestID: pipe.RequestID, Model: model, ChannelID: ch.ID, StatusCode: resp.StatusCode, ErrorBody: rawBody, Error: res.err.Error()})
 		}
 		return pipe, false
@@ -1301,6 +1301,17 @@ func (s *Service) tryProxyAggregateFailover(pipe *ProxyPipeline, model string, f
 	delete(retry.Pipe.Metadata, "__channel_hint")
 	delete(retry.Pipe.Metadata, "__channel_candidates")
 	return retry, true
+}
+
+// headerRuleAI 失败规则引擎的 AI 请求标记（与 failure-rules 的 headerRuleAI 同值）。
+// 网关用它识别「这次请求是 AI 兜底/规则生成自己发的」，从而不把它的失败
+// 再喂回规则引擎 —— 否则 AI 模型自身不可用时会层层放大（AI 失败 → 记录失败
+// → 规则未命中 → 又发一次 AI 请求）。
+const headerRuleAI = "X-Loadout-Rule-AI"
+
+// isRuleAIRequest 判断该请求是否由失败规则引擎的 AI 兜底发起。
+func isRuleAIRequest(r *http.Request) bool {
+	return r != nil && r.Header.Get(headerRuleAI) != ""
 }
 
 // copyProxyHeaders 把上游响应头复制到目标 Header（剔除 hop-by-hop 与 Content-Length，

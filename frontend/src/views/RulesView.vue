@@ -14,6 +14,7 @@ import {
   RiDownload2Line,
   RiSparklingLine,
   RiCheckDoubleLine,
+  RiLoader4Line,
 } from '@remixicon/vue'
 import {
   createFailureRule,
@@ -307,7 +308,9 @@ onBeforeUnmount(() => {
 async function loadSamples() {
   samplesLoading.value = true
   try {
-    samples.value = (await listRuleSamples({ limit: 500 })) ?? []
+    // 与后端「回放全部」上限保持一致（2000），避免列表显示 500 条、
+    // 实际回放范围却与用户预期不符（早期两处口径不同）。
+    samples.value = (await listRuleSamples({ limit: 2000 })) ?? []
   } catch (e) {
     toast.error(String(e))
   } finally {
@@ -391,12 +394,16 @@ const filteredSamples = computed(() => {
 })
 
 // markExpected 标注样本预期（确认后才能参与「不一致」统计）。
+//
+// 标注后必须**重跑回放**：replayMap 里存的 expected 是上一次回放时的快照，
+// 不同步的话「不一致」徽标会一直停在旧结论，直到用户再手动点一次批量回放。
 async function markExpected(s: RuleSample, verdict: string) {
   try {
     await setRuleSampleExpectation(s.id, verdict, true)
     s.expected_verdict = verdict
     s.confirmed = true
     toast.success('已标注预期判定')
+    await runReplay()
   } catch (e) {
     toast.error(String(e))
   }
@@ -408,6 +415,18 @@ async function removeSample(s: RuleSample) {
   try {
     await deleteRuleSample(s.id)
     samples.value = samples.value.filter((x) => x.id !== s.id)
+    // 同步清掉这条样本的回放结果与生成会话，否则筛选/计数会算进已删除的行。
+    const nextReplay = { ...replayMap.value }
+    delete nextReplay[s.id]
+    replayMap.value = nextReplay
+    const nextSessions = { ...authorSessions.value }
+    delete nextSessions[s.id]
+    authorSessions.value = nextSessions
+    const timer = authorTimers.get(s.id)
+    if (timer) {
+      window.clearInterval(timer)
+      authorTimers.delete(s.id)
+    }
   } catch (e) {
     toast.error(String(e))
   }
