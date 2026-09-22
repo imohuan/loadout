@@ -249,6 +249,17 @@ func (s *Service) Routes() []plugin.RouteSpec {
 		// 恢复默认规则：放在独立前缀下，避免与 /api/failure-rules/{id} 冲突。
 		{Method: http.MethodPost, Pattern: "POST /api/failure-rules-defaults/restore", Auth: plugin.AuthSession, Handler: s.session(s.handleFailureRulesRestoreDefaults)},
 		{Method: http.MethodGet, Pattern: "GET /api/rule-decisions", Auth: plugin.AuthSession, Handler: s.session(s.handleRuleDecisionsList)},
+		// ==== 样本回放 / AI 生成规则（「回撤」）====
+		// 独立前缀 /api/rule-samples*，与 /api/failure-rules/{id} 不冲突。
+		{Method: http.MethodGet, Pattern: "GET /api/rule-samples", Auth: plugin.AuthSession, Handler: s.session(s.handleRuleSamplesList)},
+		{Method: http.MethodPost, Pattern: "POST /api/rule-samples/import", Auth: plugin.AuthSession, Handler: s.session(s.handleRuleSamplesImport)},
+		{Method: http.MethodPost, Pattern: "POST /api/rule-samples/replay", Auth: plugin.AuthSession, Handler: s.session(s.handleRuleSamplesReplay)},
+		{Method: http.MethodPost, Pattern: "POST /api/rule-samples/author", Auth: plugin.AuthSession, Handler: s.session(s.handleRuleSampleAuthor)},
+		{Method: http.MethodPost, Pattern: "POST /api/rule-samples", Auth: plugin.AuthSession, Handler: s.session(s.handleRuleSampleCreate)},
+		{Method: http.MethodPatch, Pattern: "PATCH /api/rule-samples/{id}", Auth: plugin.AuthSession, Handler: s.session(s.handleRuleSamplePatch)},
+		{Method: http.MethodDelete, Pattern: "DELETE /api/rule-samples/{id}", Auth: plugin.AuthSession, Handler: s.session(s.handleRuleSampleDelete)},
+		{Method: http.MethodGet, Pattern: "GET /api/rule-author-sessions", Auth: plugin.AuthSession, Handler: s.session(s.handleRuleAuthorSessions)},
+		{Method: http.MethodGet, Pattern: "GET /api/rule-author-sessions/{id}", Auth: plugin.AuthSession, Handler: s.session(s.handleRuleAuthorSession)},
 		{Method: http.MethodGet, Pattern: "GET /api/provider-frameworks", Auth: plugin.AuthSession, Handler: s.session(s.handleProviderFrameworks)},
 
 		{Method: http.MethodGet, Pattern: "GET /api/stats/mcp", Auth: plugin.AuthSession, Handler: s.session(s.handleStatsMcp)},

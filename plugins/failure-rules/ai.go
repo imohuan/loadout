@@ -115,6 +115,81 @@ type aiVerdictSchema struct {
 	Reason          string `json:"reason"`
 }
 
+// chat 用兜底模型跑一次非流式对话，返回去围栏后的正文。
+//
+// 超时取「resolver 默认」与「调用方 context 剩余时间」中更宽的那个：
+// AI 判定（Resolve）在失败链路上，宁快勿慢，用 defaultAITimeout；
+// AI 生成规则（Author）是后台任务，提示词更长、推理更久，调用方会传入更长的
+// context。若一律套 30s，author 每轮都会在拿到响应前超时（实测踩过）。
+//
+// AI 判定（Resolve）与 AI 生成规则（作者 Author）都走这一条通道：同一个模型、
+// 同一把 SK key、同一份超时与防递归 header。抽出来避免两处各写一遍 HTTP 细节
+// （此前 CreateDraft 那类「复制粘贴漏改列名」的坑就是这么来的）。
+func (a *AIResolver) chat(ctx context.Context, prompt string) (string, error) {
+	model := a.currentModel()
+	if model == "" {
+		return "", fmt.Errorf("failure-rules: AI 兜底模型未配置")
+	}
+	skKey := a.resolveKey()
+	if skKey == "" {
+		return "", fmt.Errorf("failure-rules: 无可用 SK key，AI 不可用")
+	}
+	body, _ := json.Marshal(map[string]any{
+		"model":    model,
+		"messages": []map[string]string{{"role": "user", "content": prompt}},
+		"stream":   false,
+	})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		strings.TrimRight(a.baseURL, "/")+"/v1/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+skKey)
+	req.Header.Set(headerRuleAI, "1")
+
+	resp, err := (&http.Client{Timeout: chatTimeout(ctx, a.timeout)}).Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("failure-rules: AI 返回 %d: %s", resp.StatusCode, truncate(string(raw), 200))
+	}
+	var chatResp struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(raw, &chatResp); err != nil || len(chatResp.Choices) == 0 {
+		return "", fmt.Errorf("failure-rules: AI 响应解析失败")
+	}
+	return stripCodeFence(chatResp.Choices[0].Message.Content), nil
+}
+
+// chatTimeout 单次 AI 对话的 HTTP 超时：取默认值与调用方 deadline 中更宽的那个。
+// 调用方没设 deadline 时用默认值。
+func chatTimeout(ctx context.Context, def time.Duration) time.Duration {
+	if dl, ok := ctx.Deadline(); ok {
+		if remain := time.Until(dl); remain > def {
+			return remain
+		}
+	}
+	return def
+}
+
+// stripCodeFence 去掉模型爱包的 ```json ... ``` 围栏。
+func stripCodeFence(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.TrimPrefix(s, "```json")
+	s = strings.TrimPrefix(s, "```")
+	s = strings.TrimSuffix(s, "```")
+	return strings.TrimSpace(s)
+}
+
 // Resolve 调用 AI 分析失败证据。
 func (a *AIResolver) Resolve(ctx context.Context, ev Evidence, fp string) (Decision, bool) {
 	model := a.currentModel()
@@ -219,11 +294,20 @@ func validAIVerdict(v string) bool {
 	return false
 }
 
+// truncate 按 **rune** 截断（不是字节）。
+//
+// 上游错误信息基本都是中文：按字节切会把一个汉字拦腰截断，产生 � 乱码，
+// 这个乱码会顺着「样本指纹 → 样本 id → 草稿规则名」一路带到前端（实测踩过）。
+// n 表示最多保留的字符数。
 func truncate(s string, n int) string {
-	if len(s) <= n {
+	if n <= 0 {
+		return ""
+	}
+	runes := []rune(s)
+	if len(runes) <= n {
 		return s
 	}
-	return s[:n]
+	return string(runes[:n])
 }
 
 func hashString(s string) string {

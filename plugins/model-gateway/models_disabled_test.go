@@ -153,3 +153,31 @@ func (m *mockHealth) ListRuleDecisions(ctx context.Context, limit int) ([]map[st
 }
 func (m *mockHealth) SetRuleAIModel(model string)                                 {}
 func (m *mockHealth) RestoreDefaultFailureRules(ctx context.Context) (int, error) { return 0, nil }
+
+// ==== 样本回放 / AI 生成规则 stubs ====
+
+func (m *mockHealth) ListRuleSamples(ctx context.Context, source, model string, limit int) ([]failure.Sample, error) {
+	return nil, nil
+}
+func (m *mockHealth) ImportRuleSamples(ctx context.Context, limit int) (int, int, error) {
+	return 0, 0, nil
+}
+func (m *mockHealth) CreateRuleSample(ctx context.Context, sm failure.Sample) (failure.Sample, error) {
+	return failure.Sample{}, nil
+}
+func (m *mockHealth) SetRuleSampleExpectation(ctx context.Context, id, expected string, confirmed bool) error {
+	return nil
+}
+func (m *mockHealth) DeleteRuleSample(ctx context.Context, id string) error { return nil }
+func (m *mockHealth) ReplayRuleSamples(ctx context.Context, ids []string) (failure.ReplaySummary, error) {
+	return failure.ReplaySummary{}, nil
+}
+func (m *mockHealth) AuthorRuleFromSample(ctx context.Context, sampleID string) (failure.AuthorSession, error) {
+	return failure.AuthorSession{}, nil
+}
+func (m *mockHealth) GetRuleAuthorSession(ctx context.Context, id string) (failure.AuthorSession, error) {
+	return failure.AuthorSession{}, nil
+}
+func (m *mockHealth) ListRuleAuthorSessions(ctx context.Context, limit int) ([]failure.AuthorSession, error) {
+	return nil, nil
+}

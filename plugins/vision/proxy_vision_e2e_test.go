@@ -268,3 +268,24 @@ func (e2eHealth) ListRuleDecisions(ctx context.Context, limit int) ([]map[string
 }
 func (e2eHealth) SetRuleAIModel(model string)                             {}
 func (e2eHealth) RestoreDefaultFailureRules(context.Context) (int, error) { return 0, nil }
+func (e2eHealth) ListRuleSamples(context.Context, string, string, int) ([]failure.Sample, error) {
+	return nil, nil
+}
+func (e2eHealth) ImportRuleSamples(context.Context, int) (int, int, error) { return 0, 0, nil }
+func (e2eHealth) CreateRuleSample(context.Context, failure.Sample) (failure.Sample, error) {
+	return failure.Sample{}, nil
+}
+func (e2eHealth) SetRuleSampleExpectation(context.Context, string, string, bool) error { return nil }
+func (e2eHealth) DeleteRuleSample(context.Context, string) error                       { return nil }
+func (e2eHealth) ReplayRuleSamples(context.Context, []string) (failure.ReplaySummary, error) {
+	return failure.ReplaySummary{}, nil
+}
+func (e2eHealth) AuthorRuleFromSample(context.Context, string) (failure.AuthorSession, error) {
+	return failure.AuthorSession{}, nil
+}
+func (e2eHealth) GetRuleAuthorSession(context.Context, string) (failure.AuthorSession, error) {
+	return failure.AuthorSession{}, nil
+}
+func (e2eHealth) ListRuleAuthorSessions(context.Context, int) ([]failure.AuthorSession, error) {
+	return nil, nil
+}

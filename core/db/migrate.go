@@ -799,6 +799,59 @@ WHERE id = 'seed-010'
   AND enabled = 1
   AND priority = 100;
 `,
+}, {
+	version: 40,
+	name:    "rule-samples-and-author",
+	sql: `
+-- 样本库 + AI 规则作者会话（「回撤」能力）。
+--
+-- rule_samples：把历史失败沉淀成可复用的测试样本。来源两类：
+--   real    = 从 rule_decisions 导入的真实线上失败；
+--   builtin = 人工新增的构造样本（覆盖已知故障形态）。
+-- fingerprint 做唯一键：同一「状态码+业务码+错误摘要」的失败只留一条，
+-- 避免把 171 条同类 502 堆成 171 行样本。
+-- expected_verdict + confirmed：人工标注的期望判定；只有 confirmed=1 才计入
+-- 「不一致」统计（避免把随手填的预期当成标准答案）。
+CREATE TABLE rule_samples (
+  id TEXT PRIMARY KEY,
+  provider_base_url TEXT NOT NULL DEFAULT '',
+  model TEXT NOT NULL DEFAULT '',
+  status_code INTEGER NOT NULL DEFAULT 0,
+  body_code TEXT NOT NULL DEFAULT '',
+  message TEXT NOT NULL DEFAULT '',
+  channel_id TEXT NOT NULL DEFAULT '',
+  channel_name TEXT NOT NULL DEFAULT '',
+  provider_framework TEXT NOT NULL DEFAULT '',
+  fingerprint TEXT NOT NULL,
+  source TEXT NOT NULL DEFAULT 'real',
+  expected_verdict TEXT NOT NULL DEFAULT '',
+  confirmed INTEGER NOT NULL DEFAULT 0,
+  note TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX idx_rule_samples_fp ON rule_samples(fingerprint);
+CREATE INDEX idx_rule_samples_source ON rule_samples(source, status_code);
+
+-- rule_author_sessions：AI「多轮」生成规则的会话状态。
+-- 一次 author 请求 = 一个会话：AI 出草稿 → 用样本自检 → 不一致就带原因再修订，
+-- 最多 N 轮。每轮结果进 rounds_json（前端据此显示「第 k 轮 / 通过与否」），
+-- 会话是异步跑的，前端按 session_id 轮询。
+CREATE TABLE rule_author_sessions (
+  id TEXT PRIMARY KEY,
+  sample_id TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'running',
+  rounds INTEGER NOT NULL DEFAULT 0,
+  max_rounds INTEGER NOT NULL DEFAULT 3,
+  rounds_json TEXT NOT NULL DEFAULT '[]',
+  draft_rule_id TEXT NOT NULL DEFAULT '',
+  ai_model TEXT NOT NULL DEFAULT '',
+  error TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX idx_rule_author_created ON rule_author_sessions(created_at DESC);
+`,
 }}
 
 // Migrate applies all pending schema migrations and rejects an incompatible

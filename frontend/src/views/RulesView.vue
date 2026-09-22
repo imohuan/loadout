@@ -11,6 +11,9 @@ import {
   RiRefreshLine,
   RiFilter3Line,
   RiHistoryLine,
+  RiDownload2Line,
+  RiSparklingLine,
+  RiCheckDoubleLine,
 } from '@remixicon/vue'
 import {
   createFailureRule,
@@ -35,6 +38,18 @@ import PageHeader from '@/components/PageHeader.vue'
 import LoadingBlock from '@/components/LoadingBlock.vue'
 import EmptyState from '@/components/EmptyState.vue'
 import { useConfirm } from '@/composables/useConfirm'
+import {
+  authorRuleFromSample,
+  deleteRuleSample,
+  importRuleSamples,
+  listRuleSamples,
+  replayRuleSamples,
+  setRuleSampleExpectation,
+  type AuthorSession,
+  type RuleSample,
+  type SampleReplayResult,
+  getRuleAuthorSession,
+} from '@/lib/ruleSamples'
 
 const { confirmDialog } = useConfirm()
 
@@ -106,7 +121,7 @@ function statusTone(code?: number) {
 
 const VERDICT_LABELS: Record<string, string> = Object.fromEntries(VERDICTS.map((v) => [v.value, v.label]))
 
-const tab = ref<'rules' | 'logs'>('rules')
+const tab = ref<'rules' | 'logs' | 'samples'>('rules')
 const rules = ref<FailureRule[]>([])
 const decisions = ref<RuleDecision[]>([])
 const loading = ref(false)
@@ -259,9 +274,182 @@ async function load() {
   }
 }
 
-function switchTab(t: 'rules' | 'logs') {
+function switchTab(t: 'rules' | 'logs' | 'samples') {
   tab.value = t
   load()
+  if (t === 'samples') {
+    void loadSamples()
+  }
+}
+
+// ===== 样本回放（「回撤」）=====
+// 流程：导入历史失败 → 批量回放（规则匹配）→ 表格看通过/未命中/不一致
+//      → 对不一致的样本点「AI 生成规则」→ 产出草稿待人工确认。
+const samples = ref<RuleSample[]>([])
+const replayMap = ref<Record<string, SampleReplayResult>>({})
+const replaySummary = ref<{ matched: number; unmatched: number; confirmedOk: number; confirmedTotal: number } | null>(null)
+const samplesLoading = ref(false)
+const replaying = ref(false)
+const importing = ref(false)
+const samplesSearch = ref('')
+const samplesFilter = ref<'all' | 'matched' | 'unmatched' | 'inconsistent'>('all')
+// 每条样本的 AI 生成会话（sampleId → 会话），表格里显示轮次进度。
+const authorSessions = ref<Record<string, AuthorSession>>({})
+const authorTimers = new Map<string, number>()
+
+async function loadSamples() {
+  samplesLoading.value = true
+  try {
+    samples.value = (await listRuleSamples({ limit: 500 })) ?? []
+  } catch (e) {
+    toast.error(String(e))
+  } finally {
+    samplesLoading.value = false
+  }
+}
+
+async function importSamples() {
+  importing.value = true
+  try {
+    const res = await importRuleSamples(2000)
+    toast.success(`已导入 ${res.imported} 条失败样本（库内共 ${res.total} 条）`)
+    await loadSamples()
+  } catch (e) {
+    toast.error(String(e))
+  } finally {
+    importing.value = false
+  }
+}
+
+async function runReplay() {
+  replaying.value = true
+  try {
+    const sum = await replayRuleSamples([])
+    const map: Record<string, SampleReplayResult> = {}
+    for (const r of sum.results ?? []) map[r.sample_id] = r
+    replayMap.value = map
+    replaySummary.value = {
+      matched: sum.matched,
+      unmatched: sum.unmatched,
+      confirmedOk: sum.confirmed_ok,
+      confirmedTotal: sum.confirmed_total,
+    }
+    toast.success(
+      `回放完成：共 ${sum.total} 条，命中 ${sum.matched}，未命中 ${sum.unmatched}` +
+        (sum.confirmed_total ? `，预期一致 ${sum.confirmed_ok}/${sum.confirmed_total}` : ''),
+    )
+  } catch (e) {
+    toast.error(String(e))
+  } finally {
+    replaying.value = false
+  }
+}
+
+// replayOf 该样本的回放结果（未回放返回 null）。
+function replayOf(id: string): SampleReplayResult | null {
+  return replayMap.value[id] ?? null
+}
+
+// sampleTone 结果态：不一致=红（预期≠实际）；未命中=琥珀；命中=绿。
+function sampleResultTone(id: string): string {
+  const r = replayOf(id)
+  if (!r) return 'bg-slate-500/15 text-slate-700 dark:text-slate-300 border-slate-500/20'
+  if (r.expected && !r.expected_ok) return 'bg-red-500/15 text-red-700 dark:text-red-300 border-red-500/20'
+  if (!r.matched_rule_id) return 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/20'
+  return 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/20'
+}
+
+function sampleResultLabel(id: string): string {
+  const r = replayOf(id)
+  if (!r) return '未回放'
+  if (r.expected && !r.expected_ok) return `不一致（预期 ${VERDICT_LABELS[r.expected] ?? r.expected}）`
+  if (!r.matched_rule_id) return '未命中规则'
+  return `已匹配 · ${VERDICT_LABELS[r.verdict] ?? r.verdict}`
+}
+
+const filteredSamples = computed(() => {
+  const q = samplesSearch.value.trim().toLowerCase()
+  return samples.value.filter((s) => {
+    if (q) {
+      const hay = `${s.model} ${s.status_code} ${s.body_code} ${s.message} ${s.provider_base_url}`.toLowerCase()
+      if (!hay.includes(q)) return false
+    }
+    if (samplesFilter.value === 'all') return true
+    const r = replayOf(s.id)
+    if (!r) return false
+    if (samplesFilter.value === 'matched') return !!r.matched_rule_id
+    if (samplesFilter.value === 'unmatched') return !r.matched_rule_id
+    return !!r.expected && !r.expected_ok
+  })
+})
+
+// markExpected 标注样本预期（确认后才能参与「不一致」统计）。
+async function markExpected(s: RuleSample, verdict: string) {
+  try {
+    await setRuleSampleExpectation(s.id, verdict, true)
+    s.expected_verdict = verdict
+    s.confirmed = true
+    toast.success('已标注预期判定')
+  } catch (e) {
+    toast.error(String(e))
+  }
+}
+
+async function removeSample(s: RuleSample) {
+  const ok = await confirmDialog({ title: '删除这条样本？', description: '仅从样本库移除，不影响规则与运行状态。' })
+  if (!ok) return
+  try {
+    await deleteRuleSample(s.id)
+    samples.value = samples.value.filter((x) => x.id !== s.id)
+  } catch (e) {
+    toast.error(String(e))
+  }
+}
+
+// authorForSample 让 AI 对该样本「多轮」生成规则；轮询会话进度。
+async function authorForSample(s: RuleSample) {
+  try {
+    const sess = await authorRuleFromSample(s.id)
+    authorSessions.value = { ...authorSessions.value, [s.id]: sess }
+    toast.success('AI 生成已启动（进度见表格）')
+    pollAuthor(s.id, sess.id)
+  } catch (e) {
+    toast.error(String(e))
+  }
+}
+
+function pollAuthor(sampleId: string, sessionId: string) {
+  const existing = authorTimers.get(sampleId)
+  if (existing) window.clearInterval(existing)
+  const timer = window.setInterval(async () => {
+    try {
+      const sess = await getRuleAuthorSession(sessionId)
+      authorSessions.value = { ...authorSessions.value, [sampleId]: sess }
+      if (sess.status !== 'running') {
+        window.clearInterval(timer)
+        authorTimers.delete(sampleId)
+        if (sess.draft_rule_id) {
+          toast.success('AI 已生成规则草稿，请在「规则列表」确认后生效')
+          void load()
+        } else if (sess.status === 'failed') {
+          toast.error(`AI 生成失败：${sess.error ?? '未知错误'}`)
+        }
+      }
+    } catch {
+      window.clearInterval(timer)
+      authorTimers.delete(sampleId)
+    }
+  }, 3000)
+  authorTimers.set(sampleId, timer)
+}
+
+function authorText(sampleId: string): string {
+  const sess = authorSessions.value[sampleId]
+  if (!sess) return 'AI 生成规则'
+  if (sess.status === 'running') return `生成中 · 第 ${sess.rounds || 1}/${sess.max_rounds} 轮`
+  if (sess.status === 'done') return '已生成草稿'
+  if (sess.status === 'exhausted') return `${sess.rounds} 轮未收敛`
+  return '生成失败'
 }
 
 function openCreate() {
@@ -536,6 +724,7 @@ openRuleFromQuery()
       <TabsList class="h-auto w-fit">
         <TabsTrigger value="rules">规则列表</TabsTrigger>
         <TabsTrigger value="logs">路由判定日志</TabsTrigger>
+        <TabsTrigger value="samples">样本回放</TabsTrigger>
       </TabsList>
 
       <!-- ===== 规则列表 ===== -->
@@ -595,6 +784,7 @@ openRuleFromQuery()
         <EmptyState v-else-if="!filtered.length" title="暂无规则" description="没有匹配当前筛选条件的规则" />
 
         <div v-else class="overflow-x-auto rounded-lg border">
+          <AxTable>
           <Table class="min-w-[1080px]">
             <TableHeader>
               <TableRow>
@@ -688,6 +878,7 @@ openRuleFromQuery()
               </TableRow>
             </TableBody>
           </Table>
+          </AxTable>
         </div>
       </TabsContent>
 
@@ -776,7 +967,151 @@ openRuleFromQuery()
           </AxTable>
         </TooltipProvider>
       </TabsContent>
+
+      <!-- ===== 样本回放（「回撤」）=====
+           三步：导入历史失败 → 批量回放（规则匹配）→ 表格看通过/未命中/不一致
+           → 对不通过的样本点「AI 生成规则」（多轮，产出草稿待人工确认）。 -->
+      <TabsContent value="samples" class="space-y-3">
+        <div class="flex flex-wrap items-end gap-3">
+          <div class="min-w-56 space-y-1">
+            <Label>搜索</Label>
+            <Input v-model="samplesSearch" placeholder="模型 / 状态码 / 错误文案" />
+          </div>
+          <div class="min-w-40 space-y-1">
+            <Label>结果</Label>
+            <Select v-model="samplesFilter">
+              <SelectTrigger class="w-full"><SelectValue placeholder="全部结果" /></SelectTrigger>
+              <SelectContent position="popper" side="bottom" align="start" :side-offset="2">
+                <SelectGroup>
+                  <SelectItem value="all">全部结果</SelectItem>
+                  <SelectItem value="matched">已匹配</SelectItem>
+                  <SelectItem value="unmatched">未命中</SelectItem>
+                  <SelectItem value="inconsistent">不一致</SelectItem>
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+          </div>
+          <div class="flex shrink-0 items-center gap-2">
+            <Button variant="outline" size="sm" :disabled="importing" @click="importSamples">
+              <RiLoader4Line v-if="importing" class="animate-spin mr-1" size="15" />
+              <RiDownload2Line v-else size="15" class="mr-1" />导入历史失败
+            </Button>
+            <Button variant="outline" size="sm" :disabled="replaying" @click="runReplay">
+              <RiLoader4Line v-if="replaying" class="animate-spin mr-1" size="15" />
+              <RiFlaskLine v-else size="15" class="mr-1" />批量回放
+            </Button>
+            <Button variant="outline" size="sm" @click="loadSamples">
+              <RiRefreshLine size="15" class="mr-1" />刷新
+            </Button>
+          </div>
+          <span class="text-muted-foreground mb-1.5 ml-auto text-xs tabular-nums">
+            {{ filteredSamples.length }} / {{ samples.length }} 条
+            <template v-if="replaySummary">
+              · 命中 {{ replaySummary.matched }} · 未命中 {{ replaySummary.unmatched }}
+              <template v-if="replaySummary.confirmedTotal">
+                · 预期一致 {{ replaySummary.confirmedOk }}/{{ replaySummary.confirmedTotal }}
+              </template>
+            </template>
+          </span>
+        </div>
+
+        <LoadingBlock v-if="samplesLoading" />
+        <EmptyState
+          v-else-if="!filteredSamples.length"
+          title="暂无样本"
+          description="点「导入历史失败」把判定日志沉淀成可复用的测试样本"
+        />
+        <TooltipProvider v-else>
+          <div class="overflow-x-auto rounded-lg border">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead class="w-[70px]">来源</TableHead>
+                  <TableHead class="w-[64px]">状态码</TableHead>
+                  <TableHead class="w-[80px]">业务码</TableHead>
+                  <TableHead class="w-[150px]">模型</TableHead>
+                  <TableHead>错误摘要</TableHead>
+                  <TableHead class="w-[180px]">匹配规则</TableHead>
+                  <TableHead class="w-[150px]">结果</TableHead>
+                  <TableHead class="w-[150px] text-right">操作</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                <TableRow v-for="s in filteredSamples" :key="s.id">
+                  <TableCell>
+                    <Badge variant="outline" class="text-[11px]">{{ s.source === 'builtin' ? '自带' : '真实' }}</Badge>
+                  </TableCell>
+                  <TableCell class="font-mono text-xs" :class="statusTone(s.status_code)">{{ s.status_code || '—' }}</TableCell>
+                  <TableCell class="font-mono text-xs">{{ s.body_code || '—' }}</TableCell>
+                  <TableCell class="font-mono text-xs">{{ s.model || '—' }}</TableCell>
+                  <TableCell class="max-w-[360px]">
+                    <Tooltip>
+                      <TooltipTrigger as-child>
+                        <div class="truncate text-xs text-muted-foreground">{{ s.message || '—' }}</div>
+                      </TooltipTrigger>
+                      <TooltipContent class="max-w-[560px] break-all">{{ s.message || '—' }}</TooltipContent>
+                    </Tooltip>
+                  </TableCell>
+                  <TableCell class="text-xs">
+                    <span v-if="replayOf(s.id)?.matched_rule_name" class="text-foreground">
+                      {{ replayOf(s.id)?.matched_rule_name }}
+                    </span>
+                    <span v-else class="text-muted-foreground">—</span>
+                  </TableCell>
+                  <TableCell>
+                    <Badge variant="outline" class="border text-[11px] whitespace-normal" :class="sampleResultTone(s.id)">
+                      {{ sampleResultLabel(s.id) }}
+                    </Badge>
+                    <p v-if="replayOf(s.id)?.reason" class="text-muted-foreground mt-0.5 truncate text-[10px]">
+                      {{ replayOf(s.id)?.reason }}
+                    </p>
+                  </TableCell>
+                  <TableCell class="text-right">
+                    <div class="flex items-center justify-end gap-1">
+                      <Button
+                        v-if="replayOf(s.id) && !replayOf(s.id)?.matched_rule_id && !replayOf(s.id)?.expected_ok"
+                        variant="outline"
+                        size="sm"
+                        :disabled="authorSessions[s.id]?.status === 'running'"
+                        @click="authorForSample(s)"
+                      >
+                        <RiSparklingLine v-if="!authorSessions[s.id]" size="14" class="mr-1" />
+                        <RiLoader4Line
+                          v-else-if="authorSessions[s.id]?.status === 'running'"
+                          class="animate-spin mr-1"
+                          size="14"
+                        />
+                        {{ authorText(s.id) }}
+                      </Button>
+                      <Button variant="ghost" size="icon" class="size-7" title="删除样本" @click="removeSample(s)">
+                        <RiDeleteBinLine size="14" />
+                      </Button>
+                      <!-- 标注预期：确认后该样本参与「不一致」统计 -->
+                      <Tooltip>
+                        <TooltipTrigger as-child>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            class="size-7"
+                            title="标注预期判定"
+                            :class="s.confirmed ? 'text-emerald-600 dark:text-emerald-400' : ''"
+                            @click="markExpected(s, replayOf(s.id)?.verdict ?? 'ignore')"
+                          >
+                            <RiCheckDoubleLine size="14" />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>把它当前实际判定记为「预期」，之后若规则变化导致不一致会标红</TooltipContent>
+                      </Tooltip>
+                    </div>
+                  </TableCell>
+                </TableRow>
+              </TableBody>
+            </Table>
+          </div>
+        </TooltipProvider>
+      </TabsContent>
     </Tabs>
+
 
     <!-- ===== 编辑弹窗（shadcn Dialog）===== -->
     <Dialog v-model:open="showEditor">

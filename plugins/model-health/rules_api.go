@@ -82,6 +82,22 @@ func (s *Service) SetRuleAIModel(model string) {
 	}
 }
 
+// SetBuiltinFallbackModel 用「内置模型」兜底 AI 判定模型。
+//
+// 仅当用户没有在设置页显式配置 rule_ai_model 时生效——用户的选择永远优先。
+// 有了它，开箱即用：多模态插件里配了图片/音频模型，失败规则就能直接用 AI 兜底，
+// 不必再去设置页手动选一遍。
+func (s *Service) SetBuiltinFallbackModel(model string) {
+	if s.aiResolver == nil || model == "" {
+		return
+	}
+	if s.aiResolver.Enabled() {
+		return // 用户已显式配置，尊重用户
+	}
+	s.aiResolver.SetModel(model)
+	s.lg.Info("failure-rules: AI 兜底使用内置模型", "model", model)
+}
+
 // RestoreDefaultFailureRules 恢复内置默认规则并热重载引擎（UI「恢复默认规则」）。
 func (s *Service) RestoreDefaultFailureRules(ctx context.Context) (int, error) {
 	n, err := s.decisions.RestoreDefaults(ctx)

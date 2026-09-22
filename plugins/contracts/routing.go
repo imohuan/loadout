@@ -79,6 +79,17 @@ type ModelHealth interface {
 	SetRuleAIModel(string)
 	// RestoreDefaultFailureRules 恢复内置默认规则（出厂状态），返回写入条数。
 	RestoreDefaultFailureRules(context.Context) (int, error)
+
+	// ==== 样本回放 / AI 生成规则（「回撤」） ====
+	ListRuleSamples(context.Context, string, string, int) ([]failure.Sample, error)
+	ImportRuleSamples(context.Context, int) (int, int, error)
+	CreateRuleSample(context.Context, failure.Sample) (failure.Sample, error)
+	SetRuleSampleExpectation(context.Context, string, string, bool) error
+	DeleteRuleSample(context.Context, string) error
+	ReplayRuleSamples(context.Context, []string) (failure.ReplaySummary, error)
+	AuthorRuleFromSample(context.Context, string) (failure.AuthorSession, error)
+	GetRuleAuthorSession(context.Context, string) (failure.AuthorSession, error)
+	ListRuleAuthorSessions(context.Context, int) ([]failure.AuthorSession, error)
 }
 
 type ChannelStatus struct {
