@@ -290,16 +290,24 @@ func mustOpen(t *testing.T, path string) *sql.DB {
 	return database
 }
 
-func TestMigrateStepNoText(t *testing.T) {
-	ctx := context.Background()
-	// 手动构造 v22 库：绕过 Open 的自动 Migrate，按 migrations[0:22] 建 schema 并记录
-	// schema_migrations，插入 INTEGER step_no 的历史数据后，调 Migrate 只应用 v23，
-	// 验证重建（类型转换、数据保留、外键/唯一约束、索引）。
-	d, err := sql.Open("sqlite", fmt.Sprintf("file:loadout-stepno-%d?mode=memory&cache=shared", time.Now().UnixNano()))
+// openAtVersion 开一个内存库、只应用 1..upToVersion 条迁移，然后返回。
+//
+// 用途：构造「历史版本库」，再调 Migrate 验证增量迁移。版本号必须显式传入，不要用
+// len(migrations)-1 这类相对写法：相对写法隐含「最后一条迁移就是本次要测的目标」，
+// 日后新增迁移会让测试静默改跑另一个基线，而断言的文字仍指向老版本，失败信息会把
+// 排查方向带偏。
+//
+// 用 t.Cleanup 而不是 defer 关闭连接：defer 会在本辅助函数返回时立刻执行，把刚建好的库关掉。
+func openAtVersion(t *testing.T, upToVersion int) *sql.DB {
+	t.Helper()
+	if upToVersion < 1 || upToVersion > len(migrations) {
+		t.Fatalf("upToVersion = %d，超出迁移范围 1..%d", upToVersion, len(migrations))
+	}
+	d, err := sql.Open("sqlite", fmt.Sprintf("file:loadout-v%d-%d?mode=memory&cache=shared", upToVersion, time.Now().UnixNano()))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer d.Close()
+	t.Cleanup(func() { d.Close() })
 	d.SetMaxOpenConns(1)
 	if err := configure(d); err != nil {
 		t.Fatal(err)
@@ -312,7 +320,7 @@ func TestMigrateStepNoText(t *testing.T) {
 )`); err != nil {
 		t.Fatal(err)
 	}
-	for _, m := range migrations[:len(migrations)-1] {
+	for _, m := range migrations[:upToVersion] {
 		if _, err := d.Exec(m.sql); err != nil {
 			t.Fatalf("apply migration %d: %v", m.version, err)
 		}
@@ -321,6 +329,15 @@ func TestMigrateStepNoText(t *testing.T) {
 			t.Fatalf("record migration %d: %v", m.version, err)
 		}
 	}
+	return d
+}
+
+func TestMigrateStepNoText(t *testing.T) {
+	ctx := context.Background()
+	// 手动构造 v22 库：绕过 Open 的自动 Migrate，只应用 1..22 建 schema 并记录
+	// schema_migrations，插入 INTEGER step_no 的历史数据后，调 Migrate 只应用 v23，
+	// 验证重建（类型转换、数据保留、外键/唯一约束、索引）。
+	d := openAtVersion(t, 22)
 	insertAttempt := func(requestID string, step int, prev any, action string, tokens int) {
 		t.Helper()
 		if _, err := d.Exec(`INSERT INTO route_attempts(request_id, previous_attempt_id, step_no, action, model, channel_id, channel_ids_json, channel_base_url, channel_name, started_at, result, failure_class, status_code, error_message, error_body, duration_ms, stream, prompt_tokens, completion_tokens, cached_tokens, metadata_json)
@@ -454,30 +471,18 @@ func TestCapabilityRouteFieldRulesPersist(t *testing.T) {
 //  1. route_attempts.previous_attempt_id 必须有索引——它是自引用外键（ON DELETE SET NULL），
 //     缺索引时清空日志的级联删除会退化成平方级全表扫描（页面点「清空」直接卡死）；
 //  2. 历史孤儿 attempt（父请求已删、子行残留）要在迁移里清掉，否则会一直拖慢后续清空。
+//
+// ⚠️ 修改本测试时**不要**顺手改 v42 的迁移 SQL（连注释都不要动）。Migrate 用
+// migrationChecksum(整段 sql 文本，含注释) 比对已落库的 schema_migrations.checksum，
+// 不符即 `db: migration %d checksum or name does not match` 并让 Open 失败——凡是已经
+// 在生产库上跑过的迁移，改一个标点都会让服务下次启动直接起不来。要补说明就写在
+// 新的迁移里，或写在这里这种不参与校验和的地方。
 func TestMigrateIndexesPreviousAttemptAndDropsOrphans(t *testing.T) {
 	ctx := context.Background()
 	// 手动构造 v41 库（绕过 Open 的自动 Migrate），造出孤儿 attempt 后只应用 v42。
-	d, err := sql.Open("sqlite", fmt.Sprintf("file:loadout-v42-%d?mode=memory&cache=shared", time.Now().UnixNano()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer d.Close()
-	d.SetMaxOpenConns(1)
-	if err := configure(d); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := d.Exec("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, checksum TEXT NOT NULL, applied_at TEXT NOT NULL)"); err != nil {
-		t.Fatal(err)
-	}
-	for _, m := range migrations[:len(migrations)-1] {
-		if _, err := d.Exec(m.sql); err != nil {
-			t.Fatalf("apply migration %d: %v", m.version, err)
-		}
-		if _, err := d.Exec("INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (?, ?, ?, ?)",
-			m.version, m.name, migrationChecksum(m.sql), time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
-			t.Fatal(err)
-		}
-	}
+	// 显式 41：不要写 len(migrations)-1，否则日后加 v43 时这个测试会连 v42 一起应用，
+	// 下面「v42 之前不该有该索引」的断言会以指向错误方向的信息失败。
+	d := openAtVersion(t, 41)
 
 	// 历史残留：v23 建表时该外键已存在且无索引，与线上库一致。
 	var indexedBefore int

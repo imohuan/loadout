@@ -56,3 +56,24 @@
 `apps/desktop/backend/server/proxy.go` 的 `ReverseProxy.FlushInterval = -1` 是让 SSE 在
 代理层「每次 Write 立即 flush」的关键。若改回默认 0，SSE 会卡在代理缓冲里。
 `ModifyResponse` 只动 Cookie 的 Domain/Path，不读 body，不会缓冲 SSE body。
+
+## 4. 已经应用过的迁移一个字都不能改（连注释都会让服务起不来）
+
+**现象**：改了一条历史迁移的注释（只是一句话），下次启动 `Open` 直接失败：
+`db: migration 42 checksum or name does not match`，服务起不来。
+
+**根因**：`core/db/migrate.go` 的 `migrationChecksum(sql)` 取的是**整段迁移 SQL 文本**的
+SHA-256，注释也算在内；`Migrate` 会拿它和已落库的 `schema_migrations.checksum` 逐条比对，
+不一致就返回错误，`db.Open` 随即关闭连接拒绝启动。校验和的作用是防篡改，所以它宁可
+拒绝启动也不猜你的意图。
+
+**结论**：迁移一旦发到任何真实环境跑过（哪怕只是你本机 `~/.loadout/loadout.db`），
+它就变成**只读**的——改 SQL、改格式、改注释、调空格都会让所有已升级的库打不开。
+需要补说明或修问题，一律**新增一条迁移**；纯解释性文字写到 `docs/`、测试注释这类
+不参与校验和的地方。
+
+**自查命令**（改过 `migrate.go` 后跑一下，比猜快）：用库里的 `schema_migrations.checksum`
+与自己算的 `migrationChecksum` 比对，不一致就是踩了这个坑。
+
+**教训来源**：2026-09-22 修「清空日志卡死」时，v42 迁移已在生产库生效，收尾时想给
+孤儿清理补一句「不可逆」的注释，幸好先验证了校验和才发现会锁死启动。

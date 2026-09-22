@@ -1019,6 +1019,7 @@ func TestClearRemovesAllRowsQuickly(t *testing.T) {
 	service := NewService(logDB(t), nil)
 	ctx := context.Background()
 	// 4 次尝试/请求，接近线上 10.5 万 attempt / 2.2 万 request 的比例。
+	// 于是本测试实际写入 requests * attemptsEach = 16000 条 attempt。
 	// 种子数据用批量 INSERT：这里的前置条件是「表里有 N 行」，走 Start/Attempt 公共接口
 	// 每次插入都是一次独立往返，1.6 万行要十几秒，会把测试本身拖慢却测不到什么。
 	// 真正被测的是 Clear，种子只负责把表填大。
@@ -1091,8 +1092,11 @@ func TestClearRemovesAllRowsQuickly(t *testing.T) {
 		t.Fatalf("after clear: requests:%d attempts:%d, want 0/0 (orphan attempts make the next clear slower)",
 			leftRequests, leftAttempts)
 	}
-	// 4000 行若还超 5 秒，说明级联删除又退化成无索引的平方级全表扫描。
+	// 阈值来源（修复前实测，也是本测试的回归基线）：16000 行时无索引约 34.75s，
+	// 补上 previous_attempt_id 索引后约 0.67s。这里取 5s 作为宽松上限——既远离
+	// 34.75s 这个失败态，又给 CI 机器留出足够抖动余量；若又超 5s，说明级联删除
+	// 退回了无索引的平方级全表扫描。
 	if elapsed > 5*time.Second {
-		t.Fatalf("Clear took %v (want < 5s): the previous_attempt_id FK lacks an index, making cascade delete quadratic", elapsed)
+		t.Fatalf("Clear took %v (want < 5s for %d attempts): the previous_attempt_id FK lacks an index, making cascade delete quadratic", elapsed, seededAttempts)
 	}
 }
