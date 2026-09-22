@@ -1,3 +1,13 @@
+//go:build ignore
+
+// 调查记录，不是可跑的回归测试：本文件故意断言「第 65 条事件被丢弃」会失败，用来演示
+// procreg.broadcast 在 channel 满时的非阻塞丢弃行为（见同目录 research.md）。
+//
+// 它的 package 声明是 procreg，但目录在 docs/tmp 下、没有该包的其他源文件，所以直接
+// `go test ./...` / `go vet ./...` 会编译失败（undefined: New / Event），把整个 CI 拖挂。
+// 加 `//go:build ignore` 使其不参与构建，与同目录 verify_run.go 的既有做法一致。
+//
+// 要真正跑一遍验证该行为：先把本文件复制进 core/procreg/，再 go test -run TestBroadcastDropsWhenChannelFull。
 package procreg
 
 import (

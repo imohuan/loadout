@@ -152,17 +152,23 @@ func (s *Service) runRecognition(ctx context.Context, toolName, action, model st
 		return textResult(res.text), nil
 	}
 
-	_ = s.route.Start(s.routeLogCtx(), contracts.RouteRequest{
+	// 独立 ctx 写 Start：主 ctx 可能因识别超时/取消而失效，不能拿它写日志。
+	startCtx, cancelStart := s.routeLogCtx()
+	_ = s.route.Start(startCtx, contracts.RouteRequest{
 		RequestID:      reqID,
 		RequestedModel: model,
 		StartedAt:      start,
 		VirtualModel:   "",
 	})
+	cancelStart()
 
 	res := recognize()
 	dur := time.Since(start)
 
-	logCtx := s.routeLogCtx()
+	// Attempt + Finish 共用同一个独立 ctx：两次写入是一个整体，用一次 defer 收口，
+	// 既能命中「主 ctx 已死也能写完」的语义，又不让 3s 计时器泄漏。
+	logCtx, cancelLog := s.routeLogCtx()
+	defer cancelLog()
 	if res.err != nil {
 		s.routeLogAttempt(logCtx, reqID, action, model, res, dur, "failed", res.err.Error(), meta)
 		s.routeLogFinish(logCtx, reqID, model, res, dur, "failed", res.err.Error())
@@ -175,9 +181,12 @@ func (s *Service) runRecognition(ctx context.Context, toolName, action, model st
 
 // routeLogCtx 返回与主请求 ctx 隔离的 route-log 写入 ctx：3s 超时，
 // 足以把 Start/Attempt/Finish 写完；不会因主 ctx 超时/取消而失败。
-func (s *Service) routeLogCtx() context.Context {
-	ctx, _ := context.WithTimeout(context.Background(), 3*time.Second)
-	return ctx
+//
+// 返回值 second 为 cancel，调用方**必须** defer 调用；用 routeLogCtxFor 包一层可以，
+// 但不要把它拆成「只拿 ctx、丢掉 cancel」——那样 3s 计时器会一直留在堆上，直到超时
+// 才被回收（探测型 goroutine/定时器泄漏），go vet 也会直接报 context leak。
+func (s *Service) routeLogCtx() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), 3*time.Second)
 }
 
 // routeLogAttempt 写一条 route-log attempt（识别步骤）。

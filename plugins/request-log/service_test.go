@@ -1343,6 +1343,12 @@ func TestApplyCurrentRetentionUsesSettings(t *testing.T) {
 // 检查都显示「还超限」，一路删到 100 条保留下限——实测 301 行只有 19MB、上限
 // 20MB 的场景被删到只剩 100 行，用户丢掉了本可以保留的日志。
 // 正确行为：只删到「真实文件大小落到上限内」为止，剩下的行必须留下。
+//
+// ⚠️ 数据量必须真的超过上限，否则本测试没有意义。这里踩过一次坑：原先写 300 行 × 64KB，
+// 备注按「300 × 64KB ≈ 23MB」推算以为超了 20MB 上限，但实际文件只有 ~19.9MB——本来就
+// 在限内，清理逻辑正确地什么都不删，而后面的 `after < before` 却断定「必须变小」，
+// 于是测试长期失败。真正超限需要 ~340 行以上（实测 340 行 ≈ 22.5MB）。这里用 400 行
+// 留出余量，避免 SQLite 页头/对齐带来的估算偏差又把它压回限内。
 func TestTrimBySizeDoesNotOverDelete(t *testing.T) {
 	path := t.TempDir() + "/request-log.db"
 	reqDB, err := openRequestLogDB(path)
@@ -1354,23 +1360,31 @@ func TestTrimBySizeDoesNotOverDelete(t *testing.T) {
 	svc.SetDBPath(path)
 
 	base := time.Now().UTC()
-	// 300 行 × 64KB ≈ 23MB 磁盘占用。上限设 20MB：只超出一点点，
+	// 400 行 × 64KB ≈ 26.5MB 磁盘占用（实测）。上限设 20MB：只超出一点点，
 	// 压缩 + 删掉少量最旧的行就该达标，绝不能一路删到 100 条下限。
-	for i := 0; i < 300; i++ {
+	const rows = 400
+	for i := 0; i < rows; i++ {
 		seedLogRow(t, reqDB, fmt.Sprintf("s%03d", i), base.Add(time.Duration(i)*time.Second).Format(time.RFC3339Nano), 64*1024)
 	}
 	before := svc.diskSize()
 
+	// 前置条件守卫：本测试的全部意义都建立在「清理前确实超限」上。若数据量涨不上去
+	// （阈值被调小、种子逻辑变化），后面的「必须收缩」会变成假失败，这里直接点破原因。
+	const limitBytes = 20 * 1024 * 1024
+	if before <= limitBytes {
+		t.Fatalf("测试前提不成立：清理前 %d 字节未超过上限 %d，本测试需要「确实超限」的库", before, limitBytes)
+	}
+
 	svc.ApplyRetention(context.Background(), RetentionConfig{MaxSizeMB: 20})
 
 	after := svc.compactedSize(context.Background())
-	if after > 20*1024*1024 {
-		t.Fatalf("size after trim = %d, want <= %d", after, 20*1024*1024)
+	if after > limitBytes {
+		t.Fatalf("size after trim = %d, want <= %d", after, limitBytes)
 	}
 	if after >= before {
 		t.Fatalf("size after trim = %d, want < %d (must actually shrink)", after, before)
 	}
-	// 关键断言：不该删到保留下限。数据量只有约 19MB，远不到需要砍到 100 行的地步。
+	// 关键断言：不该删到保留下限。数据量只有 20MB 出头，远不到需要砍到 100 行的地步。
 	var remaining int
 	if err := reqDB.QueryRow(`SELECT COUNT(*) FROM request_logs`).Scan(&remaining); err != nil {
 		t.Fatal(err)
@@ -1379,8 +1393,8 @@ func TestTrimBySizeDoesNotOverDelete(t *testing.T) {
 	if remaining < retentionMinKeep {
 		t.Fatalf("remaining = %d, want >= %d (never drain the DB completely)", remaining, retentionMinKeep)
 	}
-	// 300 行里最多只需删掉极少数旧行；一条都不删（说明只是 VACUUM 收缩了）也可以接受，
-	// 但绝不能删到只剩个位数。这里给一个宽松上限：留下的必须占绝大多数。
+	// 400 行里最多只需删掉少数旧行；绝不能删到只剩个位数。
+	// 这里给一个宽松上限：留下的必须占绝大多数。
 	if remaining < 200 {
 		t.Fatalf("remaining = %d, want >= 200 (must not over-delete)", remaining)
 	}
