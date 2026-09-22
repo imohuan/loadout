@@ -908,6 +908,39 @@ WHERE NOT EXISTS (
   SELECT 1 FROM route_requests r WHERE r.request_id = route_attempts.request_id
 );
 `,
+}, {
+	version: 43,
+	name:    "author-stream-and-more-rounds",
+	sql: `
+-- AI 生成规则改为流式输出 + 20 轮。
+--
+-- stream_tail：当前轮流式输出的尾部预览（Go 侧只留最后 N 个字符），
+--   前端轮询会话时展示成「打字机」效果，让用户确认 AI 还在动、没卡死。
+--   单独一列而不是塞进 rounds_json：流式每几个字符就要刷一次，是高频小写入，
+--   与轮次结构（低频整体覆盖）分开存互不干扰。
+ALTER TABLE rule_author_sessions ADD COLUMN stream_tail TEXT NOT NULL DEFAULT '';
+-- max_rounds 默认 3 → 20（复杂故障需要更多修订空间；存量会话保留原值）。
+-- SQLite 无 ALTER COLUMN DEFAULT，重建表；会话是临时数据，代价可忽略。
+CREATE TABLE rule_author_sessions_new (
+  id TEXT PRIMARY KEY,
+  sample_id TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'running',
+  rounds INTEGER NOT NULL DEFAULT 0,
+  max_rounds INTEGER NOT NULL DEFAULT 20,
+  rounds_json TEXT NOT NULL DEFAULT '[]',
+  stream_tail TEXT NOT NULL DEFAULT '',
+  draft_rule_id TEXT NOT NULL DEFAULT '',
+  ai_model TEXT NOT NULL DEFAULT '',
+  error TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+INSERT INTO rule_author_sessions_new (id, sample_id, status, rounds, max_rounds, rounds_json, stream_tail, draft_rule_id, ai_model, error, created_at, updated_at)
+  SELECT id, sample_id, status, rounds, max_rounds, rounds_json, '', draft_rule_id, ai_model, error, created_at, updated_at FROM rule_author_sessions;
+DROP TABLE rule_author_sessions;
+ALTER TABLE rule_author_sessions_new RENAME TO rule_author_sessions;
+CREATE INDEX idx_rule_author_created ON rule_author_sessions(created_at DESC);
+`,
 }}
 
 // Migrate applies all pending schema migrations and rejects an incompatible

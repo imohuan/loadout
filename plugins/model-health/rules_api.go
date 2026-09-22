@@ -62,8 +62,10 @@ func (s *Service) ConfirmFailureRule(ctx context.Context, id string) error {
 }
 
 // VerifyFailureRule 规则样本校验（dry-run，不入库）。
+// 只校验「匹配条件」，跳过作用域：编辑弹窗里的样本只有状态码/业务码/文案，
+// 没有 provider/model，作用域是保存规则时的平台范围，不参与此处预测。
 func (s *Service) VerifyFailureRule(rule failure.Rule, ev failure.Evidence) bool {
-	return s.rules.VerifyRule(rule, ev)
+	return s.rules.VerifyRuleMatchOnly(rule, ev)
 }
 
 // ListRuleDecisions AI 判定日志。

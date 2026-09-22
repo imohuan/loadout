@@ -54,6 +54,8 @@ export interface AuthorSession {
   rounds: number
   max_rounds: number
   round_detail: AuthorRound[] | null
+  /** 当前轮流式输出尾部（打字机预览；非 running 时为空） */
+  stream_tail?: string
   draft_rule_id?: string
   ai_model?: string
   error?: string

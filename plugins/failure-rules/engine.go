@@ -310,3 +310,14 @@ func (e *Engine) VerifyRule(rule Rule, ev Evidence) bool {
 	c := compiled{rule: rule, regex: compileRegex(rule.Match)}
 	return matchConditions(c, ev)
 }
+
+// VerifyRuleMatchOnly 只校验「匹配条件」本身，跳过作用域（scope/model）判断。
+//
+// 专给编辑弹窗的 dry-run 用：用户在那里填的是「状态码 + 业务码 + 错误文案」，
+// 本来就没有（也不该要求填）provider / model —— 规则的作用域是保存时才确定的
+// 平台范围。若在这里也跑 scopeMatches，锁了平台的规则会因样本 ProviderURL 为空
+// 而永远返回 false，用户填了完全正确的预测也显示「未命中」（实测踩过）。
+func (e *Engine) VerifyRuleMatchOnly(rule Rule, ev Evidence) bool {
+	c := compiled{rule: rule, regex: compileRegex(rule.Match)}
+	return matchConditions(c, ev)
+}

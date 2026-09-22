@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -25,11 +26,13 @@ type AuthorSession struct {
 	Rounds      int           `json:"rounds"`
 	MaxRounds   int           `json:"max_rounds"`
 	RoundDetail []AuthorRound `json:"round_detail"`
-	DraftRuleID string        `json:"draft_rule_id,omitempty"`
-	AIModel     string        `json:"ai_model,omitempty"`
-	Error       string        `json:"error,omitempty"`
-	CreatedAt   string        `json:"created_at"`
-	UpdatedAt   string        `json:"updated_at"`
+	// StreamTail 当前轮流式输出的尾部预览（打字机效果展示用；非 running 时为空）。
+	StreamTail  string `json:"stream_tail,omitempty"`
+	DraftRuleID string `json:"draft_rule_id,omitempty"`
+	AIModel     string `json:"ai_model,omitempty"`
+	Error       string `json:"error,omitempty"`
+	CreatedAt   string `json:"created_at"`
+	UpdatedAt   string `json:"updated_at"`
 }
 
 // authorDraftSchema AI 返回的规则草稿结构。
@@ -40,7 +43,10 @@ type authorDraftSchema struct {
 	Reason string `json:"reason"`
 }
 
-const authorMaxRounds = 3
+// authorMaxRounds AI 生成规则的最大轮次。
+// 用户要求 20 轮：复杂故障（多平台/多模型混合语义）确实需要更多修订空间。
+// 每轮都落库，中途失败也能看到已完成的轮次。
+const authorMaxRounds = 20
 
 // AuthorStore rule_author_sessions 读写。
 type AuthorStore struct{ db *sql.DB }
@@ -72,12 +78,22 @@ func (s *AuthorStore) Update(ctx context.Context, id, status string, rounds int,
 	return err
 }
 
+// UpdateStream 只更新当前轮的流式尾部预览（高频调用，专列专改）。
+// 独立成方法的原因：authorLoop 的 Update 会整体覆盖 rounds_json 等字段，
+// 流式预览是每几个字符就要刷一次的高频小写入，混进去会互相覆盖。
+func (s *AuthorStore) UpdateStream(ctx context.Context, id, tail string) error {
+	_, err := s.db.ExecContext(ctx,
+		"UPDATE rule_author_sessions SET stream_tail=?, updated_at=? WHERE id=?",
+		tail, time.Now().UTC().Format(time.RFC3339Nano), id)
+	return err
+}
+
 // Get 读会话。
 func (s *AuthorStore) Get(ctx context.Context, id string) (AuthorSession, error) {
 	var out AuthorSession
 	var roundsJSON string
-	row := s.db.QueryRowContext(ctx, "SELECT id, sample_id, status, rounds, max_rounds, rounds_json, draft_rule_id, ai_model, error, created_at, updated_at FROM rule_author_sessions WHERE id=?", id)
-	if err := row.Scan(&out.ID, &out.SampleID, &out.Status, &out.Rounds, &out.MaxRounds, &roundsJSON, &out.DraftRuleID, &out.AIModel, &out.Error, &out.CreatedAt, &out.UpdatedAt); err != nil {
+	row := s.db.QueryRowContext(ctx, "SELECT id, sample_id, status, rounds, max_rounds, rounds_json, stream_tail, draft_rule_id, ai_model, error, created_at, updated_at FROM rule_author_sessions WHERE id=?", id)
+	if err := row.Scan(&out.ID, &out.SampleID, &out.Status, &out.Rounds, &out.MaxRounds, &roundsJSON, &out.StreamTail, &out.DraftRuleID, &out.AIModel, &out.Error, &out.CreatedAt, &out.UpdatedAt); err != nil {
 		return AuthorSession{}, err
 	}
 	_ = json.Unmarshal([]byte(roundsJSON), &out.RoundDetail)
@@ -133,13 +149,35 @@ func (e *Engine) AuthorRun(ctx context.Context, ai *AIResolver, drafts *Store, s
 // authorRun 跑多轮循环并落库。
 func (e *Engine) authorRun(ctx context.Context, ai *AIResolver, drafts *Store, store *AuthorStore, sess AuthorSession, sm Sample) (AuthorSession, error) {
 	// 每轮独立 3 分钟：实测推理型模型 9~40s，3 分钟足够且不会被第一轮吃光总预算。
-	return e.authorLoop(ctx, func(prompt string) (string, error) {
-		return ai.chatWithTimeout(ctx, prompt, authorRoundTimeout)
-	}, drafts, store, sess, sm)
+	return e.authorStream(ctx, ai, drafts, store, sess, sm)
 }
 
-// authorRoundTimeout AI 生成规则的单轮超时（每轮各自独立计时）。
-const authorRoundTimeout = 3 * time.Minute
+// authorStreamTailLen 实时预览保留的流输出尾部字符数（用户只要看最后 10 个字符）。
+const authorStreamTailLen = 10
+
+// authorStream 带流式输出的多轮生成：每轮调 AI 时把增量实时写进会话
+// （streams_json 只留尾部 N 个字符，供前端「打字机」式展示），
+// 轮次结构照旧走 authorLoop 的注入版。
+func (e *Engine) authorStream(ctx context.Context, ai *AIResolver, drafts *Store, store *AuthorStore, sess AuthorSession, sm Sample) (AuthorSession, error) {
+	// currentStream 每轮的实时尾部（并发安全由闭包内自持，只有本轮在写）。
+	var tailMu sync.Mutex
+	tail := ""
+	onChunk := func(delta string) {
+		tailMu.Lock()
+		tail = truncate(tail+delta, authorStreamTailLen)
+		snapshot := tail
+		tailMu.Unlock()
+		// 每个增量都落库（轮询接口读 streams_json 实时展示）。
+		// 只更新流尾部字段，不动 rounds/status，失败静默（预览非关键路径）。
+		_ = store.UpdateStream(ctx, sess.ID, snapshot)
+	}
+	return e.authorRunWith(ctx, func(prompt string) (string, error) {
+		tailMu.Lock()
+		tail = "" // 每轮开始清空预览
+		tailMu.Unlock()
+		return ai.chatStream(ctx, prompt, authorRoundTimeout, onChunk)
+	}, drafts, store, sess, sm)
+}
 
 // authorRunWith 用可注入的对话函数跑多轮（测试用：无需真实 AI 即可覆盖
 // 「非法 JSON → 修订 → 收敛」「一直不通过 → 耗尽」等分支）。
@@ -240,6 +278,12 @@ func buildAuthorPrompt(sm Sample, rules string, round int, lastReason string) st
 	b.WriteString(sm.Model)
 	b.WriteString("\n平台: ")
 	b.WriteString(sm.ProviderBaseURL)
+	b.WriteString("\n\n【作用域要求（重要）】")
+	b.WriteString("\n规则按「平台」生效：同一个平台（同 base_url 的所有账号 Key）对外错误格式统一，")
+	b.WriteString("同一类上游故障在任何模型上都会以同样方式出现。因此规则不要限定 model（model 字段留空），")
+	b.WriteString("让规则对该平台所有模型生效；当前失败只是恰好发生在 " + sm.Model + " 上。")
+	b.WriteString("\n只有当错误文案明确指向某个特定模型名（如 model \"xxx\" not found）时，")
+	b.WriteString("才考虑在 match 里用 message_text 锚定那个模型名，而不是用 model 字段限定作用域。")
 	b.WriteString("\n错误信息: ")
 	b.WriteString(truncate(sm.Message, 600))
 	b.WriteString("\n\n【已有规则（避免重复）】\n")
@@ -262,7 +306,6 @@ func draftRuleInput(draft authorDraftSchema, sm Sample) RuleInput {
 	in := RuleInput{
 		Name:     draftAuthorName(draft, sm),
 		Priority: 150,
-		Model:    sm.Model,
 		Match:    draft.Match,
 		Action:   draft.Action,
 	}

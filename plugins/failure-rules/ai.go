@@ -1,6 +1,7 @@
 package failurerules
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -138,6 +139,110 @@ type aiVerdictSchema struct {
 // （此前 CreateDraft 那类「复制粘贴漏改列名」的坑就是这么来的）。
 func (a *AIResolver) chat(ctx context.Context, prompt string) (string, error) {
 	return a.chatWithTimeout(ctx, prompt, 0)
+}
+
+// authorRoundTimeout AI 生成规则的单轮超时（每轮各自独立计时）。
+const authorRoundTimeout = 3 * time.Minute
+
+// AIStreamChunk 一次流式输出片段（author 会话实时展示用）。
+// Delta 是模型本轮吐出的增量文本；Done 表示本轮结束。
+type AIStreamChunk struct {
+	Delta string
+	Done  bool
+	Err   error
+}
+
+// chatStream 用流式（SSE）跑一次对话，增量通过 onChunk 实时回调，
+// 函数返回时给出拼接后的完整正文。
+//
+// 为什么 author 要用流式：非流式要等模型把整段 JSON 生成完才返回（9~40s），
+// 用户全程只有「转圈」可看；流式让前端能实时看到模型正在写什么（哪怕只显示
+// 尾部 10 个字符，也能确认「它还在动、没卡死」）。
+func (a *AIResolver) chatStream(ctx context.Context, prompt string, perRound time.Duration, onChunk func(string)) (string, error) {
+	model := a.currentModel()
+	if model == "" {
+		return "", fmt.Errorf("failure-rules: AI 兜底模型未配置")
+	}
+	skKey := a.resolveKey()
+	if skKey == "" {
+		return "", fmt.Errorf("failure-rules: 无可用 SK key，AI 不可用")
+	}
+	body, _ := json.Marshal(map[string]any{
+		"model":    model,
+		"messages": []map[string]string{{"role": "user", "content": prompt}},
+		"stream":   true,
+	})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		strings.TrimRight(a.baseURL, "/")+"/v1/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+skKey)
+	req.Header.Set(headerRuleAI, "1")
+	req.Header.Set("Accept", "text/event-stream")
+
+	budget := a.timeout
+	if perRound > 0 {
+		budget = perRound
+	}
+	ctx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
+	req = req.WithContext(ctx)
+
+	resp, err := (&http.Client{}).Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return "", fmt.Errorf("failure-rules: AI 返回 %d: %s", resp.StatusCode, truncate(string(raw), 200))
+	}
+
+	var full strings.Builder
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if payload == "" || payload == "[DONE]" {
+			if payload == "[DONE]" {
+				break
+			}
+			continue
+		}
+		var chunk struct {
+			Choices []struct {
+				Delta struct {
+					Content string `json:"content"`
+				} `json:"delta"`
+				FinishReason any `json:"finish_reason"`
+			} `json:"choices"`
+			Error any `json:"error"`
+		}
+		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+			continue // 跳过无法解析的心跳/注释行
+		}
+		if len(chunk.Choices) == 0 {
+			continue
+		}
+		delta := chunk.Choices[0].Delta.Content
+		if delta == "" {
+			continue
+		}
+		full.WriteString(delta)
+		if onChunk != nil {
+			onChunk(delta)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return full.String(), fmt.Errorf("failure-rules: 读取流式响应中断: %w", err)
+	}
+	return full.String(), nil
 }
 
 // chatWithTimeout 同 chat，但可指定单轮超时（0 = 用 resolver 默认）。
