@@ -159,8 +159,8 @@ func (m *mockHealth) RestoreDefaultFailureRules(ctx context.Context) (int, error
 func (m *mockHealth) ListRuleSamples(ctx context.Context, source, model string, limit int) ([]failure.Sample, error) {
 	return nil, nil
 }
-func (m *mockHealth) ImportRuleSamples(ctx context.Context, limit int) (int, int, error) {
-	return 0, 0, nil
+func (m *mockHealth) ImportRuleSamples(ctx context.Context, limit int) (failure.ImportResult, error) {
+	return failure.ImportResult{}, nil
 }
 func (m *mockHealth) CreateRuleSample(ctx context.Context, sm failure.Sample) (failure.Sample, error) {
 	return failure.Sample{}, nil

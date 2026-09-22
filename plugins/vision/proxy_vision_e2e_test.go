@@ -271,7 +271,9 @@ func (e2eHealth) RestoreDefaultFailureRules(context.Context) (int, error) { retu
 func (e2eHealth) ListRuleSamples(context.Context, string, string, int) ([]failure.Sample, error) {
 	return nil, nil
 }
-func (e2eHealth) ImportRuleSamples(context.Context, int) (int, int, error) { return 0, 0, nil }
+func (e2eHealth) ImportRuleSamples(context.Context, int) (failure.ImportResult, error) {
+	return failure.ImportResult{}, nil
+}
 func (e2eHealth) CreateRuleSample(context.Context, failure.Sample) (failure.Sample, error) {
 	return failure.Sample{}, nil
 }
