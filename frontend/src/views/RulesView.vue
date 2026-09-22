@@ -533,6 +533,26 @@ function authorDetail(sampleId: string): string {
   return last?.note ?? '未能命中该样本'
 }
 
+// streamKindLabel 正在吐出的这一段是哪一类。
+// 用户要求：不管是思考、文本还是 MCP/工具内容，都直接原样输出，
+// 但要能一眼看出是哪一种（推理模型会先想一大段再给结果，不标就看不懂片段）。
+function streamKindLabel(sampleId: string): string {
+  const kind = authorSessions.value[sampleId]?.stream_kind
+  if (kind === 'reasoning') return '思考'
+  if (kind === 'content') return '文本'
+  if (kind === 'tool') return '工具'
+  return ''
+}
+
+// streamKindTone 思考=灰紫（旁白感）、文本=天蓝（正式输出）、工具=琥珀（外部调用）。
+function streamKindTone(sampleId: string): string {
+  const kind = authorSessions.value[sampleId]?.stream_kind
+  if (kind === 'reasoning') return 'shrink-0 rounded bg-violet-500/15 px-1 text-violet-600 dark:text-violet-300'
+  if (kind === 'content') return 'shrink-0 rounded bg-sky-500/15 px-1 text-sky-600 dark:text-sky-300'
+  if (kind === 'tool') return 'shrink-0 rounded bg-amber-500/15 px-1 text-amber-600 dark:text-amber-300'
+  return ''
+}
+
 function openCreate() {
   editing.value = null
   form.value = emptyForm()
@@ -1172,11 +1192,20 @@ openRuleFromQuery()
                           <RiRefreshLine v-else class="mr-1" size="12" />
                           {{ authorText(s.id) }}
                         </Badge>
+                        <!-- 第二行 = 正在吐出的文字（尾部 10 字）+ 它属于「思考」还是「文本」。
+                             用户要求：不管是思考还是正文，直接原样输出即可，但要能看出是哪一种。 -->
                         <span
                           v-if="authorSessions[s.id]?.status === 'running'"
-                          class="font-mono max-w-[168px] truncate text-left text-[10px] text-muted-foreground"
+                          class="flex max-w-[168px] items-center gap-1 truncate text-left text-[10px]"
                           :title="authorSessions[s.id]?.stream_tail || ''"
-                        >{{ authorSessions[s.id]?.stream_tail || '…' }}<span class="animate-pulse">▍</span></span>
+                        >
+                          <span v-if="streamKindLabel(s.id)" :class="streamKindTone(s.id)">
+                            {{ streamKindLabel(s.id) }}
+                          </span>
+                          <span class="font-mono truncate text-muted-foreground"
+                            >{{ authorSessions[s.id]?.stream_tail || '…' }}<span class="animate-pulse">▍</span></span
+                          >
+                        </span>
                         <span
                           v-else-if="authorDetail(s.id)"
                           class="max-w-[168px] truncate text-left text-[10px] text-muted-foreground"

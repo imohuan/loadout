@@ -158,7 +158,7 @@ type AIStreamChunk struct {
 // 为什么 author 要用流式：非流式要等模型把整段 JSON 生成完才返回（9~40s），
 // 用户全程只有「转圈」可看；流式让前端能实时看到模型正在写什么（哪怕只显示
 // 尾部 10 个字符，也能确认「它还在动、没卡死」）。
-func (a *AIResolver) chatStream(ctx context.Context, prompt string, perRound time.Duration, onChunk func(string)) (string, error) {
+func (a *AIResolver) chatStream(ctx context.Context, prompt string, perRound time.Duration, onChunk func(kind, delta string)) (string, error) {
 	model := a.currentModel()
 	if model == "" {
 		return "", fmt.Errorf("failure-rules: AI 兜底模型未配置")
@@ -200,49 +200,133 @@ func (a *AIResolver) chatStream(ctx context.Context, prompt string, perRound tim
 		return "", fmt.Errorf("failure-rules: AI 返回 %d: %s", resp.StatusCode, truncate(string(raw), 200))
 	}
 
-	var full strings.Builder
-	scanner := bufio.NewScanner(resp.Body)
+	// 解析 SSE：正文与「思考」分属两个字段，必须都取到。
+	//
+	// 实测推理模型（glm-5.3-flash 等）把思考放在 delta.reasoning_content、
+	// 正文放在 delta.content，两者是分开的两路流（实测 866 vs 217 个增量）。
+	// 只看 content 时，整段思考期间预览是空的，用户会以为卡死。
+	content, reasoning, err := collectStreamDeltas(resp.Body, onChunk)
+	if err != nil {
+		return content, err
+	}
+	return finalizeStreamText(content, reasoning), nil
+}
+
+// finalizeStreamText 决定这一轮流式输出最终交给上层解析的文本。
+//
+// 正常用正文；正文为空时回退用思考——有些模型会把答案整段写在思考里，
+// 不回退的话这一轮等于白跑（解析出空规则，白占一轮）。
+func finalizeStreamText(content, reasoning string) string {
+	if strings.TrimSpace(content) == "" {
+		return reasoning
+	}
+	return content
+}
+
+// 流式增量的类型标签（前端据此显示「思考 / 文本」）。
+const (
+	// StreamKindReasoning 模型在「想」：reasoning_content / reasoning 字段。
+	StreamKindReasoning = "reasoning"
+	// StreamKindContent 模型的正式输出：content 字段。
+	StreamKindContent = "content"
+	// StreamKindTool 模型在调工具（含 MCP）：function/tool_calls 的参数增量。
+	StreamKindTool = "tool"
+)
+
+// collectStreamDeltas 解析 OpenAI 风格 SSE，返回（正文, 思考）并实时回调每段增量。
+//
+// onChunk 收到的是**思考与正文合流后**的增量 + 它的类型标签——用户要的是
+// 「当前正在输出的那段文字」，不管它属于思考还是正文，都要原样显示出来。
+//
+// 返回值严格拆开：content 只含正文，供上层解析规则 JSON（混入思考会让
+// json.Unmarshal 失败）；reasoning 只含思考，供「正文为空」时兜底。
+func collectStreamDeltas(r io.Reader, onChunk func(kind, delta string)) (content, reasoning string, err error) {
+	var contentB, reasoningB strings.Builder
+	emit := func(kind, s string) {
+		if s == "" || onChunk == nil {
+			return
+		}
+		onChunk(kind, s)
+	}
+	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if !strings.HasPrefix(line, "data:") {
-			continue
+			continue // 空行 / 注释行 / 事件名
 		}
 		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-		if payload == "" || payload == "[DONE]" {
-			if payload == "[DONE]" {
-				break
-			}
+		if payload == "" {
 			continue
+		}
+		if payload == "[DONE]" {
+			break
 		}
 		var chunk struct {
 			Choices []struct {
 				Delta struct {
 					Content string `json:"content"`
+					// 思考增量：各家网关命名不一，一起认，避免「思考不显示」。
+					ReasoningContent string `json:"reasoning_content"`
+					Reasoning        string `json:"reasoning"`
+					// 工具调用增量（含 MCP）：arguments 是分片拼出来的，
+					// 用户要求「不管是思考、文本还是 MCP 内容，都直接输出」。
+					ToolCalls []struct {
+						Function struct {
+							Name      string `json:"name"`
+							Arguments string `json:"arguments"`
+						} `json:"function"`
+					} `json:"tool_calls"`
+					FunctionCall *struct {
+						Name      string `json:"name"`
+						Arguments string `json:"arguments"`
+					} `json:"function_call"`
 				} `json:"delta"`
-				FinishReason any `json:"finish_reason"`
 			} `json:"choices"`
-			Error any `json:"error"`
 		}
 		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
-			continue // 跳过无法解析的心跳/注释行
+			continue // 跳过无法解析的心跳/噪音行
 		}
 		if len(chunk.Choices) == 0 {
 			continue
 		}
-		delta := chunk.Choices[0].Delta.Content
-		if delta == "" {
-			continue
+		d := chunk.Choices[0].Delta
+		think := d.ReasoningContent
+		if think == "" {
+			think = d.Reasoning
 		}
-		full.WriteString(delta)
-		if onChunk != nil {
-			onChunk(delta)
+		if think != "" {
+			reasoningB.WriteString(think)
+			emit(StreamKindReasoning, think)
+		}
+		if d.Content != "" {
+			contentB.WriteString(d.Content)
+			emit(StreamKindContent, d.Content)
+		}
+		// 工具调用（含 MCP）：arguments 是分片吐出来的，逐片回调即可。
+		// 这段不进 content——它是「工具参数」而不是规则文本，
+		// 混进去会让上层解析规则 JSON 失败。
+		for _, tc := range d.ToolCalls {
+			if tc.Function.Name != "" {
+				emit(StreamKindTool, tc.Function.Name)
+			}
+			if tc.Function.Arguments != "" {
+				emit(StreamKindTool, tc.Function.Arguments)
+			}
+		}
+		if fc := d.FunctionCall; fc != nil {
+			if fc.Name != "" {
+				emit(StreamKindTool, fc.Name)
+			}
+			if fc.Arguments != "" {
+				emit(StreamKindTool, fc.Arguments)
+			}
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return full.String(), fmt.Errorf("failure-rules: 读取流式响应中断: %w", err)
+		return contentB.String(), reasoningB.String(), fmt.Errorf("failure-rules: 读取流式响应中断: %w", err)
 	}
-	return full.String(), nil
+	return contentB.String(), reasoningB.String(), nil
 }
 
 // chatWithTimeout 同 chat，但可指定单轮超时（0 = 用 resolver 默认）。
@@ -284,17 +368,26 @@ func (a *AIResolver) chatWithTimeout(ctx context.Context, prompt string, perRoun
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("failure-rules: AI 返回 %d: %s", resp.StatusCode, truncate(string(raw), 200))
 	}
+	// 非流式也要看思考字段：推理模型的响应里思考与正文是分开的两块，
+	// 只读 content 时，把答案写在思考里的模型会返回空串（判定直接失败）。
 	var chatResp struct {
 		Choices []struct {
 			Message struct {
-				Content string `json:"content"`
+				Content          string `json:"content"`
+				ReasoningContent string `json:"reasoning_content"`
+				Reasoning        string `json:"reasoning"`
 			} `json:"message"`
 		} `json:"choices"`
 	}
 	if err := json.Unmarshal(raw, &chatResp); err != nil || len(chatResp.Choices) == 0 {
 		return "", fmt.Errorf("failure-rules: AI 响应解析失败")
 	}
-	return stripCodeFence(chatResp.Choices[0].Message.Content), nil
+	msg := chatResp.Choices[0].Message
+	think := msg.ReasoningContent
+	if think == "" {
+		think = msg.Reasoning
+	}
+	return stripCodeFence(finalizeStreamText(msg.Content, think)), nil
 }
 
 // chatTimeout 单次 AI 对话的 HTTP 超时：取默认值与调用方 deadline 中更宽的那个。

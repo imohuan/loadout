@@ -58,6 +58,8 @@ export interface AuthorSession {
   round_detail: AuthorRound[] | null
   /** 当前轮流式输出尾部（打字机预览；非 running 时为空） */
   stream_tail?: string
+  /** 当前这段预览的类型：reasoning=模型在思考 / content=正式输出 */
+  stream_kind?: 'reasoning' | 'content' | string
   draft_rule_id?: string
   ai_model?: string
   error?: string

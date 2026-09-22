@@ -30,7 +30,10 @@ type AuthorSession struct {
 	MaxRounds   int           `json:"max_rounds"`
 	RoundDetail []AuthorRound `json:"round_detail"`
 	// StreamTail 当前轮流式输出的尾部预览（打字机效果展示用；非 running 时为空）。
-	StreamTail  string `json:"stream_tail,omitempty"`
+	StreamTail string `json:"stream_tail,omitempty"`
+	// StreamKind 当前这段预览的类型：reasoning=模型在思考 / content=正式输出。
+	// 用户要求「不管它是思考还是文本，直接输出就行」，但要能看出是哪一种。
+	StreamKind  string `json:"stream_kind,omitempty"`
 	DraftRuleID string `json:"draft_rule_id,omitempty"`
 	AIModel     string `json:"ai_model,omitempty"`
 	Error       string `json:"error,omitempty"`
@@ -84,10 +87,11 @@ func (s *AuthorStore) Update(ctx context.Context, id, status string, rounds int,
 // UpdateStream 只更新当前轮的流式尾部预览（高频调用，专列专改）。
 // 独立成方法的原因：authorLoop 的 Update 会整体覆盖 rounds_json 等字段，
 // 流式预览是每几个字符就要刷一次的高频小写入，混进去会互相覆盖。
-func (s *AuthorStore) UpdateStream(ctx context.Context, id, tail string) error {
+// kind 是这段增量的类型（reasoning=思考 / content=正文），前端据此显示标签。
+func (s *AuthorStore) UpdateStream(ctx context.Context, id, tail, kind string) error {
 	_, err := s.db.ExecContext(ctx,
-		"UPDATE rule_author_sessions SET stream_tail=?, updated_at=? WHERE id=?",
-		tail, time.Now().UTC().Format(time.RFC3339Nano), id)
+		"UPDATE rule_author_sessions SET stream_tail=?, stream_kind=?, updated_at=? WHERE id=?",
+		tail, kind, time.Now().UTC().Format(time.RFC3339Nano), id)
 	return err
 }
 
@@ -95,8 +99,8 @@ func (s *AuthorStore) UpdateStream(ctx context.Context, id, tail string) error {
 func (s *AuthorStore) Get(ctx context.Context, id string) (AuthorSession, error) {
 	var out AuthorSession
 	var roundsJSON string
-	row := s.db.QueryRowContext(ctx, "SELECT id, sample_id, status, rounds, max_rounds, rounds_json, stream_tail, draft_rule_id, ai_model, error, created_at, updated_at FROM rule_author_sessions WHERE id=?", id)
-	if err := row.Scan(&out.ID, &out.SampleID, &out.Status, &out.Rounds, &out.MaxRounds, &roundsJSON, &out.StreamTail, &out.DraftRuleID, &out.AIModel, &out.Error, &out.CreatedAt, &out.UpdatedAt); err != nil {
+	row := s.db.QueryRowContext(ctx, "SELECT id, sample_id, status, rounds, max_rounds, rounds_json, stream_tail, stream_kind, draft_rule_id, ai_model, error, created_at, updated_at FROM rule_author_sessions WHERE id=?", id)
+	if err := row.Scan(&out.ID, &out.SampleID, &out.Status, &out.Rounds, &out.MaxRounds, &roundsJSON, &out.StreamTail, &out.StreamKind, &out.DraftRuleID, &out.AIModel, &out.Error, &out.CreatedAt, &out.UpdatedAt); err != nil {
 		return AuthorSession{}, err
 	}
 	_ = json.Unmarshal([]byte(roundsJSON), &out.RoundDetail)
@@ -165,14 +169,14 @@ func (e *Engine) authorStream(ctx context.Context, ai *AIResolver, drafts *Store
 	// currentStream 每轮的实时尾部（并发安全由闭包内自持，只有本轮在写）。
 	var tailMu sync.Mutex
 	tail := ""
-	onChunk := func(delta string) {
+	onChunk := func(k, delta string) {
 		tailMu.Lock()
 		tail = streamTail(tail+delta, authorStreamTailLen)
 		snapshot := tail
 		tailMu.Unlock()
 		// 每个增量都落库（轮询接口读 streams_json 实时展示）。
 		// 只更新流尾部字段，不动 rounds/status，失败静默（预览非关键路径）。
-		_ = store.UpdateStream(ctx, sess.ID, snapshot)
+		_ = store.UpdateStream(ctx, sess.ID, snapshot, k)
 	}
 	return e.authorRunWith(ctx, func(prompt string) (string, error) {
 		tailMu.Lock()

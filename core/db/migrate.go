@@ -941,6 +941,17 @@ DROP TABLE rule_author_sessions;
 ALTER TABLE rule_author_sessions_new RENAME TO rule_author_sessions;
 CREATE INDEX idx_rule_author_created ON rule_author_sessions(created_at DESC);
 `,
+}, {
+	version: 44,
+	name:    "author-stream-kind",
+	sql: `
+-- 流式预览的类型标签：reasoning=模型在思考 / content=正式输出。
+--
+-- 实测推理模型把「思考」放在 delta.reasoning_content、正文放在 delta.content，
+-- 是分开的两路流。前端要能看出「此刻是在想、还是已经在写结果」，
+-- 所以把当前这段增量的类型跟着尾部预览一起存。
+ALTER TABLE rule_author_sessions ADD COLUMN stream_kind TEXT NOT NULL DEFAULT '';
+`,
 }}
 
 // Migrate applies all pending schema migrations and rejects an incompatible
