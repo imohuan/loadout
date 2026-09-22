@@ -137,6 +137,13 @@ type aiVerdictSchema struct {
 // 同一把 SK key、同一份超时与防递归 header。抽出来避免两处各写一遍 HTTP 细节
 // （此前 CreateDraft 那类「复制粘贴漏改列名」的坑就是这么来的）。
 func (a *AIResolver) chat(ctx context.Context, prompt string) (string, error) {
+	return a.chatWithTimeout(ctx, prompt, 0)
+}
+
+// chatWithTimeout 同 chat，但可指定单轮超时（0 = 用 resolver 默认）。
+// AI 生成规则（author）需要比「失败链路上的快速判定」更宽的窗口：
+// 它的提示词更长、还要等模型输出完整 JSON。
+func (a *AIResolver) chatWithTimeout(ctx context.Context, prompt string, perRound time.Duration) (string, error) {
 	model := a.currentModel()
 	if model == "" {
 		return "", fmt.Errorf("failure-rules: AI 兜底模型未配置")
@@ -159,7 +166,11 @@ func (a *AIResolver) chat(ctx context.Context, prompt string) (string, error) {
 	req.Header.Set("Authorization", "Bearer "+skKey)
 	req.Header.Set(headerRuleAI, "1")
 
-	resp, err := (&http.Client{Timeout: chatTimeout(ctx, a.timeout)}).Do(req)
+	budget := a.timeout
+	if perRound > 0 {
+		budget = perRound
+	}
+	resp, err := (&http.Client{Timeout: chatTimeout(ctx, budget)}).Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -185,7 +196,11 @@ func (a *AIResolver) chat(ctx context.Context, prompt string) (string, error) {
 // 调用方没设 deadline 时用默认值。
 func chatTimeout(ctx context.Context, def time.Duration) time.Duration {
 	if dl, ok := ctx.Deadline(); ok {
-		if remain := time.Until(dl); remain > def {
+		// 取「默认值」与「剩余时间」中**较小**的那个：
+		// 之前取较大值，导致 author（总预算 10 分钟）把第一轮的单次 HTTP 超时
+		// 抬到接近 10 分钟，一轮就能吃掉全部预算、后续轮次直接没时间。
+		// 取较小值既尊重调用方的总 deadline，又给每轮留出各自的窗口。
+		if remain := time.Until(dl); remain < def {
 			return remain
 		}
 	}

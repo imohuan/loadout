@@ -132,8 +132,14 @@ func (e *Engine) AuthorRun(ctx context.Context, ai *AIResolver, drafts *Store, s
 
 // authorRun 跑多轮循环并落库。
 func (e *Engine) authorRun(ctx context.Context, ai *AIResolver, drafts *Store, store *AuthorStore, sess AuthorSession, sm Sample) (AuthorSession, error) {
-	return e.authorLoop(ctx, func(prompt string) (string, error) { return ai.chat(ctx, prompt) }, drafts, store, sess, sm)
+	// 每轮独立 3 分钟：实测推理型模型 9~40s，3 分钟足够且不会被第一轮吃光总预算。
+	return e.authorLoop(ctx, func(prompt string) (string, error) {
+		return ai.chatWithTimeout(ctx, prompt, authorRoundTimeout)
+	}, drafts, store, sess, sm)
 }
+
+// authorRoundTimeout AI 生成规则的单轮超时（每轮各自独立计时）。
+const authorRoundTimeout = 3 * time.Minute
 
 // authorRunWith 用可注入的对话函数跑多轮（测试用：无需真实 AI 即可覆盖
 // 「非法 JSON → 修订 → 收敛」「一直不通过 → 耗尽」等分支）。
