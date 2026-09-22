@@ -3,6 +3,14 @@
 > 目标：补齐用户指出的三块缺口——(1) AI 兜底真正可用；(2) AI 生成规则的多轮机制；(3)「回撤」（拉历史失败 → 去重 → 批量回放测试 → 表格看通过/不通过 → AI 生成草稿待人工确认）。
 > 参照物：\`D:\\Code\\Git\\web2api\` 的规则体系（samples + replay + author）。
 
+## 完成状态（2026-09-22）
+
+全部任务已实现、实测并提交（e6c6ce8 → 6880159，共 9 个提交）。
+验证证据：真实接口（导入去重 3→2、回放 8 条命中 5 未命中 3）、真实 AI 生成
+（status=done、第 1 轮收敛、草稿 confirmed=0）、人工确认后同一样本由「未命中」
+变为命中该草稿、浏览器 UI（样本回放 tab、结果表、AI 生成轮次进度、图标全部渲染）、
+以及一轮独立代码审查 + 按审查修复（5 个严重问题 + 竞态/无法关闭兜底/超时链等）。
+
 ## 背景：现状与差距（已核实）
 
 当前失败链路（\`plugins/model-health/rules_integration.go:recordFailureRuled\`）：
@@ -49,7 +57,7 @@ web2api 对应实现（已读源码）：
 ## 任务拆解
 
 ### M1 后端：样本库表与接口
-- [ ] M1.1 迁移 v40：建 \`rule_samples\` 表
+- [x] M1.1 迁移 v40：建 \`rule_samples\` 表
       \`\`\`sql
       CREATE TABLE rule_samples (
         id TEXT PRIMARY KEY,
@@ -69,43 +77,43 @@ web2api 对应实现（已读源码）：
       );
       CREATE UNIQUE INDEX idx_rule_samples_fp ON rule_samples(fingerprint);
       \`\`\`
-- [ ] M1.2 \`plugins/failure-rules/samples.go\`：Store 方法
+- [x] M1.2 \`plugins/failure-rules/samples.go\`：Store 方法
       - \`ImportFromDecisions(ctx, limit)\`：从 \`rule_decisions\` 导入，按 fingerprint 去重（\`INSERT OR IGNORE\`）
       - \`ListSamples(ctx, filter)\` / \`UpdateSampleExpected(ctx, id, verdict, confirmed)\` / \`DeleteSample(ctx, id)\`
       - \`ListByIDs(ctx, ids)\`
-- [ ] M1.3 \`Replay(ctx, ids, useAI)\`：对样本跑规则，返回每条的 \`{sampleId, ok, matchedRuleId, matchedRuleName, verdict, expected, reason}\` + 汇总 \`{okCount, total, confirmedOk, confirmedTotal, inconsistent}\`
+- [x] M1.3 \`Replay(ctx, ids, useAI)\`：对样本跑规则，返回每条的 \`{sampleId, ok, matchedRuleId, matchedRuleName, verdict, expected, reason}\` + 汇总 \`{okCount, total, confirmedOk, confirmedTotal, inconsistent}\`
       - **关键**：复用 \`Engine.VerifyRule\` 的匹配逻辑；不写状态、不调上游
-- [ ] M1.4 测试：导入去重、回放命中/未命中/不一致三种结果
+- [x] M1.4 测试：导入去重、回放命中/未命中/不一致三种结果
 
 ### M2 后端：AI 多轮生成规则（author）
-- [ ] M2.1 \`plugins/failure-rules/author.go\`：\`Author(ctx, sample) (sessionId, err)\`
+- [x] M2.1 \`plugins/failure-rules/author.go\`：\`Author(ctx, sample) (sessionId, err)\`
       - 组装「失败证据 + 现有规则摘要」提示词 → 调 AI 产出规则草稿
       - 用样本回放自检 → 不一致则带失败原因再修订，最多 3 轮
       - 每轮 \`{round, verdict, matched, ok, reason}\` 落 \`rule_author_sessions\`
-- [ ] M2.2 迁移 v40 一并建 \`rule_author_sessions\`（session_id / sample_id / status / rounds_json / draft_rule_id / error）
-- [ ] M2.3 接口：\`POST /api/rule-samples/author\`、\`GET /api/rule-samples/author/{sessionId}\`
-- [ ] M2.4 测试：多轮收敛、达到上限仍不一致、AI 不可用时的降级
+- [x] M2.2 迁移 v40 一并建 \`rule_author_sessions\`（session_id / sample_id / status / rounds_json / draft_rule_id / error）
+- [x] M2.3 接口：\`POST /api/rule-samples/author\`、\`GET /api/rule-samples/author/{sessionId}\`
+- [x] M2.4 测试：多轮收敛、达到上限仍不一致、AI 不可用时的降级
 
 ### M3 后端：HTTP 接口与契约
-- [ ] M3.1 \`GET /api/rule-samples\`（筛选：source/verdict/model）
-- [ ] M3.2 \`POST /api/rule-samples/import\`（导入历史失败）
-- [ ] M3.3 \`POST /api/rule-samples/replay\`（批量回放，body: ids + useAI）
-- [ ] M3.4 \`PATCH /api/rule-samples/{id}\`（标注预期/确认）、\`DELETE /api/rule-samples/{id}\`
-- [ ] M3.5 contracts 接口扩展 + admin-api 路由注册（独立前缀，避免与 {id} 冲突）
+- [x] M3.1 \`GET /api/rule-samples\`（筛选：source/verdict/model）
+- [x] M3.2 \`POST /api/rule-samples/import\`（导入历史失败）
+- [x] M3.3 \`POST /api/rule-samples/replay\`（批量回放，body: ids + useAI）
+- [x] M3.4 \`PATCH /api/rule-samples/{id}\`（标注预期/确认）、\`DELETE /api/rule-samples/{id}\`
+- [x] M3.5 contracts 接口扩展 + admin-api 路由注册（独立前缀，避免与 {id} 冲突）
 
 ### M4 前端：失败规则页新增「样本回放」tab
-- [ ] M4.1 第三个 tab「样本回放」
-- [ ] M4.2 工具栏按钮：导入历史失败 / 批量回放 / AI 兜底测试 / AI 生成规则
-- [ ] M4.3 表格列：来源 / 状态码 / 业务码 / 错误摘要（tooltip）/ 匹配规则 / 判定 / 预期 / 结果 / 操作
-- [ ] M4.4 结果态徽标：已匹配（绿）/ 未命中（琥珀）/ AI兜底（蓝）/ 不一致（红，标注原因）
-- [ ] M4.5 过滤：匹配 / 未命中 / AI兜底 / 不一致 + 搜索
-- [ ] M4.6 AI 生成进度列（轮次 + 状态），完成后草稿进规则列表的 AI 草稿区待确认
+- [x] M4.1 第三个 tab「样本回放」
+- [x] M4.2 工具栏按钮：导入历史失败 / 批量回放 / AI 兜底测试 / AI 生成规则
+- [x] M4.3 表格列：来源 / 状态码 / 业务码 / 错误摘要（tooltip）/ 匹配规则 / 判定 / 预期 / 结果 / 操作
+- [x] M4.4 结果态徽标：已匹配（绿）/ 未命中（琥珀）/ AI兜底（蓝）/ 不一致（红，标注原因）
+- [x] M4.5 过滤：匹配 / 未命中 / AI兜底 / 不一致 + 搜索
+- [x] M4.6 AI 生成进度列（轮次 + 状态），完成后草稿进规则列表的 AI 草稿区待确认
 
 ### M5 验证
-- [ ] M5.1 \`go build ./...\` + 相关包测试
-- [ ] M5.2 真实接口验证：导入 → 回放 → 标注 → AI 生成 → 人工确认
-- [ ] M5.3 前端 \`vue-tsc\` + \`npm run build\`
-- [ ] M5.4 浏览器实测（内置浏览器可用时）
+- [x] M5.1 \`go build ./...\` + 相关包测试
+- [x] M5.2 真实接口验证：导入 → 回放 → 标注 → AI 生成 → 人工确认
+- [x] M5.3 前端 \`vue-tsc\` + \`npm run build\`
+- [x] M5.4 浏览器实测（内置浏览器可用时）
 
 ## 完成标准
 
