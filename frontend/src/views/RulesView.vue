@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { toast } from 'vue-sonner'
 import {
@@ -296,6 +296,13 @@ const samplesFilter = ref<'all' | 'matched' | 'unmatched' | 'inconsistent'>('all
 // 每条样本的 AI 生成会话（sampleId → 会话），表格里显示轮次进度。
 const authorSessions = ref<Record<string, AuthorSession>>({})
 const authorTimers = new Map<string, number>()
+
+// 离开页面时清掉所有生成进度轮询：AI 生成是后台任务，最长可跑 10 分钟，
+// 用户切走后定时器若继续跑会一直发请求（内存与网络都白耗）。
+onBeforeUnmount(() => {
+  for (const t of authorTimers.values()) window.clearInterval(t)
+  authorTimers.clear()
+})
 
 async function loadSamples() {
   samplesLoading.value = true
