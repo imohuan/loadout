@@ -71,14 +71,37 @@ const FIELDS = [
   { value: 'status_code', label: '状态码' },
   { value: 'body_code', label: '业务码' },
   { value: 'message_text', label: '错误文案' },
-  { value: 'message_regex', label: '正则' },
 ]
 const OPS = [
-  { value: 'eq', label: '等于' },
   { value: 'contains', label: '包含' },
   { value: 'not_contains', label: '不包含' },
+  { value: 'eq', label: '等于' },
   { value: 'regex', label: '正则' },
 ]
+// FIELD_OPS 每个字段允许的操作。
+//
+// 以前这个下拉对所有字段都列同样的操作，于是很容易配出「配了却永远不命中」的组合
+// （比如状态码 + 正则）。这里按字段收窄，从源头避免死组合。
+//
+// 「正则」只挂在错误文案上——旧的独立「正则」字段（message_regex）在界面上
+// 合并成了「错误文案 + 正则」这一种更好懂的写法；后端仍认 message_regex，
+// 打开旧规则时 frontend 会把它规范化成新写法，不会丢数据。
+const FIELD_OPS: Record<string, string[]> = {
+  status_code: ['eq'],
+  body_code: ['eq'],
+  message_text: ['contains', 'not_contains', 'eq', 'regex'],
+  message_regex: ['regex'], // 兼容旧数据（界面上不再出现）
+}
+function opsFor(field: string) {
+  const allowed = FIELD_OPS[field] ?? ['contains']
+  return OPS.filter((o) => allowed.includes(o.value))
+}
+// onFieldChange 换字段时把不合法/无意义的操作自动纠正成该字段的第一个合法操作，
+// 否则用户会看到「字段改了、操作还停在旧值」，保存下来就是一条不生效的规则。
+function onFieldChange(cond: { field: string; op: string }) {
+  const allowed = FIELD_OPS[cond.field] ?? []
+  if (!allowed.includes(cond.op)) cond.op = allowed[0] ?? 'contains'
+}
 const SCOPE_MODES = [
   { value: '__all__', label: '全部平台' },
   { value: 'urls', label: '指定平台' },
@@ -227,12 +250,6 @@ const scopeModeProxy = computed({
   get: () => form.value.scope_mode || '__all__',
   set: (v: string) => {
     form.value.scope_mode = v === '__all__' ? '' : v
-  },
-})
-const singlePlatformProxy = computed({
-  get: () => form.value.provider_base_url || '__all__',
-  set: (v: string) => {
-    form.value.provider_base_url = v === '__all__' ? '' : v
   },
 })
 const recoverProxy = computed({
@@ -526,6 +543,17 @@ function openCreate() {
 function openEdit(rule: FailureRule) {
   editing.value = rule
   scopeUrlsText.value = (rule.provider_base_urls ?? []).join(', ')
+  // 规范化旧写法：老规则里的 message_regex 字段合并成「错误文案 + 正则」，
+  // 否则界面上字段下拉没有这一项、会显示成空，用户一保存就丢条件。
+  const normalizedMatch: RuleInput['match'] = JSON.parse(JSON.stringify(rule.match))
+  for (const kind of ['any', 'all'] as const) {
+    for (const cond of normalizedMatch[kind] ?? []) {
+      if (cond.field === 'message_regex') {
+        cond.field = 'message_text'
+        cond.op = 'regex'
+      }
+    }
+  }
   form.value = {
     name: rule.name,
     priority: rule.priority,
@@ -534,7 +562,7 @@ function openEdit(rule: FailureRule) {
     provider_base_urls: rule.provider_base_urls ?? [],
     provider_framework: rule.provider_framework ?? '',
     model: rule.model,
-    match: JSON.parse(JSON.stringify(rule.match)),
+    match: normalizedMatch,
     action: JSON.parse(JSON.stringify(rule.action)),
   }
   showEditor.value = true
@@ -723,18 +751,6 @@ const allModels = computed(() => {
   const set = new Set<string>()
   for (const c of channels.value ?? []) for (const m of c.models || []) set.add(m)
   return [...set].sort()
-})
-const uniqueChannels = computed(() => {
-  const seen = new Set<string>()
-  const out: Array<{ base_url: string; name: string }> = []
-  for (const c of channels.value ?? []) {
-    const u = (c.base_url || '').replace(/\/+$/, '')
-    if (!u || seen.has(u)) continue
-    seen.add(u)
-    // 展示优先渠道组名（channel_name），无则回退 base_url；name 是 Key 名，不代表平台。
-    out.push({ base_url: u, name: c.channel_name || u })
-  }
-  return out
 })
 const FRAMEWORK_PRESETS = ['newapi', 'one-api', 'done-hub', 'voapi']
 const frameworkOptions = computed(() => {
@@ -1220,30 +1236,19 @@ openRuleFromQuery()
               allow-custom
             />
           </div>
-          <div class="col-span-2 grid grid-cols-2 gap-3">
-            <div class="space-y-1">
-              <Label>作用范围</Label>
-              <Select v-model="scopeModeProxy">
-                <SelectTrigger class="w-full"><SelectValue placeholder="选择作用范围" /></SelectTrigger>
-                <SelectContent position="popper" side="bottom" align="start" :side-offset="2">
-                  <SelectGroup>
-                    <SelectItem v-for="m in SCOPE_MODES" :key="m.value" :value="m.value">{{ m.label }}</SelectItem>
-                  </SelectGroup>
-                </SelectContent>
-              </Select>
-            </div>
-            <div v-if="form.scope_mode !== 'urls' && form.scope_mode !== 'framework'" class="space-y-1">
-              <Label>单平台（兼容，通常留空）</Label>
-              <Select v-model="singlePlatformProxy">
-                <SelectTrigger class="w-full"><SelectValue placeholder="全部平台" /></SelectTrigger>
-                <SelectContent position="popper" side="bottom" align="start" :side-offset="2">
-                  <SelectGroup>
-                    <SelectItem value="__all__">全部平台</SelectItem>
-                    <SelectItem v-for="c in uniqueChannels" :key="c.base_url" :value="c.base_url">{{ c.name || c.base_url }}</SelectItem>
-                  </SelectGroup>
-                </SelectContent>
-              </Select>
-            </div>
+          <!-- 作用范围只有「全部平台 / 指定平台 / 按框架」三种。
+               旧的「单平台（兼容）」下拉已下线——要锁单个平台，用「指定平台」填一个即可
+               （后端仍保留对历史 provider_base_url 数据的读取兼容，只是不再暴露这个输入口）。 -->
+          <div class="col-span-2 space-y-1">
+            <Label>作用范围</Label>
+            <Select v-model="scopeModeProxy">
+              <SelectTrigger class="w-full"><SelectValue placeholder="选择作用范围" /></SelectTrigger>
+              <SelectContent position="popper" side="bottom" align="start" :side-offset="2">
+                <SelectGroup>
+                  <SelectItem v-for="m in SCOPE_MODES" :key="m.value" :value="m.value">{{ m.label }}</SelectItem>
+                </SelectGroup>
+              </SelectContent>
+            </Select>
           </div>
           <div v-if="form.scope_mode === 'framework'" class="col-span-2 space-y-1">
             <Label>框架（同框架平台共用此规则）</Label>
@@ -1281,7 +1286,7 @@ openRuleFromQuery()
             </Button>
           </div>
           <div v-for="(cond, i) in form.match[kind]" :key="i" class="flex items-center gap-2">
-            <Select v-model="cond.field">
+            <Select :model-value="cond.field" @update:model-value="(v: string) => { cond.field = v; onFieldChange(cond) }">
               <SelectTrigger class="w-32"><SelectValue placeholder="字段" /></SelectTrigger>
               <SelectContent position="popper" side="bottom" align="start" :side-offset="2">
                 <SelectGroup>
@@ -1292,10 +1297,14 @@ openRuleFromQuery()
             <Select v-model="cond.op">
               <SelectTrigger class="w-28"><SelectValue placeholder="操作" /></SelectTrigger>
               <SelectContent position="popper" side="bottom" align="start" :side-offset="2">
-                <SelectItem v-for="o in OPS" :key="o.value" :value="o.value">{{ o.label }}</SelectItem>
+                <SelectItem v-for="o in opsFor(cond.field)" :key="o.value" :value="o.value">{{ o.label }}</SelectItem>
               </SelectContent>
             </Select>
-            <Input v-model="cond.value" class="flex-1" placeholder="匹配值" />
+            <Input
+              v-model="cond.value"
+              class="flex-1"
+              :placeholder="cond.op === 'regex' ? '正则，如 额度.*用尽' : '匹配值'"
+            />
             <Button variant="ghost" size="icon" class="text-red-500 hover:text-red-600" @click="removeCondition(kind, i)">
               <RiDeleteBinLine size="15" />
             </Button>

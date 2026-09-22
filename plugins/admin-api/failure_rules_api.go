@@ -1,12 +1,26 @@
 package adminapi
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
 
 	failure "loadout/plugins/failure-rules"
 )
+
+// writeRuleWriteError 规则写入失败的统一收口。
+//
+// 用户输入问题（ErrInvalidRule）回 400 + 具体原因，让前端能直接提示
+// 「正则不合法：…」；其余才是 500。
+func (s *Service) writeRuleWriteError(w http.ResponseWriter, err error) {
+	var invalid failure.ErrInvalidRule
+	if errors.As(err, &invalid) {
+		writeError(w, http.StatusBadRequest, invalid.Error())
+		return
+	}
+	s.writeServerError(w, err)
+}
 
 // ==== 失败规则引擎 HTTP API（前端「失败规则」页） ====
 
@@ -39,7 +53,7 @@ func (s *Service) handleFailureRuleCreate(w http.ResponseWriter, r *http.Request
 	}
 	rule, err := s.health.CreateFailureRule(r.Context(), in)
 	if err != nil {
-		s.writeServerError(w, err)
+		s.writeRuleWriteError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, rule)
@@ -57,7 +71,7 @@ func (s *Service) handleFailureRuleUpdate(w http.ResponseWriter, r *http.Request
 	}
 	rule, err := s.health.UpdateFailureRule(r.Context(), r.PathValue("id"), in)
 	if err != nil {
-		s.writeServerError(w, err)
+		s.writeRuleWriteError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, rule)

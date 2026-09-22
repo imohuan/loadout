@@ -12,10 +12,18 @@ import (
 	"time"
 )
 
+// compiledCond 编译后的单条条件：需要正则的条件在这里把正则预编译好，
+// 避免每次求值重复编译。
+type compiledCond struct {
+	cond  Condition
+	regex *regexp.Regexp // 该条件声明了正则时非 nil；非法正则保持 nil（判不命中）
+}
+
 // compiled 缓存编译后的规则。
 type compiled struct {
-	rule  Rule
-	regex *regexp.Regexp // 预编译的正则（message_regex 条件）
+	rule Rule
+	any  []compiledCond
+	all  []compiledCond
 }
 
 // Engine 规则引擎：加载启用且已确认的规则，按优先级匹配失败证据。
@@ -95,8 +103,7 @@ func (e *Engine) Reload(ctx context.Context) {
 			e.lg.Warn("failure-rules: 规则 action_json 解析失败", "id", r.ID, "err", err)
 			continue
 		}
-		c := compiled{rule: r}
-		c.regex = compileRegex(r.Match)
+		c := compiled{rule: r, any: compileConditions(r.Match.Any), all: compileConditions(r.Match.All)}
 		out = append(out, c)
 	}
 	e.mu.Lock()
@@ -191,14 +198,17 @@ func (e *Engine) recordHit(ruleID string) {
 
 // matchConditions 求值一条编译规则的 any/all 条件。
 func matchConditions(c compiled, ev Evidence) bool {
-	m := c.rule.Match
-	eval := func(cond Condition) bool { return evalCondition(cond, ev, c.regex) }
-	if len(m.Any) > 0 {
-		return anyMatch(m.Any, eval)
+	if len(c.any) > 0 {
+		for _, cc := range c.any {
+			if evalCondition(cc, ev) {
+				return true
+			}
+		}
+		return false
 	}
-	if len(m.All) > 0 {
-		for _, cond := range m.All {
-			if !eval(cond) {
+	if len(c.all) > 0 {
+		for _, cc := range c.all {
+			if !evalCondition(cc, ev) {
 				return false
 			}
 		}
@@ -207,16 +217,78 @@ func matchConditions(c compiled, ev Evidence) bool {
 	return false
 }
 
-func anyMatch(conds []Condition, eval func(Condition) bool) bool {
-	for _, cond := range conds {
-		if eval(cond) {
-			return true
-		}
-	}
-	return false
+// compileRule 把一条规则的两组条件预编译成求值用的形态。
+func compileRule(rule Rule) compiled {
+	return compiled{rule: rule, any: compileConditions(rule.Match.Any), all: compileConditions(rule.Match.All)}
 }
 
-func evalCondition(cond Condition, ev Evidence, re *regexp.Regexp) bool {
+// compileConditions 逐条编译条件。
+//
+// 关键：正则必须**按条件各自编译**，不能整条规则共用一份。
+// 早期版本 compileRegex 只返回规则里遇到的第一个正则，再拿它去判所有正则条件，
+// 于是「any 里第二条正则才命中」被算成不命中、「all 里第二条本该不命中」被算成
+// 命中——一条规则里写两个正则结果就全乱（用户实测反馈过）。
+func compileConditions(conds []Condition) []compiledCond {
+	if len(conds) == 0 {
+		return nil
+	}
+	out := make([]compiledCond, 0, len(conds))
+	for _, cond := range conds {
+		cc := compiledCond{cond: cond}
+		if pattern, ok := regexPattern(cond); ok {
+			// 非法正则留 nil：evalCondition 见到 nil 直接判不命中，不 panic。
+			if re, err := compileMessageRegex(pattern); err == nil {
+				cc.regex = re
+			}
+		}
+		out = append(out, cc)
+	}
+	return out
+}
+
+// compileMessageRegex 编译「错误文案」用的正则。
+//
+// 统一在这里加 (?i)：忽略大小写，与「包含」的口径保持一致——
+// 上游错误文案大小写很随意，两种操作对同样字面量必须给出同结论。
+// 校验（validateCondition）和运行期都必须走这个函数，否则会出现
+// 「保存校验通过、运行时却说非法」的错位。
+func compileMessageRegex(pattern string) (*regexp.Regexp, error) {
+	return regexp.Compile("(?i)" + pattern)
+}
+
+// regexPattern 判断一条条件是否要按正则求值，并取出模式串。
+//
+// 两个入口都认：
+//   - field=message_regex（前端「正则」字段）；
+//   - op=regex（前端「正则」操作）。
+//
+// 早前后者被忽略，用户在界面上选了「正则」操作却完全不生效。
+//
+// 正则只作用于错误文案：状态码/业务码是数字，配「正则」没有意义，
+// 直接判不匹配（而不是拿数字去撞文案正则）。
+func regexPattern(cond Condition) (string, bool) {
+	if cond.Field != "message_regex" && cond.Op != "regex" {
+		return "", false
+	}
+	if cond.Field == "status_code" || cond.Field == "body_code" {
+		return "", false
+	}
+	pattern := toString(cond.Value)
+	if pattern == "" {
+		return "", false
+	}
+	return pattern, true
+}
+
+func evalCondition(cc compiledCond, ev Evidence) bool {
+	cond := cc.cond
+	// 需要正则的条件统一走 cc.regex（按条件各自编译好的那一份）。
+	if _, ok := regexPattern(cond); ok {
+		if cc.regex == nil {
+			return false // 非法/空正则
+		}
+		return cc.regex.MatchString(ev.Message)
+	}
 	switch cond.Field {
 	case "status_code":
 		n, ok := toInt(cond.Value)
@@ -227,6 +299,8 @@ func evalCondition(cond Condition, ev Evidence, re *regexp.Regexp) bool {
 		needle := strings.ToLower(toString(cond.Value))
 		hay := strings.ToLower(ev.Message)
 		switch cond.Op {
+		case "eq":
+			return needle != "" && hay == needle
 		case "contains":
 			return needle != "" && strings.Contains(hay, needle)
 		case "not_contains":
@@ -234,26 +308,9 @@ func evalCondition(cond Condition, ev Evidence, re *regexp.Regexp) bool {
 		default:
 			return false
 		}
-	case "message_regex":
-		if re == nil {
-			return false
-		}
-		return re.MatchString(ev.Message)
 	default:
 		return false
 	}
-}
-
-// compileRegex 预编译规则内所有 message_regex 条件（任取其一即可，单正则）。
-func compileRegex(m Match) *regexp.Regexp {
-	for _, cond := range append(append([]Condition{}, m.Any...), m.All...) {
-		if cond.Field == "message_regex" {
-			if r, err := regexp.Compile(toString(cond.Value)); err == nil {
-				return r
-			}
-		}
-	}
-	return nil
 }
 
 func toString(v any) string {
@@ -307,7 +364,7 @@ func (e *Engine) VerifyRule(rule Rule, ev Evidence) bool {
 	if !rule.scopeMatches(ev) {
 		return false
 	}
-	c := compiled{rule: rule, regex: compileRegex(rule.Match)}
+	c := compileRule(rule)
 	return matchConditions(c, ev)
 }
 
@@ -318,6 +375,6 @@ func (e *Engine) VerifyRule(rule Rule, ev Evidence) bool {
 // 平台范围。若在这里也跑 scopeMatches，锁了平台的规则会因样本 ProviderURL 为空
 // 而永远返回 false，用户填了完全正确的预测也显示「未命中」（实测踩过）。
 func (e *Engine) VerifyRuleMatchOnly(rule Rule, ev Evidence) bool {
-	c := compiled{rule: rule, regex: compileRegex(rule.Match)}
+	c := compileRule(rule)
 	return matchConditions(c, ev)
 }

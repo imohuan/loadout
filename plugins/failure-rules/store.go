@@ -27,6 +27,15 @@ type RuleInput struct {
 // Store failure_rules 表 CRUD。
 type Store struct{ db *sql.DB }
 
+// ErrInvalidRule 规则不合法（用户输入问题，不是服务端故障）。
+//
+// 单独成型的原因：HTTP 层要把这类错误回成 400 + 可读原因，让用户看到
+// 「正则不合法：…」这种具体提示，而不是笼统的「服务器内部错误」。
+// 早期校验失败一路走 writeServerError，用户只看到 500，根本不知道哪里填错了。
+type ErrInvalidRule struct{ Reason string }
+
+func (e ErrInvalidRule) Error() string { return e.Reason }
+
 // NewStore 创建 Store。
 func NewStore(database *sql.DB) *Store { return &Store{db: database} }
 
@@ -304,21 +313,79 @@ func scanRule(row interface{ Scan(...any) error }) (Rule, error) {
 
 func validateInput(in RuleInput) error {
 	if strings.TrimSpace(in.Name) == "" {
-		return fmt.Errorf("规则名不能为空")
+		return ErrInvalidRule{"规则名不能为空"}
 	}
 	if len(in.Match.Any) == 0 && len(in.Match.All) == 0 {
-		return fmt.Errorf("匹配条件不能为空（any/all 至少一组）")
+		return ErrInvalidRule{"匹配条件不能为空（any/all 至少一组）"}
+	}
+	if err := validateConditions(in.Match); err != nil {
+		return err
 	}
 	switch in.Action.Verdict {
 	case VerdictDisableKey, VerdictDisableModel, VerdictDisableProvider, VerdictCooldown,
 		VerdictIgnore, VerdictRetrySame, VerdictSwitchNext:
 	default:
-		return fmt.Errorf("无效的 verdict: %q", in.Action.Verdict)
+		return ErrInvalidRule{fmt.Sprintf("无效的 verdict: %q", in.Action.Verdict)}
 	}
 	switch in.Action.Recover {
 	case "", "never", "daily", "fixed":
 	default:
-		return fmt.Errorf("无效的 recover: %q", in.Action.Recover)
+		return ErrInvalidRule{fmt.Sprintf("无效的 recover: %q", in.Action.Recover)}
+	}
+	return nil
+}
+
+// validateConditions 逐条校验匹配条件。
+//
+// 目的是把「配了但永远不会命中」的条件挡在保存这一步，而不是等用户线上发现
+// 规则没生效：
+//   - 值不能为空（空值条件恒不匹配，等于白配）；
+//   - 正则必须能编译（写错正则静默失效极具迷惑性）；
+//   - 「正则」只对错误文案有意义（状态码/业务码是数字）。
+func validateConditions(m Match) error {
+	for _, group := range []struct {
+		name  string
+		conds []Condition
+	}{{"any", m.Any}, {"all", m.All}} {
+		for i, cond := range group.conds {
+			label := fmt.Sprintf("%s 第 %d 条条件", group.name, i+1)
+			if err := validateCondition(cond); err != nil {
+				return ErrInvalidRule{fmt.Sprintf("%s：%s", label, err.Error())}
+			}
+		}
+	}
+	return nil
+}
+
+func validateCondition(cond Condition) error {
+	switch cond.Field {
+	case "status_code", "body_code", "message_text", "message_regex":
+	default:
+		return fmt.Errorf("未知的字段 %q", cond.Field)
+	}
+	if _, ok := regexPattern(cond); ok {
+		// 需要正则的条件：模式必须能编译。
+		if _, err := compileMessageRegex(toString(cond.Value)); err != nil {
+			return fmt.Errorf("正则不合法：%v", err)
+		}
+		return nil
+	}
+	if cond.Op == "regex" {
+		// field=status_code/body_code + op=regex：配了也不会生效。
+		return fmt.Errorf("「正则」只能用于错误文案（当前字段是 %s）", cond.Field)
+	}
+	switch cond.Op {
+	case "eq", "contains", "not_contains":
+	default:
+		return fmt.Errorf("未知的操作 %q", cond.Op)
+	}
+	if toString(cond.Value) == "" {
+		return fmt.Errorf("匹配值不能为空")
+	}
+	if cond.Field == "status_code" {
+		if _, ok := toInt(cond.Value); !ok {
+			return fmt.Errorf("状态码必须是数字")
+		}
 	}
 	return nil
 }
