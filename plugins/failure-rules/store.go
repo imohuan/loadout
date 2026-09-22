@@ -82,11 +82,7 @@ func (s *Store) CreateDraft(ctx context.Context, in RuleInput, aiModel, aiRaw st
 	// 去重：同一条 AI 判定反复触发（并发请求 / 缓存过期）时，不重复堆草稿。
 	// 判据 = 同样的匹配条件 + 同样的动作 + 同一个模型，命中已有草稿就直接复用。
 	matchJSON, actionJSON := mustJSON(in.Match), mustJSON(in.Action)
-	var existingID string
-	if err := s.db.QueryRowContext(ctx, `
-		SELECT id FROM failure_rules
-		WHERE source='ai' AND confirmed=0 AND model=? AND match_json=? AND action_json=?
-		LIMIT 1`, in.Model, matchJSON, actionJSON).Scan(&existingID); err == nil && existingID != "" {
+	if existingID := s.findDuplicateDraft(ctx, in.Model, matchJSON, actionJSON); existingID != "" {
 		return s.Get(ctx, existingID)
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
@@ -98,6 +94,11 @@ func (s *Store) CreateDraft(ctx context.Context, in RuleInput, aiModel, aiRaw st
 		id, in.Name, in.Priority, in.ProviderBaseURL, in.ScopeMode, mustJSON(in.ProviderBaseURLs), in.ProviderFramework, in.Model,
 		matchJSON, actionJSON, now, now)
 	if err != nil {
+		// 并发下两个请求可能同时通过上面的查重、同时插入：此时唯一索引
+		// idx_ai_draft_dedup 会拒绝第二条。这不是错误——退回复用已存在的那条。
+		if again := s.findDuplicateDraft(ctx, in.Model, matchJSON, actionJSON); again != "" {
+			return s.Get(ctx, again)
+		}
 		return Rule{}, err
 	}
 	// AI 原始输出入 rule_decisions（审计）。
@@ -106,6 +107,18 @@ func (s *Store) CreateDraft(ctx context.Context, in RuleInput, aiModel, aiRaw st
 		VALUES ('', ?, ?, ?, ?, ?, ?)`,
 		in.Model, in.ProviderBaseURL, aiModel, aiRaw, in.Action.Verdict, now)
 	return s.Get(ctx, id)
+}
+
+// findDuplicateDraft 查「同模型 + 同 match + 同 action 且未确认」的 AI 草稿 id（无则空串）。
+func (s *Store) findDuplicateDraft(ctx context.Context, model, matchJSON, actionJSON string) string {
+	var id string
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT id FROM failure_rules
+		WHERE source='ai' AND confirmed=0 AND model=? AND match_json=? AND action_json=?
+		LIMIT 1`, model, matchJSON, actionJSON).Scan(&id); err != nil {
+		return ""
+	}
+	return id
 }
 
 // Update 更新规则（字段全量替换；Enabled nil = 不变）。
