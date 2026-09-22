@@ -880,6 +880,34 @@ CREATE UNIQUE INDEX idx_ai_draft_dedup
   ON failure_rules(model, match_json, action_json, provider_base_urls_json)
   WHERE source='ai' AND confirmed=0;
 `,
+}, {
+	version: 42,
+	name:    "route-attempts-previous-attempt-index",
+	sql: `
+-- 清空转发日志慢到「页面卡死」的根因修复。
+--
+-- route_attempts.previous_attempt_id 是指向本表 id 的自引用外键
+-- （ON DELETE SET NULL）。SQLite 要求子键列有索引，否则执行 DELETE 时要对每个
+-- 被删的子行做一次全表扫描来找出需要置 NULL 的行。缺索引时清空 route_requests
+-- 触发级联删除的代价是「删除行数 x 表总行数」的平方级：线上 10.5 万行实测
+-- 几十分钟到小时级，而整个库只开一个连接（db.Open 的 SetMaxOpenConns(1)），
+-- 这条慢删除把唯一连接占满，页面其他请求全部排队，看起来就是点一下直接卡死。
+-- 加上索引后同一操作降到秒级。
+--
+-- 列本身当前无人写入（代码里只有测试构造 previous_attempt_id），保留外键语义、
+-- 只补索引，是收益最大且改动最小的一步。
+CREATE INDEX IF NOT EXISTS idx_route_attempts_previous_attempt
+  ON route_attempts(previous_attempt_id);
+
+-- 顺手清理历史孤儿 attempt：父请求已被删、子行却留下来的行。它们会一直拖慢
+-- 下一次清空（表越大，平方级越贵），也不属于任何请求，没有任何展示价值。
+-- 用 NOT EXISTS 走 route_requests 主键，逐行判断，不依赖外键开关（PRAGMA
+-- foreign_keys 在这个迁移事务里是 OFF，级联不会替我们兜底）。
+DELETE FROM route_attempts
+WHERE NOT EXISTS (
+  SELECT 1 FROM route_requests r WHERE r.request_id = route_attempts.request_id
+);
+`,
 }}
 
 // Migrate applies all pending schema migrations and rejects an incompatible

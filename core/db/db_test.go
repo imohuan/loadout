@@ -449,3 +449,93 @@ func TestCapabilityRouteFieldRulesPersist(t *testing.T) {
 		t.Fatalf("FieldRules 持久化失败: %+v", got)
 	}
 }
+
+// TestMigrateIndexesPreviousAttemptAndDropsOrphans 锁住 v42 迁移的两个行为：
+//  1. route_attempts.previous_attempt_id 必须有索引——它是自引用外键（ON DELETE SET NULL），
+//     缺索引时清空日志的级联删除会退化成平方级全表扫描（页面点「清空」直接卡死）；
+//  2. 历史孤儿 attempt（父请求已删、子行残留）要在迁移里清掉，否则会一直拖慢后续清空。
+func TestMigrateIndexesPreviousAttemptAndDropsOrphans(t *testing.T) {
+	ctx := context.Background()
+	// 手动构造 v41 库（绕过 Open 的自动 Migrate），造出孤儿 attempt 后只应用 v42。
+	d, err := sql.Open("sqlite", fmt.Sprintf("file:loadout-v42-%d?mode=memory&cache=shared", time.Now().UnixNano()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	d.SetMaxOpenConns(1)
+	if err := configure(d); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, checksum TEXT NOT NULL, applied_at TEXT NOT NULL)"); err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range migrations[:len(migrations)-1] {
+		if _, err := d.Exec(m.sql); err != nil {
+			t.Fatalf("apply migration %d: %v", m.version, err)
+		}
+		if _, err := d.Exec("INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (?, ?, ?, ?)",
+			m.version, m.name, migrationChecksum(m.sql), time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// 历史残留：v23 建表时该外键已存在且无索引，与线上库一致。
+	var indexedBefore int
+	if err := d.QueryRow("SELECT count(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_route_attempts_previous_attempt'").Scan(&indexedBefore); err != nil {
+		t.Fatal(err)
+	}
+	if indexedBefore != 0 {
+		t.Fatal("v42 迁移之前不该已有 idx_route_attempts_previous_attempt 索引，测试前提被破坏")
+	}
+
+	// 一条正常请求（父在、子留）+ 一条孤儿请求（父删、子留）。
+	if _, err := d.Exec("INSERT INTO route_requests(request_id, requested_model, started_at, result) VALUES ('req-keep', 'm', 'now', 'success')"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec("INSERT INTO route_requests(request_id, requested_model, started_at, result) VALUES ('req-orphan', 'm', 'now', 'success')"); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"req-keep", "req-orphan"} {
+		if _, err := d.Exec("INSERT INTO route_attempts(request_id, step_no, action, model, started_at, result) VALUES (?, '1', 'first', 'm', 'now', 'success')", id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// 模拟「某次清空只删了父表、没删子表」：直接删父行，此时外键开关关着，级联不会兜底。
+	if _, err := d.Exec("PRAGMA foreign_keys = OFF"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec("DELETE FROM route_requests WHERE request_id = 'req-orphan'"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec("PRAGMA foreign_keys = ON"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Migrate(ctx, d); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1) 索引建好了
+	var indexed int
+	if err := d.QueryRow("SELECT count(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_route_attempts_previous_attempt'").Scan(&indexed); err != nil {
+		t.Fatal(err)
+	}
+	if indexed != 1 {
+		t.Fatal("idx_route_attempts_previous_attempt 缺失：清空日志会退回平方级级联删除")
+	}
+
+	// 2) 孤儿被清理、正常尝试保留
+	var orphans, kept int
+	if err := d.QueryRow("SELECT count(*) FROM route_attempts WHERE request_id = 'req-orphan'").Scan(&orphans); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.QueryRow("SELECT count(*) FROM route_attempts WHERE request_id = 'req-keep'").Scan(&kept); err != nil {
+		t.Fatal(err)
+	}
+	if orphans != 0 {
+		t.Fatalf("孤儿 attempt 残留 %d 条，应为 0", orphans)
+	}
+	if kept != 1 {
+		t.Fatalf("正常请求的 attempt 被误删，保留 %d 条，应为 1", kept)
+	}
+}

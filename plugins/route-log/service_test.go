@@ -1005,3 +1005,94 @@ func TestListRequestLogPresenceIncludesAttempts(t *testing.T) {
 		}
 	}
 }
+
+// TestClearRemovesAllRowsQuickly：清空日志必须「删得干净 + 秒级完成」。
+//
+// route_attempts.previous_attempt_id 是指向自己的外键（ON DELETE SET NULL）。它没有索引时，
+// 删父表触发级联，SQLite 每删一个子行都要把 route_attempts 全表扫一遍，代价是
+// 「删除行数 x 表总行数」的平方级。线上 10.5 万行实测要跑几十分钟到小时级，
+// 页面点「清空日志」看起来就是直接卡死（唯一那个数据库连接被占满，其他请求全在排队）。
+//
+// 这个测试把用户看到的行为锁住：数据量够大时也必须秒级删净、零残留。
+// 残留的孤儿 attempt 会让下次清空更慢，所以「删干净」和「够快」必须同时成立。
+func TestClearRemovesAllRowsQuickly(t *testing.T) {
+	service := NewService(logDB(t), nil)
+	ctx := context.Background()
+	// 4 次尝试/请求，接近线上 10.5 万 attempt / 2.2 万 request 的比例。
+	// 种子数据用批量 INSERT：这里的前置条件是「表里有 N 行」，走 Start/Attempt 公共接口
+	// 每次插入都是一次独立往返，1.6 万行要十几秒，会把测试本身拖慢却测不到什么。
+	// 真正被测的是 Clear，种子只负责把表填大。
+	const requests = 4000
+	const attemptsEach = 4
+	const seededAttempts = requests * attemptsEach
+
+	base := time.Now().Add(-time.Hour)
+	seedTx, err := service.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer seedTx.Rollback()
+	seedRequest, err := seedTx.PrepareContext(ctx,
+		"INSERT INTO route_requests(request_id, requested_model, started_at, result) VALUES (?, ?, ?, ?)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer seedRequest.Close()
+	seedAttempt, err := seedTx.PrepareContext(ctx,
+		"INSERT INTO route_attempts(request_id, step_no, action, model, channel_id, started_at, finished_at, result) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer seedAttempt.Close()
+	for i := 0; i < requests; i++ {
+		id := fmt.Sprintf("r-clear-%04d", i)
+		startedAt := base.Add(time.Duration(i) * time.Millisecond)
+		stamp := startedAt.UTC().Format(time.RFC3339Nano)
+		if _, err := seedRequest.ExecContext(ctx, id, "m", stamp, "success"); err != nil {
+			t.Fatal(err)
+		}
+		for step := 1; step <= attemptsEach; step++ {
+			if _, err := seedAttempt.ExecContext(ctx,
+				id, fmt.Sprintf("%d", step), "first", "m", "c", stamp, stamp, "success",
+			); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := seedTx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	// 先确认种子数据真的落库，否则空表也会「很快」，测试会假绿。
+	var seededRequests, storedAttempts int
+	if err := service.db.QueryRow(
+		"SELECT (SELECT COUNT(*) FROM route_requests), (SELECT COUNT(*) FROM route_attempts)",
+	).Scan(&seededRequests, &storedAttempts); err != nil {
+		t.Fatal(err)
+	}
+	if seededRequests != requests || storedAttempts != seededAttempts {
+		t.Fatalf("seed = requests:%d attempts:%d, want %d/%d",
+			seededRequests, storedAttempts, requests, seededAttempts)
+	}
+
+	started := time.Now()
+	if err := service.Clear(ctx, time.Time{}); err != nil {
+		t.Fatalf("Clear: %v", err)
+	}
+	elapsed := time.Since(started)
+
+	var leftRequests, leftAttempts int
+	if err := service.db.QueryRow(
+		"SELECT (SELECT COUNT(*) FROM route_requests), (SELECT COUNT(*) FROM route_attempts)",
+	).Scan(&leftRequests, &leftAttempts); err != nil {
+		t.Fatal(err)
+	}
+	if leftRequests != 0 || leftAttempts != 0 {
+		t.Fatalf("after clear: requests:%d attempts:%d, want 0/0 (orphan attempts make the next clear slower)",
+			leftRequests, leftAttempts)
+	}
+	// 4000 行若还超 5 秒，说明级联删除又退化成无索引的平方级全表扫描。
+	if elapsed > 5*time.Second {
+		t.Fatalf("Clear took %v (want < 5s): the previous_attempt_id FK lacks an index, making cascade delete quadratic", elapsed)
+	}
+}
