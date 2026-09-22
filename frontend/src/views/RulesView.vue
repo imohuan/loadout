@@ -321,8 +321,26 @@ async function loadSamples() {
 async function importSamples() {
   importing.value = true
   try {
-    const res = await importRuleSamples(2000)
-    toast.success(`已导入 ${res.imported} 条失败样本（库内共 ${res.total} 条）`)
+    // limit=0 表示「尽可能多」；后端用 maxImportLimit 兜底并回带 truncated。
+    const res = await importRuleSamples(0)
+    // 关键：历史失败里绝大多数是同一类错误（实测 605 条 → 8 条样本），
+    // 只说「导入 8 条」用户会以为漏导了。把「扫描 → 并库 → 新增」讲清楚。
+    //
+    // 措辞要区分两种 merged：
+    //   - 本次新增 > 0：说明确实把一批同类失败收敛成了少量新样本；
+    //   - 本次新增 = 0：说明扫到的都已在库里（重复点导入就是这种），
+    //     不能说「合并了 605 条」——那是「全部已在库中」的意思。
+    if (res.imported === 0 && res.merged > 0) {
+      toast.info(`已扫描 ${res.scanned} 条历史失败，均已在样本库中（库内共 ${res.total} 条）`)
+    } else {
+      const parts = [`已扫描 ${res.scanned} 条历史失败`]
+      if (res.merged > 0) parts.push(`其中 ${res.merged} 条同类已合并`)
+      parts.push(`新增 ${res.imported} 条样本（库内共 ${res.total} 条）`)
+      toast.success(parts.join('，'))
+    }
+    if (res.truncated) {
+      toast.warning(`历史失败超过 ${res.limit} 条，本次只扫描了最新 ${res.limit} 条`)
+    }
     await loadSamples()
   } catch (e) {
     toast.error(String(e))
@@ -1055,18 +1073,22 @@ openRuleFromQuery()
           description="点「导入历史失败」把判定日志沉淀成可复用的测试样本"
         />
         <TooltipProvider v-else>
-          <div class="overflow-x-auto rounded-lg border">
+          <!-- 样本表也走 AxTable：列宽跟随内容、表头边界可拖拽、max-w 真正生效。
+               之前这里只有裸 Table，比另外两张表少了一整套能力。
+               列宽只给「下限 / 上限」，不再写死像素值（写死会出现「结果列 121px
+               装不下『未命中规则 no_rule_matched』、而操作列空着 190px」）。 -->
+          <AxTable class="rounded-lg border">
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead class="w-[70px]">来源</TableHead>
-                  <TableHead class="w-[64px]">状态码</TableHead>
-                  <TableHead class="w-[80px]">业务码</TableHead>
-                  <TableHead class="w-[150px]">模型</TableHead>
-                  <TableHead>错误摘要</TableHead>
-                  <TableHead class="w-[180px]">匹配规则</TableHead>
-                  <TableHead class="w-[150px]">结果</TableHead>
-                  <TableHead class="w-[150px] text-right">操作</TableHead>
+                  <TableHead class="min-w-[72px]">来源</TableHead>
+                  <TableHead class="min-w-[70px]">状态码</TableHead>
+                  <TableHead class="min-w-[76px]">业务码</TableHead>
+                  <TableHead class="min-w-[120px] max-w-[200px]">模型</TableHead>
+                  <TableHead class="max-w-[420px]">错误摘要</TableHead>
+                  <TableHead class="min-w-[150px] max-w-[240px]">匹配规则</TableHead>
+                  <TableHead class="min-w-[170px]">结果</TableHead>
+                  <TableHead class="min-w-[140px] text-right">操作</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -1140,7 +1162,7 @@ openRuleFromQuery()
                 </TableRow>
               </TableBody>
             </Table>
-          </div>
+          </AxTable>
         </TooltipProvider>
       </TabsContent>
     </Tabs>

@@ -82,7 +82,7 @@ type ModelHealth interface {
 
 	// ==== 样本回放 / AI 生成规则（「回撤」） ====
 	ListRuleSamples(context.Context, string, string, int) ([]failure.Sample, error)
-	ImportRuleSamples(context.Context, int) (int, int, error)
+	ImportRuleSamples(context.Context, int) (failure.ImportResult, error)
 	CreateRuleSample(context.Context, failure.Sample) (failure.Sample, error)
 	SetRuleSampleExpectation(context.Context, string, string, bool) error
 	DeleteRuleSample(context.Context, string) error

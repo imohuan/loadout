@@ -70,7 +70,19 @@ export const listRuleSamples = (opts: { source?: string; model?: string; limit?:
 }
 
 export const importRuleSamples = (limit = 2000) =>
-  request<{ ok: boolean; imported: number; total: number }>("/api/rule-samples/import", "POST", { limit })
+  request<{
+    ok: boolean
+    imported: number
+    total: number
+    /** 本次扫描的判定日志条数 */
+    scanned: number
+    /** 扫描到但已存在同样本（指纹命中）而被并入的条数 */
+    merged: number
+    /** 本次扫描上限 */
+    limit: number
+    /** 是否因为上限没扫全 */
+    truncated: boolean
+  }>("/api/rule-samples/import", "POST", { limit })
 
 export const replayRuleSamples = (ids: string[] = []) =>
   request<SampleReplaySummary>("/api/rule-samples/replay", "POST", { ids })

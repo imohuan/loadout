@@ -19,9 +19,10 @@ func (s *Service) ListRuleSamples(ctx context.Context, source, model string, lim
 }
 
 // ImportRuleSamples 从历史判定日志导入样本（去重）。
-func (s *Service) ImportRuleSamples(ctx context.Context, limit int) (int, int, error) {
+// 返回结构化结果，让 UI 能解释「扫描 N 条 → 新增 X 条（同类已合并）」。
+func (s *Service) ImportRuleSamples(ctx context.Context, limit int) (failure.ImportResult, error) {
 	if s.samples == nil {
-		return 0, 0, fmt.Errorf("model-health: 样本库未装配")
+		return failure.ImportResult{}, fmt.Errorf("model-health: 样本库未装配")
 	}
 	return s.samples.ImportFromDecisions(ctx, limit)
 }

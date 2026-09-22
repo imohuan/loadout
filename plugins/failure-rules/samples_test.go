@@ -2,6 +2,8 @@ package failurerules
 
 import (
 	"context"
+	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -72,23 +74,30 @@ func TestSampleImportDedupAndReplay(t *testing.T) {
 		}
 	}
 
-	inserted, total, err := samples.ImportFromDecisions(ctx, 100)
+	res, err := samples.ImportFromDecisions(ctx, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if inserted != 2 {
-		t.Fatalf("3 行日志应去重成 2 条样本（两条同类 502），实际 inserted=%d", inserted)
+	if res.Inserted != 2 {
+		t.Fatalf("3 行日志应去重成 2 条样本（两条同类 502），实际 inserted=%d", res.Inserted)
 	}
-	if total != 2 {
-		t.Fatalf("库内样本应 2 条，实际 %d", total)
+	if res.Total != 2 {
+		t.Fatalf("库内样本应 2 条，实际 %d", res.Total)
+	}
+	// 导入结果要把「扫描 / 合并」讲清楚，否则用户看到「只多了 2 条」会以为漏导。
+	if res.Scanned != 3 {
+		t.Fatalf("应扫描 3 条日志，实际 %d", res.Scanned)
+	}
+	if res.Merged != 1 {
+		t.Fatalf("应有 1 条因同类被合并，实际 %d", res.Merged)
 	}
 	// 重复导入不产生新行。
-	again, total2, err := samples.ImportFromDecisions(ctx, 100)
+	again, err := samples.ImportFromDecisions(ctx, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if again != 0 || total2 != 2 {
-		t.Fatalf("重复导入不应新增：again=%d total=%d", again, total2)
+	if again.Inserted != 0 || again.Total != 2 {
+		t.Fatalf("重复导入不应新增：inserted=%d total=%d", again.Inserted, again.Total)
 	}
 
 	// 回放：502 没有规则覆盖（未命中），429+14018 应命中 seed-002。
@@ -360,4 +369,48 @@ func TestAIResolverKeyProviderRace(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+// TestImportTruncatedFlag 回归：历史失败超过上限时必须回带 truncated，
+// 让 UI 能提示「只扫描了最新 N 条」，而不是让用户以为全导进来了。
+func TestImportTruncatedFlag(t *testing.T) {
+	database, err := openMemory(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	samples := NewSamplesStore(database)
+	ctx := context.Background()
+
+	// 造 5 条**互不相同**的失败（避免被指纹去重，才能测到上限）。
+	ins := `INSERT INTO rule_decisions(request_id, model, provider_base_url, status_code, error_excerpt, matched_rule_id, verdict, created_at) VALUES (?, ?, ?, ?, ?, '', ?, '2026-01-01T00:00:00Z')`
+	for i := 0; i < 5; i++ {
+		msg := fmt.Sprintf("上游返回错误(502): 第 %d 种不同的故障形态", i)
+		if _, err := database.Exec(ins, fmt.Sprintf("req-%d", i), "m"+strconv.Itoa(i), "https://x/v1", 502, msg, "cooldown"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// 上限 3：只扫 3 条，且标记 truncated。
+	res, err := samples.ImportFromDecisions(ctx, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Scanned != 3 {
+		t.Fatalf("上限 3 时应只扫描 3 条，实际 %d", res.Scanned)
+	}
+	if !res.Truncated {
+		t.Fatal("还有更多历史失败时应标记 truncated=true")
+	}
+	if res.Limit != 3 {
+		t.Fatalf("应回带本次上限 3，实际 %d", res.Limit)
+	}
+
+	// 上限足够大：不标记 truncated。
+	res2, err := samples.ImportFromDecisions(ctx, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res2.Truncated {
+		t.Fatal("上限足够时不应标记 truncated")
+	}
 }

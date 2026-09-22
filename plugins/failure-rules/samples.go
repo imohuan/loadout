@@ -153,22 +153,44 @@ func stripURLs(s string) string {
 // SamplesStore rule_samples 表读写。
 type SamplesStore struct{ db *sql.DB }
 
+// maxImportLimit 单次导入的扫描上限（防止一次把几年日志全拉进内存）。
+// limit<=0（「导入全部」）时用它兜底，并在结果里回带 Truncated 让 UI 提示。
+const maxImportLimit = 5000
+
 // NewSamplesStore 创建样本 Store。
 func NewSamplesStore(database *sql.DB) *SamplesStore { return &SamplesStore{db: database} }
 
 const sampleCols = "id, provider_base_url, model, status_code, body_code, message, channel_id, channel_name, " +
 	"provider_framework, fingerprint, source, expected_verdict, confirmed, note, created_at, updated_at"
 
+// ImportResult 一次导入的结果，用于向用户解释「为什么只多了几条」。
+//
+// 为什么需要它：历史失败里绝大多数是同一类错误（实测 605 条 → 8 条样本，
+// 457 条 403 合并成 1 条）。只回「新增 8」用户会以为漏导了；把「扫描了多少、
+// 其中多少并进了已有样本、本次上限是多少」一并说清，才不会误解。
+type ImportResult struct {
+	Scanned  int `json:"scanned"`  // 实际扫描的判定日志条数
+	Inserted int `json:"inserted"` // 本次新增的样本数
+	// Merged 扫描到但已存在同样本（指纹命中）而被并入的条数。
+	// 注意：这不是「本次合并了多少种」，而是「有多少条日志落到了已有样本上」——
+	// 重复点导入时它等于 Scanned（全部并进已有样本），UI 要按这个语义措辞。
+	Merged    int  `json:"merged"`
+	Total     int  `json:"total"`     // 库内样本总数
+	Limit     int  `json:"limit"`     // 本次扫描上限（触顶时 UI 要提示）
+	Truncated bool `json:"truncated"` // 是否因为上限而没扫全
+}
+
 // ImportFromDecisions 把历史判定日志导入样本库（按 fingerprint 去重）。
-// 返回 (新增数, 库内总数)。重复调用不会产生重复样本。
-func (s *SamplesStore) ImportFromDecisions(ctx context.Context, limit int) (int, int, error) {
+// limit <= 0 表示「尽可能多」（用 maxImportLimit 兜底）。
+func (s *SamplesStore) ImportFromDecisions(ctx context.Context, limit int) (ImportResult, error) {
 	if limit <= 0 || limit > 5000 {
-		limit = 2000
+		limit = maxImportLimit
 	}
+	// 多取 1 条用来判断「是否还有更多」（触顶提示）。limit+1 不参与插入。
 	q := "SELECT provider_base_url, model, status_code, COALESCE(error_excerpt,''), COALESCE(channel_id,''), COALESCE(channel_name,'') FROM rule_decisions WHERE error_excerpt <> '' ORDER BY id DESC LIMIT ?"
-	rows, err := s.db.QueryContext(ctx, q, limit)
+	rows, err := s.db.QueryContext(ctx, q, limit+1)
 	if err != nil {
-		return 0, 0, fmt.Errorf("failure-rules: read decisions for import: %w", err)
+		return ImportResult{}, fmt.Errorf("failure-rules: read decisions for import: %w", err)
 	}
 	type cand struct {
 		url, model, msg, channelID, channelName string
@@ -179,13 +201,18 @@ func (s *SamplesStore) ImportFromDecisions(ctx context.Context, limit int) (int,
 		var c cand
 		if err := rows.Scan(&c.url, &c.model, &c.status, &c.msg, &c.channelID, &c.channelName); err != nil {
 			rows.Close()
-			return 0, 0, err
+			return ImportResult{}, err
 		}
 		cands = append(cands, c)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		return 0, 0, err
+		return ImportResult{}, err
+	}
+	truncated := false
+	if len(cands) > limit {
+		truncated = true
+		cands = cands[:limit]
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339Nano)
@@ -197,14 +224,25 @@ func (s *SamplesStore) ImportFromDecisions(ctx context.Context, limit int) (int,
 		res, err := s.db.ExecContext(ctx, ins,
 			"sm-"+fp, c.url, c.model, c.status, bodyCode, truncate(c.msg, 2000), c.channelID, c.channelName, fp, now, now)
 		if err != nil {
-			return inserted, 0, fmt.Errorf("failure-rules: insert sample: %w", err)
+			return ImportResult{Scanned: len(cands), Inserted: inserted, Limit: limit, Truncated: truncated},
+				fmt.Errorf("failure-rules: insert sample: %w", err)
 		}
 		if n, _ := res.RowsAffected(); n > 0 {
 			inserted++
 		}
 	}
 	total, err := s.Count(ctx)
-	return inserted, total, err
+	if err != nil {
+		return ImportResult{}, err
+	}
+	return ImportResult{
+		Scanned:   len(cands),
+		Inserted:  inserted,
+		Merged:    len(cands) - inserted,
+		Total:     total,
+		Limit:     limit,
+		Truncated: truncated,
+	}, nil
 }
 
 // extractBodyCodeFromText 从错误摘要文本里抓上游业务码。

@@ -40,12 +40,21 @@ func (s *Service) handleRuleSamplesImport(w http.ResponseWriter, r *http.Request
 		Limit int `json:"limit"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
-	inserted, total, err := s.health.ImportRuleSamples(r.Context(), body.Limit)
+	res, err := s.health.ImportRuleSamples(r.Context(), body.Limit)
 	if err != nil {
 		s.writeServerError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "imported": inserted, "total": total})
+	// 回带 scanned/merged/truncated，让前端能解释「为什么只多了几条」。
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":        true,
+		"imported":  res.Inserted,
+		"total":     res.Total,
+		"scanned":   res.Scanned,
+		"merged":    res.Merged,
+		"limit":     res.Limit,
+		"truncated": res.Truncated,
+	})
 }
 
 // handleRuleSampleCreate POST /api/rule-samples  新增构造样本。
