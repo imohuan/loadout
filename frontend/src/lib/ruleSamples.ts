@@ -42,7 +42,9 @@ export interface SampleReplaySummary {
 
 export interface AuthorRound {
   round: number
-  verdict: string
+  /** 本轮 AI 交出的规则摘要（如「all(status_code eq 599) 动作 ignore」） */
+  attempt?: string
+  verdict?: string
   ok: boolean
   note?: string
 }

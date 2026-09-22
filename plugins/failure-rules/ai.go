@@ -441,6 +441,22 @@ func truncate(s string, n int) string {
 	return string(runes[:n])
 }
 
+// streamTail 保留字符串**尾部** n 个字符（前端的流式预览用）。
+//
+// 与 truncate 的区别是方向：truncate 保留开头，适合「摘要」；
+// 流式预览要的是「最新吐出来的那几个字」，必须保留结尾，
+// 否则满 n 个字符后画面就冻住了，打字机效果等于没有。
+func streamTail(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	runes := []rune(s)
+	if len(runes) <= n {
+		return s
+	}
+	return string(runes[len(runes)-n:])
+}
+
 func hashString(s string) string {
 	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:8])

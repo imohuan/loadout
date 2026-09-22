@@ -12,8 +12,11 @@ import (
 
 // AuthorRound 一轮生成的结果（前端据此显示「第 k 轮 / 通过与否」）。
 type AuthorRound struct {
-	Round   int    `json:"round"`
-	Verdict string `json:"verdict"`
+	Round int `json:"round"`
+	// Attempt 本轮 AI 交出的规则摘要（如「status_code eq 599 → ignore」）。
+	// 既给前端看「它到底试了什么」，也是下一轮提示词里「历史记录」的原料。
+	Attempt string `json:"attempt,omitempty"`
+	Verdict string `json:"verdict,omitempty"`
 	OK      bool   `json:"ok"`
 	Note    string `json:"note,omitempty"`
 }
@@ -164,7 +167,7 @@ func (e *Engine) authorStream(ctx context.Context, ai *AIResolver, drafts *Store
 	tail := ""
 	onChunk := func(delta string) {
 		tailMu.Lock()
-		tail = truncate(tail+delta, authorStreamTailLen)
+		tail = streamTail(tail+delta, authorStreamTailLen)
 		snapshot := tail
 		tailMu.Unlock()
 		// 每个增量都落库（轮询接口读 streams_json 实时展示）。
@@ -188,10 +191,13 @@ func (e *Engine) authorRunWith(ctx context.Context, chatFn func(prompt string) (
 // authorLoop 多轮生成主循环（与具体 AI 通道解耦，便于测试）。
 func (e *Engine) authorLoop(ctx context.Context, chatFn func(prompt string) (string, error), drafts *Store, store *AuthorStore, sess AuthorSession, sm Sample) (AuthorSession, error) {
 	var detail []AuthorRound
-	var lastReason string
 	var draftRuleID string
 	for round := 1; round <= sess.MaxRounds; round++ {
-		prompt := buildAuthorPrompt(sm, e.rulesBrief(ctx), round, lastReason)
+		// 历史累积：把**已完成每一轮**试过什么、为什么没通过都带给 AI。
+		// 用户明确要求「继续提交给 AI 进行对话（历史记录给他）」——
+		// 只传上一轮的失败原因时，AI 看不到自己前面错在哪，容易在同一类
+		// 错解上反复打转（实测前几轮会重复给同样的条件）。
+		prompt := buildAuthorPrompt(sm, e.rulesBrief(ctx), round, detail)
 		content, err := chatFn(prompt)
 		if err != nil {
 			_ = store.Update(ctx, sess.ID, "failed", round-1, detail, draftRuleID, err.Error())
@@ -199,8 +205,11 @@ func (e *Engine) authorLoop(ctx context.Context, chatFn func(prompt string) (str
 		}
 		var draft authorDraftSchema
 		if err := json.Unmarshal([]byte(content), &draft); err != nil || draft.Action.Verdict == "" {
-			lastReason = "返回的不是合法规则 JSON"
-			detail = append(detail, AuthorRound{Round: round, OK: false, Note: lastReason})
+			detail = append(detail, AuthorRound{
+				Round: round, OK: false,
+				Attempt: truncate(strings.TrimSpace(content), 200),
+				Note:    "返回的不是合法规则 JSON",
+			})
 			_ = store.Update(ctx, sess.ID, "running", round, detail, draftRuleID, "")
 			continue
 		}
@@ -221,9 +230,14 @@ func (e *Engine) authorLoop(ctx context.Context, chatFn func(prompt string) (str
 		note := draft.Reason
 		if !hit {
 			note = "草稿规则未能命中该样本"
-			lastReason = note
 		}
-		detail = append(detail, AuthorRound{Round: round, Verdict: draft.Action.Verdict, OK: hit, Note: note})
+		detail = append(detail, AuthorRound{
+			Round:   round,
+			Attempt: describeAttempt(draft),
+			Verdict: draft.Action.Verdict,
+			OK:      hit,
+			Note:    note,
+		})
 
 		// 命中即收敛：把草稿入库（confirmed=0 待人工确认）。
 		if hit {
@@ -260,7 +274,11 @@ func (e *Engine) rulesBrief(ctx context.Context) string {
 }
 
 // buildAuthorPrompt 组装某轮的生成提示词。
-func buildAuthorPrompt(sm Sample, rules string, round int, lastReason string) string {
+//
+// history 是前面各轮的完整记录（含每轮交出的规则与不通过原因）。用户要求
+// 「继续提交给 ai 进行对话（历史记录给他）」——把历史整段带上，AI 才知道
+// 自己已经试过哪些写法，从而换方向，而不是重复同一份错解。
+func buildAuthorPrompt(sm Sample, rules string, round int, history []AuthorRound) string {
 	var b strings.Builder
 	b.WriteString("你在为一个模型网关编写「失败规则」。根据下面这次上游失败，写一条能正确处置它的规则。")
 	b.WriteString("\n只返回 JSON，不要 markdown 围栏：")
@@ -288,14 +306,54 @@ func buildAuthorPrompt(sm Sample, rules string, round int, lastReason string) st
 	b.WriteString(truncate(sm.Message, 600))
 	b.WriteString("\n\n【已有规则（避免重复）】\n")
 	b.WriteString(rules)
-	if lastReason != "" {
-		b.WriteString("\n\n【上一轮不通过原因，请修正】\n")
-		b.WriteString(lastReason)
+	if hist := formatHistory(history); hist != "" {
+		b.WriteString("\n\n【你的历次尝试（全都没通过自检，请针对原因换一种写法，不要重复同一份规则）】\n")
+		b.WriteString(hist)
 	}
 	b.WriteString("\n\n这是第 ")
 	b.WriteString(fmt.Sprintf("%d", round))
 	b.WriteString(" 轮。")
 	return b.String()
+}
+
+// formatHistory 把已完成轮次拼成给 AI 看的「历史记录」；无历史时返回空串。
+func formatHistory(history []AuthorRound) string {
+	var b strings.Builder
+	for _, h := range history {
+		b.WriteString(fmt.Sprintf("第 %d 轮：你交出的规则是 %s → 未通过（%s）\n", h.Round, h.Attempt, h.Note))
+	}
+	// 历史太长会挤掉样本本身；只保留最近若干轮（2000 字符足够 AI 看出模式）。
+	return truncate(b.String(), 2000)
+}
+
+// describeAttempt 把 AI 交出的草稿压成一行可读摘要（历史记录与前端展示共用）。
+func describeAttempt(d authorDraftSchema) string {
+	var parts []string
+	if name := strings.TrimSpace(d.Name); name != "" {
+		parts = append(parts, "「"+truncate(name, 40)+"」")
+	}
+	if len(d.Match.All) > 0 {
+		parts = append(parts, "all("+describeConditions(d.Match.All)+")")
+	}
+	if len(d.Match.Any) > 0 {
+		parts = append(parts, "any("+describeConditions(d.Match.Any)+")")
+	}
+	if d.Action.Verdict != "" {
+		parts = append(parts, "动作 "+d.Action.Verdict)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return truncate(strings.Join(parts, " "), 200)
+}
+
+// describeConditions 条件列表可读化（field op value，逗号分隔）。
+func describeConditions(conds []Condition) string {
+	parts := make([]string, 0, len(conds))
+	for _, c := range conds {
+		parts = append(parts, fmt.Sprintf("%s %s %v", c.Field, c.Op, c.Value))
+	}
+	return strings.Join(parts, ", ")
 }
 
 // draftRuleInput 由 AI 草稿 + 样本构造落库用的规则输入（自检与落库共用同一份）。

@@ -485,6 +485,37 @@ function authorText(sampleId: string): string {
   return '生成失败'
 }
 
+// canAuthor 这条样本能不能点「AI 生成规则」。
+// 只有「已回放、没匹配到规则、且没有已确认预期」的样本才值得让 AI 出一条——
+// 其余情况（已命中/未回放）点了也是白花一次推理。
+function canAuthor(s: RuleSample): boolean {
+  const r = replayOf(s.id)
+  return !!r && !r.matched_rule_id && !r.expected_ok
+}
+
+// authorTone 生成状态色：与「结果列」同一种视觉语言（胶囊标签 + 下方灰色小字）。
+// 运行中=天蓝（进行中）、收敛=绿、未收敛=琥珀、失败=红。
+function authorTone(sampleId: string): string {
+  const status = authorSessions.value[sampleId]?.status
+  if (status === 'running') return 'bg-sky-500/15 text-sky-700 dark:text-sky-300 border-sky-500/25'
+  if (status === 'done') return 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/25'
+  if (status === 'exhausted') return 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/25'
+  if (status === 'failed') return 'bg-red-500/15 text-red-700 dark:text-red-300 border-red-500/25'
+  return 'bg-slate-500/15 text-slate-700 dark:text-slate-300 border-slate-500/20'
+}
+
+// authorDetail 胶囊标签下面那行灰色小字。结束态给出「最后一轮为什么没通过」
+// 或失败原因——用户看进度时最想知道的就是 AI 卡在哪。
+function authorDetail(sampleId: string): string {
+  const sess = authorSessions.value[sampleId]
+  if (!sess || sess.status === 'running') return ''
+  if (sess.status === 'done') return '待人工确认后生效'
+  if (sess.status === 'failed') return sess.error ?? '未知错误'
+  const rounds = sess.round_detail ?? []
+  const last = rounds[rounds.length - 1]
+  return last?.note ?? '未能命中该样本'
+}
+
 function openCreate() {
   editing.value = null
   form.value = emptyForm()
@@ -1075,7 +1106,7 @@ openRuleFromQuery()
                   <TableHead class="max-w-[420px]">错误摘要</TableHead>
                   <TableHead class="min-w-[150px] max-w-[240px]">匹配规则</TableHead>
                   <TableHead class="min-w-[170px]">结果</TableHead>
-                  <TableHead class="min-w-[140px] text-right">操作</TableHead>
+                  <TableHead class="min-w-[176px]">操作</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -1108,32 +1139,46 @@ openRuleFromQuery()
                       {{ replayOf(s.id)?.reason }}
                     </p>
                   </TableCell>
-                  <TableCell class="text-right">
+                  <TableCell>
                     <div class="flex items-center justify-end gap-1">
+                      <!-- AI 生成进度 / 结果：与「结果列」同一视觉语言 ——
+                           上面一枚胶囊标签，下面一行灰色小字。
+                           运行中第二行是流式尾部（打字机），结束后第二行是
+                           「最后一轮为什么没通过」，让用户知道 AI 卡在哪。 -->
+                      <div v-if="authorSessions[s.id]" class="flex min-w-0 flex-col items-start gap-0.5">
+                        <Badge variant="outline" class="border text-[11px] whitespace-nowrap" :class="authorTone(s.id)">
+                          <RiLoader4Line
+                            v-if="authorSessions[s.id]?.status === 'running'"
+                            class="animate-spin mr-1"
+                            size="12"
+                          />
+                          <RiCheckLine v-else-if="authorSessions[s.id]?.status === 'done'" class="mr-1" size="12" />
+                          <RiRefreshLine v-else class="mr-1" size="12" />
+                          {{ authorText(s.id) }}
+                        </Badge>
+                        <span
+                          v-if="authorSessions[s.id]?.status === 'running'"
+                          class="font-mono max-w-[168px] truncate text-left text-[10px] text-muted-foreground"
+                          :title="authorSessions[s.id]?.stream_tail || ''"
+                        >{{ authorSessions[s.id]?.stream_tail || '…' }}<span class="animate-pulse">▍</span></span>
+                        <span
+                          v-else-if="authorDetail(s.id)"
+                          class="max-w-[168px] truncate text-left text-[10px] text-muted-foreground"
+                          :title="authorDetail(s.id)"
+                        >{{ authorDetail(s.id) }}</span>
+                      </div>
+                      <!-- AI 生成规则：没有结果时是带文字的按钮，跑过之后再点就是「重新生成」 -->
                       <Button
-                        v-if="replayOf(s.id) && !replayOf(s.id)?.matched_rule_id && !replayOf(s.id)?.expected_ok"
-                        variant="outline"
-                        size="sm"
+                        v-if="canAuthor(s)"
+                        :variant="authorSessions[s.id] ? 'ghost' : 'outline'"
+                        :size="authorSessions[s.id] ? 'icon' : 'sm'"
+                        :class="authorSessions[s.id] ? 'size-7' : ''"
                         :disabled="authorSessions[s.id]?.status === 'running'"
+                        :title="authorSessions[s.id] ? '重新生成规则' : 'AI 生成规则'"
                         @click="authorForSample(s)"
                       >
-                        <RiSparklingLine v-if="!authorSessions[s.id]" size="14" class="mr-1" />
-                        <RiLoader4Line
-                          v-else-if="authorSessions[s.id]?.status === 'running'"
-                          class="animate-spin mr-1"
-                          size="14"
-                        />
-                        <!-- 两行展示：第一行轮次，第二行流式尾部（打字机）。
-                             用户点名要「第一行第几轮 / 第二行流输出最后 10 字符 + 打字动画」，
-                             让生成过程可见，而不是一个转圈干等 40 秒。 -->
-                        <span v-if="authorSessions[s.id]?.status === 'running'" class="flex flex-col items-start leading-tight">
-                          <span>{{ authorText(s.id) }}</span>
-                          <span
-                            class="font-mono max-w-[180px] truncate text-left text-[10px] text-muted-foreground"
-                            :title="authorSessions[s.id]?.stream_tail || ''"
-                          >{{ authorSessions[s.id]?.stream_tail || '…' }}<span class="animate-pulse">▍</span></span>
-                        </span>
-                        <template v-else>{{ authorText(s.id) }}</template>
+                        <RiSparklingLine size="14" :class="authorSessions[s.id] ? '' : 'mr-1'" />
+                        <template v-if="!authorSessions[s.id]">AI 生成规则</template>
                       </Button>
                       <Button variant="ghost" size="icon" class="size-7" title="删除样本" @click="removeSample(s)">
                         <RiDeleteBinLine size="14" />

@@ -61,17 +61,23 @@ type Rule struct {
 }
 
 // Evidence 一次失败的证据（求值输入）。
+//
+// 必须带 json tag：这份结构会被 admin-api 直接从请求体反序列化
+// （编辑弹窗的「样本校验」body 是 {status_code, body_code, message}）。
+// 没有 tag 时 encoding/json 的大小写不敏感匹配只救得了 Message，
+// status_code / body_code 这种带下划线的键会静默落到零值 —— 用户填了
+// 完全正确的预测，dry-run 也一律显示「未命中」（实测踩过）。
 type Evidence struct {
-	RequestID         string
-	Model             string
-	ChannelID         string
-	ChannelName       string // Key 名（账号标识，如手机号；用于日志展示「平台+Key+模型」）
-	ProviderURL       string // 渠道 base_url（组身份）
-	ProviderFramework string // 渠道框架标签（newapi/one-api/…；空 = 自定义）
-	StatusCode        int
-	BodyCode          string // 错误体中的业务码（如 14018）
-	Message           string // error 文本 + error_body 合并（截断）
-	FailCount         int    // 该 key 连续失败次数（RecordSuccess 清零）
+	RequestID         string `json:"request_id,omitempty"`
+	Model             string `json:"model,omitempty"`
+	ChannelID         string `json:"channel_id,omitempty"`
+	ChannelName       string `json:"channel_name,omitempty"`       // Key 名（账号标识，如手机号；用于日志展示「平台+Key+模型」）
+	ProviderURL       string `json:"provider_url,omitempty"`       // 渠道 base_url（组身份）
+	ProviderFramework string `json:"provider_framework,omitempty"` // 渠道框架标签（newapi/one-api/…；空 = 自定义）
+	StatusCode        int    `json:"status_code,omitempty"`
+	BodyCode          string `json:"body_code,omitempty"`  // 错误体中的业务码（如 14018）
+	Message           string `json:"message,omitempty"`    // error 文本 + error_body 合并（截断）
+	FailCount         int    `json:"fail_count,omitempty"` // 该 key 连续失败次数（RecordSuccess 清零）
 }
 
 // Verdict 常量。
