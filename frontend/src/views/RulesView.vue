@@ -13,7 +13,6 @@ import {
   RiHistoryLine,
   RiDownload2Line,
   RiSparklingLine,
-  RiCheckDoubleLine,
   RiLoader4Line,
 } from '@remixicon/vue'
 import {
@@ -45,7 +44,6 @@ import {
   importRuleSamples,
   listRuleSamples,
   replayRuleSamples,
-  setRuleSampleExpectation,
   type AuthorSession,
   type RuleSample,
   type SampleReplayResult,
@@ -411,22 +409,6 @@ const filteredSamples = computed(() => {
   })
 })
 
-// markExpected 标注样本预期（确认后才能参与「不一致」统计）。
-//
-// 标注后必须**重跑回放**：replayMap 里存的 expected 是上一次回放时的快照，
-// 不同步的话「不一致」徽标会一直停在旧结论，直到用户再手动点一次批量回放。
-async function markExpected(s: RuleSample, verdict: string) {
-  try {
-    await setRuleSampleExpectation(s.id, verdict, true)
-    s.expected_verdict = verdict
-    s.confirmed = true
-    toast.success('已标注预期判定')
-    await runReplay()
-  } catch (e) {
-    toast.error(String(e))
-  }
-}
-
 async function removeSample(s: RuleSample) {
   const ok = await confirmDialog({ title: '删除这条样本？', description: '仅从样本库移除，不影响规则与运行状态。' })
   if (!ok) return
@@ -615,7 +597,12 @@ async function confirmDraft(rule: FailureRule) {
 }
 
 async function remove(rule: FailureRule) {
-  if (!window.confirm(`确定删除规则「${rule.name}」？`)) return
+  const ok = await confirmDialog({
+    title: `删除规则「${rule.name}」？`,
+    description: '删除后该错误将不再被此规则处置（未命中时交给 AI 兜底判定）。',
+    confirmText: '删除',
+  })
+  if (!ok) return
   try {
     await deleteFailureRule(rule.id)
     toast.success('已删除')
@@ -1136,27 +1123,21 @@ openRuleFromQuery()
                           class="animate-spin mr-1"
                           size="14"
                         />
-                        {{ authorText(s.id) }}
+                        <!-- 两行展示：第一行轮次，第二行流式尾部（打字机）。
+                             用户点名要「第一行第几轮 / 第二行流输出最后 10 字符 + 打字动画」，
+                             让生成过程可见，而不是一个转圈干等 40 秒。 -->
+                        <span v-if="authorSessions[s.id]?.status === 'running'" class="flex flex-col items-start leading-tight">
+                          <span>{{ authorText(s.id) }}</span>
+                          <span
+                            class="font-mono max-w-[180px] truncate text-left text-[10px] text-muted-foreground"
+                            :title="authorSessions[s.id]?.stream_tail || ''"
+                          >{{ authorSessions[s.id]?.stream_tail || '…' }}<span class="animate-pulse">▍</span></span>
+                        </span>
+                        <template v-else>{{ authorText(s.id) }}</template>
                       </Button>
                       <Button variant="ghost" size="icon" class="size-7" title="删除样本" @click="removeSample(s)">
                         <RiDeleteBinLine size="14" />
                       </Button>
-                      <!-- 标注预期：确认后该样本参与「不一致」统计 -->
-                      <Tooltip>
-                        <TooltipTrigger as-child>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            class="size-7"
-                            title="标注预期判定"
-                            :class="s.confirmed ? 'text-emerald-600 dark:text-emerald-400' : ''"
-                            @click="markExpected(s, replayOf(s.id)?.verdict ?? 'ignore')"
-                          >
-                            <RiCheckDoubleLine size="14" />
-                          </Button>
-                        </TooltipTrigger>
-                        <TooltipContent>把它当前实际判定记为「预期」，之后若规则变化导致不一致会标红</TooltipContent>
-                      </Tooltip>
                     </div>
                   </TableCell>
                 </TableRow>
