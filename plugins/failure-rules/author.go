@@ -383,19 +383,20 @@ func draftRuleInput(draft authorDraftSchema, sm Sample) RuleInput {
 	return in
 }
 
-// draftAuthorName 草稿名：AI 给的名字为空时用可读兜底。
+// draftAuthorName 草稿名：简洁概括问题原因。
+//
+// 用户要求：不要「AI:」前缀、不要模型名/平台名，只要一句话说清「这条规则
+// 在处理什么问题」。冗余信息各有归处——这是不是 AI 生成的看 source 字段，
+// 平台范围看作用域，模型本来就不该限定。AI 给了名字就用它的（AI 自己概括），
+// 没给就用「<状态码> 异常」兜底。
 func draftAuthorName(d authorDraftSchema, sm Sample) string {
 	name := strings.TrimSpace(d.Name)
 	if name == "" {
-		name = "AI 规则"
+		if sm.StatusCode == 0 {
+			name = "网络异常"
+		} else {
+			name = fmt.Sprintf("%d 异常", sm.StatusCode)
+		}
 	}
-	return fmt.Sprintf("AI: %s (%s %s)", truncate(name, 40), sm.Model, errStatusTextLocal(sm.StatusCode))
-}
-
-// errStatusTextLocal 状态码可读化（与 model-health 的 errStatusText 同口径，本包自持）。
-func errStatusTextLocal(code int) string {
-	if code == 0 {
-		return "net"
-	}
-	return "http" + fmt.Sprint(code)
+	return truncate(name, 40)
 }

@@ -37,6 +37,7 @@ import AxTable from '@/components/ui/AxTable.vue'
 import PageHeader from '@/components/PageHeader.vue'
 import LoadingBlock from '@/components/LoadingBlock.vue'
 import EmptyState from '@/components/EmptyState.vue'
+import HoverTextCard from '@/components/ui/HoverTextCard.vue'
 import { useConfirm } from '@/composables/useConfirm'
 import {
   authorRuleFromSample,
@@ -503,11 +504,13 @@ function authorText(sampleId: string): string {
 }
 
 // canAuthor 这条样本能不能点「AI 生成规则」。
-// 只有「已回放、没匹配到规则、且没有已确认预期」的样本才值得让 AI 出一条——
-// 其余情况（已命中/未回放）点了也是白花一次推理。
+// 判据 = 已回放且没有规则命中。不能用 expected_ok 参与判断：
+// 「预期 cooldown 且已确认」的样本，即使没命中任何规则，回放默认动作也是
+// cooldown，expected_ok 恰好为 true——用户实测看到 3 条未命中只有 1 条有按钮，
+// 另外 2 条（带预期的 502）就被这个条件挡住了，而它们恰恰最需要 AI 兜底。
 function canAuthor(s: RuleSample): boolean {
   const r = replayOf(s.id)
-  return !!r && !r.matched_rule_id && !r.expected_ok
+  return !!r && !r.matched_rule_id
 }
 
 // authorTone 生成状态色：与「结果列」同一种视觉语言（胶囊标签 + 下方灰色小字）。
@@ -1012,7 +1015,7 @@ openRuleFromQuery()
         <LoadingBlock v-if="loading" />
         <EmptyState v-else-if="!filteredLogs.length" title="暂无判定记录" description="请求失败后的规则/AI 裁决会记录在这里" />
 
-        <TooltipProvider v-else>
+        <template v-else>
           <!-- 判定日志表：列宽由内容自己决定，只给「错误摘要」一个最大宽度（超出换行，
                不再被裁掉）。表头列边界可拖拽调宽，双击恢复自动宽度。 -->
           <AxTable class="rounded-lg border">
@@ -1045,14 +1048,9 @@ openRuleFromQuery()
                   {{ d.status_code || '—' }}
                 </TableCell>
                 <TableCell>
-                  <Tooltip>
-                    <TooltipTrigger as-child>
-                      <div class="truncate text-xs">{{ d.error_excerpt || '—' }}</div>
-                    </TooltipTrigger>
-                    <TooltipContent class="max-w-[560px] break-all">
-                      {{ d.error_excerpt || '—' }}
-                    </TooltipContent>
-                  </Tooltip>
+                  <HoverTextCard :text="d.error_excerpt" label="错误详情" :mono="true">
+                    <div class="cursor-default truncate text-xs">{{ d.error_excerpt || '—' }}</div>
+                  </HoverTextCard>
                 </TableCell>
                 <TableCell>
                   <Badge v-if="d.matched_rule_id" variant="outline" class="text-[11px] whitespace-normal">
@@ -1070,7 +1068,7 @@ openRuleFromQuery()
             </TableBody>
           </Table>
           </AxTable>
-        </TooltipProvider>
+        </template>
       </TabsContent>
 
       <!-- ===== 样本回放（「回撤」）=====
@@ -1126,7 +1124,7 @@ openRuleFromQuery()
           title="暂无样本"
           description="点「导入历史失败」把判定日志沉淀成可复用的测试样本"
         />
-        <TooltipProvider v-else>
+        <template v-else>
           <!-- 样本表也走 AxTable：列宽跟随内容、表头边界可拖拽、max-w 真正生效。
                之前这里只有裸 Table，比另外两张表少了一整套能力。
                列宽只给「下限 / 上限」，不再写死像素值（写死会出现「结果列 121px
@@ -1154,12 +1152,9 @@ openRuleFromQuery()
                   <TableCell class="font-mono text-xs">{{ s.body_code || '—' }}</TableCell>
                   <TableCell class="font-mono text-xs">{{ s.model || '—' }}</TableCell>
                   <TableCell class="max-w-[360px]">
-                    <Tooltip>
-                      <TooltipTrigger as-child>
-                        <div class="truncate text-xs text-muted-foreground">{{ s.message || '—' }}</div>
-                      </TooltipTrigger>
-                      <TooltipContent class="max-w-[560px] break-all">{{ s.message || '—' }}</TooltipContent>
-                    </Tooltip>
+                    <HoverTextCard :text="s.message" label="错误详情" :mono="true">
+                      <div class="truncate text-xs text-muted-foreground">{{ s.message || '—' }}</div>
+                    </HoverTextCard>
                   </TableCell>
                   <TableCell class="text-xs">
                     <span v-if="replayOf(s.id)?.matched_rule_name" class="text-foreground">
@@ -1234,7 +1229,7 @@ openRuleFromQuery()
               </TableBody>
             </Table>
           </AxTable>
-        </TooltipProvider>
+        </template>
       </TabsContent>
     </Tabs>
 
@@ -1247,7 +1242,8 @@ openRuleFromQuery()
           <DialogDescription>规则按优先级从小到大匹配，首个命中生效</DialogDescription>
         </DialogHeader>
 
-        <div class="grid grid-cols-2 gap-3">
+        <!-- 小窗口（<640px）全部单列排布，避免字段被挤扁；sm 起才两列。 -->
+        <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <div class="col-span-2 space-y-1">
             <Label>规则名</Label>
             <Input v-model="form.name" placeholder="如：额度用尽（次日恢复）" />
@@ -1314,9 +1310,10 @@ openRuleFromQuery()
               <RiAddLine size="12" class="mr-1" /> 加条件
             </Button>
           </div>
-          <div v-for="(cond, i) in form.match[kind]" :key="i" class="flex items-center gap-2">
+          <!-- 条件行：小窗口换行堆叠，sm 起一行放下 -->
+          <div v-for="(cond, i) in form.match[kind]" :key="i" class="flex flex-wrap items-center gap-2">
             <Select :model-value="cond.field" @update:model-value="(v: string) => { cond.field = v; onFieldChange(cond) }">
-              <SelectTrigger class="w-32"><SelectValue placeholder="字段" /></SelectTrigger>
+              <SelectTrigger class="w-28 sm:w-32"><SelectValue placeholder="字段" /></SelectTrigger>
               <SelectContent position="popper" side="bottom" align="start" :side-offset="2">
                 <SelectGroup>
                   <SelectItem v-for="f in FIELDS" :key="f.value" :value="f.value">{{ f.label }}</SelectItem>
@@ -1324,14 +1321,14 @@ openRuleFromQuery()
               </SelectContent>
             </Select>
             <Select v-model="cond.op">
-              <SelectTrigger class="w-28"><SelectValue placeholder="操作" /></SelectTrigger>
+              <SelectTrigger class="w-24 sm:w-28"><SelectValue placeholder="操作" /></SelectTrigger>
               <SelectContent position="popper" side="bottom" align="start" :side-offset="2">
                 <SelectItem v-for="o in opsFor(cond.field)" :key="o.value" :value="o.value">{{ o.label }}</SelectItem>
               </SelectContent>
             </Select>
             <Input
               v-model="cond.value"
-              class="flex-1"
+              class="min-w-[120px] flex-1"
               :placeholder="cond.op === 'regex' ? '正则，如 额度.*用尽' : '匹配值'"
             />
             <Button variant="ghost" size="icon" class="text-red-500 hover:text-red-600" @click="removeCondition(kind, i)">
@@ -1340,8 +1337,8 @@ openRuleFromQuery()
           </div>
         </div>
 
-        <!-- 动作 -->
-        <div class="grid grid-cols-3 gap-3">
+        <!-- 动作：小窗口单列，sm 起三列 -->
+        <div class="grid grid-cols-1 gap-3 sm:grid-cols-3">
           <div class="space-y-1">
             <Label>动作</Label>
             <Select v-model="form.action.verdict">
@@ -1375,9 +1372,9 @@ openRuleFromQuery()
           <div class="mb-2 flex items-center gap-1.5 text-sm font-medium">
             <RiFlaskLine size="14" /> 样本校验（dry-run）
           </div>
-          <div class="flex gap-2">
-            <Input v-model.number="verifySample.status_code" type="number" class="w-24" placeholder="状态码" />
-            <Input v-model="verifySample.body_code" class="w-28" placeholder="业务码" />
+          <div class="flex flex-wrap gap-2">
+            <Input v-model.number="verifySample.status_code" type="number" class="w-20 sm:w-24" placeholder="状态码" />
+            <Input v-model="verifySample.body_code" class="w-24 sm:w-28" placeholder="业务码" />
             <Input v-model="verifySample.message" class="flex-1" placeholder="错误文案" />
             <Button variant="secondary" :disabled="verifying" @click="runVerify">测试</Button>
           </div>
