@@ -263,6 +263,10 @@ func (e2eHealth) SetFailureRuleEnabled(ctx context.Context, id string, enabled b
 }
 func (e2eHealth) ConfirmFailureRule(ctx context.Context, id string) error       { return nil }
 func (e2eHealth) VerifyFailureRule(rule failure.Rule, ev failure.Evidence) bool { return false }
+
+func (e2eHealth) VerifyFailureRuleDetail(rule failure.Rule, ev failure.Evidence) failure.VerifyDetail {
+	return failure.VerifyDetail{}
+}
 func (e2eHealth) ListRuleDecisions(ctx context.Context, limit int) ([]map[string]any, error) {
 	return nil, nil
 }

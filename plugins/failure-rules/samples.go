@@ -55,11 +55,17 @@ type ReplayResult struct {
 	//
 	// 用户要求：回测时草稿也参与匹配并展示「匹配规则 + 结果」，但要用差异样式
 	// 提醒「只是回测临时生效，正式环境需人工确认」。前端据此渲染醒目草稿样式。
-	IsDraft    bool   `json:"is_draft,omitempty"`
-	Verdict    string `json:"verdict"`
-	Expected   string `json:"expected,omitempty"`
-	ExpectedOK bool   `json:"expected_ok"`
-	Reason     string `json:"reason,omitempty"`
+	IsDraft bool   `json:"is_draft,omitempty"`
+	Verdict string `json:"verdict"`
+	// RecoverUntil 预计恢复时刻（规则开启「提取恢复时间」且文案带时间时非空）。
+	// RFC3339；前端格式化成年月日时分秒展示。用户要求：提取出的时间用到了动作里，
+	// 样本校验就要能看到这个参数（恢复到几点 / 冷却多久）。
+	RecoverUntil string `json:"recover_until,omitempty"`
+	// ActionParams 动作参数摘要（「恢复时间 2026-09-23 15:48:27」/「冷却 120 秒」）。
+	ActionParams string `json:"action_params,omitempty"`
+	Expected     string `json:"expected,omitempty"`
+	ExpectedOK   bool   `json:"expected_ok"`
+	Reason       string `json:"reason,omitempty"`
 }
 
 // ReplaySummary 批量回放汇总。
@@ -475,12 +481,24 @@ func (e *Engine) Replay(ctx context.Context, samples []Sample) ReplaySummary {
 	summary := ReplaySummary{Total: len(samples)}
 	for _, sm := range samples {
 		d, isDraft := e.matchOnlyWithDrafts(sm.Evidence())
+		// 动作参数：用户要求回放时展示「命中后会发生什么」的具体参数——
+		// 特别是「提取恢复时间」用到的那个时刻（恢复到几点），而不只是一个 verdict。
+		recoverUntil, params := "", ""
+		if d.MatchedRuleID != "" {
+			until, timed := nextRecoveryWithEvidence(d.Action, sm.Evidence(), time.Now())
+			if timed {
+				recoverUntil = until.In(beijingTZ).Format("2006-01-02 15:04:05")
+			}
+			params = actionParamsText(d.Verdict, recoverUntil, d.Action.CooldownSeconds)
+		}
 		res := ReplayResult{
 			SampleID:        sm.ID,
 			MatchedRuleID:   d.MatchedRuleID,
 			MatchedRuleName: d.MatchedRuleName,
 			IsDraft:         isDraft,
 			Verdict:         d.Verdict,
+			RecoverUntil:    recoverUntil,
+			ActionParams:    params,
 			Expected:        sm.ExpectedVerdict,
 			Reason:          d.Reason,
 		}

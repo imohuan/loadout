@@ -27,6 +27,10 @@ export interface SampleReplayResult {
   /** 命中的是 AI 草稿（回测临时生效，正式环境需在规则列表确认） */
   is_draft?: boolean
   verdict: string
+  /** 预计恢复时刻（规则开启「提取恢复时间」且文案带时间时非空），RFC3339 */
+  recover_until?: string
+  /** 动作参数摘要（「恢复时间 2026-09-23 15:48:27」/「冷却 120 秒」） */
+  action_params?: string
   expected?: string
   expected_ok: boolean
   reason?: string

@@ -53,6 +53,19 @@ func DefaultRules() []RuleInput {
 			Action: Action{Verdict: VerdictCooldown, CooldownSeconds: 120, Recover: "fixed", FailUpgradeCount: 5, FailUpgradeRecover: "daily"},
 		},
 		{
+			// 限速且文案带「重置时刻」（如腾讯 copilot code 6004：
+			// 「您的使用量已超出频率限制，将在 2026-09-23 15:48:27 UTC+8 重置」）：
+			// 开「提取恢复时间」，冷却到上游自己说的那个点，而不是拍脑袋 2 分钟——
+			// 用户实测反馈：文案里明明给了时间，旧规则却只冷却 2 分钟、5 次后又
+			// 升级成 1 天，全都不对。该规则优先级比通用限速更高（49 < 50）。
+			Name: "限速带重置时间（按文案时刻恢复）", Priority: 49,
+			Match: Match{All: []Condition{
+				{Field: "status_code", Op: "eq", Value: 429},
+				{Field: "message_text", Op: "regex", Value: "20\\d{2}[-/]\\d{2}[-/]\\d{2}[ T]\\d{1,2}:\\d{2}(:\\d{2})?"},
+			}},
+			Action: Action{Verdict: VerdictCooldown, Recover: "fixed", ExtractRecoverAt: true},
+		},
+		{
 			// 平台没有这个模型：只禁该模型（其余模型照用），不要连坐整个 Key。
 			Name: "平台不支持该模型（禁用该模型）", Priority: 55,
 			Match:  Match{All: []Condition{{Field: "body_code", Op: "eq", Value: "11102"}}},
@@ -121,6 +134,6 @@ func DefaultRules() []RuleInput {
 // DefaultRuleIDs 默认规则的固定 ID，**必须与 DefaultRules() 返回顺序一一对应**
 // （seed-013/014 是按优先级 45/55 插进中间的两条实测新增规则）。
 var DefaultRuleIDs = []string{
-	"seed-001", "seed-002", "seed-003", "seed-004", "seed-013", "seed-005", "seed-014",
+	"seed-001", "seed-002", "seed-003", "seed-004", "seed-013", "seed-015", "seed-005", "seed-014",
 	"seed-006", "seed-007", "seed-008", "seed-009", "seed-010", "seed-011", "seed-012",
 }

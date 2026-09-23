@@ -132,8 +132,10 @@ func (s *Service) handleFailureRuleVerify(w http.ResponseWriter, r *http.Request
 	if !decodeJSON(w, r, &body) {
 		return
 	}
-	hit := s.health.VerifyFailureRule(body.Rule, body.Sample)
-	writeJSON(w, http.StatusOK, map[string]any{"hit": hit})
+	// 返回完整明细：命中与否 + 命中后动作的参数（恢复时间/冷却秒数）。
+	// 用户要求：样本校验里能看到「提取的时间用到了动作中」——恢复到几点。
+	detail := s.health.VerifyFailureRuleDetail(body.Rule, body.Sample)
+	writeJSON(w, http.StatusOK, detail)
 }
 
 // handleFailureRulesRestoreDefaults POST /api/failure-rules-defaults/restore

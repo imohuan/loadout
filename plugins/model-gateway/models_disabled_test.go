@@ -148,6 +148,10 @@ func (m *mockHealth) SetFailureRuleEnabled(ctx context.Context, id string, enabl
 }
 func (m *mockHealth) ConfirmFailureRule(ctx context.Context, id string) error       { return nil }
 func (m *mockHealth) VerifyFailureRule(rule failure.Rule, ev failure.Evidence) bool { return false }
+
+func (m *mockHealth) VerifyFailureRuleDetail(rule failure.Rule, ev failure.Evidence) failure.VerifyDetail {
+	return failure.VerifyDetail{}
+}
 func (m *mockHealth) ListRuleDecisions(ctx context.Context, limit int) ([]map[string]any, error) {
 	return nil, nil
 }

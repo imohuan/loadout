@@ -952,6 +952,29 @@ CREATE INDEX idx_rule_author_created ON rule_author_sessions(created_at DESC);
 -- 所以把当前这段增量的类型跟着尾部预览一起存。
 ALTER TABLE rule_author_sessions ADD COLUMN stream_kind TEXT NOT NULL DEFAULT '';
 `,
+}, {
+	version: 45,
+	name:    "rule-rate-limit-with-reset-time",
+	sql: `
+-- 限速文案带「重置时刻」的规则（用户实测：腾讯 copilot code 6004 明确给出
+-- 「将在 2026-09-23 15:48:27 UTC+8 重置」，旧默认规则却只冷却 2 分钟）。
+-- 新规则开启「提取恢复时间」，冷却到上游自己说的那个点。优先级 49 比通用
+-- 限速（50）更高。仅对不存在的库插入（尊重用户已修改的同名规则）。
+INSERT OR IGNORE INTO failure_rules(id, name, enabled, source, confirmed, priority, match_json, action_json, created_at, updated_at) VALUES
+('seed-015', '限速带重置时间（按文案时刻恢复）', 1, 'manual', 1, 49,
+ '{"all":[{"field":"status_code","op":"eq","value":429},{"field":"message_text","op":"regex","value":"20\d{2}[-/]\d{2}[-/]\d{2}[ T]\d{1,2}:\d{2}(:\d{2})?"}]}',
+ '{"verdict":"cooldown","recover":"fixed","extract_recover_at":true}', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+`,
+}, {
+	version: 46,
+	name:    "fix-seed015-regex-escape",
+	sql: `
+-- 修复 v45 写坏的 seed-015 match_json：JSON 里的反斜杠未转义（\d 应为 \\d），
+-- 导致 json.Unmarshal 失败、规则列表 500。仅在坏值存在时替换，幂等。
+UPDATE failure_rules
+SET match_json = REPLACE(match_json, '\d', '\\d')
+WHERE id='seed-015' AND match_json LIKE '%\d{2}[-/]%'
+`,
 }}
 
 // Migrate applies all pending schema migrations and rejects an incompatible

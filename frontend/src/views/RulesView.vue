@@ -702,13 +702,18 @@ async function remove(rule: FailureRule) {
 // ===== 样本校验 =====
 const verifySample = ref<RuleEvidence>({ status_code: 429, message: '' })
 const verifyHit = ref<boolean | null>(null)
+// 校验明细：命中后的动作参数（恢复时间/冷却秒数）——用户要求能看到
+// 「提取的时间用到了动作中」，光一个 ✓/✗ 不够。
+const verifyDetail = ref<{ verdict?: string; recover_until?: string; action_params?: string } | null>(null)
 const verifying = ref(false)
 async function runVerify() {
   verifyHit.value = null
+  verifyDetail.value = null
   verifying.value = true
   try {
     const res = await verifyFailureRule(form.value as Partial<FailureRule>, verifySample.value)
     verifyHit.value = res.hit
+    verifyDetail.value = { verdict: res.verdict, recover_until: res.recover_until, action_params: res.action_params }
   } catch (e) {
     toast.error(String(e))
   } finally {
@@ -1234,13 +1239,22 @@ async function openRuleFromName(ruleId?: string) {
                     </template>
                     <span v-else class="text-muted-foreground">—</span>
                   </TableCell>
-                  <TableCell>
-                    <Badge variant="outline" class="border text-[11px] whitespace-normal" :class="sampleResultTone(s.id)">
-                      {{ sampleResultLabel(s.id) }}
-                    </Badge>
-                    <p v-if="replayOf(s.id)?.reason" class="text-muted-foreground mt-0.5 truncate text-[10px]">
-                      {{ replayOf(s.id)?.reason }}
-                    </p>
+	                  <TableCell>
+	                    <Badge variant="outline" class="border text-[11px] whitespace-normal" :class="sampleResultTone(s.id)">
+	                      {{ sampleResultLabel(s.id) }}
+	                    </Badge>
+	                    <!-- 动作参数：命中后会发生什么（恢复时间/冷却秒数）。
+	                         用户要求能看到「提取的时间用到了动作中」。 -->
+	                    <p
+	                      v-if="replayOf(s.id)?.action_params"
+	                      class="mt-0.5 truncate text-[10px] text-amber-600 dark:text-amber-300/90"
+	                      :title="replayOf(s.id)?.recover_until ? '预计恢复：' + replayOf(s.id)?.recover_until : replayOf(s.id)?.action_params"
+	                    >
+	                      {{ replayOf(s.id)?.action_params }}
+	                    </p>
+	                    <p v-if="replayOf(s.id)?.reason" class="text-muted-foreground mt-0.5 truncate text-[10px]">
+	                      {{ replayOf(s.id)?.reason }}
+	                    </p>
                   </TableCell>
                   <TableCell>
                     <div class="flex items-center justify-end gap-1">
@@ -1435,8 +1449,21 @@ async function openRuleFromName(ruleId?: string) {
           </div>
           <div class="space-y-1">
             <Label>冷却秒数</Label>
-            <Input v-model.number="form.action.cooldown_seconds" type="number" :disabled="form.action.recover !== 'fixed'" />
+            <Input v-model.number="form.action.cooldown_seconds" type="number" :disabled="form.action.recover !== 'fixed' || form.action.extract_recover_at" />
           </div>
+          <!-- 提取恢复时间：文案里带「将在 … 重置」这类时刻时，冷却到那个点而不是固定秒数。
+               用户实测：腾讯 copilot 6004 明确给出重置时间，拍脑袋 2 分钟完全不对。 -->
+          <label
+            v-if="form.action.recover === 'fixed'"
+            class="col-span-1 flex cursor-pointer items-center gap-2 text-xs text-foreground sm:col-span-3"
+          >
+            <Checkbox
+              :model-value="form.action.extract_recover_at ?? false"
+              @update:model-value="(v: boolean) => (form.action.extract_recover_at = v)"
+            />
+            从错误文案提取恢复时间（如「将在 2026-09-23 15:48:27 UTC+8 重置」→ 冷却到该时刻；
+            提取不到时回退冷却秒数）
+          </label>
           <div v-if="form.action.recover === 'daily'" class="space-y-1">
             <Label>每日恢复点（小时）</Label>
             <Input v-model.number="form.action.daily_reset_hour" type="number" :min="0" :max="23" />
@@ -1454,9 +1481,24 @@ async function openRuleFromName(ruleId?: string) {
             <Input v-model="verifySample.message" class="flex-1" placeholder="错误文案" />
             <Button variant="secondary" :disabled="verifying" @click="runVerify">测试</Button>
           </div>
-          <p v-if="verifyHit !== null" class="mt-2 text-sm" :class="verifyHit ? 'text-green-600' : 'text-red-500'">
-            {{ verifyHit ? '✓ 命中该规则' : '✗ 未命中' }}
-          </p>
+          <div v-if="verifyHit !== null" class="mt-2 space-y-1">
+            <p class="text-sm" :class="verifyHit ? 'text-green-600' : 'text-red-500'">
+              {{ verifyHit ? '✓ 命中该规则' : '✗ 未命中' }}
+            </p>
+            <!-- 命中后的动作参数：恢复时间（含文案提取出的时刻）/ 冷却秒数。
+                 用户要求：能看到提取的时间确实用到了动作里。 -->
+            <div
+              v-if="verifyHit && verifyDetail"
+              class="flex flex-wrap items-center gap-x-3 gap-y-0.5 rounded border border-border/60 bg-muted/40 px-2 py-1 text-[11px]"
+            >
+              <span class="text-muted-foreground"
+                >动作：<span class="text-foreground">{{ VERDICT_LABELS[verifyDetail.verdict ?? ''] ?? verifyDetail.verdict }}</span></span
+              >
+              <span v-if="verifyDetail.action_params" class="text-amber-600 dark:text-amber-300">
+                {{ verifyDetail.action_params }}
+              </span>
+            </div>
+          </div>
         </div>
 
         <DialogFooter>

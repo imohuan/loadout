@@ -21,6 +21,8 @@ export interface RuleAction {
   switch_account?: boolean
   fail_upgrade_count?: number
   fail_upgrade_recover?: string
+  /** 从错误文案中提取「恢复/重置时刻」作为恢复点（文案带时间时优先于 cooldown_seconds） */
+  extract_recover_at?: boolean
 }
 
 export interface FailureRule {
@@ -95,7 +97,14 @@ export const deleteFailureRule = (id: string) =>
 export const patchFailureRule = (id: string, body: { enabled?: boolean; confirm?: boolean }) =>
   request<{ ok: boolean }>(`/api/failure-rules/${id}`, "PATCH", body)
 export const verifyFailureRule = (rule: Partial<FailureRule>, sample: RuleEvidence) =>
-  request<{ hit: boolean }>("/api/failure-rules/verify", "POST", { rule, sample })
+  request<{
+    hit: boolean
+    verdict?: string
+    /** 预计恢复时刻（规则开启「提取恢复时间」且文案带时间时非空） */
+    recover_until?: string
+    /** 动作参数摘要（「恢复时间 2026-09-23 15:48:27」/「冷却 120 秒」） */
+    action_params?: string
+  }>("/api/failure-rules/verify", "POST", { rule, sample })
 export const listRuleDecisions = (limit = 50) =>
   request<RuleDecision[]>(`/api/rule-decisions?limit=${limit}`, "GET")
 

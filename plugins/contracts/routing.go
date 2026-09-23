@@ -75,6 +75,8 @@ type ModelHealth interface {
 	SetFailureRuleEnabled(context.Context, string, bool) error
 	ConfirmFailureRule(context.Context, string) error
 	VerifyFailureRule(failure.Rule, failure.Evidence) bool
+	// VerifyFailureRuleDetail 样本校验的完整结果（含动作参数：恢复时间/冷却秒数）。
+	VerifyFailureRuleDetail(failure.Rule, failure.Evidence) failure.VerifyDetail
 	ListRuleDecisions(context.Context, int) ([]map[string]any, error)
 	SetRuleAIModel(string)
 	// RestoreDefaultFailureRules 恢复内置默认规则（出厂状态），返回写入条数。

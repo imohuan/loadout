@@ -68,6 +68,11 @@ func (s *Service) VerifyFailureRule(rule failure.Rule, ev failure.Evidence) bool
 	return s.rules.VerifyRuleMatchOnly(rule, ev)
 }
 
+// VerifyFailureRuleDetail 样本校验的完整结果（含动作参数）。
+func (s *Service) VerifyFailureRuleDetail(rule failure.Rule, ev failure.Evidence) failure.VerifyDetail {
+	return s.rules.VerifyRuleDetail(rule, ev)
+}
+
 // ListRuleDecisions AI 判定日志。
 // SetRuleAIModel 更新 AI 兜底模型（设置保存后调用；空 = 关闭 AI 兜底）。
 // SetKeyResolver 注入 SK key 明文解析器（plugin.go 装配时注入）。

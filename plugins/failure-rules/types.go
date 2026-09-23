@@ -36,6 +36,12 @@ type Action struct {
 	// 限速升级：连续失败 FailUpgradeCount 次后升级为 FailUpgradeRecover 策略。
 	FailUpgradeCount   int    `json:"fail_upgrade_count,omitempty"`
 	FailUpgradeRecover string `json:"fail_upgrade_recover,omitempty"`
+	// ExtractRecoverAt 从错误文案中提取「恢复时间」交给动作。
+	//
+	// 用户要求：很多平台在限速/额度消息里明确给出重置时刻（如 code 6004 的
+	// 「将在 2026-09-23 15:48:27 UTC+8 重置」）。开启后恢复点 = 提取到的时刻，
+	// 而不是拍脑袋的 now+cooldown；提取不到时回退常规恢复策略。
+	ExtractRecoverAt bool `json:"extract_recover_at,omitempty"`
 }
 
 // Rule 一条失败规则（DB 行的内存表示）。

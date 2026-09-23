@@ -394,3 +394,33 @@ func (e *Engine) VerifyRuleMatchOnly(rule Rule, ev Evidence) bool {
 	c := compileRule(rule)
 	return matchConditions(c, ev)
 }
+
+// VerifyDetail 样本校验的完整结果：是否命中 + 命中后动作的参数。
+//
+// 用户要求：样本校验里不光要显示「命中与否」，还要显示动作参数——
+// 特别是「提取恢复时间」用到的时刻（恢复到几点）、冷却秒数等。
+type VerifyDetail struct {
+	Hit          bool   `json:"hit"`
+	Verdict      string `json:"verdict,omitempty"`
+	RecoverUntil string `json:"recover_until,omitempty"`
+	ActionParams string `json:"action_params,omitempty"`
+}
+
+// VerifyRuleDetail 计算校验明细（dry-run，无副作用）。
+func (e *Engine) VerifyRuleDetail(rule Rule, ev Evidence) VerifyDetail {
+	c := compileRule(rule)
+	if !matchConditions(c, ev) {
+		return VerifyDetail{Hit: false}
+	}
+	until, timed := nextRecoveryWithEvidence(rule.Action, ev, time.Now())
+	untilText := ""
+	if timed {
+		untilText = until.In(beijingTZ).Format("2006-01-02 15:04:05")
+	}
+	return VerifyDetail{
+		Hit:          true,
+		Verdict:      rule.Action.Verdict,
+		RecoverUntil: untilText,
+		ActionParams: actionParamsText(rule.Action.Verdict, untilText, rule.Action.CooldownSeconds),
+	}
+}
