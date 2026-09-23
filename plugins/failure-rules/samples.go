@@ -485,7 +485,7 @@ func (e *Engine) Replay(ctx context.Context, samples []Sample) ReplaySummary {
 		// 特别是「提取恢复时间」用到的那个时刻（恢复到几点），而不只是一个 verdict。
 		recoverUntil, params := "", ""
 		if d.MatchedRuleID != "" {
-			until, timed := nextRecoveryWithEvidence(d.Action, sm.Evidence(), time.Now())
+			until, timed := nextRecoveryWithEvidence(d.Action, sm.Evidence(), d.Captures, time.Now())
 			if timed {
 				recoverUntil = until.In(beijingTZ).Format("2006-01-02 15:04:05")
 			}
@@ -549,7 +549,13 @@ func (e *Engine) matchOnlyWithDrafts(ev Evidence) (Decision, bool) {
 		if !c.rule.scopeMatches(ev) {
 			continue
 		}
-		if matchConditions(c, ev) {
+		hit, caps := matchConditions(c, ev)
+		if hit {
+			dec := e.decisionOf(c)
+			dec.Captures = caps
+			return dec, !c.rule.Confirmed
+		}
+		if false {
 			return e.decisionOf(c), !c.rule.Confirmed
 		}
 	}

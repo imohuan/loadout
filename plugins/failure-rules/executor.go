@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
-	"regexp"
 	"strings"
 	"time"
 )
@@ -65,15 +64,19 @@ func (x *Executor) Execute(ctx context.Context, ac ActionContext) (bool, error) 
 
 // nextRecovery 计算恢复时间点。never 返回 (zero, false)。
 func nextRecovery(a Action, now time.Time) (time.Time, bool) {
-	return nextRecoveryWithEvidence(a, Evidence{}, now)
+	return nextRecoveryWithEvidence(a, Evidence{}, nil, now)
 }
 
-// nextRecoveryWithEvidence 同 nextRecovery，但支持「从错误文案提取恢复时间」。
+// nextRecoveryWithEvidence 同 nextRecovery，但支持捕获模板。
 //
-// 规则开启 ExtractRecoverAt 且文案里带可解析的时刻（如「将在 2026-09-23
-// 15:48:27 UTC+8 重置」）时，恢复点 = 提取到的时刻；提取不到或时间在过去
-// 则回退常规策略，规则照常工作。daily 的「明天刷新」语义保持不变。
-func nextRecoveryWithEvidence(a Action, ev Evidence, now time.Time) (time.Time, bool) {
+// captures 是正则条件命中的捕获组；动作的 CooldownSecondsTemplate /
+// RecoverAtTemplate 里可以用 $1/$2… 引用（通用机制，不限于时间）。
+//   - RecoverAtTemplate：展开结果解析成时间成功 → 恢复点 = 该时刻；
+//   - CooldownSecondsTemplate：展开结果是数字 → 冷却秒数 = 该值；
+//   - 都没配 / 展开失败 → 回退静态字段（cooldown_seconds，缺省 120s）。
+//
+// daily 的「明天刷新」语义保持不变。
+func nextRecoveryWithEvidence(a Action, ev Evidence, captures []string, now time.Time) (time.Time, bool) {
 	switch a.Recover {
 	case "never":
 		return time.Time{}, false
@@ -88,76 +91,25 @@ func nextRecoveryWithEvidence(a Action, ev Evidence, now time.Time) (time.Time, 
 		local := now.In(beijingTZ)
 		return time.Date(local.Year(), local.Month(), local.Day()+1, hour, 0, 0, 0, beijingTZ), true
 	default: // fixed
-		// 开了「从文案提取恢复时间」就先试提取：上游明确说「几点重置」时，
-		// 冷却到那个点比拍脑袋的 now+cooldown 准确得多（用户实测反馈）。
-		if a.ExtractRecoverAt {
-			if until, ok := extractRecoverAt(ev.Message, now); ok {
+		// 1) 恢复时刻模板：展开结果解析成时间即用。
+		if a.RecoverAtTemplate != "" {
+			if until, ok := parseTimeFlex(expandTemplate(a.RecoverAtTemplate, captures), now); ok {
 				return until, true
 			}
 		}
+		// 2) 冷却秒数模板：展开结果必须是正数。
+		if a.CooldownSecondsTemplate != "" {
+			if n, ok := toInt(expandTemplate(a.CooldownSecondsTemplate, captures)); ok && n > 0 {
+				return now.Add(time.Duration(n) * time.Second), true
+			}
+		}
+		// 3) 回退静态冷却。
 		secs := a.CooldownSeconds
 		if secs <= 0 {
 			secs = 120
 		}
 		return now.Add(time.Duration(secs) * time.Second), true
 	}
-}
-
-// recoverAtPatterns 上游文案里的时间写法（按平台实测积累）：
-//   - 2026-09-23 15:48:27 UTC+8（腾讯 copilot / newapi 系）
-//   - 2026-09-23 15:48:27 GMT+8 / +08:00
-//   - 2026/09/23 15:48:27、2026-09-23 15:48（秒可省）
-var recoverAtPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`20\d{2}[-/]\d{2}[-/]\d{2}[ T]\d{1,2}:\d{2}:\d{2}`),
-	regexp.MustCompile(`20\d{2}[-/]\d{2}[-/]\d{2}[ T]\d{1,2}:\d{2}`),
-}
-
-// recoverAtTZHints 时区写法 → 偏移。文案没写时区时按北京时间（+8）处理：
-// 目标上游以中国平台为主，与其依赖机器时区不如固定 +8 可预期。
-var recoverAtTZHints = []struct {
-	hint   []string
-	offset int
-}{
-	{[]string{"utc+8", "gmt+8", "+08:00", "cst", "北京时间"}, 8 * 3600},
-	{[]string{"utc+7", "gmt+7", "+07:00"}, 7 * 3600},
-}
-
-// extractRecoverAt 从错误文案中提取「恢复/重置时刻」。
-//
-// 找不到、解析失败或时间在过去（上游时钟漂移、示例文本）都返回 ok=false，
-// 调用方回退常规恢复策略。
-func extractRecoverAt(message string, now time.Time) (time.Time, bool) {
-	if message == "" {
-		return time.Time{}, false
-	}
-	lower := strings.ToLower(message)
-	offset := 8 * 3600
-	for _, h := range recoverAtTZHints {
-		for _, hint := range h.hint {
-			if strings.Contains(lower, hint) {
-				offset = h.offset
-				break
-			}
-		}
-	}
-	for _, re := range recoverAtPatterns {
-		m := re.FindString(message)
-		if m == "" {
-			continue
-		}
-		for _, layout := range []string{
-			"2006-01-02 15:04:05", "2006/01/02 15:04:05",
-			"2006-01-02T15:04:05", "2006-01-02 15:04", "2006/01/02 15:04",
-		} {
-			if t, err := time.ParseInLocation(layout, m, time.FixedZone("hint", offset)); err == nil {
-				if !t.After(now) {
-					return time.Time{}, false // 过去时间视为无效
-				}
-				return t, true
-			}
-		}
-	}
-	return time.Time{}, false
 }
 
 // actionParamsText 生成动作参数的人类可读摘要（回放/样本校验展示用）。
@@ -245,7 +197,7 @@ func (x *Executor) applyDisableKey(ctx context.Context, ac ActionContext) error 
 // 于是「每日额度用尽」既没禁 Key，也没法到期自动恢复。
 func (x *Executor) writeChannelState(ctx context.Context, ac ActionContext, a Action, class string) error {
 	now := time.Now().UTC()
-	until, timed := nextRecoveryWithEvidence(a, ac.Evidence, now)
+	until, timed := nextRecoveryWithEvidence(a, ac.Evidence, ac.Decision.Captures, now)
 	status := "disabled"
 	var untilAny any
 	if timed {
@@ -278,7 +230,7 @@ func (x *Executor) applyDisableModel(ctx context.Context, ac ActionContext) erro
 	// 该模型在当前渠道上禁用（disable_model 语义 = key 级模型禁用，
 	// 与 legacy auth/model_quota 行为一致；跨渠道全禁由 disable_provider 承担）。
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	until, timed := nextRecoveryWithEvidence(ac.Action, ac.Evidence, time.Now())
+	until, timed := nextRecoveryWithEvidence(ac.Action, ac.Evidence, ac.Decision.Captures, time.Now())
 	status := "disabled"
 	var untilAny any
 	if timed {
@@ -330,7 +282,7 @@ func (x *Executor) applyDisableProvider(ctx context.Context, ac ActionContext) e
 // writeModelState 写单个 key（channel+model）的状态。
 func (x *Executor) writeModelState(ctx context.Context, ac ActionContext, a Action, class string) error {
 	now := time.Now().UTC()
-	until, timed := nextRecoveryWithEvidence(a, ac.Evidence, now)
+	until, timed := nextRecoveryWithEvidence(a, ac.Evidence, ac.Decision.Captures, now)
 	status := "disabled"
 	var untilAny any
 	if timed {
@@ -391,4 +343,60 @@ func (x *Executor) ProviderURLFor(ctx context.Context, channelID string) string 
 		return ""
 	}
 	return strings.TrimRight(u, "/")
+}
+
+// parseTimeFlex 宽松解析时间文本（捕获模板的产物）。
+//
+// 支持常见格式与时区提示（UTC+8 / GMT+8 / +08:00 / 北京时间 / CST）；
+// 无时区提示时按北京时间（+8）。解析失败返回 ok=false。
+func parseTimeFlex(text string, now time.Time) (time.Time, bool) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return time.Time{}, false
+	}
+	lower := strings.ToLower(text)
+	offset := 8 * 3600
+	for _, h := range []struct {
+		hint   []string
+		offset int
+	}{
+		{[]string{"utc+8", "gmt+8", "+08:00", "cst", "北京时间"}, 8 * 3600},
+		{[]string{"utc+7", "gmt+7", "+07:00"}, 7 * 3600},
+	} {
+		for _, hint := range h.hint {
+			if strings.Contains(lower, hint) {
+				offset = h.offset
+				break
+			}
+		}
+	}
+	// 纯数字：Unix 时间戳（秒/毫秒）。
+	if n, ok := toInt(text); ok && n > 10^12 {
+		return time.UnixMilli(int64(n)), true
+	}
+	if n, ok := toInt(text); ok && n > 10^9 {
+		return time.Unix(int64(n), 0), true
+	}
+	for _, layout := range []string{
+		"2006-01-02 15:04:05", "2006/01/02 15:04:05",
+		"2006-01-02T15:04:05", "2006-01-02 15:04", "2006/01/02 15:04",
+		"2006-01-02", "2006/01/02",
+		"15:04:05", "15:04",
+	} {
+		if t, err := time.ParseInLocation(layout, text, time.FixedZone("hint", offset)); err == nil {
+			// 只给时间（15:04:05）→ 拼到今天；若已过去则拼到明天。
+			if layout == "15:04:05" || layout == "15:04" {
+				local := now.In(beijingTZ)
+				t = time.Date(local.Year(), local.Month(), local.Day(), t.Hour(), t.Minute(), t.Second(), 0, beijingTZ)
+				if !t.After(now) {
+					t = t.AddDate(0, 0, 1)
+				}
+			}
+			if layout == "2006-01-02" || layout == "2006/01/02" {
+				t = time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, beijingTZ)
+			}
+			return t, true
+		}
+	}
+	return time.Time{}, false
 }

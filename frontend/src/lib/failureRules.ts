@@ -21,8 +21,10 @@ export interface RuleAction {
   switch_account?: boolean
   fail_upgrade_count?: number
   fail_upgrade_recover?: string
-  /** 从错误文案中提取「恢复/重置时刻」作为恢复点（文案带时间时优先于 cooldown_seconds） */
-  extract_recover_at?: boolean
+  /** 冷却秒数模板：正则捕获组引用（如 $1），展开结果是数字 → 冷却秒数 */
+  cooldown_seconds_template?: string
+  /** 恢复时刻模板：正则捕获组引用（如 $1），展开结果解析成时间 → 恢复点 */
+  recover_at_template?: string
 }
 
 export interface FailureRule {

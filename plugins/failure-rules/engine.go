@@ -17,6 +17,9 @@ import (
 type compiledCond struct {
 	cond  Condition
 	regex *regexp.Regexp // 该条件声明了正则时非 nil；非法正则保持 nil（判不命中）
+	// lastCaptures 最近一次求值命中的捕获组（$0 = 整个匹配，$1.. = 子组）。
+	// 求值是单线程逐条件进行的，动作模板随后立即读取，无需加锁。
+	lastCaptures []string
 }
 
 // compiled 缓存编译后的规则。
@@ -140,9 +143,10 @@ func (e *Engine) Evaluate(ctx context.Context, ev Evidence) Decision {
 		if !c.rule.scopeMatches(ev) {
 			continue
 		}
-		if matchConditions(c, ev) {
+		hit, caps := matchConditions(c, ev)
+		if hit {
 			e.recordHit(c.rule.ID)
-			return Decision{MatchedRuleID: c.rule.ID, MatchedRuleName: c.rule.Name, Verdict: c.rule.Action.Verdict, Action: c.rule.Action}
+			return Decision{MatchedRuleID: c.rule.ID, MatchedRuleName: c.rule.Name, Verdict: c.rule.Action.Verdict, Action: c.rule.Action, Captures: caps}
 		}
 	}
 
@@ -212,25 +216,33 @@ func (e *Engine) recordHit(ruleID string) {
 	}
 }
 
-// matchConditions 求值一条编译规则的 any/all 条件。
-func matchConditions(c compiled, ev Evidence) bool {
+// matchConditions 求值一条编译规则的 any/all 条件；captures 带回命中正则的捕获组。
+// 正则条件命中时通过 FindStringSubmatch 取捕获（$0=整匹配，$1..=子组），
+// 写回 compiledCond.lastCaptures，供动作模板展开（见 Evaluate/matchOnly）。
+func matchConditions(c compiled, ev Evidence) (bool, []string) {
 	if len(c.any) > 0 {
-		for _, cc := range c.any {
+		for i := range c.any {
+			cc := &c.any[i]
 			if evalCondition(cc, ev) {
-				return true
+				return true, cc.lastCaptures
 			}
 		}
-		return false
+		return false, nil
 	}
 	if len(c.all) > 0 {
-		for _, cc := range c.all {
+		var caps []string
+		for i := range c.all {
+			cc := &c.all[i]
 			if !evalCondition(cc, ev) {
-				return false
+				return false, nil
+			}
+			if cc.lastCaptures != nil {
+				caps = cc.lastCaptures
 			}
 		}
-		return true
+		return true, caps
 	}
-	return false
+	return false, nil
 }
 
 // compileRule 把一条规则的两组条件预编译成求值用的形态。
@@ -296,14 +308,21 @@ func regexPattern(cond Condition) (string, bool) {
 	return pattern, true
 }
 
-func evalCondition(cc compiledCond, ev Evidence) bool {
+func evalCondition(cc *compiledCond, ev Evidence) bool {
 	cond := cc.cond
 	// 需要正则的条件统一走 cc.regex（按条件各自编译好的那一份）。
 	if _, ok := regexPattern(cond); ok {
 		if cc.regex == nil {
 			return false // 非法/空正则
 		}
-		return cc.regex.MatchString(ev.Message)
+		m := cc.regex.FindStringSubmatch(ev.Message)
+		if m == nil {
+			return false
+		}
+		// 捕获组带回给动作模板（$0 = 整个匹配，$1.. = 子组）。
+		// evalCondition 接收的是副本，这里通过指针接收方传递——见 matchConditions。
+		cc.lastCaptures = m
+		return true
 	}
 	switch cond.Field {
 	case "status_code":
@@ -381,7 +400,8 @@ func (e *Engine) VerifyRule(rule Rule, ev Evidence) bool {
 		return false
 	}
 	c := compileRule(rule)
-	return matchConditions(c, ev)
+	hit, _ := matchConditions(c, ev)
+	return hit
 }
 
 // VerifyRuleMatchOnly 只校验「匹配条件」本身，跳过作用域（scope/model）判断。
@@ -392,7 +412,8 @@ func (e *Engine) VerifyRule(rule Rule, ev Evidence) bool {
 // 而永远返回 false，用户填了完全正确的预测也显示「未命中」（实测踩过）。
 func (e *Engine) VerifyRuleMatchOnly(rule Rule, ev Evidence) bool {
 	c := compileRule(rule)
-	return matchConditions(c, ev)
+	hit, _ := matchConditions(c, ev)
+	return hit
 }
 
 // VerifyDetail 样本校验的完整结果：是否命中 + 命中后动作的参数。
@@ -408,19 +429,39 @@ type VerifyDetail struct {
 
 // VerifyRuleDetail 计算校验明细（dry-run，无副作用）。
 func (e *Engine) VerifyRuleDetail(rule Rule, ev Evidence) VerifyDetail {
+
 	c := compileRule(rule)
-	if !matchConditions(c, ev) {
+	hit, caps := matchConditions(c, ev)
+	if !hit {
 		return VerifyDetail{Hit: false}
 	}
-	until, timed := nextRecoveryWithEvidence(rule.Action, ev, time.Now())
+	until, timed := nextRecoveryWithEvidence(rule.Action, ev, caps, time.Now())
 	untilText := ""
 	if timed {
 		untilText = until.In(beijingTZ).Format("2006-01-02 15:04:05")
+	}
+	// 参数摘要的口径：
+	//   - 配了「恢复时刻模板」→ 显示恢复到几点（用户看得懂「等它说的那个时间」）；
+	//   - 配了「冷却秒数模板」→ 显示冷却多少秒（捕获展开值优先于静态值）；
+	//   - 都没配 → 用静态字段。
+	params := ""
+	if rule.Action.RecoverAtTemplate != "" {
+		if untilText != "" {
+			params = "恢复时间 " + untilText
+		}
+	} else if rule.Action.CooldownSecondsTemplate != "" {
+		if n, ok := toInt(expandTemplate(rule.Action.CooldownSecondsTemplate, caps)); ok && n > 0 {
+			params = fmt.Sprintf("冷却 %d 秒（来自文案捕获）", n)
+		} else if rule.Action.CooldownSeconds > 0 {
+			params = fmt.Sprintf("冷却 %d 秒", rule.Action.CooldownSeconds)
+		}
+	} else {
+		params = actionParamsText(rule.Action.Verdict, untilText, rule.Action.CooldownSeconds)
 	}
 	return VerifyDetail{
 		Hit:          true,
 		Verdict:      rule.Action.Verdict,
 		RecoverUntil: untilText,
-		ActionParams: actionParamsText(rule.Action.Verdict, untilText, rule.Action.CooldownSeconds),
+		ActionParams: params,
 	}
 }

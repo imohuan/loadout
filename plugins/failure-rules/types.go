@@ -36,12 +36,16 @@ type Action struct {
 	// 限速升级：连续失败 FailUpgradeCount 次后升级为 FailUpgradeRecover 策略。
 	FailUpgradeCount   int    `json:"fail_upgrade_count,omitempty"`
 	FailUpgradeRecover string `json:"fail_upgrade_recover,omitempty"`
-	// ExtractRecoverAt 从错误文案中提取「恢复时间」交给动作。
+	// 捕获模板：正则条件里的捕获组 (…) 在命中后可用 $1/$2… 引用，
+	// 动作字段里写模板即可引用捕获值（通用机制，不限于时间）。
 	//
-	// 用户要求：很多平台在限速/额度消息里明确给出重置时刻（如 code 6004 的
-	// 「将在 2026-09-23 15:48:27 UTC+8 重置」）。开启后恢复点 = 提取到的时刻，
-	// 而不是拍脑袋的 now+cooldown；提取不到时回退常规恢复策略。
-	ExtractRecoverAt bool `json:"extract_recover_at,omitempty"`
+	// 例：正则 `retry after (\d+) seconds` 命中后，
+	//   CooldownSecondsTemplate = "$1" → 冷却秒数取捕获值；
+	//   RecoverAtTemplate       = "$1" → 冷却到捕获的「2026-09-23 15:48:27」。
+	// 模板展开失败（无捕获/类型不符）时回退对应字段的静态值。
+	// 模板展开结果为数字时是「秒数」；解析成时间成功时是「时刻」。
+	CooldownSecondsTemplate string `json:"cooldown_seconds_template,omitempty"`
+	RecoverAtTemplate       string `json:"recover_at_template,omitempty"`
 }
 
 // Rule 一条失败规则（DB 行的内存表示）。
@@ -106,6 +110,10 @@ type Decision struct {
 	AIModel         string `json:"ai_model,omitempty"` // verdict 来自 AI 兜底时非空
 	AIRaw           string `json:"ai_raw,omitempty"`
 	Action          Action `json:"-"` // 命中规则的完整动作配置（内部传递）
+	// Captures 正则条件的捕获组（$0=整个匹配，$1..=子组）。
+	// 供动作模板（cooldown_seconds_template / recover_at_template）展开用，
+	// 不出 JSON——只在引擎 → 执行器的内存链路里传递。
+	Captures []string `json:"-"`
 }
 
 // routeScope 作用域命中判断（引擎内部用）。

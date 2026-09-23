@@ -975,6 +975,15 @@ UPDATE failure_rules
 SET match_json = REPLACE(match_json, '\d', '\\d')
 WHERE id='seed-015' AND match_json LIKE '%\d{2}[-/]%'
 `,
+}, {
+	version: 47,
+	name:    "seed015-capture-template",
+	sql: `
+-- seed-015 的动作从专用开关（extract_recover_at）迁到通用捕获模板
+-- （recover_at_template=$0：正则整匹配=时间文本）。仅当仍是旧值时改写，幂等。
+UPDATE failure_rules SET action_json = '{"verdict":"cooldown","recover":"fixed","recover_at_template":"$0"}' WHERE id='seed-015' AND action_json = '{"verdict":"cooldown","recover":"fixed","extract_recover_at":true}';
+UPDATE failure_rules SET match_json = REPLACE(match_json, '20\\d{2}[-/]\\d{2}[-/]\\d{2}[ T]\\d{1,2}:\\d{2}(:\\d{2})?', '20\\d{2}[-/]\\d{2}[-/]\\d{2}[ T]\\d{1,2}:\\d{2}:\\d{2}') WHERE id='seed-015';
+`,
 }}
 
 // Migrate applies all pending schema migrations and rejects an incompatible

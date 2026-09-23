@@ -55,15 +55,17 @@ func DefaultRules() []RuleInput {
 		{
 			// 限速且文案带「重置时刻」（如腾讯 copilot code 6004：
 			// 「您的使用量已超出频率限制，将在 2026-09-23 15:48:27 UTC+8 重置」）：
-			// 开「提取恢复时间」，冷却到上游自己说的那个点，而不是拍脑袋 2 分钟——
-			// 用户实测反馈：文案里明明给了时间，旧规则却只冷却 2 分钟、5 次后又
-			// 升级成 1 天，全都不对。该规则优先级比通用限速更高（49 < 50）。
+			// 正则捕获组抓出时间文本，动作里用 $1 引用（recover_at_template），
+			// 冷却到上游自己说的那个点，而不是拍脑袋 2 分钟——用户实测反馈：
+			// 文案里明明给了时间，旧规则却只冷却 2 分钟、5 次后又升级成 1 天。
+			// 优先级比通用限速更高（49 < 50）。这是**通用捕获模板**的一个实例，
+			// 任何数值/时间/文本都能用同样的方式提取。
 			Name: "限速带重置时间（按文案时刻恢复）", Priority: 49,
 			Match: Match{All: []Condition{
 				{Field: "status_code", Op: "eq", Value: 429},
-				{Field: "message_text", Op: "regex", Value: "20\\d{2}[-/]\\d{2}[-/]\\d{2}[ T]\\d{1,2}:\\d{2}(:\\d{2})?"},
+				{Field: "message_text", Op: "regex", Value: "20\\d{2}[-/]\\d{2}[-/]\\d{2}[ T]\\d{1,2}:\\d{2}:\\d{2}"},
 			}},
-			Action: Action{Verdict: VerdictCooldown, Recover: "fixed", ExtractRecoverAt: true},
+			Action: Action{Verdict: VerdictCooldown, Recover: "fixed", RecoverAtTemplate: "$0"},
 		},
 		{
 			// 平台没有这个模型：只禁该模型（其余模型照用），不要连坐整个 Key。

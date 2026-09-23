@@ -260,6 +260,16 @@ const recoverProxy = computed({
     form.value.action.recover = v === '__none__' ? '' : v
   },
 })
+// 模板字段的三向代理：Input 字符串 ⇄ Action 模板（空串 = 未设置）。
+// 与 scopeModeProxy 同理——后端 omitempty 需要空串而不是 undefined。
+const cooldownTemplateText = computed({
+  get: () => form.value.action.cooldown_seconds_template ?? '',
+  set: (v: string) => (form.value.action.cooldown_seconds_template = v.trim() || undefined),
+})
+const recoverAtTemplateText = computed({
+  get: () => form.value.action.recover_at_template ?? '',
+  set: (v: string) => (form.value.action.recover_at_template = v.trim() || undefined),
+})
 
 function emptyForm(): RuleInput {
   return {
@@ -1449,21 +1459,32 @@ async function openRuleFromName(ruleId?: string) {
           </div>
           <div class="space-y-1">
             <Label>冷却秒数</Label>
-            <Input v-model.number="form.action.cooldown_seconds" type="number" :disabled="form.action.recover !== 'fixed' || form.action.extract_recover_at" />
+            <Input v-model.number="form.action.cooldown_seconds" type="number" :disabled="form.action.recover !== 'fixed' || !!form.action.cooldown_seconds_template" />
           </div>
-          <!-- 提取恢复时间：文案里带「将在 … 重置」这类时刻时，冷却到那个点而不是固定秒数。
-               用户实测：腾讯 copilot 6004 明确给出重置时间，拍脑袋 2 分钟完全不对。 -->
-          <label
-            v-if="form.action.recover === 'fixed'"
-            class="col-span-1 flex cursor-pointer items-center gap-2 text-xs text-foreground sm:col-span-3"
-          >
-            <Checkbox
-              :model-value="form.action.extract_recover_at ?? false"
-              @update:model-value="(v: boolean) => (form.action.extract_recover_at = v)"
-            />
-            从错误文案提取恢复时间（如「将在 2026-09-23 15:48:27 UTC+8 重置」→ 冷却到该时刻；
-            提取不到时回退冷却秒数）
-          </label>
+          <!-- 捕获模板（通用）：正则条件里的捕获组 (…) 命中后可用 $1/$2… 引用。
+               cooldown_seconds_template 填数字模板（如 $1）→ 冷却秒数取捕获值；
+               recover_at_template 填时间模板（如 $1）→ 冷却到捕获的时刻。
+               提取失败时回退上面的静态冷却秒数。 -->
+          <template v-if="form.action.recover === 'fixed'">
+            <div class="space-y-1">
+              <Label>冷却秒数模板（可选）</Label>
+              <Input
+                v-model="cooldownTemplateText"
+                placeholder="如 $1（引用正则捕获组）；留空用上面的固定秒数"
+              />
+            </div>
+            <div class="space-y-1">
+              <Label>恢复时刻模板（可选）</Label>
+              <Input
+                v-model="recoverAtTemplateText"
+                placeholder="如 $1（正则捕获的「2026-09-23 15:48:27」→ 冷却到该时刻）"
+              />
+              <p class="text-muted-foreground text-xs">
+                正则条件里用捕获组 (…) 抓值，这里用 $1/$2 引用；$0 是整个匹配。
+                填了恢复时刻模板时优先生效；两者都留空则用固定秒数。
+              </p>
+            </div>
+          </template>
           <div v-if="form.action.recover === 'daily'" class="space-y-1">
             <Label>每日恢复点（小时）</Label>
             <Input v-model.number="form.action.daily_reset_hour" type="number" :min="0" :max="23" />
