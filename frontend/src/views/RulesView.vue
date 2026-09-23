@@ -1463,9 +1463,10 @@ async function openRuleFromName(ruleId?: string) {
               </SelectContent>
             </Select>
           </div>
-          <div class="space-y-1">
+          <!-- 冷却秒数只对「定时恢复」有意义：每日恢复用下面的恢复点，永久禁用不需要 -->
+          <div v-if="form.action.recover === 'fixed'" class="space-y-1">
             <Label>冷却秒数</Label>
-            <Input v-model.number="form.action.cooldown_seconds" type="number" :disabled="form.action.recover !== 'fixed' || !!form.action.cooldown_seconds_template" />
+            <Input v-model.number="form.action.cooldown_seconds" type="number" :disabled="!!form.action.cooldown_seconds_template" />
           </div>
           <!-- 捕获模板（通用）：正则条件里的捕获组 (…) 命中后可用 $1/$2… 引用。
                cooldown_seconds_template 填数字模板（如 $1）→ 冷却秒数取捕获值；
