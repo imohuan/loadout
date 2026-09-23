@@ -33,6 +33,12 @@ type Engine struct {
 
 	mu    sync.RWMutex
 	cache []compiled
+	// drafts AI 草稿（confirmed=0）的编译缓存。
+	//
+	// 只供「样本回放」使用——用户要求回测时能看到 AI 草稿的匹配效果，
+	// 并用差异样式提醒「这是临时生效，正式环境要人工确认」。
+	// 正式链路（Evaluate）永远只看 cache，草稿不确认就绝不生效。
+	drafts []compiled
 
 	// AI 兜底：nil = 未配置（无规则命中时走默认动作）。
 	ai *AIResolver
@@ -69,12 +75,16 @@ func (e *Engine) SetOnAIDecided(fn func(Evidence, Decision)) {
 	e.onAIDecided = fn
 }
 
-// Reload 重新加载启用且已确认的规则（按 priority 升序）。
+// Reload 重新加载规则（按 priority 升序）。
+//
+// 分两份缓存：confirmed=1 的正式规则进 cache（正式链路 + 回放都用），
+// confirmed=0 的 AI 草稿进 drafts（只有回放用）——用户要求回测时能看到
+// 草稿的匹配效果，同时草稿绝不影响正式裁决。
 func (e *Engine) Reload(ctx context.Context) {
 	rows, err := e.db.QueryContext(ctx, `
 		SELECT id, name, enabled, source, confirmed, priority, provider_base_url, model,
 		       match_json, action_json, hit_count, COALESCE(last_hit_at,''), created_at, updated_at
-		FROM failure_rules WHERE enabled = 1 AND confirmed = 1
+		FROM failure_rules WHERE enabled = 1 AND confirmed IN (0, 1)
 		ORDER BY priority ASC, rowid ASC`)
 	if err != nil {
 		e.lg.Warn("failure-rules: 加载规则失败", "err", err)
@@ -83,6 +93,7 @@ func (e *Engine) Reload(ctx context.Context) {
 	defer rows.Close()
 
 	var out []compiled
+	var draftOut []compiled
 	for rows.Next() {
 		var r Rule
 		var enabled, confirmed int
@@ -104,10 +115,15 @@ func (e *Engine) Reload(ctx context.Context) {
 			continue
 		}
 		c := compiled{rule: r, any: compileConditions(r.Match.Any), all: compileConditions(r.Match.All)}
-		out = append(out, c)
+		if r.Confirmed {
+			out = append(out, c)
+		} else {
+			draftOut = append(draftOut, c)
+		}
 	}
 	e.mu.Lock()
 	e.cache = out
+	e.drafts = draftOut
 	e.mu.Unlock()
 	e.lg.Info("failure-rules: 规则已加载", "count", len(out))
 }

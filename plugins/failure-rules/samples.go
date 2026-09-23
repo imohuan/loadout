@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
@@ -50,10 +51,15 @@ type ReplayResult struct {
 	SampleID        string `json:"sample_id"`
 	MatchedRuleID   string `json:"matched_rule_id,omitempty"`
 	MatchedRuleName string `json:"matched_rule_name,omitempty"`
-	Verdict         string `json:"verdict"`
-	Expected        string `json:"expected,omitempty"`
-	ExpectedOK      bool   `json:"expected_ok"`
-	Reason          string `json:"reason,omitempty"`
+	// IsDraft 命中的是 AI 草稿（confirmed=0）。
+	//
+	// 用户要求：回测时草稿也参与匹配并展示「匹配规则 + 结果」，但要用差异样式
+	// 提醒「只是回测临时生效，正式环境需人工确认」。前端据此渲染醒目草稿样式。
+	IsDraft    bool   `json:"is_draft,omitempty"`
+	Verdict    string `json:"verdict"`
+	Expected   string `json:"expected,omitempty"`
+	ExpectedOK bool   `json:"expected_ok"`
+	Reason     string `json:"reason,omitempty"`
 }
 
 // ReplaySummary 批量回放汇总。
@@ -468,11 +474,12 @@ func scanSample(row interface{ Scan(...any) error }) (Sample, error) {
 func (e *Engine) Replay(ctx context.Context, samples []Sample) ReplaySummary {
 	summary := ReplaySummary{Total: len(samples)}
 	for _, sm := range samples {
-		d := e.matchOnly(sm.Evidence())
+		d, isDraft := e.matchOnlyWithDrafts(sm.Evidence())
 		res := ReplayResult{
 			SampleID:        sm.ID,
 			MatchedRuleID:   d.MatchedRuleID,
 			MatchedRuleName: d.MatchedRuleName,
+			IsDraft:         isDraft,
 			Verdict:         d.Verdict,
 			Expected:        sm.ExpectedVerdict,
 			Reason:          d.Reason,
@@ -500,23 +507,43 @@ func (e *Engine) Replay(ctx context.Context, samples []Sample) ReplaySummary {
 	return summary
 }
 
-// matchOnly 只做规则匹配：不调 AI、不计命中数（回放必须无副作用）。
-func (e *Engine) matchOnly(ev Evidence) Decision {
+// matchOnlyWithDrafts 回放用匹配：正式规则优先，其次 AI 草稿（各自按 priority 升序）。
+//
+// 不调 AI、不计命中数（回放必须无副作用）。返回值第二个 bool 表示命中的是草稿。
+// 草稿参与匹配是回测可见性的要求——用户刚让 AI 生成的草稿，回放就要能看到
+// 它会怎么判；正式链路（Evaluate）永远不看草稿，草稿不确认绝不生效。
+func (e *Engine) matchOnlyWithDrafts(ev Evidence) (Decision, bool) {
 	e.mu.RLock()
-	cache := e.cache
+	cache, draftCache := e.cache, e.drafts
 	e.mu.RUnlock()
-	for _, c := range cache {
+	// 合并后按 priority 升序匹配（与正式链路同语义）；同优先级正式规则优先，
+	// 避免草稿「抢跑」遮住已确认规则。
+	all := make([]compiled, 0, len(cache)+len(draftCache))
+	all = append(all, cache...)
+	all = append(all, draftCache...)
+	sort.SliceStable(all, func(i, j int) bool {
+		if all[i].rule.Priority != all[j].rule.Priority {
+			return all[i].rule.Priority < all[j].rule.Priority
+		}
+		return !all[i].rule.Confirmed && all[j].rule.Confirmed
+	})
+	for _, c := range all {
 		if !c.rule.scopeMatches(ev) {
 			continue
 		}
 		if matchConditions(c, ev) {
-			return Decision{
-				MatchedRuleID:   c.rule.ID,
-				MatchedRuleName: c.rule.Name,
-				Verdict:         c.rule.Action.Verdict,
-				Action:          c.rule.Action,
-			}
+			return e.decisionOf(c), !c.rule.Confirmed
 		}
 	}
-	return Decision{Verdict: VerdictCooldown, Reason: "no_rule_matched"}
+	return Decision{Verdict: VerdictCooldown, Reason: "no_rule_matched"}, false
+}
+
+// decisionOf 由编译规则构造判定（无副作用，不写命中统计——回放专用）。
+func (e *Engine) decisionOf(c compiled) Decision {
+	return Decision{
+		MatchedRuleID:   c.rule.ID,
+		MatchedRuleName: c.rule.Name,
+		Verdict:         c.rule.Action.Verdict,
+		Action:          c.rule.Action,
+	}
 }

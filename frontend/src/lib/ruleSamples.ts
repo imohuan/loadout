@@ -24,6 +24,8 @@ export interface SampleReplayResult {
   sample_id: string
   matched_rule_id?: string
   matched_rule_name?: string
+  /** 命中的是 AI 草稿（回测临时生效，正式环境需在规则列表确认） */
+  is_draft?: boolean
   verdict: string
   expected?: string
   expected_ok: boolean

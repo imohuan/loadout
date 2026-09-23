@@ -14,6 +14,7 @@ import {
   RiDownload2Line,
   RiSparklingLine,
   RiLoader4Line,
+  RiErrorWarningLine,
 } from '@remixicon/vue'
 import {
   createFailureRule,
@@ -304,7 +305,7 @@ function switchTab(t: 'rules' | 'logs' | 'samples') {
 //      → 对不一致的样本点「AI 生成规则」→ 产出草稿待人工确认。
 const samples = ref<RuleSample[]>([])
 const replayMap = ref<Record<string, SampleReplayResult>>({})
-const replaySummary = ref<{ matched: number; unmatched: number; confirmedOk: number; confirmedTotal: number } | null>(null)
+const replaySummary = ref<{ matched: number; unmatched: number; draftMatched: number; confirmedOk: number; confirmedTotal: number } | null>(null)
 const samplesLoading = ref(false)
 const replaying = ref(false)
 const importing = ref(false)
@@ -375,6 +376,7 @@ async function runReplay() {
     replaySummary.value = {
       matched: sum.matched,
       unmatched: sum.unmatched,
+      draftMatched: (sum.results ?? []).filter((r) => r.is_draft).length,
       confirmedOk: sum.confirmed_ok,
       confirmedTotal: sum.confirmed_total,
     }
@@ -399,6 +401,8 @@ function sampleResultTone(id: string): string {
   const r = replayOf(id)
   if (!r) return 'bg-slate-500/15 text-slate-700 dark:text-slate-300 border-slate-500/20'
   if (r.expected && !r.expected_ok) return 'bg-red-500/15 text-red-700 dark:text-red-300 border-red-500/20'
+  // 命中草稿：琥珀（区别于正式规则的绿），呼应「临时生效需确认」的提醒。
+  if (r.is_draft) return 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/25'
   if (!r.matched_rule_id) return 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/20'
   return 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/20'
 }
@@ -407,6 +411,7 @@ function sampleResultLabel(id: string): string {
   const r = replayOf(id)
   if (!r) return '未回放'
   if (r.expected && !r.expected_ok) return `不一致（预期 ${VERDICT_LABELS[r.expected] ?? r.expected}）`
+  if (r.is_draft) return `草稿命中 · ${VERDICT_LABELS[r.verdict] ?? r.verdict}`
   if (!r.matched_rule_id) return '未命中规则'
   return `已匹配 · ${VERDICT_LABELS[r.verdict] ?? r.verdict}`
 }
@@ -1111,6 +1116,9 @@ openRuleFromQuery()
             {{ filteredSamples.length }} / {{ samples.length }} 条
             <template v-if="replaySummary">
               · 命中 {{ replaySummary.matched }} · 未命中 {{ replaySummary.unmatched }}
+              <template v-if="replaySummary.draftMatched">
+                · <span class="text-amber-600 dark:text-amber-300">草稿命中 {{ replaySummary.draftMatched }}</span>
+              </template>
               <template v-if="replaySummary.confirmedTotal">
                 · 预期一致 {{ replaySummary.confirmedOk }}/{{ replaySummary.confirmedTotal }}
               </template>
@@ -1157,9 +1165,27 @@ openRuleFromQuery()
                     </HoverTextCard>
                   </TableCell>
                   <TableCell class="text-xs">
-                    <span v-if="replayOf(s.id)?.matched_rule_name" class="text-foreground">
-                      {{ replayOf(s.id)?.matched_rule_name }}
-                    </span>
+                    <template v-if="replayOf(s.id)?.matched_rule_name">
+                      <!-- 命中 AI 草稿：琥珀描边 + 「草稿」角标，提醒这是回测临时生效，
+                           正式环境要在「规则列表」确认后才会生效。 -->
+                      <div
+                        v-if="replayOf(s.id)?.is_draft"
+                        class="rounded-md border border-amber-500/40 bg-amber-500/10 px-1.5 py-1"
+                      >
+                        <div class="flex items-center gap-1">
+                          <RiErrorWarningLine size="12" class="shrink-0 text-amber-600 dark:text-amber-300" />
+                          <span class="text-xs text-amber-700 dark:text-amber-300">
+                            {{ replayOf(s.id)?.matched_rule_name }}
+                          </span>
+                        </div>
+                        <p class="mt-0.5 text-[10px] leading-tight text-amber-600/90 dark:text-amber-300/80">
+                          AI 草稿 · 仅回测临时生效，正式环境需确认
+                        </p>
+                      </div>
+                      <span v-else class="text-foreground">
+                        {{ replayOf(s.id)?.matched_rule_name }}
+                      </span>
+                    </template>
                     <span v-else class="text-muted-foreground">—</span>
                   </TableCell>
                   <TableCell>
