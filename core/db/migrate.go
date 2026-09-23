@@ -984,6 +984,22 @@ WHERE id='seed-015' AND match_json LIKE '%\d{2}[-/]%'
 UPDATE failure_rules SET action_json = '{"verdict":"cooldown","recover":"fixed","recover_at_template":"$0"}' WHERE id='seed-015' AND action_json = '{"verdict":"cooldown","recover":"fixed","extract_recover_at":true}';
 UPDATE failure_rules SET match_json = REPLACE(match_json, '20\\d{2}[-/]\\d{2}[-/]\\d{2}[ T]\\d{1,2}:\\d{2}(:\\d{2})?', '20\\d{2}[-/]\\d{2}[-/]\\d{2}[ T]\\d{1,2}:\\d{2}:\\d{2}') WHERE id='seed-015';
 `,
+}, {
+	version: 48,
+	name:    "seed013-content-blocked-disables-key",
+	sql: `
+-- seed-013 语义修正（用户实测）：403 + body_code 11140「request illegal /
+-- 内容未通过安全审核」不是「请求内容有问题、换个模型就好」，而是这条 Key 被
+-- 平台风控标记——继续用它只会一直 403。动作从 ignore 改为 disable_key + never
+-- （需人工申诉/换号，不会自愈）。仅当仍是旧的 ignore 配置时改写，幂等，
+-- 不覆盖用户已自定义的动作。
+UPDATE failure_rules
+SET action_json = '{"verdict":"disable_key","recover":"never"}',
+    name = '内容未过安全审核（禁用当前Key）',
+    updated_at = '2026-01-01T00:00:00Z'
+ WHERE id = 'seed-013'
+ AND action_json = '{"verdict":"ignore"}';
+`,
 }}
 
 // Migrate applies all pending schema migrations and rejects an incompatible

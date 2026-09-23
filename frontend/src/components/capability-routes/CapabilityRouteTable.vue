@@ -15,6 +15,7 @@ import {
 } from '@/composables/useChannelRef'
 import ModelChannelRef from '@/components/ModelChannelRef.vue'
 import EmptyState from '@/components/EmptyState.vue'
+import AxTable from '@/components/ui/AxTable.vue'
 
 const props = defineProps<{
   routes: CapabilityRoute[]
@@ -122,6 +123,7 @@ function channelScopeLabel(channels: Channel[], ids?: string[], baseURLs?: strin
       </CardHeader>
       <CardContent class="p-0">
         <div v-if="routes.length" class="overflow-x-auto">
+          <AxTable>
           <Table>
             <TableHeader>
               <TableRow>
@@ -319,6 +321,7 @@ function channelScopeLabel(channels: Channel[], ids?: string[], baseURLs?: strin
               </TableRow>
             </TableBody>
           </Table>
+          </AxTable>
         </div>
         <EmptyState
           v-else

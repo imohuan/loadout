@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { Platform } from '@/lib/unifyai'
+import AxTable from '@/components/ui/AxTable.vue'
 
 /**
  * 「平台能力矩阵」帮助弹窗：纯展示各平台对模型 / MCP 同步的支持情况。
@@ -22,6 +23,7 @@ defineEmits<{
         <DialogTitle>平台能力矩阵</DialogTitle>
         <DialogDescription>UnifyAI 同步到各平台的模型 / MCP 支持情况。</DialogDescription>
       </DialogHeader>
+      <AxTable>
       <Table>
         <TableHeader>
           <TableRow>
@@ -62,6 +64,7 @@ defineEmits<{
           </TableRow>
         </TableBody>
       </Table>
+      </AxTable>
       <p class="text-xs leading-5 text-muted-foreground">
         提示：Codex / Claude Code 仅支持 MCP 同步；Reasonix 的 MCP 写入未实现（跳过）； 模型同步对
         OpenCode 为全量覆盖写入，执行前请确认已备份。

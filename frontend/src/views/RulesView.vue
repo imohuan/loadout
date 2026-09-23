@@ -882,7 +882,7 @@ async function openRuleFromName(ruleId?: string) {
             <Label>搜索</Label>
             <Input v-model="search" placeholder="名称 / 模型 / 平台 / ID" />
           </div>
-          <div class="min-w-36 space-y-1">
+          <div class="min-w-64 space-y-1">
             <Label>来源</Label>
             <Select v-model="filterSource">
               <SelectTrigger class="w-full"><SelectValue placeholder="全部来源" /></SelectTrigger>
@@ -1537,11 +1537,25 @@ async function openRuleFromName(ruleId?: string) {
           <div class="mb-2 flex items-center gap-1.5 text-sm font-medium">
             <RiFlaskLine size="14" /> 样本校验（dry-run）
           </div>
-          <div class="flex flex-wrap gap-2">
-            <Input v-model.number="verifySample.status_code" type="number" class="w-20 sm:w-24" placeholder="状态码" />
-            <Input v-model="verifySample.body_code" class="w-24 sm:w-28" placeholder="业务码" />
-            <Input v-model="verifySample.message" class="flex-1" placeholder="错误文案" />
-            <Button variant="secondary" :disabled="verifying" @click="runVerify">测试</Button>
+          <!-- 两行布局：第一行错误码 + 测试按钮（按钮固定右侧），
+               第二行多行文本框（错误文案常是 JSON/多行，单行输入框没法看）。
+               文本框默认 3 行、支持纵向拖拽 resize。 -->
+          <div class="space-y-2">
+            <div class="flex items-center gap-2">
+              <Input v-model.number="verifySample.status_code" type="number" class="w-20 sm:w-24" placeholder="状态码" />
+              <Input v-model="verifySample.body_code" class="w-24 sm:w-28" placeholder="业务码" />
+              <Button variant="secondary" :disabled="verifying" class="ml-auto shrink-0" @click="runVerify">
+                <RiLoader4Line v-if="verifying" class="animate-spin mr-1" size="15" />
+                <RiFlaskLine v-else size="15" class="mr-1" />
+                测试
+              </Button>
+            </div>
+            <Textarea
+              v-model="verifySample.message"
+              :rows="3"
+              class="min-h-[72px] resize-y font-mono text-xs"
+              placeholder="错误文案（支持多行 / 直接粘贴上游 JSON）"
+            />
           </div>
           <div v-if="verifyHit !== null" class="mt-2 space-y-1">
             <p class="text-sm" :class="verifyHit ? 'text-green-600' : 'text-red-500'">

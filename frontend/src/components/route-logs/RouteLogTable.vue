@@ -8,6 +8,7 @@ import ModelChannelRef from '@/components/ModelChannelRef.vue'
 import EmptyState from '@/components/EmptyState.vue'
 import DataPagination from '@/components/DataPagination.vue'
 import RouteLogErrorCell from '@/components/route-logs/RouteLogErrorCell.vue'
+import AxTable from '@/components/ui/AxTable.vue'
 
 const props = withDefaults(
   defineProps<{
@@ -302,7 +303,8 @@ function hasRequestLog(requestLogId?: string) {
     </CardHeader>
     <CardContent class="p-0">
       <div v-if="pagedLogs.length" class="overflow-x-auto">
-        <Table>
+       <AxTable>
+       <Table>
           <TableHeader>
             <TableRow>
               <TableHead class="w-10"></TableHead>
@@ -466,6 +468,7 @@ function hasRequestLog(requestLogId?: string) {
               </TableRow>
             </template></TableBody>
         </Table>
+        </AxTable>
       </div>
       <EmptyState v-else-if="!total" title="还没有请求记录" description="发生模型请求后，这里会按 request_id 展示完整路由过程。" />
       <div v-if="(props.total ?? logs.length) > 0" class="border-t border-border p-3">

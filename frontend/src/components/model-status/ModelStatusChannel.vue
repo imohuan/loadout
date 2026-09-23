@@ -14,6 +14,7 @@ import type { ChannelStatus, ModelStatus } from '@/lib/types'
 import ModelHealthBadge from '@/components/model-status/ModelHealthBadge.vue'
 import BulkSelectButtons from '@/components/BulkSelectButtons.vue'
 import { formatDate } from '@/lib/format'
+import AxTable from '@/components/ui/AxTable.vue'
 
 const props = defineProps<{
   item: ChannelStatus
@@ -270,6 +271,7 @@ function busy(action: string) {
         </div>
         <div v-if="expanded" class="border-t border-border">
           <div v-if="mode === 'table'" class="overflow-x-auto">
+            <AxTable>
             <Table>
               <TableHeader>
                 <TableRow>
@@ -371,6 +373,7 @@ function busy(action: string) {
                 </TableRow>
               </TableBody>
             </Table>
+            </AxTable>
           </div>
           <div v-else class="flex flex-wrap gap-1.5 p-3">
             <button

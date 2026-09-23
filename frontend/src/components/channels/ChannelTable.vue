@@ -15,6 +15,7 @@ import {
 import type { Channel } from '@/lib/types'
 import { groupChannelsByBaseURL, type ChannelGroup } from '@/composables/useChannels'
 import EmptyState from '@/components/EmptyState.vue'
+import AxTable from '@/components/ui/AxTable.vue'
 
 const props = defineProps<{ channels: Channel[]; isPending?: (key: string) => boolean }>()
 const emit = defineEmits<{
@@ -113,7 +114,8 @@ function groupTitle(group: ChannelGroup) {
       </CardHeader>
       <CardContent class="p-0">
         <div v-if="groups.length" class="w-full overflow-hidden">
-          <Table class="table-fixed w-full">
+          <AxTable>
+          <Table>
             <colgroup>
               <col class="w-10" />
               <col />
@@ -405,6 +407,7 @@ function groupTitle(group: ChannelGroup) {
               </template>
             </TableBody>
           </Table>
+          </AxTable>
         </div>
         <EmptyState v-else title="还没有渠道" description="先添加一个上游服务，再探测可用模型。" />
       </CardContent>

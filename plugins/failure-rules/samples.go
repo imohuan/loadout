@@ -489,7 +489,7 @@ func (e *Engine) Replay(ctx context.Context, samples []Sample) ReplaySummary {
 			if timed {
 				recoverUntil = until.In(beijingTZ).Format("2006-01-02 15:04:05")
 			}
-			params = actionParamsText(d.Verdict, recoverUntil, d.Action.CooldownSeconds)
+			params = actionParamsTextR(d.Verdict, recoverUntil, d.Action.CooldownSeconds, d.Action.Recover)
 		}
 		res := ReplayResult{
 			SampleID:        sm.ID,

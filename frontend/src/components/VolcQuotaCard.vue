@@ -21,6 +21,7 @@ import { useVolcQuota } from '@/composables/useVolcQuota'
 import { useConfirm } from '@/composables/useConfirm'
 import EmptyState from '@/components/EmptyState.vue'
 import VolcQuotaModelCards from '@/components/VolcQuotaModelCards.vue'
+import AxTable from '@/components/ui/AxTable.vue'
 
 const quota = useVolcQuota()
 const channelsApi = useChannels()
@@ -510,7 +511,8 @@ defineExpose({
                   class="h-7 w-56 text-xs"
                   @update:model-value="(v: string) => setPkgFilter(item.config.channel_id, v)" />
               </div>
-              <Table class="w-full text-xs">
+             <AxTable>
+             <Table>
                 <TableHeader>
                   <TableRow class="bg-muted/30 hover:bg-muted/30">
                     <TableHead>资源包</TableHead>
@@ -566,6 +568,7 @@ defineExpose({
                   </TableRow>
                 </TableBody>
               </Table>
+              </AxTable>
               <div v-if="filteredPackages(item).length === 0"
                 class="px-3 py-4 text-center text-xs text-muted-foreground">
                 没有匹配「{{ getPkgFilter(item.config.channel_id) }}」的资源包

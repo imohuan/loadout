@@ -10,6 +10,7 @@ import LoadingBlock from '@/components/LoadingBlock.vue'
 import SplitPane from '@/components/SplitPane.vue'
 import { getMcpInvocations } from '@/lib/api'
 import type { McpInvocation } from '@/lib/types'
+import AxTable from '@/components/ui/AxTable.vue'
 
 const loading = ref(false)
 const items = ref<McpInvocation[]>([])
@@ -196,7 +197,8 @@ onMounted(load)
           <div class="mb-2 text-sm text-muted-foreground">暂无工具调用记录</div>
           <p class="text-xs text-muted-foreground/70">触发单 MCP / 分组 / 聚合调用后自动记录</p>
         </div>
-        <Table v-else class="table-fixed w-full">
+       <AxTable v-else>
+       <Table>
           <colgroup>
             <col class="w-8" />
             <col class="w-[150px]" />
@@ -299,6 +301,7 @@ onMounted(load)
             </template>
           </TableBody>
         </Table>
+        </AxTable>
       </CardContent>
     </Card>
 

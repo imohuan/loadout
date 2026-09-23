@@ -15,6 +15,7 @@ import {
   type Platform,
   type PlatformId,
 } from '@/lib/unifyai'
+import AxTable from '@/components/ui/AxTable.vue'
 
 const props = defineProps<{
   /** 源 mcp.json 全集（行 = 去重后的服务器） */
@@ -143,7 +144,8 @@ const stats = computed(() => {
       </div>
     </div>
     <div class="overflow-x-auto rounded-md border">
-      <Table class="w-full min-w-[720px] table-fixed">
+     <AxTable>
+     <Table>
         <TableHeader>
           <TableRow>
             <TableHead class="w-44">MCP 服务器</TableHead>
@@ -265,6 +267,7 @@ const stats = computed(() => {
           </TableRow>
         </TableBody>
       </Table>
+      </AxTable>
       <div v-if="!servers.length"
         class="flex min-h-32 flex-col items-center justify-center gap-1 border-t p-6 text-center">
         <p class="text-sm text-muted-foreground">暂无 MCP 配置，先运行「导入各平台配置到源」。</p>

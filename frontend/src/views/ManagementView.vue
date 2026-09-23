@@ -20,6 +20,7 @@ import PageHeader from '@/components/PageHeader.vue'
 import LoadingBlock from '@/components/LoadingBlock.vue'
 import EmptyState from '@/components/EmptyState.vue'
 import VolcQuotaCard from '@/components/VolcQuotaCard.vue'
+import AxTable from '@/components/ui/AxTable.vue'
 import LogRetentionCard from '@/components/LogRetentionCard.vue'
 import ConfigExportDialog from '@/components/config-transfer/ConfigExportDialog.vue'
 import ConfigImportDialog from '@/components/config-transfer/ConfigImportDialog.vue'
@@ -507,6 +508,7 @@ onMounted(() => {
               </CardHeader>
               <CardContent class="p-0">
                 <div v-if="keys?.sk_keys?.length" class="overflow-x-auto">
+                  <AxTable>
                   <Table>
                     <TableHeader>
                       <TableRow>
@@ -545,6 +547,7 @@ onMounted(() => {
                       </TableRow>
                     </TableBody>
                   </Table>
+                  </AxTable>
                 </div>
                 <EmptyState
                   v-else
@@ -568,6 +571,7 @@ onMounted(() => {
             </CardHeader>
             <CardContent class="p-0">
               <div v-if="plugins?.plugins?.length" class="overflow-x-auto">
+                <AxTable>
                 <Table>
                   <TableHeader>
                     <TableRow>
@@ -596,6 +600,7 @@ onMounted(() => {
                     </template></TableBody
                   >
                 </Table>
+                </AxTable>
               </div>
               <EmptyState
                 v-else

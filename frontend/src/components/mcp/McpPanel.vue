@@ -26,6 +26,7 @@ import McpLogsTab from '@/components/mcp/McpLogsTab.vue'
 import McpInvocationsTab from '@/components/mcp/McpInvocationsTab.vue'
 import KeyValueRowsEditor from '@/components/mcp/KeyValueRowsEditor.vue'
 import ToolTestDialog from '@/components/mcp/ToolTestDialog.vue'
+import AxTable from '@/components/ui/AxTable.vue'
 import TranslateText from '@/components/TranslateText.vue'
 import { useMcpManagement, isServerActive } from '@/composables/useMcpManagement'
 import { useManagementApi } from '@/composables/useManagementApi'
@@ -416,7 +417,8 @@ async function copyConfig(endpoint: { path: string; label: string }) {
           </CardHeader>
           <CardContent class="p-0">
             <div v-if="mcp.servers.length" class="w-full overflow-hidden">
-              <Table class="table-fixed w-full">
+              <AxTable>
+              <Table>
                 <colgroup>
                   <col class="w-10" />
                   <col />
@@ -638,6 +640,7 @@ async function copyConfig(endpoint: { path: string; label: string }) {
                   </template>
                 </TableBody>
               </Table>
+              </AxTable>
             </div>
             <EmptyState
               v-else
@@ -655,6 +658,7 @@ async function copyConfig(endpoint: { path: string; label: string }) {
           </CardHeader>
           <CardContent class="p-0">
             <div v-if="mcp.groups.length" class="overflow-x-auto">
+              <AxTable>
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -696,6 +700,7 @@ async function copyConfig(endpoint: { path: string; label: string }) {
                   </TableRow>
                 </TableBody>
               </Table>
+              </AxTable>
             </div>
             <EmptyState v-else title="没有分组 MCP" description="添加一个分组来组合上游工具。" />
           </CardContent>
@@ -710,6 +715,7 @@ async function copyConfig(endpoint: { path: string; label: string }) {
             >
           </CardHeader>
           <CardContent class="p-0">
+            <AxTable>
             <Table>
               <TableHeader>
                 <TableRow>
@@ -878,6 +884,7 @@ async function copyConfig(endpoint: { path: string; label: string }) {
                 </template>
               </TableBody>
             </Table>
+            </AxTable>
           </CardContent>
         </Card>
       </TabsContent>

@@ -36,13 +36,18 @@ func DefaultRules() []RuleInput {
 			Action: Action{Verdict: VerdictDisableKey, Recover: "never", SwitchAccount: true},
 		},
 		{
-			// 账号正常，请求内容被平台风控拦截：与 Key 健康无关，不能冷却/禁用 Key。
-			Name: "内容未过安全审核（忽略，换下一个Key）", Priority: 45,
+			// 403 + 11140「request illegal / 内容未通过安全审核」：
+			//
+			// 语义修正（用户实测）：这不是「请求内容有问题、换个模型就好」，
+			// 而是**该 Key 已被平台风控标记**——继续用它只会一直 403。
+			// 所以禁用当前 Key（recover=never：风控要人工申诉/换号，不会自愈）。
+			// 原来判 ignore 会导致这条 Key 持续被选中反复失败。
+			Name: "内容未过安全审核（禁用当前Key）", Priority: 45,
 			Match: Match{All: []Condition{
 				{Field: "status_code", Op: "eq", Value: 403},
 				{Field: "body_code", Op: "eq", Value: "11140"},
 			}},
-			Action: Action{Verdict: VerdictIgnore},
+			Action: Action{Verdict: VerdictDisableKey, Recover: "never"},
 		},
 		{
 			Name: "限速（冷却2分钟，连续5次升级为次日恢复）", Priority: 50,

@@ -131,13 +131,17 @@ func TestMatchJSONRoundTrip(t *testing.T) {
 func TestEngineUpstreamErrorTaxonomy(t *testing.T) {
 	e, _ := newTestEngine(t)
 
-	// 403 + 11140 内容未过安全审核：账号正常，与 Key 健康无关 → ignore（不写状态）。
+	// 403 + 11140 内容未过安全审核：该 Key 已被平台风控标记 → disable_key。
+	//
+	// 语义修正（用户实测反馈）：这个错误不是「请求内容有问题、换个模型就好」，
+	// 而是上游把这条 Key 本身拉黑了——继续用它只会一直 403。所以动作必须是
+	// disable_key（配合 recover=never，需人工处理），而不是 ignore。
 	d := e.Evaluate(context.Background(), Evidence{
 		Model: "m", ChannelID: "ch1", StatusCode: 403, BodyCode: "11140",
 		Message: "request illegal 内容未通过安全审核",
 	})
-	if d.Verdict != VerdictIgnore {
-		t.Fatalf("content blocked should ignore, got %s (rule=%s)", d.Verdict, d.MatchedRuleID)
+	if d.Verdict != VerdictDisableKey {
+		t.Fatalf("content blocked（Key 被风控）应 disable_key，实际 %s (rule=%s)", d.Verdict, d.MatchedRuleID)
 	}
 
 	// 400 + 11102 平台没有该模型：只禁当前模型，不能禁 Key。

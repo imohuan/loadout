@@ -456,7 +456,7 @@ func (e *Engine) VerifyRuleDetail(rule Rule, ev Evidence) VerifyDetail {
 			params = fmt.Sprintf("冷却 %d 秒", rule.Action.CooldownSeconds)
 		}
 	} else {
-		params = actionParamsText(rule.Action.Verdict, untilText, rule.Action.CooldownSeconds)
+		params = actionParamsTextR(rule.Action.Verdict, untilText, rule.Action.CooldownSeconds, rule.Action.Recover)
 	}
 	return VerifyDetail{
 		Hit:          true,

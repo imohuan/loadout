@@ -114,13 +114,30 @@ func nextRecoveryWithEvidence(a Action, ev Evidence, captures []string, now time
 
 // actionParamsText 生成动作参数的人类可读摘要（回放/样本校验展示用）。
 func actionParamsText(verdict, until string, cooldownSeconds int) string {
+	return actionParamsTextR(verdict, until, cooldownSeconds, "")
+}
+
+// actionParamsTextR 带 recover 的版本：never 要说清「不会自动恢复」。
+//
+// 早期只按 verdict 判断，disable_key + recover=never（永久禁用）也会显示成
+// 「定时恢复」，误导用户以为会自动恢复（实测反馈）。
+func actionParamsTextR(verdict, until string, cooldownSeconds int, recover string) string {
 	switch verdict {
 	case VerdictCooldown, VerdictDisableKey, VerdictDisableModel, VerdictDisableProvider:
+		switch recover {
+		case "never":
+			return "永久禁用（需手动恢复）"
+		case "daily":
+			if until != "" {
+				return "次日恢复 " + until
+			}
+			return "次日恢复"
+		}
 		if until != "" {
 			return "恢复时间 " + until
 		}
 		if cooldownSeconds > 0 {
-			return "冷却 " + fmt.Sprint(cooldownSeconds) + " 秒"
+			return fmt.Sprintf("冷却 %d 秒", cooldownSeconds)
 		}
 		return "定时恢复"
 	default:

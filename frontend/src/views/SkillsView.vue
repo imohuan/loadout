@@ -26,6 +26,7 @@ import PageHeader from '@/components/PageHeader.vue'
 import LoadingBlock from '@/components/LoadingBlock.vue'
 import EmptyState from '@/components/EmptyState.vue'
 import SkillPreviewDialog from '@/components/SkillPreviewDialog.vue'
+import AxTable from '@/components/ui/AxTable.vue'
 import TranslateText from '@/components/TranslateText.vue'
 import { useTranslateStore } from '@/stores/translate'
 const api = useManagementApi()
@@ -539,7 +540,8 @@ async function restoreAllBackups() {
             </CardHeader>
             <CardContent class="p-0">
               <div v-if="skills?.length" class="overflow-x-auto">
-                <Table class="table-fixed w-full min-w-[60rem]">
+                <AxTable>
+                  <Table>
                   <TableHeader v-if="!groupBySource">
                     <TableRow>
                       <TableHead class="w-48">名称</TableHead>
@@ -864,8 +866,9 @@ async function restoreAllBackups() {
                       </TableRow>
                     </template>
                   </TableBody>
-                </Table>
-              </div>
+               </Table>
+                </AxTable>
+             </div>
               <EmptyState v-else title="还没有技能" description="通过来源安装技能。" />
             </CardContent>
           </Card>
@@ -877,7 +880,8 @@ async function restoreAllBackups() {
             </CardHeader>
             <CardContent class="p-0">
               <div v-if="presets?.length" class="overflow-x-auto">
-                <Table class="table-fixed w-full">
+                <AxTable>
+                  <Table>
                   <TableHeader>
                     <TableRow>
                       <TableHead class="w-32">名称</TableHead>
@@ -955,8 +959,9 @@ async function restoreAllBackups() {
                       </TableCell>
                     </TableRow>
                   </TableBody>
-                </Table>
-              </div>
+               </Table>
+                </AxTable>
+             </div>
               <EmptyState
                 v-else
                 title="还没有预设"
@@ -988,7 +993,8 @@ async function restoreAllBackups() {
                 <code class="font-mono">skills-backup</code>；检测到备份后可用「恢复」还原。
               </p>
               <div v-if="skillStatus?.length" class="overflow-x-auto">
-                <Table class="table-fixed w-full">
+                <AxTable>
+                  <Table>
                   <TableHeader>
                     <TableRow>
                       <TableHead class="w-64">平台</TableHead>
@@ -1026,8 +1032,9 @@ async function restoreAllBackups() {
                       </TableCell>
                     </TableRow>
                   </TableBody>
-                </Table>
-              </div>
+               </Table>
+                </AxTable>
+             </div>
               <EmptyState
                 v-else
                 title="暂无平台信息"

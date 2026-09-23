@@ -8,9 +8,9 @@
 //   都用这一份，不靠任何其他外壳组件——一个文件管所有错误展示。
 //
 // 「只要有内容就能 hover」是硬要求：很多失败没有上游响应体（聚合模型「所有目标当前
-// 不可用」、网络错误、路由前置拒绝等，error_body 为空），此前 hover 卡片被 hasJson
+// 不可用」、网络错误、路由前置拒绝等，error_body 为空），此前 hover 卡片被「有没有 JSON」
 // 挡住，一半的错误点不出任何东西。现在只要有响应体或 error_message 就弹卡：
-// 响应体能解析成 JSON 走彩色预览，纯文本原样展示，都没有则展示完整 error_message。
+// 响应体能解析成 JSON 走彩色预览，纯文本原样展示，两者都没有才回落完整的 error_message。
 import { computed, ref } from 'vue'
 import { HoverCard, HoverCardContent, HoverCardTrigger } from 'shadcn-vue-cdn'
 import { extractErrorSummary } from '@/lib/errorExtract'
@@ -34,15 +34,17 @@ const props = withDefaults(
 
 // 基础文本：JSON 里提取 msg/message，找不到回退到传入的 error_message
 const summary = computed(() => extractErrorSummary(props.json, props.message))
-const jsonText = computed(() => (props.json || '').trim())
-const hasJson = computed(() => jsonText.value !== '')
-// 卡片正文（不截断）：有上游响应体就用它；没有（如聚合模型「所有目标当前不可用」
-// 这类只有 error_message 的失败）就用完整 error_message。列表里那行仍是截断摘要。
-const fullText = computed(() => (props.message || '').trim() || summary.value)
-const cardBody = computed(() => (hasJson.value ? (props.json as string) : fullText.value))
+// 上游响应体（JSON 或纯文本）。是否 JSON 由 ErrorJsonPreview 内部判断，这里只判有无。
+const bodyText = computed(() => (props.json || '').trim())
+const hasBody = computed(() => bodyText.value !== '')
+// 无响应体时的正文：完整 error_message（截断只发生在列表那一行摘要里）
+const messageText = computed(() => (props.message || '').trim() || summary.value)
+// 卡片正文（不截断）：有响应体就用响应体原文；没有（如聚合模型「所有目标当前不可用」
+// 这类只有 error_message 的失败）才回落 error_message。
+const cardBody = computed(() => (hasBody.value ? (props.json as string) : messageText.value))
 // 只要有一丁点可展示内容就允许 hover：不再要求必须有 error_body，
 // 否则一半失败（无上游响应体）会点不出任何东西。
-const hasContent = computed(() => hasJson.value || Boolean(fullText.value))
+const hasContent = computed(() => hasBody.value || Boolean(messageText.value))
 
 // 复制到剪贴板。失败（如非安全上下文）静默吞掉。
 async function copyJson() {
@@ -92,13 +94,18 @@ const copied = ref(false)
             {{ copied ? '已复制' : '复制' }}
           </button>
         </div>
-        <!-- 有上游响应体（JSON / 纯文本）走彩色预览，非 JSON 自动降级为原样文本；
-             没有响应体时展示完整 error_message -->
-        <ErrorJsonPreview v-if="hasJson" :body="jsonText" :compact="true" max-height-class="max-h-72" />
+        <!-- 有上游响应体：JSON 走彩色预览，纯文本原样展示（由 ErrorJsonPreview 内部降级）；
+             完全没有响应体时展示完整 error_message -->
+        <ErrorJsonPreview
+          v-if="hasBody"
+          :body="bodyText"
+          :compact="true"
+          max-height-class="max-h-72"
+        />
         <pre
           v-else
           class="max-h-72 overflow-auto whitespace-pre-wrap break-all font-mono text-[11px] leading-snug text-foreground/80"
-          >{{ fullText }}</pre>
+          >{{ messageText }}</pre>
       </div>
     </HoverCardContent>
   </HoverCard>
@@ -132,8 +139,8 @@ const copied = ref(false)
       </button>
     </div>
     <ErrorJsonPreview
-      v-if="hasJson"
-      :body="jsonText"
+      v-if="hasBody"
+      :body="bodyText"
       :compact="props.compact"
       :max-height-class="props.compact ? 'max-h-40' : 'max-h-80'"
       class="mt-1"
@@ -145,7 +152,7 @@ const copied = ref(false)
         props.compact ? 'max-h-40 text-[11px]' : 'max-h-80 text-xs',
       ]"
       class="mt-1"
-      >{{ fullText }}</pre>
+      >{{ messageText }}</pre>
   </div>
   <p v-else-if="summary" class="mt-1 text-xs text-muted-foreground">{{ summary }}</p>
 </template>
