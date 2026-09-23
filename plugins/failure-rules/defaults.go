@@ -50,14 +50,6 @@ func DefaultRules() []RuleInput {
 			Action: Action{Verdict: VerdictDisableKey, Recover: "never"},
 		},
 		{
-			Name: "限速（冷却2分钟，连续5次升级为次日恢复）", Priority: 50,
-			Match: Match{All: []Condition{
-				{Field: "status_code", Op: "eq", Value: 429},
-				{Field: "message_text", Op: "not_contains", Value: "额度"},
-			}},
-			Action: Action{Verdict: VerdictCooldown, CooldownSeconds: 120, Recover: "fixed", FailUpgradeCount: 5, FailUpgradeRecover: "daily"},
-		},
-		{
 			// 限速且文案带「重置时刻」（如腾讯 copilot code 6004：
 			// 「您的使用量已超出频率限制，将在 2026-09-23 15:48:27 UTC+8 重置」）：
 			// 正则捕获组抓出时间文本，动作里用 $1 引用（recover_at_template），
@@ -71,6 +63,14 @@ func DefaultRules() []RuleInput {
 				{Field: "message_text", Op: "regex", Value: "20\\d{2}[-/]\\d{2}[-/]\\d{2}[ T]\\d{1,2}:\\d{2}:\\d{2}"},
 			}},
 			Action: Action{Verdict: VerdictCooldown, Recover: "fixed", RecoverAtTemplate: "$0"},
+		},
+		{
+			Name: "限速（冷却2分钟，连续5次升级为次日恢复）", Priority: 50,
+			Match: Match{All: []Condition{
+				{Field: "status_code", Op: "eq", Value: 429},
+				{Field: "message_text", Op: "not_contains", Value: "额度"},
+			}},
+			Action: Action{Verdict: VerdictCooldown, CooldownSeconds: 120, Recover: "fixed", FailUpgradeCount: 5, FailUpgradeRecover: "daily"},
 		},
 		{
 			// 平台没有这个模型：只禁该模型（其余模型照用），不要连坐整个 Key。

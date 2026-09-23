@@ -1000,6 +1000,21 @@ SET action_json = '{"verdict":"disable_key","recover":"never"}',
  WHERE id = 'seed-013'
  AND action_json = '{"verdict":"ignore"}';
 `,
+}, {
+	version: 49,
+	name:    "swap-seed005-seed015-mismatch",
+	sql: `
+-- 修复 seed-005/seed-015 的内容错位。
+-- RestoreDefaults 按 DefaultRules() 下标与 DefaultRuleIDs[i] 对位 upsert。插入 seed-015
+-- 时只更新了 IDs 列表没调整 DefaultRules() 顺序，导致两条限速规则互写到对方 ID：
+--   seed-005 ← 限速带重置时间（priority 49, recover_at_template）
+--   seed-015 ← 限速冷却2分钟（priority 50, fail_upgrade）
+-- match/action 本身正确，运行行为没错；但 ID 错位会让跳转编辑/恢复默认很困惑。
+-- 临时 ID 避免唯一键冲突；仅当名字仍是错位状态时交换，幂等。
+UPDATE failure_rules SET id = 'seed-015-swap' WHERE id = 'seed-005' AND name = '限速带重置时间（按文案时刻恢复）';
+UPDATE failure_rules SET id = 'seed-005' WHERE id = 'seed-015' AND name = '限速（冷却2分钟，连续5次升级为次日恢复）';
+UPDATE failure_rules SET id = 'seed-015' WHERE id = 'seed-015-swap';
+`,
 }}
 
 // Migrate applies all pending schema migrations and rejects an incompatible
