@@ -815,6 +815,24 @@ async function openRuleFromQuery() {
 }
 
 openRuleFromQuery()
+
+// openRuleFromName 从回放/判定日志点规则名 → 打开对应规则的编辑弹窗（查看/编辑）。
+//
+// 注意不能绕道 ?rule=<id> query：router.replace 是异步的，紧接着读
+// route.query.rule 拿到的还是旧值（实测踩过：弹窗纹丝不动、也无报错）。
+// 这里直接同步查表打开；规则列表可能还没加载时补一次 await load()。
+async function openRuleFromName(ruleId?: string) {
+  if (!ruleId) return
+  if (!rules.value.length) {
+    await load()
+  }
+  const rule = rules.value.find((r) => r.id === ruleId)
+  if (!rule) {
+    toast.error(`未找到规则 ${ruleId}（可能已被删除）`)
+    return
+  }
+  openEdit(rule)
+}
 </script>
 
 <template>
@@ -1058,7 +1076,14 @@ openRuleFromQuery()
                   </HoverTextCard>
                 </TableCell>
                 <TableCell>
-                  <Badge v-if="d.matched_rule_id" variant="outline" class="text-[11px] whitespace-normal">
+                  <!-- 命中规则可点击 → 打开对应规则的编辑弹窗；hover 下划线提示 -->
+                  <Badge
+                    v-if="d.matched_rule_id"
+                    variant="outline"
+                    class="cursor-pointer whitespace-normal text-[11px] hover:underline"
+                    title="点击查看 / 编辑该规则"
+                    @click.stop="openRuleFromName(d.matched_rule_id)"
+                  >
                     {{ d.matched_rule_name || d.matched_rule_id }}
                   </Badge>
                   <Badge v-else-if="d.ai_model" variant="outline" class="border border-violet-500/20 bg-violet-500/15 text-[11px] text-violet-700 dark:text-violet-300">AI 判定</Badge>
@@ -1148,7 +1173,7 @@ openRuleFromQuery()
                   <TableHead class="max-w-[420px]">错误摘要</TableHead>
                   <TableHead class="min-w-[150px] max-w-[240px]">匹配规则</TableHead>
                   <TableHead class="min-w-[170px]">结果</TableHead>
-                  <TableHead class="min-w-[176px]">操作</TableHead>
+                  <TableHead class="min-w-[200px]">操作</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -1174,7 +1199,8 @@ openRuleFromQuery()
                       >
                         <!-- 单行：图标 + 规则名。说明文字收进图标的 hover tooltip，
                              避免第二行把表格行撑高（用户要求）。 -->
-                        <div class="flex items-center gap-1">
+                        <!-- 规则名可点击：跳到对应规则的编辑弹窗；hover 出下划线提示可点 -->
+                        <div class="flex min-w-0 items-center gap-1">
                           <TooltipProvider>
                             <Tooltip>
                               <TooltipTrigger as-child>
@@ -1188,12 +1214,21 @@ openRuleFromQuery()
                               </TooltipContent>
                             </Tooltip>
                           </TooltipProvider>
-                          <span class="truncate text-xs text-amber-700 dark:text-amber-300">
+                          <span
+                            class="cursor-pointer truncate text-xs text-amber-700 hover:underline dark:text-amber-300"
+                            title="点击查看 / 编辑该规则"
+                            @click.stop="openRuleFromName(replayOf(s.id)?.matched_rule_id)"
+                          >
                             {{ replayOf(s.id)?.matched_rule_name }}
                           </span>
                         </div>
                       </div>
-                      <span v-else class="text-foreground">
+                      <span
+                        v-else
+                        class="cursor-pointer text-foreground hover:underline"
+                        title="点击查看 / 编辑该规则"
+                        @click.stop="openRuleFromName(replayOf(s.id)?.matched_rule_id)"
+                      >
                         {{ replayOf(s.id)?.matched_rule_name }}
                       </span>
                     </template>
@@ -1213,8 +1248,10 @@ openRuleFromQuery()
                            上面一枚胶囊标签，下面一行灰色小字。
                            运行中第二行是流式尾部（打字机），结束后第二行是
                            「最后一轮为什么没通过」，让用户知道 AI 卡在哪。 -->
-                      <div v-if="authorSessions[s.id]" class="flex min-w-0 flex-col items-start gap-0.5">
-                        <Badge variant="outline" class="border text-[11px] whitespace-nowrap" :class="authorTone(s.id)">
+                      <!-- shrink-0：进度块整体不允许被 flex 压缩，空间不够时宁可让
+                           外层表格滚动，也不能把「生成中」胶囊和「思考」标签挤变形。 -->
+                      <div v-if="authorSessions[s.id]" class="flex max-w-full shrink-0 flex-col items-start gap-0.5">
+                        <Badge variant="outline" class="shrink-0 whitespace-nowrap border text-[11px]" :class="authorTone(s.id)">
                           <RiLoader4Line
                             v-if="authorSessions[s.id]?.status === 'running'"
                             class="animate-spin mr-1"
@@ -1226,15 +1263,17 @@ openRuleFromQuery()
                         </Badge>
                         <!-- 第二行 = 正在吐出的文字（尾部 10 字）+ 它属于「思考」还是「文本」。
                              用户要求：不管是思考还是正文，直接原样输出即可，但要能看出是哪一种。 -->
+                        <!-- 第二行：标签不缩（shrink-0），尾部文字占满剩余宽度自己截断；
+                             不再给整行写死 max-w，避免容器变窄时把「思考」标签压扁。 -->
                         <span
                           v-if="authorSessions[s.id]?.status === 'running'"
-                          class="flex max-w-[168px] items-center gap-1 truncate text-left text-[10px]"
+                          class="flex w-full max-w-[200px] items-center gap-1 text-left text-[10px]"
                           :title="authorSessions[s.id]?.stream_tail || ''"
                         >
                           <span v-if="streamKindLabel(s.id)" :class="streamKindTone(s.id)">
                             {{ streamKindLabel(s.id) }}
                           </span>
-                          <span class="font-mono truncate text-muted-foreground"
+                          <span class="min-w-0 flex-1 truncate font-mono text-muted-foreground"
                             >{{ authorSessions[s.id]?.stream_tail || '…' }}<span class="animate-pulse">▍</span></span
                           >
                         </span>
