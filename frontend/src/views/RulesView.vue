@@ -882,7 +882,7 @@ async function openRuleFromName(ruleId?: string) {
             <Label>搜索</Label>
             <Input v-model="search" placeholder="名称 / 模型 / 平台 / ID" />
           </div>
-          <div class="min-w-64 space-y-1">
+          <div class="min-w-36 space-y-1">
             <Label>来源</Label>
             <Select v-model="filterSource">
               <SelectTrigger class="w-full"><SelectValue placeholder="全部来源" /></SelectTrigger>
