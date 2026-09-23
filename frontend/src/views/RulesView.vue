@@ -15,6 +15,7 @@ import {
   RiSparklingLine,
   RiLoader4Line,
   RiErrorWarningLine,
+  RiInformationLine,
 } from '@remixicon/vue'
 import {
   createFailureRule,
@@ -1336,12 +1337,17 @@ async function openRuleFromName(ruleId?: string) {
 
     <!-- ===== 编辑弹窗（shadcn Dialog）===== -->
     <Dialog v-model:open="showEditor">
-      <DialogContent class="max-h-[92vh] w-[calc(100vw-2rem)] sm:max-w-2xl! overflow-y-auto">
+      <!-- 三段式布局：标题与底部按钮固定，只有中间表单区滚动。
+           之前 overflow-y-auto 直接挂在 DialogContent 上，整块（含标题/按钮）一起滚，
+           长表单（模板字段 + 样本校验）滚到下面时看不到「保存」。 -->
+      <DialogContent class="max-h-[92vh] w-[calc(100vw-2rem)] sm:max-w-2xl! flex flex-col overflow-hidden">
         <DialogHeader>
           <DialogTitle>{{ editing ? '编辑规则' : '新建规则' }}</DialogTitle>
           <DialogDescription>规则按优先级从小到大匹配，首个命中生效</DialogDescription>
         </DialogHeader>
 
+        <!-- 中间滚动区：min-h-0 是 flex 子项能滚动的必要条件（默认 min-height:auto 会撑开）。 -->
+        <div class="-mx-1 min-h-0 flex-1 space-y-3 overflow-y-auto px-1">
         <!-- 小窗口（<640px）全部单列排布，避免字段被挤扁；sm 起才两列。 -->
         <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <div class="col-span-2 space-y-1">
@@ -1466,24 +1472,59 @@ async function openRuleFromName(ruleId?: string) {
                recover_at_template 填时间模板（如 $1）→ 冷却到捕获的时刻。
                提取失败时回退上面的静态冷却秒数。 -->
           <template v-if="form.action.recover === 'fixed'">
+            <!-- TooltipProvider 必须就近包：Dialog 内容会被 teleport 到 body，
+                 外层 DashboardLayout 的 provider 覆盖不到它。 -->
+            <TooltipProvider :delay-duration="100">
             <div class="space-y-1">
-              <Label>冷却秒数模板（可选）</Label>
+              <div class="flex items-center gap-1">
+                <Label>冷却秒数模板</Label>
+                <!-- 说明收进可 hover 的小图标：长文案不再占版面 -->
+                <Tooltip>
+                  <TooltipTrigger as-child>
+                    <button
+                      type="button"
+                      class="text-muted-foreground hover:text-foreground"
+                      aria-label="冷却秒数模板说明"
+                    >
+                      <RiInformationLine size="13" />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="top" class="max-w-xs whitespace-normal break-words text-left">
+                    正则条件里用捕获组 (…) 抓值，这里用 $1/$2 引用（$0 = 整个匹配）。
+                    例如正则抓到 300，填 $1 → 冷却 300 秒。留空则用左边的固定冷却秒数。
+                  </TooltipContent>
+                </Tooltip>
+              </div>
               <Input
                 v-model="cooldownTemplateText"
                 placeholder="如 $1（引用正则捕获组）；留空用上面的固定秒数"
               />
             </div>
             <div class="space-y-1">
-              <Label>恢复时刻模板（可选）</Label>
+              <div class="flex items-center gap-1">
+                <Label>恢复时刻模板</Label>
+                <Tooltip>
+                  <TooltipTrigger as-child>
+                    <button
+                      type="button"
+                      class="text-muted-foreground hover:text-foreground"
+                      aria-label="恢复时刻模板说明"
+                    >
+                      <RiInformationLine size="13" />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="top" class="max-w-xs whitespace-normal break-words text-left">
+                    引用正则捕获的时间文本（如 $1 = 2026-09-23 15:48:27），系统会解析成恢复时刻。
+                    填了它时优先生效，覆盖上面的冷却秒数；留空则按固定秒数算。
+                  </TooltipContent>
+                </Tooltip>
+              </div>
               <Input
                 v-model="recoverAtTemplateText"
                 placeholder="如 $1（正则捕获的「2026-09-23 15:48:27」→ 冷却到该时刻）"
               />
-              <p class="text-muted-foreground text-xs">
-                正则条件里用捕获组 (…) 抓值，这里用 $1/$2 引用；$0 是整个匹配。
-                填了恢复时刻模板时优先生效；两者都留空则用固定秒数。
-              </p>
             </div>
+            </TooltipProvider>
           </template>
           <div v-if="form.action.recover === 'daily'" class="space-y-1">
             <Label>每日恢复点（小时）</Label>
@@ -1520,6 +1561,7 @@ async function openRuleFromName(ruleId?: string) {
               </span>
             </div>
           </div>
+        </div>
         </div>
 
         <DialogFooter>
