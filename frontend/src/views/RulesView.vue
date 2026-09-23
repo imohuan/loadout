@@ -1172,15 +1172,26 @@ openRuleFromQuery()
                         v-if="replayOf(s.id)?.is_draft"
                         class="rounded-md border border-amber-500/40 bg-amber-500/10 px-1.5 py-1"
                       >
+                        <!-- 单行：图标 + 规则名。说明文字收进图标的 hover tooltip，
+                             避免第二行把表格行撑高（用户要求）。 -->
                         <div class="flex items-center gap-1">
-                          <RiErrorWarningLine size="12" class="shrink-0 text-amber-600 dark:text-amber-300" />
-                          <span class="text-xs text-amber-700 dark:text-amber-300">
+                          <TooltipProvider>
+                            <Tooltip>
+                              <TooltipTrigger as-child>
+                                <RiErrorWarningLine
+                                  size="12"
+                                  class="shrink-0 cursor-help text-amber-600 dark:text-amber-300"
+                                />
+                              </TooltipTrigger>
+                              <TooltipContent side="top" class="max-w-[260px] whitespace-normal break-words">
+                                AI 草稿 · 仅回测临时生效，正式环境需确认
+                              </TooltipContent>
+                            </Tooltip>
+                          </TooltipProvider>
+                          <span class="truncate text-xs text-amber-700 dark:text-amber-300">
                             {{ replayOf(s.id)?.matched_rule_name }}
                           </span>
                         </div>
-                        <p class="mt-0.5 text-[10px] leading-tight text-amber-600/90 dark:text-amber-300/80">
-                          AI 草稿 · 仅回测临时生效，正式环境需确认
-                        </p>
                       </div>
                       <span v-else class="text-foreground">
                         {{ replayOf(s.id)?.matched_rule_name }}
