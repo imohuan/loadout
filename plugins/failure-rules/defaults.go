@@ -20,7 +20,7 @@ func DefaultRules() []RuleInput {
 				{Field: "message_text", Op: "contains", Value: "额度已用尽"},
 				{Field: "message_text", Op: "contains", Value: "quota exhausted"},
 			}},
-			Action: Action{Verdict: VerdictDisableKey, Recover: "daily", DailyResetHour: 12},
+			Action: Action{Verdict: VerdictDisableKey, Recover: "daily", DailyResetHour: hourPtrValue(12)},
 		},
 		{
 			Name: "账户余额不足（禁用key）", Priority: 30,

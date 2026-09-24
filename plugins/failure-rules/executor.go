@@ -67,6 +67,21 @@ func nextRecovery(a Action, now time.Time) (time.Time, bool) {
 	return nextRecoveryWithEvidence(a, Evidence{}, nil, now)
 }
 
+// hourPtrValue 取小时数字的指针（构造 Action 用；0..23）。
+func hourPtrValue(h int) *int { return &h }
+
+// effectiveDailyResetHour 每日恢复点（小时）的口径，唯一来源。
+//
+// nil = 未设置 → 中午 12 点（历史默认值，留给「没填过」的老规则）；
+// 显式 0 点 → 0 点。早期用 int + 「if hour == 0 { hour = 12 }」，把用户设的
+// 午夜恢复点静默改成中午，见 TestDailyResetHourZeroIsMidnight。
+func effectiveDailyResetHour(a Action) int {
+	if a.DailyResetHour == nil {
+		return 12
+	}
+	return *a.DailyResetHour
+}
+
 // nextRecoveryWithEvidence 同 nextRecovery，但支持捕获模板。
 //
 // captures 是正则条件命中的捕获组；动作的 CooldownSecondsTemplate /
@@ -81,10 +96,8 @@ func nextRecoveryWithEvidence(a Action, ev Evidence, captures []string, now time
 	case "never":
 		return time.Time{}, false
 	case "daily":
-		hour := a.DailyResetHour
-		if hour == 0 {
-			hour = 12
-		}
+		// 0 点是合法恢复点；只有「没设置」（nil）才兜底到中午 12 点。
+		hour := effectiveDailyResetHour(a)
 		// 「每日额度」的语义是：今天用尽后今天不再可用，要等明天刷新。
 		// 恢复点必须是「明天」的刷新时刻（理由见历史注释）；用固定北京时间，
 		// 不依赖机器时区（中国无夏令时，FixedZone 零依赖）。
@@ -180,8 +193,10 @@ func (x *Executor) applyCooldown(ctx context.Context, ac ActionContext) error {
 	if a.FailUpgradeCount > 0 && ac.Evidence.FailCount+1 >= a.FailUpgradeCount && a.FailUpgradeRecover != "" {
 		upgrade := a
 		upgrade.Recover = a.FailUpgradeRecover
-		if upgrade.Recover == "daily" && upgrade.DailyResetHour == 0 {
-			upgrade.DailyResetHour = 12
+		// 升级到 daily 时，恢复点沿用原规则；没设置才补默认 12 点。
+		// （显式配了 0 点要保留——见effectiveDailyResetHour 的说明。）
+		if upgrade.Recover == "daily" && upgrade.DailyResetHour == nil {
+			upgrade.DailyResetHour = hourPtrValue(12)
 		}
 		x.lg.Info("failure-rules: 连续失败升级恢复策略",
 			"model", ac.Evidence.Model, "channel", ac.Evidence.ChannelID,
@@ -388,11 +403,17 @@ func parseTimeFlex(text string, now time.Time) (time.Time, bool) {
 		}
 	}
 	// 纯数字：Unix 时间戳（秒/毫秒）。
-	if n, ok := toInt(text); ok && n > 10^12 {
-		return time.UnixMilli(int64(n)), true
-	}
-	if n, ok := toInt(text); ok && n > 10^9 {
-		return time.Unix(int64(n), 0), true
+	// 注意这里必须是 1e12 / 1e9 字面量：Go 的 ^ 是位异或，不是幂运算。
+	// 早期写的 n > 10^12 实际等于 n > 6（10^9 == 3），任何稍大的数字都被
+	// 当成毫秒戳，秒级时间戳解析成 1970 年 —— 恢复点落在过去，等于立刻恢复，
+	// 「按文案时刻恢复」静默失效。见 TestParseTimeFlexUnixSeconds。
+	if n, ok := toInt(text); ok {
+		switch {
+		case n > 1e12: // 毫秒级
+			return time.UnixMilli(int64(n)), true
+		case n > 1e9: // 秒级
+			return time.Unix(int64(n), 0), true
+		}
 	}
 	for _, layout := range []string{
 		"2006-01-02 15:04:05", "2006/01/02 15:04:05",

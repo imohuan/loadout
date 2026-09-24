@@ -30,7 +30,12 @@ type Action struct {
 	//   fixed  = now + cooldown_seconds 恢复（status='cooling'）
 	Recover         string `json:"recover,omitempty"`
 	CooldownSeconds int    `json:"cooldown_seconds,omitempty"`
-	DailyResetHour  int    `json:"daily_reset_hour,omitempty"`
+	// DailyResetHour 每日恢复点（小时，0..23）。指针：nil = 未设置（默认 12 点）。
+	//
+	// 用 *int 而不是 int 的原因：0 点（午夜）是合法值，但 int + omitempty 会把 0
+	// 当成空值丢掉——用户设了 0 点，存库/来回 JSON 之后变成「没设置」，恢复点
+	// 又漂回中午 12 点。指针让「0」和「没设置」彻底分开。
+	DailyResetHour *int `json:"daily_reset_hour,omitempty"`
 	// 连坐：disable_key 时是否同时禁用整个渠道组（auth 永久禁用场景）。
 	SwitchAccount bool `json:"switch_account,omitempty"`
 	// 限速升级：连续失败 FailUpgradeCount 次后升级为 FailUpgradeRecover 策略。

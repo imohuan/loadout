@@ -272,6 +272,18 @@ const recoverAtTemplateText = computed({
   set: (v: string) => (form.value.action.recover_at_template = v.trim() || undefined),
 })
 
+// 每日恢复点（小时）的三向代理：
+//   - 空输入框 → undefined（= 后端 nil = 未设置，走默认 12 点），
+//     否则 v-model.number 会给出空串 ''，后端 *int 反序列化直接 400；
+//   - 0 点必须原样保留（用 ?? 而不是 ||，否则 0 会被当成「没填」）。
+const dailyResetHourProxy = computed({
+  get: () => form.value.action.daily_reset_hour,
+  set: (v: number | string | undefined) => {
+    const n = typeof v === 'number' ? v : Number(v)
+    form.value.action.daily_reset_hour = v === '' || v === undefined || Number.isNaN(n) ? undefined : n
+  },
+})
+
 function emptyForm(): RuleInput {
   return {
     name: '',
@@ -756,7 +768,8 @@ function matchSummary(rule: FailureRule) {
 
 function recoverText(rule: FailureRule) {
   const a = rule.action
-  if (a.recover === 'daily') return `次日 ${a.daily_reset_hour || 12} 点`
+  // ?? 而不是 ||：0 点是合法恢复点，|| 会把 0 当成「没设置」显示成 12 点。
+  if (a.recover === 'daily') return `次日 ${a.daily_reset_hour ?? 12} 点`
   if (a.recover === 'fixed') return `${a.cooldown_seconds || 0} 秒`
   if (a.recover === 'never') return '不恢复'
   return '—'
@@ -1529,7 +1542,7 @@ async function openRuleFromName(ruleId?: string) {
           </template>
           <div v-if="form.action.recover === 'daily'" class="space-y-1">
             <Label>每日恢复点（小时）</Label>
-            <Input v-model.number="form.action.daily_reset_hour" type="number" :min="0" :max="23" />
+            <Input v-model="dailyResetHourProxy" type="number" :min="0" :max="23" placeholder="0-23，留空为 12" />
           </div>
         </div>
 

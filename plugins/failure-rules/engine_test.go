@@ -39,7 +39,7 @@ func TestStateClassEncodesVerdictAndRecover(t *testing.T) {
 		action  Action
 		want    string
 	}{
-		{"disable_key", Action{Recover: "daily", DailyResetHour: 12}, "rule_disable_key_daily"},
+		{"disable_key", Action{Recover: "daily", DailyResetHour: hourPtrValue(12)}, "rule_disable_key_daily"},
 		{"disable_key", Action{Recover: "never"}, "rule_disable_key_never"},
 		{"cooldown", Action{Recover: "fixed", CooldownSeconds: 120}, "rule_cooldown_fixed"},
 		{"disable_model", Action{Recover: "never"}, "rule_disable_model_never"},

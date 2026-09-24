@@ -332,6 +332,10 @@ func validateInput(in RuleInput) error {
 	default:
 		return ErrInvalidRule{fmt.Sprintf("无效的 recover: %q", in.Action.Recover)}
 	}
+	// 每日恢复点（小时）只能 0..23。0 点（午夜）是合法值，nil = 未设置。
+	if h := in.Action.DailyResetHour; h != nil && (*h < 0 || *h > 23) {
+		return ErrInvalidRule{fmt.Sprintf("每日恢复点必须是 0-23 点，收到 %d", *h)}
+	}
 	return nil
 }
 
