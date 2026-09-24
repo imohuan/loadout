@@ -3,7 +3,7 @@
 > 本文讲 Loadout 如何把"多个真实模型+渠道"聚合成一个虚拟模型，并在失败时自动切换（failover），
 > 以及背后的健康检查与故障切换机制。配套：[04-模型网关](./04-model-gateway.md)、[03-插件开发指南](./03-plugin-dev-guide.md)。
 
-源码：`plugins/aggregate/`（plugin.go / proxy.go / strategy.go / health.go / checker.go）、`plugins/model-health/`。
+源码：`plugins/aggregate/`（plugin.go / proxy.go / strategy.go / health.go）、`plugins/model-health/`。
 
 ## 1. 聚合模型是什么
 
@@ -55,13 +55,13 @@ ctx.On(modelgateway.EventUpstreamSucceeded, svc.HandleUpstreamSucceeded)
 | `connection refused` / `network` | **cooldown 1s** | 网络错误，冷却 |
 | 其它（含 AI 分析） | cooldown | 兜底冷却 |
 
-- **disable**：该渠道标记为不可用，不再尝试（需人工或后台健康检查恢复）。
+- **disable**：该渠道标记为不可用，不再尝试（需人工恢复）。
 - **cooldown**：临时冷却 N 秒，期间跳过该目标，避免无效重试。
 
 ## 4. 健康检查与故障切换（health.go / model-health）
 
 - **智能目标选择**：`selectAvailableTarget` 优先选"健康"的目标，跳过手动禁用与自动熔断（冷却中）的 Key；不可用目标不发起真实请求。
-- **后台健康检查**：定时测试冷却中的渠道，自动恢复可用状态（`checker.go`）。
+- **到期自动恢复**：`model-health` 每 3 分钟扫一遍状态表，把到点的冷却改回可用（`plugins/model-health/service.go` 的 `CheckNow`）。全平台共用这一条恢复链路，聚合目标同样受益。
 - **状态持久化**：健康状态保存到磁盘（`model_health` 表 / `model_health.json`），服务重启后保持，避免重启后重复踩坑。
 - **模型级失败处理**：模型整体无可用渠道时记为 `model@`（无具体 Key），后续跳过该模型所有 Key，防止死循环反复选中同一不可用目标。
 

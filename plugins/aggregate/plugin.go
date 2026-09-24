@@ -37,7 +37,11 @@ func (p *aggregatePlugin) Manifest() plugin.Manifest {
 	}
 }
 
-// Apply 装配插件：订阅请求前、失败和成功事件，启动后台健康检查。
+// Apply 装配插件：订阅请求前、失败和成功事件。
+//
+// 注：本插件不自己跑健康检查。冷却到期恢复统一由 model-health 的后台扫描
+// （plugins/model-health/service.go 的 CheckNow，每 3 分钟）负责，避免两套
+// 恢复逻辑互相打架。
 func (p *aggregatePlugin) Apply(ctx plugin.Context) error {
 	st := ctx.Get("store").(*store.Store)
 	lg := ctx.Get("logger").(*slog.Logger)
