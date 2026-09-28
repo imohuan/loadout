@@ -1,11 +1,9 @@
 <script setup lang="ts">
 // 状态二左栏：平台下拉 + 该平台下的 Key 列表。
 //
-// 顶部是平台下拉：鼠标移上去就展开平台菜单（换平台是次要动作，不该再多吃一次点击），
-// 同时保留点击展开与 Esc 收起，键盘与触屏也能用。下面接该平台的 Key 列表，
-// 点一行就把右栏切到那个 Key。
-import { computed, onMounted, ref } from 'vue'
-import { Popover, PopoverContent, PopoverTrigger } from 'shadcn-vue-cdn'
+// 顶部是平台下拉：点击展开平台菜单，再点一次收起；点选平台后菜单立即关闭，
+// 点外部或 Esc 也会收起。下面接该平台的 Key 列表，点一行就把右栏切到那个 Key。
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { RiArrowDownSLine } from '@remixicon/vue'
 import type { ChannelStatus } from '@/lib/types'
 import type { PlatformSummary } from '@/lib/modelStatus'
@@ -62,88 +60,84 @@ function modelSummary(key: ChannelStatus) {
   return `${availableModelCount(key)} / ${key.models.length} 模型可用`
 }
 
-// 平台下拉的展开态。
-//
-// 主要交互是 hover（鼠标移到触发条上就展开），但 hover 不能是唯一入口：
-// 键盘用户与触屏设备没有 hover，开关也就无从触发。所以这里同时维护一个
-// 点击态，并且在指针离开整块区域时统一收起，避免菜单留在屏幕上。
-/**
- * 菜单显隐（单一事实源）。
- *
- * shadcn Popover 用 v-model:open 受控：hover / 点击 / Esc 都改这个值，
- * PopoverContent 跟着显示或隐藏，触发条与菜单的定位、偏移交给 reka-ui。
- */
+/** 菜单显隐（单一事实源）。 */
 const open = ref(false)
-
-/**
- * hover 武装标志：进入「平台详情」时鼠标大概率正停在触发条的位置上（刚点完平台
- * tag，视图切换后触发条出现在指针下方），浏览器会立刻派发一次 mouseenter ——
- * 不能让这次「假 hover」把菜单弹开。因此挂载后先不武装，等指针真正离开过
- * 一次（mouseleave）再允许 hover 展开；点击展开不受影响。
- */
-const armed = ref(false)
-
-function onEnter() {
-  if (!armed.value) return
-  open.value = true
-}
-
-function onLeave() {
-  armed.value = true
-  open.value = false
+const triggerRef = ref<HTMLElement | null>(null)
+const menuRef = ref<HTMLElement | null>(null)
+function toggleOpen() {
+  open.value = !open.value
 }
 
 function pickPlatform(baseUrl: string) {
-  onLeave()
+  // 选完即收：点选平台的动作已经完成，菜单没有继续挂着的理由。
+  open.value = false
   emit('selectPlatform', baseUrl)
 }
 
-// Esc 关闭由 Popover 自带（Escape 关闭 + 焦点回触发条），无需手动监听。
+function onDocumentPointerDown(event: PointerEvent) {
+  if (!open.value) return
+  const target = event.target as Node
+  // 点在触发条或菜单内部不算外部（toggle 交给按钮自己的 click）。
+  if (triggerRef.value?.contains(target) || menuRef.value?.contains(target)) return
+  // 延迟到当前事件循环结束后再关：pointerdown 可能与「打开菜单的 click」同属
+  // 一次物理点击（浏览器先派发 pointerdown 再派发 click），同步关闭会把刚打开
+  // 的菜单瞬间关掉，表现为「点了没反应」。
+  setTimeout(() => {
+    open.value = false
+  }, 0)
+}
+
+function onDocumentKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape' && open.value) {
+    event.stopPropagation()
+    open.value = false
+  }
+}
+
 onMounted(() => {
-  // 组件挂载 = 刚从平台总览切进来，重置武装状态（hover 武装注释所述）。
-  armed.value = false
+  document.addEventListener('pointerdown', onDocumentPointerDown, true)
+  document.addEventListener('keydown', onDocumentKeydown)
+})
+onBeforeUnmount(() => {
+  document.removeEventListener('pointerdown', onDocumentPointerDown, true)
+  document.removeEventListener('keydown', onDocumentKeydown)
 })
 </script>
 
 <template>
   <div class="flex min-h-0 shrink-0 flex-col border-border md:w-64! md:border-r!">
     <!--
-      平台下拉：hover 即展开（鼠标移上来就能看），点击也能切换；选完/离开/Esc 都收起。
-      渲染走 shadcn 的 Popover（与渠道编辑器、模型测试页同一套组件）：定位、偏移、
-      碰撞翻转都交给 reka-ui，不再手写 absolute。
-      菜单不必跟着触发条等宽：平台名可能很长，给 20rem 宽、align=start。
+      平台下拉：点击展开 / 再点收起，选完即收，点外部或 Esc 也会收起。
+      曾尝试 shadcn Popover 的 Trigger/Anchor 模式：Trigger 的 click 与
+      DismissableLayer 的 outside 判定相互干扰（关闭态下点不开），最终回退到
+      手写定位 —— 菜单挂在触发条容器内，top = 触发条底边 + 6px 间距，
+      宽 20rem 不随触发条等宽（平台名可能很长），超出视口由 max-w 兜底。
     -->
-    <Popover v-model:open="open">
-      <div
-        class="group/dd relative border-b border-border p-2"
-        @mouseenter="onEnter"
-        @mouseleave="onLeave"
+    <div ref="triggerRef" class="relative border-b border-border p-2">
+      <button
+        type="button"
+        class="flex w-full items-center gap-2 rounded-md border border-border bg-background px-2.5 py-2 text-left text-sm"
+        aria-label="切换平台"
+        :aria-expanded="open"
+        aria-haspopup="dialog"
+        @click="toggleOpen"
       >
-        <PopoverTrigger as-child>
-          <button
-            type="button"
-            class="flex w-full items-center gap-2 rounded-md border border-border bg-background px-2.5 py-2 text-left text-sm"
-            aria-label="切换平台"
-          >
-            <span
-              class="size-2 shrink-0 rounded-full"
-              :class="TONE_DOT[activePlatform?.tone || 'ok']"
-              :title="toneTitle(activePlatform?.tone)"
-            />
-            <span class="min-w-0 flex-1 truncate font-medium">{{ activePlatform?.name }}</span>
-            <span class="shrink-0 text-xs tabular-nums text-muted-foreground">
-              {{ activePlatform?.keyCount }} Key
-            </span>
-            <RiArrowDownSLine size="16" class="shrink-0 text-muted-foreground" />
-          </button>
-        </PopoverTrigger>
-      </div>
+        <span
+          class="size-2 shrink-0 rounded-full"
+          :class="TONE_DOT[activePlatform?.tone || 'ok']"
+          :title="toneTitle(activePlatform?.tone)"
+        />
+        <span class="min-w-0 flex-1 truncate font-medium">{{ activePlatform?.name }}</span>
+        <span class="shrink-0 text-xs tabular-nums text-muted-foreground">
+          {{ activePlatform?.keyCount }} Key
+        </span>
+        <RiArrowDownSLine size="16" class="shrink-0 text-muted-foreground" />
+      </button>
 
-      <PopoverContent
-        class="w-[20rem] max-w-[calc(100vw-6rem)] p-1"
-        align="start"
-        :side-offset="6"
-        :on-open-auto-focus="(e: Event) => e.preventDefault()"
+      <div
+        v-if="open"
+        ref="menuRef"
+        class="absolute left-2 top-[calc(100%-8px+6px)] z-30 w-[20rem] max-w-[calc(100vw-6rem)] max-h-80 overflow-auto rounded-md border border-border bg-popover p-1 shadow-lg"
       >
         <button
           v-for="p in platforms"
@@ -166,8 +160,8 @@ onMounted(() => {
         <p v-if="!platforms.length" class="px-2 py-3 text-xs text-muted-foreground">
           没有可切换的平台
         </p>
-      </PopoverContent>
-    </Popover>
+      </div>
+    </div>
 
     <!-- Key 列表：一行一个 Key，选中项高亮。 -->
     <div class="min-h-0 flex-1 overflow-auto p-1.5">
