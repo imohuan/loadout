@@ -7,7 +7,7 @@
 //   3) 模型名 chip：可用的直接列出来，不可用的划掉，超出用「+N」
 // 点 tag 进入状态二（该平台的 Key 明细）。
 import { RiArrowRightSLine } from '@remixicon/vue'
-import type { PlatformSummary } from '@/lib/modelStatus'
+import { PLATFORM_TONE_LABEL, type PlatformSummary } from '@/lib/modelStatus'
 import HoverTextCard from '@/components/ui/HoverTextCard.vue'
 
 const props = withDefaults(
@@ -33,13 +33,6 @@ const TONE_BADGE: Record<string, string> = {
   bad: 'bg-red-500/15 text-red-700 dark:text-red-300 border-red-500/20',
   off: 'bg-slate-500/15 text-slate-700 dark:text-slate-300 border-slate-500/20',
 }
-const TONE_LABEL: Record<string, string> = {
-  ok: '全部可用',
-  warn: '部分异常',
-  bad: '不可用',
-  off: '手动关闭',
-}
-
 /**
  * tag 里要展示的模型清单。
  *
@@ -90,7 +83,7 @@ function fullModelText(p: PlatformSummary) {
           class="shrink-0 border text-[11px] font-medium"
           :class="TONE_BADGE[p.tone]"
         >
-          {{ TONE_LABEL[p.tone] }}
+          {{ PLATFORM_TONE_LABEL[p.tone] }}
         </Badge>
         <RiArrowRightSLine
           size="16"

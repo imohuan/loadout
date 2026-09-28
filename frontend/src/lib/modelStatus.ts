@@ -261,3 +261,17 @@ export function keyEnabledState(key: ChannelStatus): {
 } {
   return key.effective_available ? { label: '开启', tone: 'ok' } : { label: '关闭', tone: 'off' }
 }
+
+/**
+ * 平台整体状态的文字标签（与 summarizePlatform 的 tone 一一对应）。
+ *
+ * 圆点没有文字、颜色全靠猜 —— 黄点和灰点到底是「部分异常」还是「手动关闭」，
+ * 不解释看不出来。这里给出统一文案：平台 tag 上直接渲染文字徽标；下拉触发条
+ * 与菜单项空间窄，保留圆点 + title 提示，两处颜色同源不会对不上。
+ */
+export const PLATFORM_TONE_LABEL: Record<PlatformTone, string> = {
+  ok: '全部可用',
+  warn: '部分异常',
+  bad: '不可用',
+  off: '手动关闭',
+}

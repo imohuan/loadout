@@ -8,7 +8,12 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { RiArrowDownSLine } from '@remixicon/vue'
 import type { ChannelStatus } from '@/lib/types'
 import type { PlatformSummary } from '@/lib/modelStatus'
-import { availableModelCount, keyEnabledState, keyStatusBrief } from '@/lib/modelStatus'
+import {
+  availableModelCount,
+  keyEnabledState,
+  keyStatusBrief,
+  PLATFORM_TONE_LABEL,
+} from '@/lib/modelStatus'
 
 const props = defineProps<{
   platforms: PlatformSummary[]
@@ -31,6 +36,11 @@ const TONE_DOT: Record<string, string> = {
   warn: 'bg-amber-500',
   bad: 'bg-red-500',
   off: 'bg-slate-400',
+}
+
+/** 圆点的悬停解释：黄=部分异常、灰=手动关闭……与 PLATFORM_TONE_LABEL 同源。 */
+function toneTitle(tone?: string) {
+  return PLATFORM_TONE_LABEL[(tone || 'ok') as keyof typeof PLATFORM_TONE_LABEL]
 }
 
 /** 「开启 / 关闭」二元徽标的配色：开启=绿、关闭=灰。故障成因用另一枚彩色短标签。 */
@@ -58,16 +68,30 @@ function modelSummary(key: ChannelStatus) {
 // 点击态，并且在指针离开整块区域时统一收起，避免菜单留在屏幕上。
 const open = ref(false)
 
+/**
+ * hover 武装标志：进入「平台详情」时鼠标大概率正停在触发条的位置上（刚点完平台
+ * tag，视图切换后触发条出现在指针下方），浏览器会立刻派发一次 mouseenter ——
+ * 不能让这次「假 hover」把菜单弹开。因此挂载后先不武装，等指针真正离开过
+ * 一次（mouseleave）再允许 hover 展开；点击展开不受影响。
+ */
+const armed = ref(false)
+
 function toggleOpen() {
   open.value = !open.value
 }
 
-function closeMenu() {
+function onEnter() {
+  if (!armed.value) return
+  open.value = true
+}
+
+function onLeave() {
+  armed.value = true
   open.value = false
 }
 
 function pickPlatform(baseUrl: string) {
-  closeMenu()
+  onLeave()
   emit('selectPlatform', baseUrl)
 }
 
@@ -75,20 +99,28 @@ function pickPlatform(baseUrl: string) {
 function onKeydown(e: KeyboardEvent) {
   if (e.key === 'Escape' && open.value) {
     e.stopPropagation()
-    closeMenu()
+    onLeave()
   }
 }
-onMounted(() => window.addEventListener('keydown', onKeydown))
+onMounted(() => {
+  window.addEventListener('keydown', onKeydown)
+  // 组件挂载 = 刚从平台总览切进来，重置武装状态（上面注释所述）。
+  armed.value = false
+})
 onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 </script>
 
 <template>
   <div class="flex min-h-0 shrink-0 flex-col border-border md:w-64! md:border-r!">
-    <!-- 平台下拉：hover 即展开（鼠标移上来就能看），点击也能切换；选完/离开/Esc 都收起。 -->
+    <!--
+        平台下拉：hover 即展开（鼠标移上来就能看），点击也能切换；选完/离开/Esc 都收起。
+        菜单不必跟着触发条等宽：平台名可能很长，触发条 16rem 装不下，菜单给 20rem 宽、
+        超出视口时由 max-w 兜底。
+      -->
     <div
       class="group/dd relative border-b border-border p-2"
-      @mouseenter="open = true"
-      @mouseleave="closeMenu"
+      @mouseenter="onEnter"
+      @mouseleave="onLeave"
     >
       <button
         type="button"
@@ -100,6 +132,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
         <span
           class="size-2 shrink-0 rounded-full"
           :class="TONE_DOT[activePlatform?.tone || 'ok']"
+          :title="toneTitle(activePlatform?.tone)"
         />
         <span class="min-w-0 flex-1 truncate font-medium">{{ activePlatform?.name }}</span>
         <span class="shrink-0 text-xs text-muted-foreground tabular-nums">
@@ -110,7 +143,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 
       <div
         v-show="open"
-        class="absolute inset-x-2 top-11 z-30 max-h-80 overflow-auto rounded-md border border-border bg-popover p-1 shadow-lg"
+        class="absolute left-2 top-11 z-30 w-[20rem] max-w-[calc(100vw-6rem)] max-h-80 overflow-auto rounded-md border border-border bg-popover p-1 shadow-lg"
       >
         <button
           v-for="p in platforms"
@@ -120,7 +153,11 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
           :class="p.baseUrl === activeBaseUrl ? 'bg-muted font-medium' : ''"
           @click="pickPlatform(p.baseUrl)"
         >
-          <span class="size-2 shrink-0 rounded-full" :class="TONE_DOT[p.tone]" />
+          <span
+            class="size-2 shrink-0 rounded-full"
+            :class="TONE_DOT[p.tone]"
+            :title="toneTitle(p.tone)"
+          />
           <span class="min-w-0 flex-1 truncate">{{ p.name }}</span>
           <span class="shrink-0 text-xs text-muted-foreground tabular-nums">
             {{ p.availableModelCount }}/{{ p.modelCount }}
