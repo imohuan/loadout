@@ -40,6 +40,31 @@ export function formatDuration(value?: number) {
 }
 
 /**
+ * 紧凑日期时间（如 09-27 10:04，北京时间）。
+ *
+ * 列表里给人扫一眼「这条数据有多新」时用这个；要完整时刻用 formatDateTimeCN。
+ * 时区显式取 Asia/Shanghai，与 formatDateTimeCN 口径一致 —— 后端统一存 UTC，
+ * 直接按运行机器的本地时区渲染，在非中国时区的机器上会差 8 小时。
+ */
+export function formatShortCN(value?: string) {
+  if (!value) return '-'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '-'
+  const parts = new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(date)
+  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? ''
+  // zh-CN 在 hour12:false 下可能给出 '24' 表示午夜，归一成 '00'（同 formatDateTimeCN）。
+  const hour = get('hour') === '24' ? '00' : get('hour')
+  return `${get('month')}-${get('day')} ${hour}:${get('minute')}`
+}
+
+/**
  * 字节数转人类可读（B / KB / MB / GB）。
  * 二进制进位（1024）与后端按 MB 限制容量的口径一致。
  * 负值/非法值一律显示 0 B，避免出现 "-1 B" 这种噪音。

@@ -1,12 +1,6 @@
 import { api, request } from '@/lib/api'
 import type { ChannelStatus } from '@/lib/types'
 
-export interface ModelStatusFilters {
-  model?: string
-  manual_enabled?: boolean
-  status?: string
-}
-
 export function useModelStatus() {
   const list = () => api<ChannelStatus[]>('/api/model-status')
   const setChannel = (id: string, manual_enabled: boolean) =>

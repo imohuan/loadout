@@ -1,26 +1,36 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+// 「模型状态」页：两层结构。
+//
+// 状态一（平台总览）：一个平台一张 tag，tag 上直接给出「几个 Key、几个模型可用、
+//   哪些模型可用」，点 tag 进入状态二。
+// 状态二（平台 · Key 详情）：左栏平台下拉 + Key 列表，右栏是选中 Key 的模型明细。
+//
+// 数据口径统一走 lib/modelStatus 的纯函数（groupByBaseURL / summarizePlatform / filterPlatforms），
+// 页面只负责「拿数据、切状态、把事件转发给 service」，不再在模板里各算一遍数字。
+import { computed, ref, watch } from 'vue'
 import {
   RiLoader4Line,
   RiRefreshLine,
   RiRestartLine,
   RiStethoscopeLine,
+  RiArrowLeftSLine,
   RiListCheck,
   RiGridLine,
-  RiExpandHeightLine,
-  RiCollapseVerticalLine,
 } from '@remixicon/vue'
 import { toast } from 'vue-sonner'
 import { useModelStatus } from '@/composables/useModelStatus'
-import type { ModelStatusFilters } from '@/composables/useModelStatus'
 import { useListLoader } from '@/composables/useListLoader'
 import { useAsyncTask } from '@/composables/useAsyncTask'
 import { useConfirm } from '@/composables/useConfirm'
 import type { ChannelStatus, ModelStatus } from '@/lib/types'
+import { filterPlatforms, availableModelCount } from '@/lib/modelStatus'
 import PageHeader from '@/components/PageHeader.vue'
 import LoadingBlock from '@/components/LoadingBlock.vue'
-import ModelStatusFiltersForm from '@/components/model-status/ModelStatusFilters.vue'
-import ModelStatusList from '@/components/model-status/ModelStatusList.vue'
+import EmptyState from '@/components/EmptyState.vue'
+import ModelHealthBadge from '@/components/model-status/ModelHealthBadge.vue'
+import PlatformTagGrid from '@/components/model-status/PlatformTagGrid.vue'
+import ModelStatusKeyList from '@/components/model-status/ModelStatusKeyList.vue'
+import ModelStatusModelTable from '@/components/model-status/ModelStatusModelTable.vue'
 
 const service = useModelStatus()
 const { data: rawData, loading } = useListLoader(service.list)
@@ -28,71 +38,74 @@ const { run, isPending } = useAsyncTask()
 const { confirmDialog } = useConfirm()
 
 // 操作 key：模型状态页所有按钮级 loading 的唯一来源。
-// 子组件（ModelStatusList → ChannelGroup → Channel）内部按钮用相同规则生成 key。
+// 纯函数层与子组件内部按钮用同一套规则生成 key。
 function msKey(channelId: string, action: string) {
   return `ms:${channelId}:${action}`
 }
 
-const filters = ref<ModelStatusFilters>({})
+/** 展示层状态：平台总览 / 平台内 Key 详情。 */
+const state = ref<'platforms' | 'keys'>('platforms')
+/** 模型明细的排布：表格 / 标签。 */
 const mode = ref<'table' | 'tags'>('table')
 
-// 全部展开/折叠联动控制：'expanded' 让所有一二级菜单强制展开，'collapsed' 反之。
-// null 表示不联动（保留各菜单当前的本地手动态，便于刷新/筛选后不强行覆盖用户的偏好）。
-const expandAll = ref<'expanded' | 'collapsed' | null>(null)
+const keyword = ref('')
+const health = ref<'all' | 'issue' | 'ok'>('all')
+/** 已提交的筛选条件：输入框改动不实时过滤，点「筛选」才生效（与改造前行为一致）。 */
+const applied = ref<{ keyword?: string; health: 'all' | 'issue' | 'ok' }>({ health: 'all' })
 
-function toggleExpandAll() {
-  // 按钮主动切换：当前为展开则折叠，否则展开。null 视为"未激活"，点击后立刻进入展开态。
-  expandAll.value = expandAll.value === 'expanded' ? 'collapsed' : 'expanded'
-}
+const selectedBaseUrl = ref('')
+const selectedKeyId = ref('')
 
-/** 将 * 通配符转为正则 */
-function wildcardToRegex(pattern: string): RegExp {
-  const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&')
-  const regexStr = escaped.replace(/\*/g, '.*')
-  return new RegExp(`^${regexStr}$`, 'i')
-}
+const platforms = computed(() => filterPlatforms(rawData.value || [], applied.value))
 
-/** 模型名是否匹配搜索词（支持 * 通配符 + 模糊包含） */
-function modelMatches(modelName: string, query?: string): boolean {
-  if (!query || !query.trim()) return true
-  const q = query.trim()
-  if (q.includes('*')) return wildcardToRegex(q).test(modelName)
-  return modelName.toLowerCase().includes(q.toLowerCase())
-}
-
-const data = computed(() => {
-  const items = rawData.value || []
-  // 是否有任一筛选条件生效：没有任何筛选就直接返回原数据（零开销）
-  const hasFilters =
-    !!filters.value.model || filters.value.manual_enabled !== undefined || !!filters.value.status
-  if (!hasFilters) return items
-  return items
-    .map((channel) => {
-      const filteredModels = channel.models.filter((m) => {
-        if (!modelMatches(m.model, filters.value.model)) return false
-        if (
-          filters.value.manual_enabled !== undefined &&
-          m.manual_enabled !== filters.value.manual_enabled
-        )
-          return false
-        if (filters.value.status && m.health_status !== filters.value.status) return false
-        return true
-      })
-      // 任意筛选后该 Key 下没有匹配模型，整行直接隐藏，避免「0 / 0 个模型」的空壳继续占视觉空间。
-      // 上层 List 按 base_url 再聚合：若某 base_url 下所有 Key 都被隐藏，对应的 group 也会自动消失。
-      if (filteredModels.length === 0) return null
-      return { ...channel, models: filteredModels }
-    })
-    .filter(Boolean) as ChannelStatus[]
+/** 当前平台：优先按选中 base_url 找，找不到（如筛选后消失）回落到第一个。 */
+const activePlatform = computed(
+  () => platforms.value.find((p) => p.baseUrl === selectedBaseUrl.value) || platforms.value[0],
+)
+/** 当前 Key：优先按选中 id 找，找不到回落到该平台第一个 Key。 */
+const activeKey = computed(() => {
+  const keys = activePlatform.value?.keys || []
+  return keys.find((k) => k.channel.id === selectedKeyId.value) || keys[0]
 })
 
-async function applyFilters(next: ModelStatusFilters) {
-  await run('filter', async () => {
-    filters.value = next
-  })
+// 平台筛选后原来选中的平台/Key 可能消失：这里把选中值同步回落，避免右栏空转。
+watch(
+  activePlatform,
+  (p) => {
+    if (p && p.baseUrl !== selectedBaseUrl.value) {
+      selectedBaseUrl.value = p.baseUrl
+      selectedKeyId.value = p.keys[0]?.channel.id || ''
+    }
+  },
+  { immediate: true },
+)
+watch(activeKey, (k) => {
+  if (k && k.channel.id !== selectedKeyId.value) selectedKeyId.value = k.channel.id
+})
+
+function applyFilters() {
+  applied.value = { keyword: keyword.value, health: health.value }
 }
 function resetFilters() {
-  filters.value = {}
+  keyword.value = ''
+  health.value = 'all'
+  applied.value = { health: 'all' }
+}
+
+function openPlatform(baseUrl: string) {
+  selectedBaseUrl.value = baseUrl
+  selectedKeyId.value = ''
+  state.value = 'keys'
+}
+function selectPlatform(baseUrl: string) {
+  selectedBaseUrl.value = baseUrl
+  selectedKeyId.value = ''
+}
+function selectKey(key: ChannelStatus) {
+  selectedKeyId.value = key.channel.id
+}
+function backToPlatforms() {
+  state.value = 'platforms'
 }
 
 async function fetchFresh(): Promise<ChannelStatus[] | null> {
@@ -104,7 +117,7 @@ async function fetchFresh(): Promise<ChannelStatus[] | null> {
   }
 }
 
-// 无损刷新：静默拉取最新数据后，仅替换目标渠道，不触发 loading、不影响其他渠道与展开状态
+// 无损刷新：静默拉取最新数据后只替换目标渠道，不触发 loading、不重置当前选中的平台/Key。
 async function patchChannel(id: string) {
   const fresh = await fetchFresh()
   if (!fresh || !rawData.value) return
@@ -114,7 +127,7 @@ async function patchChannel(id: string) {
   if (idx !== -1) rawData.value[idx] = next
 }
 
-// 静默全量刷新：不置 loading，避免整表闪烁（用于健康检查、手动刷新）
+// 静默全量刷新：不置 loading，避免整页闪烁（用于健康检查、手动刷新）。
 async function silentRefresh() {
   await run('refresh', async () => {
     const fresh = await fetchFresh()
@@ -247,7 +260,6 @@ async function check() {
   )
 }
 async function recoverAllModels(item: ChannelStatus) {
-  // 计数当前渠道内"非正常"条目，给用户一个明确的预期
   const summary = (item.models || []).reduce(
     (acc, m) => {
       if (!m.effective_available) acc.disabled += 1
@@ -277,7 +289,7 @@ async function recoverAllModels(item: ChannelStatus) {
 
 // 全平台操作：恢复所有渠道的自动熔断（只清渠道状态，不碰模型开关）
 async function recoverAllChannelsGlobal() {
-  const affected = (data.value || []).filter((ch) => !ch.effective_available).length
+  const affected = (rawData.value || []).filter((ch) => !ch.effective_available).length
   if (affected === 0) {
     toast.info('没有需要恢复的异常渠道')
     return
@@ -300,7 +312,7 @@ async function recoverAllChannelsGlobal() {
 
 // 全平台操作：恢复所有渠道的全部异常模型（清熔断 + 强制打开手动开关）
 async function recoverAllModelsGlobal() {
-  const summary = (data.value || []).reduce(
+  const summary = (rawData.value || []).reduce(
     (acc, ch) => {
       ch.models.forEach((m) => {
         if (!m.effective_available) acc.disabled += 1
@@ -328,6 +340,15 @@ async function recoverAllModelsGlobal() {
     '已恢复全平台全部异常模型',
   )
 }
+
+/** 平台总览的合计文案，随筛选变化。 */
+const totals = computed(() => {
+  const list = platforms.value
+  return {
+    platforms: list.length,
+    models: list.reduce((n, p) => n + p.availableModelCount, 0),
+  }
+})
 </script>
 
 <template>
@@ -335,113 +356,192 @@ async function recoverAllModelsGlobal() {
     <PageHeader
       title="模型状态"
       description="手动开关与自动健康状态分别管理；自动状态不会重新打开手动关闭的对象。"
-      ><template #actions
-        ><Button variant="outline" :disabled="isPending('refresh')" @click="silentRefresh">
-          <RiLoader4Line v-if="isPending('refresh')" class="animate-spin" size="16" /><RiRefreshLine
-            v-else
-            size="16"
-          />刷新 </Button
-        ><Button :disabled="isPending('check')" @click="check">
-          <RiLoader4Line
-            v-if="isPending('check')"
-            class="animate-spin"
-            size="16"
-          /><RiStethoscopeLine v-else size="16" />健康检查 </Button
-        ><Button
+    >
+      <template #actions>
+        <Button variant="outline" :disabled="isPending('refresh')" @click="silentRefresh">
+          <RiLoader4Line v-if="isPending('refresh')" class="animate-spin" size="16" />
+          <RiRefreshLine v-else size="16" />刷新
+        </Button>
+        <Button :disabled="isPending('check')" @click="check">
+          <RiLoader4Line v-if="isPending('check')" class="animate-spin" size="16" />
+          <RiStethoscopeLine v-else size="16" />健康检查
+        </Button>
+        <Button
           variant="outline"
           :disabled="isPending('recover-all-channels')"
           @click="recoverAllChannelsGlobal"
         >
-          <RiLoader4Line
-            v-if="isPending('recover-all-channels')"
-            class="animate-spin"
-            size="16"
-          /><RiRefreshLine v-else size="16" />全平台恢复渠道 </Button
-        ><Button
+          <RiLoader4Line v-if="isPending('recover-all-channels')" class="animate-spin" size="16" />
+          <RiRefreshLine v-else size="16" />全平台恢复渠道
+        </Button>
+        <Button
           variant="outline"
           :disabled="isPending('recover-all-models')"
           @click="recoverAllModelsGlobal"
         >
-          <RiLoader4Line
-            v-if="isPending('recover-all-models')"
-            class="animate-spin"
-            size="16"
-          /><RiRestartLine v-else size="16" />全平台恢复全部异常
-        </Button></template
-      ></PageHeader
-    >
-    <div class="flex items-center gap-3">
-      <ModelStatusFiltersForm
-        class="flex-1"
-        :is-pending="isPending"
-        @apply="applyFilters"
-        @reset="resetFilters"
-      />
+          <RiLoader4Line v-if="isPending('recover-all-models')" class="animate-spin" size="16" />
+          <RiRestartLine v-else size="16" />全平台恢复全部异常
+        </Button>
+      </template>
+    </PageHeader>
 
-      <TooltipProvider>
-        <div class="flex shrink-0 min-w-32 items-center justify-end gap-1">
-          <div class="space-y-1">
-            <Label for="ms-model">显示状态</Label>
+    <!-- 筛选：搜索与状态对两层都生效；输入框改动需点「筛选」才应用。 -->
+    <form class="flex flex-wrap items-end gap-3" @submit.prevent="applyFilters">
+      <div class="min-w-72 flex-1 space-y-1">
+        <Label for="ms-keyword">搜索（平台 / Key / 模型，支持 * 通配符）</Label>
+        <Input id="ms-keyword" v-model="keyword" placeholder="如 workbuddy、deepseek*、acct-1" />
+      </div>
+      <div class="w-36 space-y-1">
+        <Label for="ms-health">状态</Label>
+        <Select v-model="health">
+          <SelectTrigger id="ms-health" class="w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent position="popper" side="bottom" align="start" :side-offset="2">
+            <SelectGroup>
+              <SelectItem value="all">全部状态</SelectItem>
+              <SelectItem value="issue">存在异常</SelectItem>
+              <SelectItem value="ok">全部可用</SelectItem>
+            </SelectGroup>
+          </SelectContent>
+        </Select>
+      </div>
+      <div class="flex items-center gap-2">
+        <Button type="submit">筛选</Button>
+        <Button type="button" variant="outline" @click="resetFilters">重置</Button>
+      </div>
+      <div class="ml-auto text-xs text-muted-foreground tabular-nums">
+        {{ totals.platforms }} 个平台 · 可用模型合计 {{ totals.models }}
+      </div>
+    </form>
 
-            <Tooltip>
-              <TooltipTrigger as-child
-                ><Button
-                  size="sm"
-                  variant="ghost"
-                  :class="mode === 'table' ? 'bg-muted' : ''"
-                  @click="mode = 'table'"
-                >
-                  <RiListCheck size="16" /> </Button
-              ></TooltipTrigger>
-              <TooltipContent>表格模式</TooltipContent>
-            </Tooltip>
-            <Tooltip>
-              <TooltipTrigger as-child
-                ><Button
-                  size="sm"
-                  variant="ghost"
-                  :class="mode === 'tags' ? 'bg-muted' : ''"
-                  @click="mode = 'tags'"
-                >
-                  <RiGridLine size="16" /> </Button
-              ></TooltipTrigger>
-              <TooltipContent>标签模式</TooltipContent>
-            </Tooltip>
-            <!--
-              一键折叠/展开：覆盖所有一二级菜单（含嵌套的 Key 行）。
-              图标随当前状态切换：已展开 → 折叠图标（提示即将折叠）；其他 → 展开图标。
-            -->
-            <Tooltip>
-              <TooltipTrigger as-child>
-                <Button size="sm" variant="ghost" @click="toggleExpandAll">
-                  <RiCollapseVerticalLine v-if="expandAll === 'expanded'" size="16" />
-                  <RiExpandHeightLine v-else size="16" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>{{
-                expandAll === 'expanded' ? '全部折叠' : '全部展开'
-              }}</TooltipContent>
-            </Tooltip>
+    <LoadingBlock v-if="loading" />
+
+    <template v-else>
+      <!-- ============ 状态一：平台总览 ============ -->
+      <template v-if="state === 'platforms'">
+        <PlatformTagGrid :platforms="platforms" @select="openPlatform" />
+        <EmptyState
+          v-if="!platforms.length"
+          title="没有匹配的平台"
+          description="换个搜索词，或把状态筛选改回「全部状态」。"
+        />
+      </template>
+
+      <!-- ============ 状态二：平台 · Key 详情 ============ -->
+      <div v-else class="space-y-3">
+        <div class="flex items-center gap-2 text-sm text-muted-foreground">
+          <Button
+            variant="ghost"
+            size="sm"
+            class="gap-0.5 pl-1 text-muted-foreground"
+            @click="backToPlatforms"
+          >
+            <RiArrowLeftSLine size="16" />平台总览
+          </Button>
+          <span class="text-border">/</span>
+          <span class="font-medium text-foreground">{{ activePlatform?.name }}</span>
+          <div class="ml-auto inline-flex overflow-hidden rounded-md border border-border">
+            <button
+              type="button"
+              class="px-2 py-1 transition-colors"
+              :class="
+                mode === 'table'
+                  ? 'bg-muted font-medium text-foreground'
+                  : 'text-muted-foreground hover:bg-muted/60'
+              "
+              aria-label="表格模式"
+              @click="mode = 'table'"
+            >
+              <RiListCheck size="14" />
+            </button>
+            <button
+              type="button"
+              class="border-l border-border px-2 py-1 transition-colors"
+              :class="
+                mode === 'tags'
+                  ? 'bg-muted font-medium text-foreground'
+                  : 'text-muted-foreground hover:bg-muted/60'
+              "
+              aria-label="标签模式"
+              @click="mode = 'tags'"
+            >
+              <RiGridLine size="14" />
+            </button>
           </div>
         </div>
-      </TooltipProvider>
-    </div>
-    <LoadingBlock v-if="loading" />
-    <ModelStatusList
-      v-else
-      :items="data || []"
-      :mode="mode"
-      :is-pending="isPending"
-      :expand-all="expandAll"
-      @channel-toggle="channelToggle"
-      @model-toggle="modelToggle"
-      @recover-channel="recoverChannel"
-      @recover-model="recoverModel"
-      @recover-all-models="recoverAllModels"
-      @batch-model-toggle="batchModelToggle"
-      @batch-recover-model="batchRecoverModel"
-      @batch-delete-model="batchDeleteModel"
-      @delete-model="deleteModel"
-    />
+
+        <div
+          class="flex min-h-[32rem] flex-col overflow-hidden rounded-lg border border-border md:flex-row!"
+        >
+          <ModelStatusKeyList
+            :platforms="platforms"
+            :active-base-url="activePlatform?.baseUrl || ''"
+            :active-key-id="activeKey?.channel.id"
+            :is-pending="isPending"
+            @select-platform="selectPlatform"
+            @select-key="selectKey"
+          />
+
+          <div class="flex min-w-0 flex-1 flex-col">
+            <template v-if="activeKey">
+              <!-- 右栏头部：当前 Key 的开关、状态徽标与地址。 -->
+              <div class="flex flex-wrap items-center gap-3 border-b border-border px-3 py-2.5">
+                <div class="flex items-center gap-2">
+                  <Switch
+                    :id="`channel-${activeKey.channel.id}`"
+                    :model-value="activeKey.manual_enabled"
+                    :disabled="isPending(msKey(activeKey.channel.id, 'toggle'))"
+                    @update:model-value="channelToggle(activeKey, Boolean($event))"
+                  />
+                  <Label :for="`channel-${activeKey.channel.id}`" class="text-sm font-semibold">
+                    {{ activeKey.channel.name }}
+                  </Label>
+                </div>
+                <ModelHealthBadge
+                  :status="activeKey.health_status"
+                  :available="activeKey.effective_available"
+                  :manual-enabled="activeKey.manual_enabled"
+                  :failure-class="activeKey.failure_class"
+                  :rule-id="activeKey.last_rule_id"
+                  :rule-name="activeKey.last_rule_name"
+                  :last-error="activeKey.reason"
+                />
+                <span class="text-xs tabular-nums text-muted-foreground">
+                  {{ availableModelCount(activeKey) }} / {{ activeKey.models.length }} 模型可用
+                </span>
+                <span
+                  class="ml-auto hidden min-w-0 truncate font-mono text-[11px] text-muted-foreground lg:block"
+                  :title="activeKey.channel.base_url"
+                >
+                  {{ activeKey.channel.base_url }}
+                </span>
+              </div>
+              <ModelStatusModelTable
+                :key="activeKey.channel.id"
+                :item="activeKey"
+                :mode="mode"
+                :is-pending="isPending"
+                @model-toggle="(m, enabled) => modelToggle(activeKey, m, enabled)"
+                @recover-channel="recoverChannel(activeKey)"
+                @recover-model="(m) => recoverModel(activeKey, m)"
+                @recover-all-models="recoverAllModels(activeKey)"
+                @batch-model-toggle="
+                  (models, enabled) => batchModelToggle(activeKey, models, enabled)
+                "
+                @batch-recover-model="(models) => batchRecoverModel(activeKey, models)"
+                @batch-delete-model="(models) => batchDeleteModel(activeKey, models)"
+                @delete-model="(m) => deleteModel(activeKey, m)"
+              />
+            </template>
+            <EmptyState
+              v-else
+              title="该平台没有 Key"
+              description="这个平台下还没有任何 Key，先在「渠道与模型」里添加。"
+            />
+          </div>
+        </div>
+      </div>
+    </template>
   </div>
 </template>
