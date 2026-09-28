@@ -104,7 +104,7 @@ defineExpose({ resetSelection })
             @click="emit('recoverChannel')"
           >
             <RiLoader4Line v-if="busy('recover')" class="animate-spin" size="14" />
-            <RiRefreshLine v-else size="14" />恢复渠道
+            <RiRefreshLine v-else size="14" />恢复 Key
           </Button>
           <Tooltip>
             <TooltipTrigger as-child>
@@ -119,7 +119,7 @@ defineExpose({ resetSelection })
               </Button>
             </TooltipTrigger>
             <TooltipContent>
-              清空当前渠道的自动熔断 + 强制打开该渠道所有手动开关；范围仅限当前渠道
+              清空当前 Key 的自动熔断 + 强制打开该 Key 所有模型的手动开关；范围仅限当前 Key
             </TooltipContent>
           </Tooltip>
           <div class="mx-0.5 h-5 w-px bg-border" />

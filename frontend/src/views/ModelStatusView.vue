@@ -23,7 +23,7 @@ import { useListLoader } from '@/composables/useListLoader'
 import { useAsyncTask } from '@/composables/useAsyncTask'
 import { useConfirm } from '@/composables/useConfirm'
 import type { ChannelStatus, ModelStatus } from '@/lib/types'
-import { filterPlatforms, availableModelCount } from '@/lib/modelStatus'
+import { filterPlatforms, availableModelCount, keySwitchState } from '@/lib/modelStatus'
 import PageHeader from '@/components/PageHeader.vue'
 import LoadingBlock from '@/components/LoadingBlock.vue'
 import EmptyState from '@/components/EmptyState.vue'
@@ -236,7 +236,7 @@ async function recoverChannel(item: ChannelStatus) {
       await service.recoverChannel(item.channel.id)
       await patchChannel(item.channel.id)
     },
-    '渠道已恢复',
+    'Key 已恢复',
   )
 }
 async function recoverModel(item: ChannelStatus, model: ModelStatus) {
@@ -488,10 +488,18 @@ const totals = computed(() => {
               <!-- 右栏头部：当前 Key 的开关、状态徽标与地址。 -->
               <div class="flex flex-wrap items-center gap-3 border-b border-border px-3 py-2.5">
                 <div class="flex items-center gap-2">
+                  <!--
+                    开关只表达「这个 Key 现在能不能用」：可用=on（可拨关），
+                    手动关闭=off（可拨开，后端顺带清自动熔断），
+                    自动熔断=off 且置灰（正确出口是下面的「恢复 Key」按钮）。
+                  -->
                   <Switch
                     :id="`channel-${activeKey.channel.id}`"
-                    :model-value="activeKey.manual_enabled"
-                    :disabled="isPending(msKey(activeKey.channel.id, 'toggle'))"
+                    :model-value="keySwitchState(activeKey).value"
+                    :disabled="
+                      keySwitchState(activeKey).disabled ||
+                      isPending(msKey(activeKey.channel.id, 'toggle'))
+                    "
                     @update:model-value="channelToggle(activeKey, Boolean($event))"
                   />
                   <Label :for="`channel-${activeKey.channel.id}`" class="text-sm font-semibold">
@@ -507,6 +515,23 @@ const totals = computed(() => {
                   :rule-name="activeKey.last_rule_name"
                   :last-error="activeKey.reason"
                 />
+                <!-- 自动熔断的 Key：在头部给一个明确的「恢复 Key」按钮，
+                     不用去猜工具栏里哪个按钮管这件事。 -->
+                <Button
+                  v-if="keySwitchState(activeKey).disabled"
+                  variant="outline"
+                  size="sm"
+                  class="gap-1"
+                  :disabled="isPending(msKey(activeKey.channel.id, 'recover'))"
+                  @click="recoverChannel(activeKey)"
+                >
+                  <RiLoader4Line
+                    v-if="isPending(msKey(activeKey.channel.id, 'recover'))"
+                    class="animate-spin"
+                    size="14"
+                  />
+                  <RiRefreshLine v-else size="14" />恢复 Key
+                </Button>
                 <span class="text-xs tabular-nums text-muted-foreground">
                   {{ availableModelCount(activeKey) }} / {{ activeKey.models.length }} 模型可用
                 </span>

@@ -229,3 +229,35 @@ export function keyStatusBrief(key: ChannelStatus): { label: string; tone: KeyTo
   if (key.health_status === 'cooling') return { label: '冷却中', tone: 'warn' }
   return { label: '已禁用', tone: 'bad' }
 }
+
+/**
+ * Key 行内「手动开关」应呈现的样子。
+ *
+ * 开关绑定「这个 Key 现在能不能用」这个二元事实：
+ *   - 可用 → on，用户可以拨关（手动停用）。
+ *   - 手动关闭 → off，用户可以拨开（后端会顺带清自动熔断）。
+ *   - 自动熔断（额度用尽 / 限速冷却 / 鉴权失效…）→ off 且置灰：拨开关只改手动
+ *     标志，自动熔断还在、路由照样跳过，正确出口是「恢复 Key」按钮。
+ *
+ * 之前把 manual_enabled 直接灌进开关值，「额度用尽」的 Key 看起来就像用户自己
+ * 关掉了，这是误解的来源。
+ */
+export function keySwitchState(key: ChannelStatus): { value: boolean; disabled: boolean } {
+  return {
+    value: key.effective_available,
+    disabled: key.manual_enabled && !key.effective_available,
+  }
+}
+
+/**
+ * Key 的二元状态（开 / 关），给列表与详情头部的徽章用。
+ *
+ * 故障成因（额度用尽、账号禁用…）是另一层信息，用 keyStatusBrief 展示；
+ * 两者混在一个徽标里，「额度用尽」看起来就像第三种开关状态，这正是要修掉的误解。
+ */
+export function keyEnabledState(key: ChannelStatus): {
+  label: '开启' | '关闭'
+  tone: 'ok' | 'off'
+} {
+  return key.effective_available ? { label: '开启', tone: 'ok' } : { label: '关闭', tone: 'off' }
+}

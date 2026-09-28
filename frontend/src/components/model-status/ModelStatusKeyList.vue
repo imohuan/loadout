@@ -8,7 +8,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { RiArrowDownSLine } from '@remixicon/vue'
 import type { ChannelStatus } from '@/lib/types'
 import type { PlatformSummary } from '@/lib/modelStatus'
-import { availableModelCount, keyStatusBrief } from '@/lib/modelStatus'
+import { availableModelCount, keyEnabledState, keyStatusBrief } from '@/lib/modelStatus'
 
 const props = defineProps<{
   platforms: PlatformSummary[]
@@ -31,6 +31,12 @@ const TONE_DOT: Record<string, string> = {
   warn: 'bg-amber-500',
   bad: 'bg-red-500',
   off: 'bg-slate-400',
+}
+
+/** 「开启 / 关闭」二元徽标的配色：开启=绿、关闭=灰。故障成因用另一枚彩色短标签。 */
+const ENABLED_CLASS: Record<string, string> = {
+  ok: 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300',
+  off: 'bg-slate-500/15 text-slate-700 dark:text-slate-300',
 }
 
 /** 左栏一行短标签的配色，与 PlatformTagGrid 的语义色一致。 */
@@ -78,14 +84,17 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 
 <template>
   <div class="flex min-h-0 shrink-0 flex-col border-border md:w-64! md:border-r!">
-    <!-- 平台下拉：hover 即展开（鼠标移上来就能看），点击也能切换；Esc 收起。 -->
-    <div class="group/dd relative border-b border-border p-2" @mouseleave="closeMenu">
+    <!-- 平台下拉：hover 即展开（鼠标移上来就能看），点击也能切换；选完/离开/Esc 都收起。 -->
+    <div
+      class="group/dd relative border-b border-border p-2"
+      @mouseenter="open = true"
+      @mouseleave="closeMenu"
+    >
       <button
         type="button"
         class="flex w-full items-center gap-2 rounded-md border border-border bg-background px-2.5 py-2 text-left text-sm"
         aria-label="切换平台"
         :aria-expanded="open"
-        @mouseenter="open = true"
         @click="toggleOpen"
       >
         <span
@@ -100,10 +109,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
       </button>
 
       <div
+        v-show="open"
         class="absolute inset-x-2 top-11 z-30 max-h-80 overflow-auto rounded-md border border-border bg-popover p-1 shadow-lg"
-        :class="
-          open ? 'visible' : 'invisible opacity-0 group-hover/dd:visible group-hover/dd:opacity-100'
-        "
       >
         <button
           v-for="p in platforms"
@@ -139,9 +146,17 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
           <!-- Key 名单独占一行：与状态标签同行时，标签会把名字挤成省略号。 -->
           <span class="block truncate text-sm font-medium">{{ key.channel.name }}</span>
           <span class="mt-0.5 flex items-center gap-1.5">
+            <!-- 开 / 关：只回答「这个 Key 现在能不能用」，与故障成因分开。 -->
+            <span
+              class="shrink-0 rounded px-1 py-0.5 text-[10px] font-medium"
+              :class="ENABLED_CLASS[keyEnabledState(key).tone]"
+            >
+              {{ keyEnabledState(key).label }}
+            </span>
             <!--
-              短标签而不是完整徽标：左栏只有 16rem，「账号已禁用（需手动恢复）」这种
-              完整文案会把整行占满。成因、恢复时间与规则跳转在右栏头部展示。
+              故障成因短标签：关闭时才出现，解释「为什么关闭」。左栏只有 16rem，
+              「账号已禁用（需手动恢复）」这种完整文案会把整行占满，成因、恢复时间
+              与规则跳转在右栏头部展示。
             -->
             <span
               v-if="keyStatusBrief(key).label !== '可用'"
