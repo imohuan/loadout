@@ -1,22 +1,38 @@
 <script setup lang="ts">
-import { ref } from 'vue'
-import { RiAddLine, RiRefreshLine } from '@remixicon/vue'
-import { useChannels, groupChannelsByBaseURL, normalizeBaseURL } from '@/composables/useChannels'
+// 「渠道与模型」页：两层结构。
+//
+// 状态一（渠道总览）：一个平台一张 tag，点 tag 进入状态二。
+// 状态二（平台 · Key 详情）：左栏平台下拉 + Key 列表，右栏是选中 Key 的详情与操作。
+//
+// 分组与汇总口径统一走 lib/channels 的纯函数（summarizeChannelPlatforms），
+// 页面只负责取数据、切状态、把事件转发给 service。
+import { computed, ref, watch } from 'vue'
+import { RiAddLine, RiArrowLeftSLine, RiRefreshLine } from '@remixicon/vue'
+import { useChannels, normalizeBaseURL, type ChannelInput } from '@/composables/useChannels'
+import { summarizeChannelPlatforms, channelModelCount } from '@/lib/channels'
 import { useListLoader } from '@/composables/useListLoader'
 import { useAsyncTask } from '@/composables/useAsyncTask'
 import { useConfirm } from '@/composables/useConfirm'
 import type { Channel } from '@/lib/types'
-import type { ChannelInput } from '@/composables/useChannels'
 import PageHeader from '@/components/PageHeader.vue'
 import LoadingBlock from '@/components/LoadingBlock.vue'
+import EmptyState from '@/components/EmptyState.vue'
 import ChannelEditor from '@/components/channels/ChannelEditor.vue'
 import ChannelModelSyncDialog from '@/components/channels/ChannelModelSyncDialog.vue'
-import ChannelTable from '@/components/channels/ChannelTable.vue'
+import ChannelPlatformGrid from '@/components/channels/ChannelPlatformGrid.vue'
+import ChannelKeyList from '@/components/channels/ChannelKeyList.vue'
+import ChannelKeyDetail from '@/components/channels/ChannelKeyDetail.vue'
 
 const service = useChannels()
 const { data, loading, refreshing, refresh } = useListLoader(service.list)
 const { run, isPending } = useAsyncTask()
 const { confirmDialog } = useConfirm()
+
+/** 展示层状态：渠道总览 / 平台内 Key 详情。 */
+const state = ref<'platforms' | 'keys'>('platforms')
+const selectedBaseUrl = ref('')
+const selectedKeyId = ref('')
+
 const editing = ref<Channel>()
 const editorOpen = ref(false)
 /** 模型同步弹窗：记录触发它的那个渠道组（base_url），弹窗只在组内选源和目标 */
@@ -27,13 +43,65 @@ const lockBaseUrl = ref('')
 /** 添加 Key 时展示的所属渠道组名称（同组首个 Key 的 channel_name 兜底 name） */
 const groupName = ref('')
 
+const platforms = computed(() => summarizeChannelPlatforms(data.value || []))
+
+/** 当前平台：优先按选中 base_url 找，找不到回落到第一个。 */
+const activePlatform = computed(
+  () => platforms.value.find((p) => p.baseUrl === selectedBaseUrl.value) || platforms.value[0],
+)
+/** 当前平台在列表中的下标（整组上移/下移的禁用判断）。 */
+const activePlatformIndex = computed(() =>
+  platforms.value.findIndex((p) => p.baseUrl === activePlatform.value?.baseUrl),
+)
+/** 当前 Key：优先按选中 id 找，找不到回落到该平台第一个 Key。 */
+const activeKey = computed(() => {
+  const keys = activePlatform.value?.keys || []
+  return keys.find((k) => k.id === selectedKeyId.value) || keys[0]
+})
+/** 当前 Key 在组内下标。 */
+const activeKeyIndex = computed(() => {
+  const keys = activePlatform.value?.keys || []
+  return keys.findIndex((k) => k.id === activeKey.value?.id)
+})
+
+// 平台筛选后原来选中的平台/Key 可能消失：这里把选中值同步回落，避免右栏空转。
+watch(
+  activePlatform,
+  (p) => {
+    if (p && p.baseUrl !== selectedBaseUrl.value) {
+      selectedBaseUrl.value = p.baseUrl
+      selectedKeyId.value = p.keys[0]?.id || ''
+    }
+  },
+  { immediate: true },
+)
+watch(activeKey, (k) => {
+  if (k && k.id !== selectedKeyId.value) selectedKeyId.value = k.id
+})
+
 // 操作 key：组操作锁组，key 操作锁 key，编辑器保存用全局 key。
-// ChannelTable 内按钮 :disabled 与 ChannelsView 内 run() 必须使用同一套 key。
+// 子组件内按钮 :disabled 与这里 run() 必须使用同一套 key。
 function groupKey(baseUrl: string, action: string) {
   return `group:${normalizeBaseURL(baseUrl)}:${action}`
 }
 function keyKey(channel: Channel, action: string) {
   return `key:${channel.id}:${action}`
+}
+
+function openPlatform(baseUrl: string) {
+  selectedBaseUrl.value = normalizeBaseURL(baseUrl)
+  selectedKeyId.value = ''
+  state.value = 'keys'
+}
+function selectPlatform(baseUrl: string) {
+  selectedBaseUrl.value = normalizeBaseURL(baseUrl)
+  selectedKeyId.value = ''
+}
+function selectKey(key: Channel) {
+  selectedKeyId.value = key.id
+}
+function backToPlatforms() {
+  state.value = 'platforms'
 }
 
 function openAdd() {
@@ -55,6 +123,15 @@ function openEdit(channel: Channel) {
   groupName.value = ''
   editorOpen.value = true
 }
+function groupKeys(baseUrl: string): Channel[] {
+  // baseUrl 来自已 normalize 的组标识；channel.base_url 原样存储，
+  // 按归一化后的字符串比较，兼容尾斜杠差异。
+  const target = normalizeBaseURL(baseUrl)
+  const summary = platforms.value.find((p) => p.baseUrl === target)
+  if (summary) return summary.keys
+  return (data.value || []).filter((ch) => normalizeBaseURL(ch.base_url) === target)
+}
+
 async function save(input: ChannelInput) {
   await run(
     'save',
@@ -72,8 +149,6 @@ async function save(input: ChannelInput) {
           candidates.map((model) => ({ model, enabled: enabled.has(model) })),
         )
       } else if (id) {
-        // 首次创建/用户未提供任何模型：使用后端探测结果（handleChannelCreateDB
-        // 仅在 POST 时探测，candidates 为空通常意味着走的就是这条路径）。
         const list = (saved?.models || []).map((model) => ({ model, enabled: true }))
         if (list.length) {
           await service.replaceModels(id, list)
@@ -87,12 +162,7 @@ async function save(input: ChannelInput) {
     '渠道已保存',
   )
 }
-function groupKeys(baseUrl: string): Channel[] {
-  // baseUrl 来自 ChannelTable 已 normalize 的组标识；channel.base_url 原样存储，
-  // 按归一化后的字符串比较，兼容尾斜杠差异。
-  const target = normalizeBaseURL(baseUrl)
-  return (data.value || []).filter((ch) => normalizeBaseURL(ch.base_url) === target)
-}
+
 async function toggleKey(channel: Channel) {
   const enabled = channel.manual_enabled ?? channel.enabled ?? true
   await run(keyKey(channel, 'toggle'), async () => {
@@ -170,8 +240,8 @@ async function removeGroup(baseUrl: string) {
   )
 }
 async function moveGroup(baseUrl: string, direction: 'up' | 'down') {
-  const groups = groupChannelsByBaseURL(data.value || [])
-  const index = groups.findIndex((group) => group.baseUrl === baseUrl)
+  const groups = platforms.value.map((p) => ({ baseUrl: p.baseUrl, keys: p.keys }))
+  const index = groups.findIndex((group) => group.baseUrl === normalizeBaseURL(baseUrl))
   const target = direction === 'up' ? index - 1 : index + 1
   if (index < 0 || target < 0 || target >= groups.length) return
   ;[groups[index], groups[target]] = [groups[target], groups[index]]
@@ -199,6 +269,17 @@ async function moveKey(channel: Channel, direction: 'up' | 'down') {
     await refresh()
   })
 }
+
+/** 总览页脚：模型总数与探测失败的 Key 数（让人一眼看出有没有漏配）。 */
+const totals = computed(() => {
+  const list = platforms.value
+  const failed = (data.value || []).filter((ch) => channelModelCount(ch) < 0).length
+  return {
+    platforms: list.length,
+    models: new Set(list.flatMap((p) => p.models)).size,
+    failedKeys: failed,
+  }
+})
 </script>
 
 <template>
@@ -206,12 +287,15 @@ async function moveKey(channel: Channel, direction: 'up' | 'down') {
     <PageHeader
       title="渠道与模型"
       description="同一 Base URL 的多个 Key 归为一个渠道组；配置上游服务、刷新模型目录，并控制普通模型的候选顺序。"
-      ><template #actions
-        ><Button variant="outline" :disabled="loading || refreshing" @click="refresh"
-          ><RiRefreshLine :class="{ 'animate-spin': refreshing }" size="16" />刷新</Button
-        ><Button @click="openAdd"><RiAddLine size="16" />添加渠道</Button></template
-      ></PageHeader
     >
+      <template #actions>
+        <Button variant="outline" :disabled="loading || refreshing" @click="refresh">
+          <RiRefreshLine :class="{ 'animate-spin': refreshing }" size="16" />刷新
+        </Button>
+        <Button @click="openAdd"><RiAddLine size="16" />添加渠道</Button>
+      </template>
+    </PageHeader>
+
     <ChannelEditor
       v-model:open="editorOpen"
       :channel="editing"
@@ -220,26 +304,82 @@ async function moveKey(channel: Channel, direction: 'up' | 'down') {
       :pending="isPending('save')"
       @save="save"
       @cancel="editorOpen = false"
-    /><ChannelModelSyncDialog
+    />
+    <ChannelModelSyncDialog
       v-model:open="syncOpen"
       :channels="data || []"
       :base-url="syncBaseUrl"
       :pending="isPending('sync-models')"
       @sync="syncModels"
-    /><LoadingBlock v-if="loading" /><ChannelTable
-      v-else
-      :channels="data || []"
-      :is-pending="isPending"
-      @add-key="openAddKey"
-      @toggle-key="toggleKey"
-      @refresh-key="refreshKey"
-      @edit-key="openEdit"
-      @sync-models="openSync"
-      @move-key="moveKey"
-      @remove-key="removeKey"
-      @refresh-group="refreshGroup"
-      @move-group="moveGroup"
-      @remove-group="removeGroup"
     />
+
+    <LoadingBlock v-if="loading" />
+
+    <template v-else>
+      <!-- ============ 状态一：渠道总览 ============ -->
+      <template v-if="state === 'platforms'">
+        <div class="flex items-center justify-between gap-3">
+          <p class="text-xs tabular-nums text-muted-foreground">
+            {{ totals.platforms }} 个平台 · {{ totals.models }} 个模型 ·
+            <span :class="totals.failedKeys ? 'text-amber-600 dark:text-amber-400' : ''">
+              {{ totals.failedKeys }} 个 Key 探测失败
+            </span>
+          </p>
+        </div>
+        <ChannelPlatformGrid :platforms="platforms" @select="openPlatform" />
+        <EmptyState
+          v-if="!platforms.length"
+          title="还没有配置渠道"
+          description="点右上角「添加渠道」配置第一个上游服务。"
+        />
+      </template>
+
+      <!-- ============ 状态二：平台 · Key 详情 ============ -->
+      <div v-else class="space-y-3">
+        <div class="flex items-center gap-2 text-sm text-muted-foreground">
+          <Button
+            variant="ghost"
+            size="sm"
+            class="gap-0.5 pl-1 text-muted-foreground"
+            @click="backToPlatforms"
+          >
+            <RiArrowLeftSLine size="16" />渠道总览
+          </Button>
+          <span class="text-border">/</span>
+          <span class="font-medium text-foreground">{{ activePlatform?.name }}</span>
+        </div>
+
+        <div
+          class="flex min-h-[32rem] flex-col overflow-hidden rounded-lg border border-border md:flex-row!"
+        >
+          <ChannelKeyList
+            :platforms="platforms"
+            :active-base-url="activePlatform?.baseUrl || ''"
+            :active-key-id="activeKey?.id"
+            @select-platform="selectPlatform"
+            @select-key="selectKey"
+          />
+          <ChannelKeyDetail
+            v-if="activePlatform"
+            :platform="activePlatform"
+            :channel="activeKey"
+            :key-index="activeKeyIndex"
+            :group-index="activePlatformIndex"
+            :group-count="platforms.length"
+            :is-pending="isPending"
+            @add-key="openAddKey"
+            @toggle-key="toggleKey"
+            @refresh-key="refreshKey"
+            @edit-key="openEdit"
+            @move-key="moveKey"
+            @remove-key="removeKey"
+            @sync-models="openSync"
+            @refresh-group="refreshGroup"
+            @move-group="moveGroup"
+            @remove-group="removeGroup"
+          />
+        </div>
+      </div>
+    </template>
   </div>
 </template>

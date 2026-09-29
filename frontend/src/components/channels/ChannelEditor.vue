@@ -306,11 +306,13 @@ function submit() {
               >启用渠道</Label
             >
           </div>
-          <div class="flex items-center gap-2">
-            <Switch id="sync-billing" v-model="form.sync_billing" /><Label for="sync-billing"
-              >同步渠道费用状态</Label
-            >
-          </div>
+          <!--
+            「同步渠道费用状态」（sync_billing）的开关不再暴露：它只服务一条 legacy 兜底 ——
+            402 + 余额文案时把整个渠道一起置为不可用。失败规则引擎里已有等价的
+            「账户余额不足（禁用key）」规则（402 → disable_key + never），粒度是 Key 级、
+            有判定日志、可调；这条路径更粗（整渠道连坐）且不进日志。
+            后端字段与逻辑保留不动（历史渠道全部为开启，贸然删除会静默改变路由行为）。
+          -->
         </div>
         <div class="space-y-2 md:col-span-2">
           <Label>模型列表</Label>
