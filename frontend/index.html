@@ -7,7 +7,12 @@
     <title>Loadout</title>
   </head>
   <body>
-    <div id="app"></div>
+    <div id="app">
+      <!-- Vue 挂载前的静态占位：避免白屏，挂载后被 App 的启动加载页替换。 -->
+      <div style="min-height:100dvh;display:grid;place-items:center;color:#6b7280;font:14px system-ui,-apple-system,sans-serif">
+        正在启动 Loadout…
+      </div>
+    </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

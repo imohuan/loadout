@@ -16,6 +16,7 @@ const SkillsView = () => import('@/views/SkillsView.vue')
 const TranslateView = () => import('@/views/TranslateView.vue')
 const UnifyaiView = () => import('@/views/UnifyaiView.vue')
 import { useAuthStore } from '@/stores/auth'
+import { ensureBackendReady } from '@/lib/boot'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -114,6 +115,10 @@ let ssoToken: string | null = (() => {
   return t
 })()
 router.beforeEach(async (to) => {
+  // 后端（内嵌 Loadout Server）可能仍在启动：先等它就绪再判断登录态，
+  // 否则「服务未就绪」会被当成未登录，把用户直接甩到登录页并弹出连接失败。
+  // 等待期间 App.vue 显示启动加载页。
+  await ensureBackendReady()
   const auth = useAuthStore()
   // ssoLogin 只跑一次（页面加载时自动换票）：无论成败都置空 token，
   // 避免用户登出后被 beforeEach 反复重试触发「登出 → 自动登录」死循环。

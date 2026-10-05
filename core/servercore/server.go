@@ -140,6 +140,15 @@ func assemble(lg *slog.Logger, st *store.Store) (*plugin.Assembly, http.Handler,
 		fmt.Fprintf(w, `{"base_url":"http://127.0.0.1%s"}`, config.ServerAddr)
 	})
 
+	// 健康检查：公开、无认证，仅用于判断「后端是否已开始监听」。
+	// 桌面壳的窗口会先于本服务打开，前端据此显示启动加载页，等本端点可访问后
+	// 再进入登录页，避免首批 /api/* 请求打到尚未监听的端口（代理会返回 502）。
+	mux.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		_, _ = w.Write([]byte("{\"status\":\"ok\"}"))
+	})
+
 	// 管理后台静态资源（其余路径，公开；数据走 /api/* 的 session 认证）。
 	// 用 SPA fallback 包装：Vue Router 为 history 模式时，刷新前端路由
 	//（如 /capability-routes）不落盘，直接回退 index.html 由前端接管。
