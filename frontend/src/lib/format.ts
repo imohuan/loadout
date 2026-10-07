@@ -40,6 +40,39 @@ export function formatDuration(value?: number) {
 }
 
 /**
+ * Token 数量转人类可读（K / M / B / T）。
+ *
+ * 模型统计接口返回的是原始 token 数（单日可能上亿），直接展示会出现
+ * 「118742.5K」这种越长越难读的数字；这里统一进位到 K/M/B/T，
+ * 让「积分消耗月历」「模型消耗分布」与页面顶部的柱状图口径保持一致。
+ *
+ * 十进制进位（1K = 1000），与模型厂商和账单口径一致；
+ * 保留两位有效小数并去掉多余的 0（1K、1.5K、118.74M）。
+ * 非法值一律显示 0，避免出现 NaN。
+ */
+export function formatTokens(value?: number) {
+  const n = value ?? 0
+  if (!Number.isFinite(n)) return '0'
+  const sign = n < 0 ? '-' : ''
+  const units = ['', 'K', 'M', 'B', 'T']
+  let scaled = Math.abs(n)
+  let index = 0
+  while (scaled >= 1000 && index < units.length - 1) {
+    scaled /= 1000
+    index++
+  }
+  // 小于 1000 直接取整（token 数都是整数，不会出现小数点）。
+  if (index === 0) return sign + String(Math.round(scaled))
+  let text = scaled.toFixed(2)
+  // 四舍五入后越界时再进一位：999999 → 「1000.00K」应为「1M」。
+  if (Number(text) >= 1000 && index < units.length - 1) {
+    index++
+    text = (Number(text) / 1000).toFixed(2)
+  }
+  return `${sign}${text.replace(/\.?0+$/, '')}${units[index]}`
+}
+
+/**
  * 紧凑日期时间（如 09-27 10:04，北京时间）。
  *
  * 列表里给人扫一眼「这条数据有多新」时用这个；要完整时刻用 formatDateTimeCN。

@@ -1,7 +1,13 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { RiArrowRightUpLine, RiLinkM, RiPulseLine, RiRobot2Line } from '@remixicon/vue'
+import {
+  RiArrowRightUpLine,
+  RiInformationLine,
+  RiLinkM,
+  RiPulseLine,
+  RiRobot2Line,
+} from '@remixicon/vue'
 import { api } from '@/lib/api'
 import type { Overview } from '@/lib/types'
 import PageHeader from '@/components/PageHeader.vue'
@@ -51,10 +57,22 @@ onMounted(async () => {
 
 <template>
   <div class="space-y-6">
-    <PageHeader
-      title="概览"
-      description="查看 Loadout 当前运行状态，并快速进入常用管理项。"
-    /><LoadingBlock v-if="loading" /><template v-else
+    <PageHeader title="概览" description="查看 Loadout 当前运行状态，并快速进入常用管理项。" />
+    <div
+      class="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md border bg-muted/40 px-3 py-2 text-xs leading-5 text-muted-foreground"
+    >
+      <RiInformationLine size="15" class="shrink-0" />
+      <span class="font-medium text-foreground">Token 单位</span>
+      <span>K = 千（1,000）</span>
+      <span>·</span>
+      <span>M = 百万（1,000,000）</span>
+      <span>·</span>
+      <span>B = 十亿（1,000,000,000）</span>
+      <span>·</span>
+      <span>T = 万亿（1,000,000,000,000）</span>
+      <span class="text-muted-foreground/80">例：17.55B 就是 175.5 亿</span>
+    </div>
+    <LoadingBlock v-if="loading" /><template v-else
       ><div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard v-for="card in cards" :key="card.label" v-bind="card" />
       </div>

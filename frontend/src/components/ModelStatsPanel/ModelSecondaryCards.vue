@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { ModelStats } from '@/lib/types'
+import { formatTokens } from '@/lib/format'
 
 const props = defineProps<{ stats: ModelStats | null }>()
 const cards = computed(() => {
@@ -14,11 +15,6 @@ const cards = computed(() => {
     { label: '平均耗时', value: s.avg_duration_ms.toFixed(0) + 'ms' },
   ]
 })
-function formatTokens(n: number) {
-  if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M'
-  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K'
-  return String(n)
-}
 </script>
 
 <template>

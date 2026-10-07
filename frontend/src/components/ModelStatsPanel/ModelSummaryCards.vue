@@ -1,15 +1,9 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { ModelStats } from '@/lib/types'
+import { formatTokens } from '@/lib/format'
 
 const props = defineProps<{ stats: ModelStats | null }>()
-
-function formatTokens(n: number) {
-  if (n >= 1e9) return (n / 1e9).toFixed(2) + 'B'
-  if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M'
-  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K'
-  return String(n)
-}
 
 // 5 张内嵌卡：第 1 张是"消耗积分"（强调色，对应总 Token），后 4 张是常规指标。
 type Card = {

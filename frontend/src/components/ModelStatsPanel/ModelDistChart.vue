@@ -6,6 +6,7 @@ import { CanvasRenderer } from 'echarts/renderers'
 import { PieChart } from 'echarts/charts'
 import { LegendComponent, TooltipComponent } from 'echarts/components'
 import type { ModelDistPoint } from '@/lib/types'
+import { formatTokens } from '@/lib/format'
 
 use([CanvasRenderer, PieChart, TooltipComponent, LegendComponent])
 
@@ -129,9 +130,7 @@ const rows = computed(() => {
             <span class="shrink-0 text-xs text-muted-foreground tabular-nums"
               >{{ r.calls }} 次</span
             >
-            <span class="shrink-0 font-medium tabular-nums"
-              >{{ (r.tokens / 1000).toFixed(1) }}K</span
-            >
+            <span class="shrink-0 font-medium tabular-nums">{{ formatTokens(r.tokens) }}</span>
           </div>
         </div>
       </template>

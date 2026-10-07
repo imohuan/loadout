@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { RiArrowLeftSLine, RiArrowRightSLine } from '@remixicon/vue'
 import type { ModelCalendarPoint } from '@/lib/types'
+import { formatTokens } from '@/lib/format'
 
 const props = defineProps<{
   calendar: ModelCalendarPoint[]
@@ -103,12 +104,6 @@ function color(tokens: number) {
   const alpha = Math.min(0.7, 0.1 + ratio * 0.6)
   return `rgba(245, 158, 11, ${alpha.toFixed(2)})`
 }
-
-function fmt(n: number): string {
-  if (n >= 10000) return (n / 1000).toFixed(1) + 'K'
-  if (n >= 1000) return (n / 1000).toFixed(2) + 'K'
-  return String(Math.round(n))
-}
 </script>
 
 <template>
@@ -171,7 +166,7 @@ function fmt(n: number): string {
                   >
                     <span class="text-[10px] leading-none opacity-80">{{ cell.day }}</span>
                     <span class="mt-0.5 font-medium tabular-nums leading-none">{{
-                      fmt(cell.tokens)
+                      formatTokens(cell.tokens)
                     }}</span>
                   </div>
                 </TooltipTrigger>
