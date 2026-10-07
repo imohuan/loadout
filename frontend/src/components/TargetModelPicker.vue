@@ -76,6 +76,9 @@ const triggerLabel = computed(() => {
   }
   return props.multiple ? '选择目标模型（可搜索 / 自定义）' : '选择目标模型'
 })
+
+// 有选中值时用正常前景色，只有空占位提示才用灰色（与 ModelTestView 预设下拉一致）。
+const hasValue = computed(() => selected.value.length > 0 && !props.loading)
 </script>
 
 <template>
@@ -83,7 +86,9 @@ const triggerLabel = computed(() => {
     <Popover v-model:open="open">
       <PopoverTrigger as-child>
         <Button type="button" variant="outline" class="w-full justify-between font-normal">
-          <span class="truncate text-muted-foreground">{{ triggerLabel }}</span>
+          <span class="truncate" :class="hasValue ? 'text-foreground' : 'text-muted-foreground'">{{
+            triggerLabel
+          }}</span>
           <RiSearchLine class="size-4 shrink-0 opacity-50" />
         </Button>
       </PopoverTrigger>

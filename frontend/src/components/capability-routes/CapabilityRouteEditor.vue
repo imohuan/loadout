@@ -394,7 +394,7 @@ function submit() {
           <Popover v-model:open="channelOpen">
             <PopoverTrigger as-child>
               <Button type="button" variant="outline" class="w-full justify-between font-normal">
-                <span class="truncate text-muted-foreground">{{ channelTriggerLabel }}</span>
+                <span class="truncate text-foreground">{{ channelTriggerLabel }}</span>
                 <RiSearchLine class="size-4 shrink-0 opacity-50" />
               </Button>
             </PopoverTrigger>
