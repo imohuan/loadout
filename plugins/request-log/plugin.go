@@ -78,13 +78,15 @@ func (p *requestLogPlugin) Apply(ctx plugin.Context) error {
 	// 后台 goroutine 执行，不阻塞装配（日志库可能很大，删起来要时间）。
 	go svc.ApplyRetention(context.Background(), svc.currentRetention())
 
-	// API（Auth 由框架按 plugin.AuthSession 自动挂 session 中间件，server.go:107）
+	// API（Auth 由框架按声明的 AuthKind 自动挂认证中间件，server.go:107）
 	// 注意注册顺序：/stats 是静态路径，必须早于 /{id} 通配，否则会被当成 id 吃掉。
 	ctx.RegisterRoute(plugin.RouteSpec{Method: http.MethodGet, Pattern: "GET /api/request-logs", Auth: plugin.AuthSession, Handler: http.HandlerFunc(svc.handleList)})
 	ctx.RegisterRoute(plugin.RouteSpec{Method: http.MethodGet, Pattern: "GET /api/request-logs/stats", Auth: plugin.AuthSession, Handler: http.HandlerFunc(svc.handleStats)})
 	ctx.RegisterRoute(plugin.RouteSpec{Method: http.MethodPost, Pattern: "POST /api/request-logs/retention/apply", Auth: plugin.AuthSession, Handler: http.HandlerFunc(svc.handleApplyRetention)})
 	ctx.RegisterRoute(plugin.RouteSpec{Method: http.MethodDelete, Pattern: "DELETE /api/request-logs", Auth: plugin.AuthSession, Handler: http.HandlerFunc(svc.handleClear)})
-	ctx.RegisterRoute(plugin.RouteSpec{Method: http.MethodGet, Pattern: "GET /api/request-logs/{id}", Auth: plugin.AuthSession, Handler: http.HandlerFunc(svc.handleDetail)})
+	// 详情接口 public：按 UUID 直取单条日志，前端「复制日志链接」会把它贴进外部
+	// 浏览器/IM 打开，链到就是一个可分享的访问凭据，不带会话也要能看。
+	ctx.RegisterRoute(plugin.RouteSpec{Method: http.MethodGet, Pattern: "GET /api/request-logs/{id}", Auth: plugin.AuthPublic, Handler: http.HandlerFunc(svc.handleDetail)})
 
 	ctx.RegisterCheck("request-log 完整性", func() []plugin.Issue {
 		var issues []plugin.Issue
