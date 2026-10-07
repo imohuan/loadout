@@ -259,45 +259,64 @@ async function check() {
     '健康检查已启动',
   )
 }
-async function recoverAllModels(item: ChannelStatus) {
-  const summary = (item.models || []).reduce(
-    (acc, m) => {
-      if (!m.effective_available) acc.disabled += 1
-      return acc
-    },
-    { disabled: 0 },
-  )
-  if (summary.disabled === 0) {
-    toast.info('当前渠道没有需要恢复的异常模型')
+// 平台级恢复（「恢复本平台」）：按 base_url 一键清掉该平台下全部 Key 的自动熔断，
+// 不强制打开手动关闭的开关。
+async function recoverPlatform() {
+  const platform = activePlatform.value
+  if (!platform) return
+  const affected = platform.keys.filter((k) => !k.effective_available).length
+  if (affected === 0) {
+    toast.info('当前平台没有需要恢复的异常 Key')
     return
   }
   const confirmed = await confirmDialog({
-    title: `恢复「${item.channel.name}」全部异常模型？`,
-    description: `将一键开启该渠道 ${summary.disabled} 个被自动熔断或手动关闭的模型，并清空该渠道所有自动失败计数。此操作会覆盖你主动关闭的开关。`,
-    confirmText: '恢复全部',
+    title: `恢复「${platform.name}」全部异常 Key？`,
+    description: `将清空该平台 ${affected} 个异常 Key 的自动熔断（Key 级 + 模型级），恢复其自动状态。此操作不会改动手动开关。`,
+    confirmText: '恢复本平台',
   })
   if (!confirmed) return
   await run(
-    msKey(item.channel.id, 'recover-all'),
+    'recover-platform',
     async () => {
-      await service.recoverAllByChannel(item.channel.id)
-      await patchChannel(item.channel.id)
+      await service.recoverPlatform(platform.baseUrl)
+      await silentRefresh()
     },
-    `已恢复「${item.channel.name}」全部异常模型`,
+    `已恢复「${platform.name}」全部异常 Key`,
   )
 }
 
-// 全平台操作：恢复所有渠道的自动熔断（只清渠道状态，不碰模型开关）
+// 平台级「强制开启本平台全部模型」（破坏性）：清自动熔断并强制打开手动开关。
+async function recoverPlatformForced() {
+  const platform = activePlatform.value
+  if (!platform) return
+  const confirmed = await confirmDialog({
+    title: `强制开启「${platform.name}」全部模型？`,
+    description:
+      '将清空该平台下所有 Key 的自动熔断，并把所有模型的手动开关强制打开。此操作会覆盖你主动关闭的开关。',
+    confirmText: '强制开启',
+  })
+  if (!confirmed) return
+  await run(
+    'recover-platform-forced',
+    async () => {
+      await service.recoverPlatformForced(platform.baseUrl)
+      await silentRefresh()
+    },
+    `已强制开启「${platform.name}」全部模型`,
+  )
+}
+
+// 全平台操作：「恢复全部平台」——清所有 Key 的自动熔断（Key 级 + 模型级），不碰手动开关。
 async function recoverAllChannelsGlobal() {
   const affected = (rawData.value || []).filter((ch) => !ch.effective_available).length
   if (affected === 0) {
-    toast.info('没有需要恢复的异常渠道')
+    toast.info('没有需要恢复的异常平台')
     return
   }
   const confirmed = await confirmDialog({
-    title: '全平台恢复所有异常渠道？',
-    description: `将清空 ${affected} 个异常渠道的自动熔断与失败计数，恢复其自动状态。此操作不会改动任何模型的手动开关。`,
-    confirmText: '恢复全部渠道',
+    title: '恢复全部平台？',
+    description: `将清空 ${affected} 个异常 Key 的自动熔断（Key 级 + 模型级）与失败计数，恢复其自动状态。此操作不会改动任何手动开关。`,
+    confirmText: '恢复全部平台',
   })
   if (!confirmed) return
   await run(
@@ -306,11 +325,11 @@ async function recoverAllChannelsGlobal() {
       await service.recoverAllChannels()
       await silentRefresh()
     },
-    '已恢复全部异常渠道',
+    '已恢复全部平台',
   )
 }
 
-// 全平台操作：恢复所有渠道的全部异常模型（清熔断 + 强制打开手动开关）
+// 全平台操作：「强制开启全部模型」（破坏性）——清所有熔断 + 强制打开所有手动开关。
 async function recoverAllModelsGlobal() {
   const summary = (rawData.value || []).reduce(
     (acc, ch) => {
@@ -326,9 +345,9 @@ async function recoverAllModelsGlobal() {
     return
   }
   const confirmed = await confirmDialog({
-    title: '全平台恢复全部异常模型？',
-    description: `将一键开启全平台 ${summary.disabled} 个被自动熔断或手动关闭的模型，并清空所有自动失败计数。此操作会覆盖你主动关闭的开关。`,
-    confirmText: '恢复全部',
+    title: '强制开启全平台全部模型？',
+    description: `将把全平台 ${summary.disabled} 个异常模型的手动开关强制打开，并清空所有自动失败计数。此操作会覆盖你主动关闭的开关。`,
+    confirmText: '强制开启',
   })
   if (!confirmed) return
   await run(
@@ -337,7 +356,7 @@ async function recoverAllModelsGlobal() {
       await service.recoverAll()
       await silentRefresh()
     },
-    '已恢复全平台全部异常模型',
+    '已强制开启全平台全部模型',
   )
 }
 
@@ -372,15 +391,16 @@ const totals = computed(() => {
           @click="recoverAllChannelsGlobal"
         >
           <RiLoader4Line v-if="isPending('recover-all-channels')" class="animate-spin" size="16" />
-          <RiRefreshLine v-else size="16" />全平台恢复渠道
+          <RiRefreshLine v-else size="16" />恢复全部平台
         </Button>
+        <!-- 破坏性操作（会覆盖手动关闭的开关），保留强化确认框。 -->
         <Button
           variant="outline"
           :disabled="isPending('recover-all-models')"
           @click="recoverAllModelsGlobal"
         >
           <RiLoader4Line v-if="isPending('recover-all-models')" class="animate-spin" size="16" />
-          <RiRestartLine v-else size="16" />全平台恢复全部异常
+          <RiRestartLine v-else size="16" />强制开启全部模型
         </Button>
       </template>
     </PageHeader>
@@ -441,6 +461,35 @@ const totals = computed(() => {
           </Button>
           <span class="text-border">/</span>
           <span class="font-medium text-foreground">{{ activePlatform?.name }}</span>
+          <!-- 平台级恢复操作区：放在面包屑右侧，一次作用于本平台下所有 Key。 -->
+          <!-- text-foreground：面包屑这行是 muted 文字色，按钮不继承它，
+               否则默认态会显示灰色、只有 hover 才变正常色。 -->
+          <div class="ml-3 flex items-center gap-2 text-foreground">
+            <Button
+              variant="outline"
+              size="sm"
+              class="gap-1"
+              :disabled="isPending('recover-platform')"
+              @click="recoverPlatform"
+            >
+              <RiLoader4Line v-if="isPending('recover-platform')" class="animate-spin" size="14" />
+              <RiRefreshLine v-else size="14" />恢复本平台
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              class="gap-1"
+              :disabled="isPending('recover-platform-forced')"
+              @click="recoverPlatformForced"
+            >
+              <RiLoader4Line
+                v-if="isPending('recover-platform-forced')"
+                class="animate-spin"
+                size="14"
+              />
+              <RiRestartLine v-else size="14" />强制开启本平台
+            </Button>
+          </div>
           <div class="ml-auto inline-flex overflow-hidden rounded-md border border-border">
             <button
               type="button"
@@ -548,9 +597,7 @@ const totals = computed(() => {
                 :mode="mode"
                 :is-pending="isPending"
                 @model-toggle="(m, enabled) => modelToggle(activeKey, m, enabled)"
-                @recover-channel="recoverChannel(activeKey)"
                 @recover-model="(m) => recoverModel(activeKey, m)"
-                @recover-all-models="recoverAllModels(activeKey)"
                 @batch-model-toggle="
                   (models, enabled) => batchModelToggle(activeKey, models, enabled)
                 "

@@ -49,6 +49,12 @@ func (m *mockHealth) RecoverAllModelsByChannel(ctx context.Context, channelID st
 	return 0, nil
 }
 func (m *mockHealth) RecoverAllChannels(ctx context.Context) (int64, error) { return 0, nil }
+func (m *mockHealth) RecoverPlatformByBaseURL(ctx context.Context, baseURL string) (int64, error) {
+	return 0, nil
+}
+func (m *mockHealth) RecoverAllModelsByBaseURL(ctx context.Context, baseURL string) (int64, error) {
+	return 0, nil
+}
 func (m *mockHealth) List(ctx context.Context) ([]contracts.ChannelStatus, error) {
 	return m.statuses, nil
 }

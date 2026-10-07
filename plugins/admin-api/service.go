@@ -234,6 +234,8 @@ func (s *Service) Routes() []plugin.RouteSpec {
 		{Method: http.MethodPost, Pattern: "POST /api/model-status/recover-all", Auth: plugin.AuthSession, Handler: s.session(s.handleModelStatusRecoverAll)},
 		{Method: http.MethodPost, Pattern: "POST /api/model-status/channels/{channel_id}/recover-all", Auth: plugin.AuthSession, Handler: s.session(s.handleModelStatusRecoverAllChannel)},
 		{Method: http.MethodPost, Pattern: "POST /api/model-status/recover-all-channels", Auth: plugin.AuthSession, Handler: s.session(s.handleModelStatusRecoverAllChannels)},
+		{Method: http.MethodPost, Pattern: "POST /api/model-status/platforms/recover", Auth: plugin.AuthSession, Handler: s.session(s.handleModelStatusRecoverPlatform)},
+		{Method: http.MethodPost, Pattern: "POST /api/model-status/platforms/recover-forced", Auth: plugin.AuthSession, Handler: s.session(s.handleModelStatusRecoverPlatformForced)},
 		{Method: http.MethodGet, Pattern: "GET /api/route-logs", Auth: plugin.AuthSession, Handler: s.session(s.handleRouteLogsList)},
 		{Method: http.MethodGet, Pattern: "GET /api/route-logs/{request_id}", Auth: plugin.AuthSession, Handler: s.session(s.handleRouteLogDetail)},
 		{Method: http.MethodDelete, Pattern: "DELETE /api/route-logs", Auth: plugin.AuthSession, Handler: s.session(s.handleRouteLogsClear)},

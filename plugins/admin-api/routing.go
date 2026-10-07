@@ -828,6 +828,55 @@ func (s *Service) handleModelStatusRecoverAllChannels(w http.ResponseWriter, r *
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "affected": affected})
 }
 
+// handleModelStatusRecoverPlatform 「恢复本平台」：按 base_url 清该平台全部 Key 的自动熔断。
+func (s *Service) handleModelStatusRecoverPlatform(w http.ResponseWriter, r *http.Request) {
+	if s.health == nil {
+		writeError(w, http.StatusServiceUnavailable, "model-health 未装配")
+		return
+	}
+	var body struct {
+		BaseURL string `json:"base_url"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	if strings.TrimSpace(body.BaseURL) == "" {
+		writeError(w, http.StatusBadRequest, "base_url 不能为空")
+		return
+	}
+	affected, err := s.health.RecoverPlatformByBaseURL(r.Context(), body.BaseURL)
+	if err != nil {
+		s.writeServerError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "affected": affected})
+}
+
+// handleModelStatusRecoverPlatformForced 「强制开启本平台全部模型」（破坏性）：
+// 清自动熔断的同时强制打开手动开关。
+func (s *Service) handleModelStatusRecoverPlatformForced(w http.ResponseWriter, r *http.Request) {
+	if s.health == nil {
+		writeError(w, http.StatusServiceUnavailable, "model-health 未装配")
+		return
+	}
+	var body struct {
+		BaseURL string `json:"base_url"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	if strings.TrimSpace(body.BaseURL) == "" {
+		writeError(w, http.StatusBadRequest, "base_url 不能为空")
+		return
+	}
+	affected, err := s.health.RecoverAllModelsByBaseURL(r.Context(), body.BaseURL)
+	if err != nil {
+		s.writeServerError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "affected": affected})
+}
+
 func flattenStatus(values []contracts.ChannelStatus) []map[string]any {
 	result := make([]map[string]any, 0, len(values))
 	for _, value := range values {

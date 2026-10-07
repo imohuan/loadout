@@ -3,7 +3,7 @@
 //
 // 顶部是平台下拉：点击展开平台菜单，再点一次收起；点选平台后菜单立即关闭，
 // 点外部或 Esc 也会收起。下面接该平台的 Key 列表，点一行就把右栏切到那个 Key。
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed } from 'vue'
 import { RiArrowDownSLine } from '@remixicon/vue'
 import type { ChannelStatus } from '@/lib/types'
 import type { PlatformSummary } from '@/lib/modelStatus'
@@ -60,107 +60,67 @@ function modelSummary(key: ChannelStatus) {
   return `${availableModelCount(key)} / ${key.models.length} 模型可用`
 }
 
-/** 菜单显隐（单一事实源）。 */
-const open = ref(false)
-const triggerRef = ref<HTMLElement | null>(null)
-const menuRef = ref<HTMLElement | null>(null)
-function toggleOpen() {
-  open.value = !open.value
-}
-
 function pickPlatform(baseUrl: string) {
-  // 选完即收：点选平台的动作已经完成，菜单没有继续挂着的理由。
-  open.value = false
   emit('selectPlatform', baseUrl)
 }
-
-function onDocumentPointerDown(event: PointerEvent) {
-  if (!open.value) return
-  const target = event.target as Node
-  // 点在触发条或菜单内部不算外部（toggle 交给按钮自己的 click）。
-  if (triggerRef.value?.contains(target) || menuRef.value?.contains(target)) return
-  // 延迟到当前事件循环结束后再关：pointerdown 可能与「打开菜单的 click」同属
-  // 一次物理点击（浏览器先派发 pointerdown 再派发 click），同步关闭会把刚打开
-  // 的菜单瞬间关掉，表现为「点了没反应」。
-  setTimeout(() => {
-    open.value = false
-  }, 0)
-}
-
-function onDocumentKeydown(event: KeyboardEvent) {
-  if (event.key === 'Escape' && open.value) {
-    event.stopPropagation()
-    open.value = false
-  }
-}
-
-onMounted(() => {
-  document.addEventListener('pointerdown', onDocumentPointerDown, true)
-  document.addEventListener('keydown', onDocumentKeydown)
-})
-onBeforeUnmount(() => {
-  document.removeEventListener('pointerdown', onDocumentPointerDown, true)
-  document.removeEventListener('keydown', onDocumentKeydown)
-})
 </script>
 
 <template>
   <div class="flex min-h-0 shrink-0 flex-col border-border md:w-64! md:border-r!">
     <!--
-      平台下拉：点击展开 / 再点收起，选完即收，点外部或 Esc 也会收起。
-      曾尝试 shadcn Popover 的 Trigger/Anchor 模式：Trigger 的 click 与
-      DismissableLayer 的 outside 判定相互干扰（关闭态下点不开），最终回退到
-      手写定位 —— 菜单挂在触发条容器内，top = 触发条底边 + 6px 间距，
-      宽 20rem 不随触发条等宽（平台名可能很长），超出视口由 max-w 兜底。
+      平台下拉：用 shadcn 的 DropdownMenu 渲染，动画（fade + zoom + slide）、
+      定位、碰撞翻转、Esc/点外部收起都由 reka-ui 负责，与其他下拉同源。
+      选完即收：DropdownMenuItem 选中后 reka 自动关闭。
+      菜单不跟随触发条等宽（平台名可能很长），给 20rem 固定宽、超出视口由
+      max-w 兜底；行内有圆点 + 平台名 + 计数三列，用 -mx-1 抵消 item 默认内边距。
     -->
-    <div ref="triggerRef" class="relative border-b border-border p-2">
-      <button
-        type="button"
-        class="flex w-full items-center gap-2 rounded-md border border-border bg-background px-2.5 py-2 text-left text-sm"
-        aria-label="切换平台"
-        :aria-expanded="open"
-        aria-haspopup="dialog"
-        @click="toggleOpen"
-      >
-        <span
-          class="size-2 shrink-0 rounded-full"
-          :class="TONE_DOT[activePlatform?.tone || 'ok']"
-          :title="toneTitle(activePlatform?.tone)"
-        />
-        <span class="min-w-0 flex-1 truncate font-medium">{{ activePlatform?.name }}</span>
-        <span class="shrink-0 text-xs tabular-nums text-muted-foreground">
-          {{ activePlatform?.keyCount }} Key
-        </span>
-        <RiArrowDownSLine size="16" class="shrink-0 text-muted-foreground" />
-      </button>
-
-      <div
-        v-if="open"
-        ref="menuRef"
-        class="absolute left-2 top-[calc(100%-8px+6px)] z-30 w-[20rem] max-w-[calc(100vw-6rem)] max-h-80 overflow-auto rounded-md border border-border bg-popover p-1 shadow-lg"
-      >
-        <button
-          v-for="p in platforms"
-          :key="p.baseUrl"
-          type="button"
-          class="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-muted"
-          :class="p.baseUrl === activeBaseUrl ? 'bg-muted font-medium' : ''"
-          @click="pickPlatform(p.baseUrl)"
+    <div class="border-b border-border p-2">
+      <DropdownMenu>
+        <DropdownMenuTrigger as-child>
+          <button
+            type="button"
+            class="flex w-full items-center gap-2 rounded-md border border-border bg-background px-2.5 py-2 text-left text-sm"
+            aria-label="切换平台"
+          >
+            <span
+              class="size-2 shrink-0 rounded-full"
+              :class="TONE_DOT[activePlatform?.tone || 'ok']"
+              :title="toneTitle(activePlatform?.tone)"
+            />
+            <span class="min-w-0 flex-1 truncate font-medium">{{ activePlatform?.name }}</span>
+            <span class="shrink-0 text-xs tabular-nums text-muted-foreground">
+              {{ activePlatform?.keyCount }} Key
+            </span>
+            <RiArrowDownSLine size="16" class="shrink-0 text-muted-foreground" />
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent
+          align="start"
+          :side-offset="6"
+          class="max-h-80 w-[20rem] max-w-[calc(100vw-6rem)]"
         >
-          <span
-            class="size-2 shrink-0 rounded-full"
-            :class="TONE_DOT[p.tone]"
-            :title="toneTitle(p.tone)"
-          />
-          <span class="min-w-0 flex-1 truncate">{{ p.name }}</span>
-          <span class="shrink-0 text-xs tabular-nums text-muted-foreground">
-            {{ p.availableModelCount }}/{{ p.modelCount }}
-          </span>
-        </button>
-        <p v-if="!platforms.length" class="px-2 py-3 text-xs text-muted-foreground">
-          没有可切换的平台
-        </p>
-      </div>
+          <DropdownMenuItem
+            v-for="p in platforms"
+            :key="p.baseUrl"
+            class="-mx-1 gap-2 px-2 py-1.5"
+            :class="p.baseUrl === activeBaseUrl ? 'bg-accent font-medium' : ''"
+            @select="pickPlatform(p.baseUrl)"
+          >
+            <span
+              class="size-2 shrink-0 rounded-full"
+              :class="TONE_DOT[p.tone]"
+              :title="toneTitle(p.tone)"
+            />
+            <span class="min-w-0 flex-1 truncate">{{ p.name }}</span>
+            <span class="shrink-0 text-xs tabular-nums text-muted-foreground">
+              {{ p.availableModelCount }}/{{ p.modelCount }}
+            </span>
+          </DropdownMenuItem>
+          <p v-if="!platforms.length" class="px-2 py-3 text-xs text-muted-foreground">
+            没有可切换的平台
+          </p>
+        </DropdownMenuContent>
+      </DropdownMenu>
     </div>
 
     <!-- Key 列表：一行一个 Key，选中项高亮。 -->
@@ -169,13 +129,21 @@ onBeforeUnmount(() => {
         v-for="key in activePlatform?.keys || []"
         :key="key.channel.id"
         type="button"
-        class="flex w-full items-center gap-2 rounded-md border border-transparent px-2 py-2 text-left transition-colors hover:border-border hover:bg-background"
-        :class="key.channel.id === activeKeyId ? 'border-border bg-background' : ''"
+        class="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left transition-colors"
+        :class="key.channel.id === activeKeyId ? 'bg-muted' : 'hover:bg-muted/60'"
         @click="emit('selectKey', key)"
       >
         <span class="min-w-0 flex-1" :title="key.channel.name">
           <!-- Key 名单独占一行：与状态标签同行时，标签会把名字挤成省略号。 -->
-          <span class="block truncate text-sm font-medium">{{ key.channel.name }}</span>
+          <span
+            class="block truncate text-sm"
+            :class="
+              key.channel.id === activeKeyId
+                ? 'font-semibold text-foreground'
+                : 'font-medium text-foreground'
+            "
+            >{{ key.channel.name }}</span
+          >
           <span class="mt-0.5 flex items-center gap-1.5">
             <!-- 开 / 关：只回答「这个 Key 现在能不能用」，与故障成因分开。 -->
             <span

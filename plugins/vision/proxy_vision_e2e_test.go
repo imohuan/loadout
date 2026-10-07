@@ -83,6 +83,12 @@ func (e2eHealth) RecoverAllModelsByChannel(context.Context, string) (int64, erro
 	return 0, nil
 }
 func (e2eHealth) RecoverAllChannels(context.Context) (int64, error) { return 0, nil }
+func (e2eHealth) RecoverPlatformByBaseURL(context.Context, string) (int64, error) {
+	return 0, nil
+}
+func (e2eHealth) RecoverAllModelsByBaseURL(context.Context, string) (int64, error) {
+	return 0, nil
+}
 func (e2eHealth) List(context.Context) ([]contracts.ChannelStatus, error) {
 	return nil, nil
 }

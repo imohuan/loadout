@@ -61,6 +61,10 @@ type ModelHealth interface {
 	RecoverAllModels(context.Context) (int64, error)
 	RecoverAllModelsByChannel(context.Context, string) (int64, error)
 	RecoverAllChannels(context.Context) (int64, error)
+	// 平台级（同 base_url 的一组 Key）：RecoverPlatformByBaseURL 清自动熔断，
+	// RecoverAllModelsByBaseURL 额外强制打开手动开关（破坏性）。
+	RecoverPlatformByBaseURL(context.Context, string) (int64, error)
+	RecoverAllModelsByBaseURL(context.Context, string) (int64, error)
 	List(context.Context) ([]ChannelStatus, error)
 	CheckNow(context.Context, bool) error
 	// PurgeChannelStates 删除某渠道下不在 keep 清单内的模型状态记录

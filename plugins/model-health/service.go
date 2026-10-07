@@ -341,10 +341,113 @@ func (s *Service) DeleteModels(ctx context.Context, channelID string, models []s
 	return tx.Commit()
 }
 
+// RecoverChannel 恢复一条 Key（「恢复 Key」按钮）：清掉这条 Key 的**全部自动熔断**。
+//
+// 必须同时清两个层级，缺一层用户就会看到「点了恢复但还是走别的目标」：
+//   - channel_states：Key 级熔断（401 密钥失效 / 402 余额不足 / 平台组禁用…）；
+//   - model_states：该 Key 下所有模型级熔断（429 限速 / 404 模型不存在…）。
+//
+// Check 先查 Key 级再查模型级，任一层非 available 都会让整个 Key 被判不可用，
+// 所以只清一层等于没恢复。
+//
+// 语义边界：只清自动状态，**不强制打开手动关闭的对象**（manual_enabled 不动）；
+// 需要强制打开请用 RecoverAllModels / RecoverAllModelsByChannel。
 func (s *Service) RecoverChannel(ctx context.Context, channelID string) error {
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err := s.db.ExecContext(ctx, `INSERT INTO channel_states(channel_id, status, fail_count, updated_at) VALUES (?, 'available', 0, ?) ON CONFLICT(channel_id) DO UPDATE SET status='available', disabled_until=NULL, fail_count=0, last_error='', last_failure_class='', last_rule_id='', last_rule_name='', updated_at=excluded.updated_at`, channelID, now)
+	_, err := s.recoverChannels(ctx, []string{channelID})
 	return err
+}
+
+// recoverChannels 清一批 Key 的自动熔断（Key 级 + 模型级），不动手动开关。
+// 平台级恢复与单 Key 恢复共用的底层实现，保证两处语义永远一致。
+func (s *Service) recoverChannels(ctx context.Context, channelIDs []string) (int64, error) {
+	if len(channelIDs) == 0 {
+		return 0, nil
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(channelIDs)), ",")
+	args := make([]any, 0, len(channelIDs)+1)
+	args = append(args, now)
+	for _, id := range channelIDs {
+		args = append(args, id)
+	}
+	channelRes, err := s.db.ExecContext(ctx, fmt.Sprintf(`INSERT INTO channel_states(channel_id, status, fail_count, updated_at)
+		SELECT id, 'available', 0, ? FROM channels WHERE id IN (%s)
+		ON CONFLICT(channel_id) DO UPDATE SET status='available', disabled_until=NULL, fail_count=0, last_error='', last_failure_class='', last_rule_id='', last_rule_name='', updated_at=excluded.updated_at`, placeholders), args...)
+	if err != nil {
+		return 0, fmt.Errorf("model-health: recover channels: %w", err)
+	}
+	modelRes, err := s.db.ExecContext(ctx, fmt.Sprintf(`UPDATE model_states SET status='available', disabled_until=NULL, fail_count=0, last_error='', last_failure_class='', last_rule_id='', last_rule_name='', updated_at=? WHERE channel_id IN (%s)`, placeholders), args...)
+	if err != nil {
+		return 0, fmt.Errorf("model-health: recover channel models: %w", err)
+	}
+	channelAffected, _ := channelRes.RowsAffected()
+	modelAffected, _ := modelRes.RowsAffected()
+	return channelAffected + modelAffected, nil
+}
+
+// RecoverPlatformByBaseURL 按 base_url 恢复一个平台（同 base_url 的一组 Key）：「恢复本平台」。
+// 对组内每个 Key 执行「恢复 Key」（清 Key 级 + 模型级自动熔断，不动手动开关）。
+// 返回受影响的行数（Key 级 + 模型级）。
+func (s *Service) RecoverPlatformByBaseURL(ctx context.Context, baseURL string) (int64, error) {
+	ids, err := s.channelIDsByBaseURL(ctx, baseURL)
+	if err != nil {
+		return 0, err
+	}
+	return s.recoverChannels(ctx, ids)
+}
+
+// RecoverAllModelsByBaseURL 平台级「强制开启本平台全部模型」（破坏性）：
+// 清自动熔断的同时把 manual_enabled 强制置 1，会覆盖用户主动关闭的开关。
+func (s *Service) RecoverAllModelsByBaseURL(ctx context.Context, baseURL string) (int64, error) {
+	ids, err := s.channelIDsByBaseURL(ctx, baseURL)
+	if err != nil {
+		return 0, err
+	}
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
+	args := make([]any, 0, len(ids)+1)
+	args = append(args, now)
+	for _, id := range ids {
+		args = append(args, id)
+	}
+	modelRes, err := s.db.ExecContext(ctx, fmt.Sprintf(`UPDATE model_states
+		SET status='available', disabled_until=NULL, fail_count=0, last_error='',
+		    last_failure_class='', last_rule_id='', last_rule_name='', manual_enabled=1, updated_at=?
+		WHERE channel_id IN (%s)`, placeholders), args...)
+	if err != nil {
+		return 0, fmt.Errorf("model-health: recover all models of platform: %w", err)
+	}
+	modelAffected, _ := modelRes.RowsAffected()
+	channelAffected, err := s.recoverChannels(ctx, ids)
+	if err != nil {
+		return modelAffected, err
+	}
+	return modelAffected + channelAffected, nil
+}
+
+// channelIDsByBaseURL 按 base_url 归一化（去尾斜杠）找出该平台的全部 Key id。
+func (s *Service) channelIDsByBaseURL(ctx context.Context, baseURL string) ([]string, error) {
+	target := strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	if target == "" {
+		return nil, fmt.Errorf("model-health: empty base_url")
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id FROM channels WHERE rtrim(base_url,'/') = ?`, target)
+	if err != nil {
+		return nil, fmt.Errorf("model-health: list platform channels: %w", err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 func (s *Service) RecoverModel(ctx context.Context, channelID, model string) error {
@@ -401,10 +504,12 @@ func (s *Service) RecoverAllModels(ctx context.Context) (int64, error) {
 	return modelsAffected + channelsAffected, nil
 }
 
-// RecoverAllChannels 把所有处于"非正常"状态的渠道一次性归零（全平台）：
-//   - 自动健康熔断（status != 'available'）：清 fail_count / last_error / disabled_until
+// RecoverAllChannels 恢复**所有**平台的自动熔断（「恢复全部平台」）：
+//   - channel_states（Key 级）与 model_states（模型级）一起清；
+//   - 不碰任何手动开关（manual_enabled 保持原值）。
 //
-// 注意：只恢复渠道自身的自动状态，不碰模型开关。
+// 与 RecoverChannel 同语义，只是范围放大到全部。刻意不强制打开手动开关——
+// 需要连手动开关一起打开请用 RecoverAllModels（「强制开启全部」）。
 func (s *Service) RecoverAllChannels(ctx context.Context) (int64, error) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	channelsRes, err := s.db.ExecContext(ctx, `UPDATE channel_states
@@ -420,8 +525,23 @@ func (s *Service) RecoverAllChannels(ctx context.Context) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("model-health: recover all channels: %w", err)
 	}
+	modelsRes, err := s.db.ExecContext(ctx, `UPDATE model_states
+		SET status='available',
+		    disabled_until=NULL,
+		    fail_count=0,
+		    last_error='',
+		    last_failure_class='',
+		    last_rule_id='',
+		    last_rule_name='',
+		    updated_at=?
+		WHERE status != 'available'`, now)
+	if err != nil {
+		channelsAffected, _ := channelsRes.RowsAffected()
+		return channelsAffected, fmt.Errorf("model-health: recover all models: %w", err)
+	}
 	channelsAffected, _ := channelsRes.RowsAffected()
-	return channelsAffected, nil
+	modelsAffected, _ := modelsRes.RowsAffected()
+	return channelsAffected + modelsAffected, nil
 }
 
 // RecoverAllModelsByChannel 把指定渠道内所有处于"非正常"状态的模型一次性归零：

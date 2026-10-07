@@ -7,7 +7,6 @@ import { computed, ref } from 'vue'
 import {
   RiLoader4Line,
   RiRefreshLine,
-  RiRestartLine,
   RiDeleteBinLine,
   RiToggleLine,
   RiCloseLine,
@@ -25,10 +24,8 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  recoverChannel: []
   modelToggle: [model: ModelStatus, enabled: boolean]
   recoverModel: [model: ModelStatus]
-  recoverAllModels: []
   batchModelToggle: [models: ModelStatus[], enabled: boolean]
   batchRecoverModel: [models: ModelStatus[]]
   batchDeleteModel: [models: ModelStatus[]]
@@ -97,32 +94,8 @@ defineExpose({ resetSelection })
             item.reason
           }}</span>
           <span v-else class="flex-1" />
-          <Button
-            variant="outline"
-            size="sm"
-            :disabled="busy('recover')"
-            @click="emit('recoverChannel')"
-          >
-            <RiLoader4Line v-if="busy('recover')" class="animate-spin" size="14" />
-            <RiRefreshLine v-else size="14" />恢复 Key
-          </Button>
-          <Tooltip>
-            <TooltipTrigger as-child>
-              <Button
-                variant="outline"
-                size="sm"
-                :disabled="busy('recover-all')"
-                @click="emit('recoverAllModels')"
-              >
-                <RiLoader4Line v-if="busy('recover-all')" class="animate-spin" size="14" />
-                <RiRestartLine v-else size="14" />恢复全部异常
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>
-              清空当前 Key 的自动熔断 + 强制打开该 Key 所有模型的手动开关；范围仅限当前 Key
-            </TooltipContent>
-          </Tooltip>
-          <div class="mx-0.5 h-5 w-px bg-border" />
+          <!-- 「恢复 Key」只在右栏头部保留一个（避免同动作重复出现）；
+               「强制开启本 Key」是破坏性操作，收进平台级「更多 ▾」菜单。 -->
           <Button
             variant="outline"
             size="sm"

@@ -37,6 +37,18 @@ export function useModelStatus() {
     )
   const recoverAllChannels = () =>
     request<{ ok: boolean; affected: number }>('/api/model-status/recover-all-channels', 'POST')
+  // 「恢复本平台」：按 base_url 清该平台全部 Key 的自动熔断。
+  const recoverPlatform = (baseUrl: string) =>
+    request<{ ok: boolean; affected: number }>('/api/model-status/platforms/recover', 'POST', {
+      base_url: baseUrl,
+    })
+  // 「强制开启本平台全部模型」（破坏性）：清自动熔断并强制打开手动开关。
+  const recoverPlatformForced = (baseUrl: string) =>
+    request<{ ok: boolean; affected: number }>(
+      '/api/model-status/platforms/recover-forced',
+      'POST',
+      { base_url: baseUrl },
+    )
   return {
     list,
     setChannel,
@@ -51,5 +63,7 @@ export function useModelStatus() {
     recoverAll,
     recoverAllByChannel,
     recoverAllChannels,
+    recoverPlatform,
+    recoverPlatformForced,
   }
 }
