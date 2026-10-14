@@ -371,7 +371,7 @@ const totals = computed(() => {
 </script>
 
 <template>
-  <div class="space-y-6">
+  <div class="flex min-h-0 flex-1 flex-col gap-6">
     <PageHeader
       title="模型状态"
       description="手动开关与自动健康状态分别管理；自动状态不会重新打开手动关闭的对象。"
@@ -449,7 +449,7 @@ const totals = computed(() => {
       </template>
 
       <!-- ============ 状态二：平台 · Key 详情 ============ -->
-      <div v-else class="space-y-3">
+      <div v-else class="flex min-h-0 flex-1 flex-col gap-3">
         <div class="flex items-center gap-2 text-sm text-muted-foreground">
           <Button
             variant="ghost"
@@ -521,7 +521,7 @@ const totals = computed(() => {
         </div>
 
         <div
-          class="flex min-h-[32rem] flex-col overflow-hidden rounded-lg border border-border md:flex-row!"
+          class="flex min-h-[32rem] shrink-0 flex-col overflow-hidden rounded-lg border border-border md:flex-1! md:flex-row!"
         >
           <ModelStatusKeyList
             :platforms="platforms"

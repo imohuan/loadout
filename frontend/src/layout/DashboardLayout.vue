@@ -22,9 +22,9 @@ async function logout() {
 </script>
 
 <template>
-  <SidebarProvider class="min-h-dvh bg-muted/40">
+  <SidebarProvider class="h-dvh bg-muted/40">
     <AppSidebar />
-    <SidebarInset class="min-w-0 bg-background">
+    <SidebarInset class="min-h-0 min-w-0 bg-background">
       <header
         class="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-border px-4"
       >
@@ -55,7 +55,11 @@ async function logout() {
           </Tooltip>
         </TooltipProvider>
       </header>
-      <main class="mx-auto w-full max-w-screen-2xl p-4 sm:p-6 flex-1"><RouterView /></main>
+      <main
+        class="mx-auto flex min-h-0 w-full max-w-screen-2xl flex-1 flex-col overflow-y-auto p-4 sm:p-6"
+      >
+        <RouterView />
+      </main>
     </SidebarInset>
   </SidebarProvider>
 </template>

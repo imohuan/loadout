@@ -115,18 +115,26 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <!-- Key 列表：一行一个 Key，选中项高亮。 -->
-    <div class="min-h-0 flex-1 overflow-auto p-1.5">
+    <!-- Key 列表：一行一个 Key，选中项高亮（选中配色与「模型状态」页左栏保持一致）。 -->
+    <div class="max-h-72 min-h-0 flex-1 overflow-auto p-1.5 md:max-h-none!">
       <button
         v-for="key in activePlatform?.keys || []"
         :key="key.id"
         type="button"
-        class="flex w-full items-center gap-2 rounded-md border border-transparent px-2 py-2 text-left transition-colors hover:border-border hover:bg-background"
-        :class="key.id === activeKeyId ? 'border-border bg-background' : ''"
+        class="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left transition-colors"
+        :class="key.id === activeKeyId ? 'bg-muted' : 'hover:bg-muted/60'"
         @click="emit('selectKey', key)"
       >
         <span class="min-w-0 flex-1" :title="key.name">
-          <span class="block truncate text-sm font-medium">{{ key.name }}</span>
+          <span
+            class="block truncate text-sm"
+            :class="
+              key.id === activeKeyId
+                ? 'font-semibold text-foreground'
+                : 'font-medium text-foreground'
+            "
+            >{{ key.name }}</span
+          >
           <span class="mt-0.5 block truncate text-[11px] text-muted-foreground">{{
             channelModelLabel(key)
           }}</span>

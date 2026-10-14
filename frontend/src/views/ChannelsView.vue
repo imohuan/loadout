@@ -283,7 +283,7 @@ const totals = computed(() => {
 </script>
 
 <template>
-  <div class="space-y-6">
+  <div class="flex min-h-0 flex-1 flex-col gap-6">
     <PageHeader
       title="渠道与模型"
       description="同一 Base URL 的多个 Key 归为一个渠道组；配置上游服务、刷新模型目录，并控制普通模型的候选顺序。"
@@ -334,8 +334,11 @@ const totals = computed(() => {
         />
       </template>
 
-      <!-- ============ 状态二：平台 · Key 详情 ============ -->
-      <div v-else class="space-y-3">
+      <!--
+        详情态：外层用 flex 列 + flex-1，把「剩余高度」让给下面那个左右分栏的框；
+        框自身保持 min-h-[32rem] 兜底，竖屏空间不够时由 main 接管整页滚动。
+      -->
+      <div v-else class="flex min-h-0 flex-1 flex-col gap-3">
         <div class="flex items-center gap-2 text-sm text-muted-foreground">
           <Button
             variant="ghost"
@@ -350,7 +353,7 @@ const totals = computed(() => {
         </div>
 
         <div
-          class="flex min-h-[32rem] flex-col overflow-hidden rounded-lg border border-border md:flex-row!"
+          class="flex min-h-[32rem] shrink-0 flex-col overflow-hidden rounded-lg border border-border md:flex-1! md:flex-row!"
         >
           <ChannelKeyList
             :platforms="platforms"

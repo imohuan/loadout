@@ -124,7 +124,7 @@ function pickPlatform(baseUrl: string) {
     </div>
 
     <!-- Key 列表：一行一个 Key，选中项高亮。 -->
-    <div class="min-h-0 flex-1 overflow-auto p-1.5">
+    <div class="max-h-72 min-h-0 flex-1 overflow-auto p-1.5 md:max-h-none!">
       <button
         v-for="key in activePlatform?.keys || []"
         :key="key.channel.id"
