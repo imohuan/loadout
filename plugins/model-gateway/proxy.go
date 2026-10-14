@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -91,6 +92,12 @@ func (s *Service) proxyHandle(w http.ResponseWriter, r *http.Request, version st
 	if channelHint != "" {
 		pipe.Metadata["__channel_hint"] = channelHint
 	}
+	// 测试锁定：逐 Key 测试请求带 X-Loadout-Pin-Channel，把本次请求钉到该渠道。
+	// 与 hint 一样在 hook 前后都要写回（插件重建 pipe 会清 metadata）。
+	pinChannel := pinChannelFromRequest(r)
+	if pinChannel != "" {
+		pipe.Metadata[MetadataPinChannel] = pinChannel
+	}
 	setRequestIDHeader(w, pipe.RequestID)
 	// 流式请求注入视觉流输出通道：能力插件（vision）可把识别过程实时输出到客户端。
 	if stream {
@@ -143,6 +150,9 @@ func (s *Service) proxyHandle(w http.ResponseWriter, r *http.Request, version st
 	// 保证前缀锁定在 hook 之后依然生效（插件重建 pipe 也不丢）。
 	if channelHint != "" {
 		pipe.Metadata["__channel_hint"] = channelHint
+	}
+	if pinChannel != "" {
+		pipe.Metadata[MetadataPinChannel] = pinChannel
 	}
 	// hook 可能设置了 __virtual_model：二次 Start（UPSERT）补全虚拟模型名，
 	// 不新增记录（同一 request_id 合并）。
@@ -363,6 +373,9 @@ func (s *Service) proxyAttempt(w http.ResponseWriter, r *http.Request, pipe *Pro
 		switch http.CanonicalHeaderKey(k) {
 		case "Host", "Content-Length", "Authorization", "Connection", "Proxy-Connection", "Keep-Alive",
 			"Transfer-Encoding", "Upgrade", "Te", "Trailer", "Proxy-Authenticate", "Proxy-Authorization":
+			continue
+		case headerPinChannel:
+			// 本机测试请求的锁定标记：入口已读取完毕，属于内部约定，不透传给上游。
 			continue
 		case "X-Api-Key", "Api-Key":
 			if stripAltAuth {
@@ -1204,6 +1217,16 @@ func (s *Service) resolveProxyChannels(ctx context.Context, model string, pipe *
 	}
 	if model == "" {
 		channels := s.allEnabledChannels(ctx)
+		// 测试锁定：无模型匹配也要钉住指定渠道（测试按钮始终带模型，这里只是兜底）。
+		if pin, _ := pipe.Metadata[MetadataPinChannel].(string); pin != "" {
+			var out []ResolvedChannel
+			for _, ch := range channels {
+				if ch.ID == pin {
+					out = append(out, ch)
+				}
+			}
+			return out
+		}
 		if hint, _ := pipe.Metadata["__channel_hint"].(string); hint != "" {
 			var out []ResolvedChannel
 			for _, ch := range channels {
@@ -1338,6 +1361,41 @@ func (s *Service) tryProxyAggregateFailover(pipe *ProxyPipeline, model string, f
 // 再喂回规则引擎 —— 否则 AI 模型自身不可用时会层层放大（AI 失败 → 记录失败
 // → 规则未命中 → 又发一次 AI 请求）。
 const headerRuleAI = "X-Loadout-Rule-AI"
+
+// headerPinChannel 测试锁定的请求头：值为渠道 id。
+//
+// 只服务管理后台的逐 Key 测试（模型状态页的「测试」按钮）：让这次请求锁定到
+// 指定渠道并绕开健康过滤，从而拿到「这个 Key 现在到底还行不行」的真实答案。
+// 与 headerRuleAI 一样属于本机内部约定，由服务端自己发起、不对外暴露 ——
+// 因此只认回环来源的请求（见 pinChannelFromRequest）。
+const headerPinChannel = "X-Loadout-Pin-Channel"
+
+// pinChannelFromRequest 读取测试锁定头，且**只接受回环来源**的请求。
+//
+// 这个头能绕过熔断保护并把请求钉到任意渠道，权限不轻；如果不校验来源，任何
+// 拿着 sk- key 的调用方都能凭它跳过熔断、强制打某个账号，等于把内部约定变成了
+// 对外接口。管理后台与网关同机部署，内部请求的来源必然是回环地址，加这一道
+// 就够了。
+func pinChannelFromRequest(r *http.Request) string {
+	if r == nil || !isLoopbackAddr(r.RemoteAddr) {
+		return ""
+	}
+	return r.Header.Get(headerPinChannel)
+}
+
+// isLoopbackAddr 判断来源地址是否为本机回环（127.0.0.0/8、::1、localhost）。
+// 与 admin-api 的同名判断口径一致；插件之间不互相 import，故各留一份。
+func isLoopbackAddr(remoteAddr string) bool {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		host = remoteAddr
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
 
 // isRuleAIRequest 判断该请求是否由失败规则引擎的 AI 兜底发起。
 func isRuleAIRequest(r *http.Request) bool {

@@ -31,6 +31,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"loadout/core/db"
@@ -48,9 +49,12 @@ const defaultWindowSeconds = 60
 // sweepInterval 内存计数桶的后台清扫间隔。
 const sweepInterval = time.Minute
 
-// sweepMaxIdle 清扫口径上限：没有任何请求超过这个时长的桶直接回收。
-// 取一个明显大于常见窗口的值（1 小时），保证「窗口内仍有记录的桶」不会被误删。
-const sweepMaxIdle = time.Hour
+// sweepMinIdle 清扫口径下限：没有任何请求超过这个时长的桶才允许回收。
+//
+// 实际口径取「本值」与「当前生效规则里最长的窗口」中的较大者（见 sweepIdle）：
+// 固定成 1 小时会在配置长窗口（如每 24 小时 N 次）时把窗口内的计数当空闲桶清掉，
+// 限流静默失效。取 max(1h, 最长窗口) 后，任何仍在规则窗口内的记录都不会被回收。
+const sweepMinIdle = time.Hour
 
 // Service 限流适配器：查能力路由、滑动窗口计数、候选筛选与消费。
 //
@@ -67,6 +71,12 @@ type Service struct {
 
 	// sweepOnce 保证后台清扫 goroutine 只启动一次（测试可重复调用 Start）。
 	sweepOnce sync.Once
+
+	// maxWindowNanos 已生效规则里最长的窗口长度（纳秒，0 = 尚无规则）。
+	//
+	// 后台清扫必须以它为下限：清扫口径固定 1 小时的话，「每 24 小时 N 次」这类长窗口
+	// 规则的计数桶会被当成空闲桶清掉，窗口内的计数直接归零 —— 限流静默失效。
+	maxWindowNanos atomic.Int64
 }
 
 // NewService 创建限流适配器。
@@ -91,7 +101,7 @@ func (s *Service) StartSweeper() func() {
 				case <-stop:
 					return
 				case <-ticker.C:
-					if n := s.counter.sweep(sweepMaxIdle, time.Now()); n > 0 {
+					if n := s.counter.sweep(s.sweepIdle(), time.Now()); n > 0 {
 						s.lg.Debug("key-rate-limit: 回收空闲计数桶", "removed", n, "remaining", s.counter.size())
 					}
 				}
@@ -101,16 +111,59 @@ func (s *Service) StartSweeper() func() {
 	return func() { once.Do(func() { close(stop) }) }
 }
 
+// sweepIdle 后台清扫的空闲口径：max(1 小时, 当前生效规则里最长的窗口)。
+//
+// 用「最长窗口」兜底而不是固定 1 小时：窗口配成 24 小时时，桶里的记录在 24 小时内
+// 都还有意义，按 1 小时裁剪会把它们当空闲清掉，每次清扫都让长窗口限流归零。
+// 尚无规则（尚未命中过任何限流路由）时按 1 小时，够用且能回收早就没用的桶。
+func (s *Service) sweepIdle() time.Duration {
+	if n := s.maxWindowNanos.Load(); n > 0 {
+		if w := time.Duration(n); w > sweepMinIdle {
+			return w
+		}
+	}
+	return sweepMinIdle
+}
+
+// noteWindow 记录一条生效规则里最长的窗口，供后台清扫取口径（只增不减：
+// 规则删除后计数桶仍会被按旧口径保留一段时间，等它们自然滑出即可，不会误删）。
+func (s *Service) noteWindow(w time.Duration) {
+	if w <= 0 {
+		return
+	}
+	for {
+		cur := s.maxWindowNanos.Load()
+		if int64(w) <= cur || s.maxWindowNanos.CompareAndSwap(cur, int64(w)) {
+			return
+		}
+	}
+}
+
 // decideRoutes 查能力路由：model + 请求渠道上下文的 key_rate_limit 路由。
 // 未命中返回空；命中 native（豁免）立即返回该项；多个 proxy 路由返回全部（叠加）。
 // 选择策略统一走 types.SelectCapabilityRoutesEx（与 sensitive-filter / field-filter 一致，
 // 支持聚合模型的候选 Key 与渠道级 base_url 命中）。
+//
+// extraScope 是调用方额外提供的渠道上下文。proxy:channels-resolved 阶段管线里还没有
+// __current_channel（它由 proxyAttempt 每次尝试才写入），只用 metadata 会让「渠道级约束」
+// 的路由在这里匹配不到 —— 表现为限流与账号轮换完全失效。传候选渠道进来即可命中。
+//
 // 读表/解析失败 fail-open：记日志并返回空（视为不限流）。
-func (s *Service) decideRoutes(pipe *modelgateway.ProxyPipeline, virtualModel string) []*types.CapabilityRoute {
+func (s *Service) decideRoutes(pipe *modelgateway.ProxyPipeline, virtualModel string, extraScope types.ChannelRequestScope) []*types.CapabilityRoute {
 	if pipe == nil || pipe.Request == nil {
 		return nil
 	}
 	scope := types.ChannelScopeFromMetadata(pipe.Metadata, s.requestChannelBaseURLs)
+	for _, id := range extraScope.IDs {
+		if id != "" && !containsString(scope.IDs, id) {
+			scope.IDs = append(scope.IDs, id)
+		}
+	}
+	for _, bu := range extraScope.BaseURLs {
+		if bu != "" && !containsString(scope.BaseURLs, bu) {
+			scope.BaseURLs = append(scope.BaseURLs, bu)
+		}
+	}
 	model := pipe.Request.Model
 	if s.repo != nil {
 		routes, err := s.repo.ListCapabilityRoutes(context.Background())
@@ -186,6 +239,7 @@ func dbChannelsToTypes(channels []db.Channel) []types.Channel {
 // scopeKey 一条限流规则的作用域签名：决定「哪几个模型共用一个配额桶」。
 //   - models 含 "*" → "*"（该 Key 全部模型共用一个桶）；
 //   - 否则按排序后的模型名拼接（同一规则覆盖的模型共用一个桶）。
+//
 // 规则身份也参与签名（用规则下标）：同一 Key 被多条规则覆盖时各自独立计数，互不干扰。
 func scopeKey(models []string, ruleIndex int) string {
 	sig := "*"
@@ -210,11 +264,11 @@ func containsString(list []string, want string) bool {
 
 // activeRule 命中且真正生效的一条限流规则（配好参数、归一化后的形态）。
 type activeRule struct {
-	index   int
-	rule    types.RateLimitRule
-	scope   string // 作用域签名（决定共用桶的模型集合）
-	window  time.Duration
-	onExh   string
+	index  int
+	rule   types.RateLimitRule
+	scope  string // 作用域签名（决定共用桶的模型集合）
+	window time.Duration
+	onExh  string
 	// holds 该规则占用/释放并发名额用的计数器（与次数计数分开，避免互相影响）。
 	holds *concurrencyCounter
 }
@@ -246,6 +300,9 @@ func (s *Service) activeRules(routes []*types.CapabilityRoute) ([]activeRule, bo
 		if onExh != types.RateLimitReuse {
 			onExh = types.RateLimitReject // 默认拒绝（429）
 		}
+		// 让后台清扫知道这条规则的窗口有多长：清扫口径必须 >= 最长窗口，
+		// 否则长窗口规则的计数会被当空闲桶清掉（限流静默失效）。
+		s.noteWindow(window)
 		out = append(out, activeRule{
 			index:  i,
 			rule:   *rl,
@@ -279,7 +336,10 @@ func (s *Service) HandleChannelsResolved(payload any) (any, error) {
 		return payload, nil
 	}
 	virtualModel := types.VirtualModelFromMetadata(p.Pipe.Metadata)
-	routes := s.decideRoutes(p.Pipe, virtualModel)
+	// 候选渠道本身就是本次请求的渠道上下文：此时 metadata 里还没有 __current_channel
+	// （它在每次尝试前才写入），不把候选传进去的话，「渠道 = workbuddy」这类
+	// 渠道级约束的路由在这一步匹配不到，限流与轮换就会整体失效。
+	routes := s.decideRoutes(p.Pipe, virtualModel, scopeFromCandidates(p.Candidates))
 	if len(routes) == 0 {
 		return payload, nil
 	}
@@ -470,7 +530,8 @@ func (s *Service) HandleBeforeAttempt(payload any) (any, error) {
 		// 这里为空说明尚未确定渠道，本事件不是消费点，跳过（consumer 在 proxyAttempt 内触发）。
 		return payload, nil
 	}
-	routes := s.decideRoutes(pipe, types.VirtualModelFromMetadata(pipe.Metadata))
+	// 此时 __current_channel 已是具体渠道，metadata 里的渠道上下文足够匹配路由。
+	routes := s.decideRoutes(pipe, types.VirtualModelFromMetadata(pipe.Metadata), types.ChannelRequestScope{})
 	if len(routes) == 0 {
 		return payload, nil
 	}
@@ -547,4 +608,21 @@ func bucketKey(channelID, scope string) string {
 	return channelID + "\x1f" + scope
 }
 
-
+// scopeFromCandidates 把候选渠道列表转成渠道作用域（ID + base_url），供 decideRoutes 使用。
+//
+// 与 ChannelScopeFromMetadata 的差异：后者只读 metadata，而候选解析阶段 metadata 里
+// 还没有本次请求的渠道信息（__current_channel 由 proxyAttempt 每次尝试才写入）。
+// 候选列表就是「这次请求可能落到哪些渠道」的完整上下文，用它参与路由匹配，
+// 渠道级约束（channel_base_urls）的路由才能命中。
+func scopeFromCandidates(candidates []modelgateway.ResolvedChannel) types.ChannelRequestScope {
+	scope := types.ChannelRequestScope{}
+	for _, ch := range candidates {
+		if ch.ID != "" && !containsString(scope.IDs, ch.ID) {
+			scope.IDs = append(scope.IDs, ch.ID)
+		}
+		if ch.BaseURL != "" && !containsString(scope.BaseURLs, ch.BaseURL) {
+			scope.BaseURLs = append(scope.BaseURLs, ch.BaseURL)
+		}
+	}
+	return scope
+}

@@ -143,7 +143,7 @@ func (c *windowCounter) size() int {
 //
 // 与 windowCounter 分开存：两个维度独立配置，也不该互相影响清扫。
 type concurrencyCounter struct {
-	mu      sync.Mutex
+	mu       sync.Mutex
 	inFlight map[string]int
 }
 
@@ -197,4 +197,3 @@ func (c *concurrencyCounter) size() int {
 	defer c.mu.Unlock()
 	return len(c.inFlight)
 }
-

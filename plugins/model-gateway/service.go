@@ -595,8 +595,15 @@ func (s *Service) resolveChannels(ctx context.Context, model string, metadata ma
 		}
 		specifiedBaseURL, _ = metadata["__current_channel_base_url"].(string)
 	}
+	// 测试锁定：只留这一个 Key，且跳过健康过滤。
+	// 「不可用」的 Key 正是用户最想手动验一验的，用户既然明确点了它，
+	// 就该拿到真实的上游结果，而不是被熔断保护直接挡在门外。
+	pinned, _ := metadata[MetadataPinChannel].(string)
 	var known, unknown []ResolvedChannel
 	for _, channel := range channels {
+		if pinned != "" && channel.ID != pinned {
+			continue
+		}
 		// 候选约束：Key 多选列表 > 渠道级 base_url > 单 Key（向后兼容）。
 		if len(specifiedIDs) > 0 {
 			if !slices.Contains(specifiedIDs, channel.ID) {
@@ -609,13 +616,15 @@ func (s *Service) resolveChannels(ctx context.Context, model string, metadata ma
 		} else if specified != "" && channel.ID != specified {
 			continue
 		}
-		availability, err := s.health.Check(ctx, channel.ID, model)
-		if err != nil {
-			return nil, err
-		}
-		// 不可用（手动禁用或自动熔断）的渠道不真实请求，跳过。
-		if !availability.EffectiveAvailable {
-			continue
+		if pinned == "" {
+			availability, err := s.health.Check(ctx, channel.ID, model)
+			if err != nil {
+				return nil, err
+			}
+			// 不可用（手动禁用或自动熔断）的渠道不真实请求，跳过。
+			if !availability.EffectiveAvailable {
+				continue
+			}
 		}
 		key := ""
 		if channel.APIKeyCipher != "" {
@@ -642,7 +651,7 @@ func (s *Service) resolveChannels(ctx context.Context, model string, metadata ma
 		// 仍保留进 unknown——调用方已显式约束渠道（如 vision via_options 指定视觉渠道，
 		// 该渠道 Models 列表未必包含视觉模型名），Models 匹配只应约束「自动路由」。
 		// 否则显式候选会被静默丢弃导致 failover/502。
-		if !matched && (len(specifiedIDs) > 0 || specifiedBaseURL != "" || specified != "") {
+		if !matched && (len(specifiedIDs) > 0 || specifiedBaseURL != "" || specified != "" || pinned != "") {
 			unknown = append(unknown, candidate)
 		}
 	}

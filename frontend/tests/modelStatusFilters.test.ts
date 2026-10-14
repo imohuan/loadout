@@ -1,6 +1,13 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { filterPlatforms, matchKey, keyStatusBrief } from '../src/lib/modelStatus.ts'
+import {
+  filterPlatforms,
+  matchKey,
+  keyStatusBrief,
+  keyGroup,
+  sortKeysByGroup,
+  filterKeysByGroup,
+} from '../src/lib/modelStatus.ts'
 import type { ChannelStatus, ModelStatus } from '../src/lib/types.ts'
 
 function model(name: string, available = true): ModelStatus {
@@ -110,4 +117,96 @@ test('keyStatusBrief：额度用尽类冷却给出「额度用尽」而不是泛
   quota.health_status = 'cooling'
   quota.failure_class = 'rule_disable_key_daily'
   assert.deepEqual(keyStatusBrief(quota), { label: '额度用尽', tone: 'warn' })
+})
+
+test('keyGroup：可用 / 手动关闭 / 异常 / 不可用 各自归位', () => {
+  const ok = channel('k', 'https://a/v1')
+  assert.equal(keyGroup(ok), 'ok')
+
+  const manual = channel('k', 'https://a/v1', { available: false })
+  manual.manual_enabled = false
+  assert.equal(keyGroup(manual), 'manual')
+
+  // 冷却 / 额度用尽：会随时间自愈，算「其他异常」，排在中间
+  const cooling = channel('k', 'https://a/v1', { available: false })
+  cooling.health_status = 'cooling'
+  assert.equal(keyGroup(cooling), 'issue')
+
+  // 鉴权失效 / 账号禁用：要人工介入，算「不可用」，排最下面
+  const banned = channel('k', 'https://a/v1', { available: false })
+  banned.health_status = 'disabled'
+  banned.failure_class = 'rule_disable_key_never'
+  assert.equal(keyGroup(banned), 'bad')
+})
+
+test('sortKeysByGroup：可用的排最前、不可用的排最后、手动关闭与异常居中', () => {
+  const banned = channel('bad', 'https://a/v1', { available: false })
+  banned.health_status = 'disabled'
+  banned.failure_class = 'rule_disable_key_never'
+
+  const cooling = channel('issue', 'https://a/v1', { available: false })
+  cooling.health_status = 'cooling'
+
+  const manual = channel('manual', 'https://a/v1', { available: false })
+  manual.manual_enabled = false
+
+  const ok = channel('ok', 'https://a/v1')
+
+  const sorted = sortKeysByGroup([banned, cooling, manual, ok])
+  assert.deepEqual(
+    sorted.map((k) => k.channel.id),
+    ['ok', 'manual', 'issue', 'bad'],
+  )
+})
+
+test('sortKeysByGroup：同组内保持原顺序（后端优先级），且不改动入参数组', () => {
+  const items = [
+    channel('bad-1', 'https://a/v1', { available: false }),
+    channel('ok-1', 'https://a/v1'),
+    channel('ok-2', 'https://a/v1'),
+  ]
+  items[0].health_status = 'disabled'
+  items[0].failure_class = 'rule_disable_key_never'
+
+  const sorted = sortKeysByGroup(items)
+  assert.deepEqual(
+    sorted.map((k) => k.channel.id),
+    ['ok-1', 'ok-2', 'bad-1'],
+  )
+  // 入参数组顺序不变：调用方可能在别处还按原顺序渲染
+  assert.deepEqual(
+    items.map((k) => k.channel.id),
+    ['bad-1', 'ok-1', 'ok-2'],
+  )
+})
+
+test('filterKeysByGroup：列表显示与批量测试用同一份结果', () => {
+  const banned = channel('bad-1', 'https://a/v1', { available: false })
+  banned.health_status = 'disabled'
+  banned.failure_class = 'rule_disable_key_never'
+
+  const cooling = channel('issue-1', 'https://a/v1', { available: false })
+  cooling.health_status = 'cooling'
+
+  const manual = channel('manual-1', 'https://a/v1', { available: false })
+  manual.manual_enabled = false
+
+  const items = [banned, cooling, manual, channel('ok-1', 'https://a/v1')]
+
+  // 全部：排序后原样返回
+  assert.deepEqual(
+    filterKeysByGroup(items, 'all').map((k) => k.channel.id),
+    ['ok-1', 'manual-1', 'issue-1', 'bad-1'],
+  )
+  // 单组：只剩该组的 Key，顺序仍按分组排
+  assert.deepEqual(
+    filterKeysByGroup(items, 'bad').map((k) => k.channel.id),
+    ['bad-1'],
+  )
+  assert.deepEqual(
+    filterKeysByGroup(items, 'ok').map((k) => k.channel.id),
+    ['ok-1'],
+  )
+  // 没有该组时返回空数组（筛选后「N 项」归零，按钮要据此提示）
+  assert.deepEqual(filterKeysByGroup([items[3]], 'bad'), [])
 })

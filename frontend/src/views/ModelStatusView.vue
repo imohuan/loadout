@@ -16,14 +16,23 @@ import {
   RiArrowLeftSLine,
   RiListCheck,
   RiGridLine,
+  RiArrowDownSLine,
+  RiFlaskLine,
 } from '@remixicon/vue'
 import { toast } from 'vue-sonner'
 import { useModelStatus } from '@/composables/useModelStatus'
 import { useListLoader } from '@/composables/useListLoader'
 import { useAsyncTask } from '@/composables/useAsyncTask'
+import { useKeyBatchTest, CONCURRENCY_OPTIONS } from '@/composables/useKeyBatchTest'
 import { useConfirm } from '@/composables/useConfirm'
 import type { ChannelStatus, ModelStatus } from '@/lib/types'
-import { filterPlatforms, availableModelCount, keySwitchState } from '@/lib/modelStatus'
+import {
+  filterPlatforms,
+  availableModelCount,
+  filterKeysByGroup,
+  keySwitchState,
+  type KeyGroup,
+} from '@/lib/modelStatus'
 import PageHeader from '@/components/PageHeader.vue'
 import LoadingBlock from '@/components/LoadingBlock.vue'
 import EmptyState from '@/components/EmptyState.vue'
@@ -36,6 +45,9 @@ const service = useModelStatus()
 const { data: rawData, loading } = useListLoader(service.list)
 const { run, isPending } = useAsyncTask()
 const { confirmDialog } = useConfirm()
+
+// 批量测试：把一个平台下的 Key 挨个探一遍，进度回填到左栏列表。
+const batchTest = useKeyBatchTest()
 
 // 操作 key：模型状态页所有按钮级 loading 的唯一来源。
 // 纯函数层与子组件内部按钮用同一套规则生成 key。
@@ -56,15 +68,39 @@ const applied = ref<{ keyword?: string; health: 'all' | 'issue' | 'ok' }>({ heal
 const selectedBaseUrl = ref('')
 const selectedKeyId = ref('')
 
+/**
+ * 左栏状态筛选标签的当前值。
+ *
+ * 放在页面而不是左栏组件里：批量测试要按「列表里实际显示的这些 Key」来跑，
+ * 两处必须读到同一个值。
+ */
+const groupFilter = ref<'all' | KeyGroup>('all')
+
 const platforms = computed(() => filterPlatforms(rawData.value || [], applied.value))
 
 /** 当前平台：优先按选中 base_url 找，找不到（如筛选后消失）回落到第一个。 */
 const activePlatform = computed(
   () => platforms.value.find((p) => p.baseUrl === selectedBaseUrl.value) || platforms.value[0],
 )
-/** 当前 Key：优先按选中 id 找，找不到回落到该平台第一个 Key。 */
+
+/**
+ * 左栏当前显示的 Key：可用 → 手动关闭 → 异常 → 不可用，再按选中的标签过滤。
+ *
+ * 批量测试与列表渲染共用这一份结果：各算一遍的话，界面上写「测试 7 项」却跑了
+ * 17 个，这种事迟早发生。
+ */
+const visibleKeys = computed(() =>
+  filterKeysByGroup(activePlatform.value?.keys || [], groupFilter.value),
+)
+
+/**
+ * 当前 Key：在当前显示的这份列表里找选中项，找不到（刚切了标签）就用第一条。
+ *
+ * 必须按 visibleKeys 而不是平台全部 Key 来找：否则切到「不可用」后，右栏还在
+ * 显示上一份列表里选中的那个可用 Key，而左边列表里根本没有它 —— 看着像是选错了。
+ */
 const activeKey = computed(() => {
-  const keys = activePlatform.value?.keys || []
+  const keys = visibleKeys.value
   return keys.find((k) => k.channel.id === selectedKeyId.value) || keys[0]
 })
 
@@ -81,6 +117,11 @@ watch(
 )
 watch(activeKey, (k) => {
   if (k && k.channel.id !== selectedKeyId.value) selectedKeyId.value = k.channel.id
+})
+
+// 切换状态标签等于换了一份列表：选中项落到新列表的第一条，右栏跟着一起切。
+watch(groupFilter, () => {
+  selectedKeyId.value = visibleKeys.value[0]?.channel.id || ''
 })
 
 function applyFilters() {
@@ -368,6 +409,43 @@ const totals = computed(() => {
     models: list.reduce((n, p) => n + p.availableModelCount, 0),
   }
 })
+
+/** 点左半边「测试」：按当前并发数开跑。 */
+async function runBatchTest() {
+  if (batchTest.running.value) {
+    batchTest.stop()
+    toast.info('已停止，正在跑的请求会自然结束')
+    return
+  }
+  // 批量测试的范围就是左栏当前显示的这些 Key：界面上写着「不可用 7」，
+  // 点测试就该只测这 7 个。复用 visibleKeys（而不是另算一份），两份结果
+  // 不可能对不上。
+  const targets = visibleKeys.value
+  if (!targets.length) {
+    toast.info('当前筛选下没有可测试的 Key')
+    return
+  }
+  await batchTest.testKeys(targets)
+  // 只统计这一批的结果：别的平台或上一轮留下的失败标记不该算进来。
+  const tested = new Set(targets.map((key) => key.channel.id))
+  const remaining = Object.entries(batchTest.states.value).filter(
+    ([id, state]) => state.phase === 'failed' && tested.has(id),
+  ).length
+  // 测试走的是自家网关，成功/失败都会真实改动渠道健康状态（熔断、恢复、
+  // 失败计数），所以跑完必须拉一次最新数据，否则右侧表格还是测试前的旧状态。
+  await silentRefresh()
+  if (remaining > 0) toast.error(`测试完成，${remaining} 个 Key 未通过`)
+  else toast.success('测试完成，全部 Key 通过')
+}
+
+/** 右栏表格里某一行的「测试」：只测当前 Key 下的这个模型。 */
+async function testModel(item: ChannelStatus, model: ModelStatus) {
+  const result = await batchTest.testOne(item, model.model)
+  // 同上：单测也会改健康状态，立刻刷一遍让表格跟上。
+  await silentRefresh()
+  if (result.ok) toast.success(`「${model.model}」测试通过`)
+  else toast.error(`「${model.model}」测试失败：${result.error}`)
+}
 </script>
 
 <template>
@@ -490,33 +568,113 @@ const totals = computed(() => {
               <RiRestartLine v-else size="14" />强制开启本平台
             </Button>
           </div>
-          <div class="ml-auto inline-flex overflow-hidden rounded-md border border-border">
-            <button
-              type="button"
-              class="px-2 py-1 transition-colors"
-              :class="
-                mode === 'table'
-                  ? 'bg-muted font-medium text-foreground'
-                  : 'text-muted-foreground hover:bg-muted/60'
-              "
-              aria-label="表格模式"
-              @click="mode = 'table'"
+          <!--
+            右侧操作区：批量测试 + 视图切换。
+            批量测试是一个整体按钮，内部分成「测试」与「并发数」两半，中间一条
+            分隔线；两半各自 hover、各自可点，上下留出 padding 让它有实体感。
+          -->
+          <div class="ml-auto flex items-center gap-2">
+            <!--
+              一个整体按钮：外层出圆角与描边，内部用 1px 分隔线把「测试」与
+              「并发数」分成两个可点区域。不能用两个 Button 拼——Button 各自带
+              圆角，会渲染成两个分开的小药丸。
+              hover 取 hover:bg-muted：与左侧「强制开启本平台」Button 的悬停色
+              同一个类。带透明度的 hover:bg-muted/60 在本项目里不会被样式层生成
+              （实测该规则不存在），写了也是白写。
+            -->
+            <div
+              class="inline-flex h-7 items-stretch overflow-hidden rounded-md border border-border"
             >
-              <RiListCheck size="14" />
-            </button>
-            <button
-              type="button"
-              class="border-l border-border px-2 py-1 transition-colors"
-              :class="
-                mode === 'tags'
-                  ? 'bg-muted font-medium text-foreground'
-                  : 'text-muted-foreground hover:bg-muted/60'
-              "
-              aria-label="标签模式"
-              @click="mode = 'tags'"
-            >
-              <RiGridLine size="14" />
-            </button>
+              <!--
+                左半「测试 N 项」：N 跟着左栏筛选标签走，点「不可用」就是 7 项，
+                点「全部」就是 17 项 —— 点了会跑多少，按之前先写清楚。
+              -->
+              <button
+                type="button"
+                class="flex h-full items-center gap-1.5 px-2.5 text-[0.8rem] font-medium text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+                :title="`按并发 ${batchTest.concurrency.value} 测试本平台全部 Key`"
+                @click="runBatchTest"
+              >
+                <RiLoader4Line v-if="batchTest.running.value" class="animate-spin" size="14" />
+                <RiFlaskLine v-else size="14" />
+                <span class="tabular-nums">
+                  <template v-if="batchTest.running.value">
+                    测试中 {{ batchTest.progress.value }}
+                  </template>
+                  <!--
+                    空闲态直接报出这一批有多少项：数量跟着左栏的筛选标签走，
+                    用户点「不可用」时看到的就该是 7 项，而不是整个平台的 17。
+                  -->
+                  <template v-else-if="visibleKeys.length">
+                    测试 {{ visibleKeys.length }} 项
+                  </template>
+                  <template v-else>测试</template>
+                </span>
+              </button>
+              <span class="w-px shrink-0 bg-border" aria-hidden="true" />
+              <DropdownMenu>
+                <DropdownMenuTrigger as-child>
+                  <button
+                    type="button"
+                    class="flex h-full items-center gap-1 px-2 text-[0.8rem] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
+                    aria-label="选择并发数"
+                    :disabled="batchTest.running.value"
+                    :title="`测试并发数：当前 ${batchTest.concurrency.value}`"
+                  >
+                    <span class="tabular-nums text-[11px]">{{ batchTest.concurrency.value }}</span>
+                    <RiArrowDownSLine size="14" />
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" :side-offset="4" class="min-w-44">
+                  <DropdownMenuLabel class="text-xs font-normal text-muted-foreground">
+                    测试并发数（当前 {{ batchTest.concurrency.value }}）
+                  </DropdownMenuLabel>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuRadioGroup v-model="batchTest.concurrency.value">
+                    <DropdownMenuRadioItem
+                      v-for="option in CONCURRENCY_OPTIONS"
+                      :key="option"
+                      :value="option"
+                      :class="
+                        option === batchTest.concurrency.value
+                          ? 'bg-accent font-semibold text-accent-foreground'
+                          : ''
+                      "
+                    >
+                      {{ option }} 个并发
+                    </DropdownMenuRadioItem>
+                  </DropdownMenuRadioGroup>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+            <div class="mx-2 inline-flex h-7 overflow-hidden rounded-md border border-border">
+              <button
+                type="button"
+                class="h-full px-2 transition-colors"
+                :class="
+                  mode === 'table'
+                    ? 'bg-muted font-medium text-foreground'
+                    : 'text-muted-foreground hover:bg-muted'
+                "
+                aria-label="表格模式"
+                @click="mode = 'table'"
+              >
+                <RiListCheck size="14" />
+              </button>
+              <button
+                type="button"
+                class="h-full border-l border-border px-2 transition-colors"
+                :class="
+                  mode === 'tags'
+                    ? 'bg-muted font-medium text-foreground'
+                    : 'text-muted-foreground hover:bg-muted'
+                "
+                aria-label="标签模式"
+                @click="mode = 'tags'"
+              >
+                <RiGridLine size="14" />
+              </button>
+            </div>
           </div>
         </div>
 
@@ -528,6 +686,8 @@ const totals = computed(() => {
             :active-base-url="activePlatform?.baseUrl || ''"
             :active-key-id="activeKey?.channel.id"
             :is-pending="isPending"
+            :test-states="batchTest.states.value"
+            v-model:group-filter="groupFilter"
             @select-platform="selectPlatform"
             @select-key="selectKey"
           />
@@ -596,8 +756,10 @@ const totals = computed(() => {
                 :item="activeKey"
                 :mode="mode"
                 :is-pending="isPending"
+                :is-testing="(model) => batchTest.isTesting(activeKey.channel.id, model)"
                 @model-toggle="(m, enabled) => modelToggle(activeKey, m, enabled)"
                 @recover-model="(m) => recoverModel(activeKey, m)"
+                @test-model="(m) => testModel(activeKey, m)"
                 @batch-model-toggle="
                   (models, enabled) => batchModelToggle(activeKey, models, enabled)
                 "

@@ -95,7 +95,9 @@ func newTwoAccountUpstream(t *testing.T, rec *hitRecorder) *httptest.Server {
 
 // newGatewayWithLimit 组装「同平台两个账号 + 一条限流规则」的网关。
 // max=0 表示规则未配参数（等同不限流）。
-func newGatewayWithLimit(t *testing.T, max, windowSeconds int, onExhausted string, rec *hitRecorder) *modelgateway.Service {
+// scopeToChannel 为 true 时把限流规则绑到该渠道（channel_base_urls，界面上「渠道」列选中的值）：
+// 覆盖「规则只对某个平台生效」这一形态。
+func newGatewayWithLimit(t *testing.T, max, windowSeconds int, onExhausted string, rec *hitRecorder, scopeToChannel ...bool) *modelgateway.Service {
 	t.Helper()
 	st, err := store.New(t.TempDir())
 	if err != nil {
@@ -118,7 +120,7 @@ func newGatewayWithLimit(t *testing.T, max, windowSeconds int, onExhausted strin
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.Write(types.FileCapabilityRoutes, []types.CapabilityRoute{{
+	route := types.CapabilityRoute{
 		Models:     []string{"*"},
 		Capability: capabilityName,
 		Route:      types.RouteProxy,
@@ -127,7 +129,12 @@ func newGatewayWithLimit(t *testing.T, max, windowSeconds int, onExhausted strin
 			WindowSeconds: windowSeconds,
 			OnExhausted:   onExhausted,
 		},
-	}}); err != nil {
+	}
+	// 渠道级约束：把规则绑到上游所在的这个渠道组（界面上的「渠道」列）。
+	if len(scopeToChannel) > 0 && scopeToChannel[0] {
+		route.ChannelBaseURLs = []string{upstream.URL}
+	}
+	if err := st.Write(types.FileCapabilityRoutes, []types.CapabilityRoute{route}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -254,11 +261,33 @@ func TestE2EWindowExpiryRotatesBack(t *testing.T) {
 	}
 }
 
+// TestE2EChannelScopedRuleRotatesAccounts 规则绑在渠道上（界面「渠道」列 = channel_base_urls）时
+// 账号轮换同样生效。
+//
+// 回归：候选解析阶段 metadata 里还没有 __current_channel，只用 metadata 解析渠道作用域时
+// 这条路由匹配不到，表现为用户看到的「配了限流完全没效果」。
+func TestE2EChannelScopedRuleRotatesAccounts(t *testing.T) {
+	rec := &hitRecorder{}
+	// scopeToChannel=true：规则带 channel_base_urls（界面「渠道」列），走渠道级匹配。
+	gw := newGatewayWithLimit(t, 1, 60, types.RateLimitReject, rec, true)
+
+	for i := 0; i < 2; i++ {
+		if code, body := doChat(t, gw); code != http.StatusOK {
+			t.Fatalf("第 %d 次状态码 = %d，期望 200：%s", i+1, code, body)
+		}
+	}
+	hits := rec.list()
+	if len(hits) != 2 || hits[1] != "key-account-b" {
+		t.Fatalf("渠道级约束下 A 用满应换到 B，实际 hits=%v", hits)
+	}
+}
+
 // newGatewayWithConcurrency 组装「两个账号 + 只限并发」的网关。
 //
 // gatedKeys 里的账号在上游会被阻塞（直到调用方释放），其他账号立即返回——这样才能分别制造
 // 「某个账号有一个请求还在途」的状态。返回的 release 用于放行全部被阻塞的请求。
-func newGatewayWithConcurrency(t *testing.T, maxConcurrency int, onExhausted string, rec *hitRecorder, gatedKeys ...string) (gw *modelgateway.Service, release func()) {
+// scopeToChannel 为 true 时把规则绑到该渠道（channel_base_urls = 界面上的「渠道」列）。
+func newGatewayWithConcurrency(t *testing.T, maxConcurrency int, onExhausted string, rec *hitRecorder, gatedKeys []string, scopeToChannel ...bool) (gw *modelgateway.Service, release func()) {
 	t.Helper()
 	st, err := store.New(t.TempDir())
 	if err != nil {
@@ -312,12 +341,16 @@ func newGatewayWithConcurrency(t *testing.T, maxConcurrency int, onExhausted str
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.Write(types.FileCapabilityRoutes, []types.CapabilityRoute{{
+	route := types.CapabilityRoute{
 		Models:     []string{"*"},
 		Capability: capabilityName,
 		Route:      types.RouteProxy,
 		RateLimit:  &types.RateLimitRule{MaxConcurrency: maxConcurrency, OnExhausted: onExhausted},
-	}}); err != nil {
+	}
+	if len(scopeToChannel) > 0 && scopeToChannel[0] {
+		route.ChannelBaseURLs = []string{srv.URL}
+	}
+	if err := st.Write(types.FileCapabilityRoutes, []types.CapabilityRoute{route}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -336,7 +369,7 @@ func newGatewayWithConcurrency(t *testing.T, maxConcurrency int, onExhausted str
 func TestE2EConcurrencyRotatesAccounts(t *testing.T) {
 	rec := &hitRecorder{}
 	// 只让账号 A 的请求阻塞：A 的名额被占住后，第二个请求应落到 B（B 立即可用）。
-	gw, release := newGatewayWithConcurrency(t, 1, types.RateLimitReject, rec, "key-account-a")
+	gw, release := newGatewayWithConcurrency(t, 1, types.RateLimitReject, rec, []string{"key-account-a"})
 
 	// 第一个请求：会卡在上游（占用 A 的并发名额）。
 	done := make(chan int, 1)
@@ -366,7 +399,7 @@ func TestE2EConcurrencyRotatesAccounts(t *testing.T) {
 func TestE2EConcurrencyRejectsWhenAllBusy(t *testing.T) {
 	rec := &hitRecorder{}
 	// 两个账号都阻塞：两个请求各占住一个名额后，第三个请求应被 429 拒绝。
-	gw, release := newGatewayWithConcurrency(t, 1, types.RateLimitReject, rec, "key-account-a", "key-account-b")
+	gw, release := newGatewayWithConcurrency(t, 1, types.RateLimitReject, rec, []string{"key-account-a", "key-account-b"})
 
 	// 两个请求分别占住 A、B 的名额（都卡在上游）。
 	doneA := make(chan int, 1)
@@ -393,6 +426,50 @@ func TestE2EConcurrencyRejectsWhenAllBusy(t *testing.T) {
 	<-doneB
 }
 
+// TestE2EChannelScopedConcurrencyRotatesAccounts 规则绑在渠道上时，并发维度的账号轮换同样生效。
+//
+// 回归：这一形态（界面「渠道」列 + 并发上限）正是用户实测「并发控制完全没效果、
+// 全是同一个账号」的场景。渠道级路由在候选阶段匹配不到时，A 的并发名额根本不会被占，
+// 第二个请求照样落到 A。
+func TestE2EChannelScopedConcurrencyRotatesAccounts(t *testing.T) {
+	rec := &hitRecorder{}
+	// 只阻塞账号 A：A 的在途名额被占住后，第二个请求应换到 B。
+	gw, release := newGatewayWithConcurrency(t, 1, types.RateLimitReject, rec, []string{"key-account-a"}, true)
+
+	done := make(chan int, 1)
+	go func() {
+		code, _ := doChat(t, gw)
+		done <- code
+	}()
+	waitForHits(t, rec, 1)
+
+	// 第二个请求要有界：若换号没生效，它会落到仍被阻塞的账号 A 上、永久等待。
+	// 所以放 goroutine 里等结果，超时即判定「没换号」，而不是把测试挂死。
+	second := make(chan int, 1)
+	go func() {
+		code, _ := doChat(t, gw)
+		second <- code
+	}()
+	select {
+	case code := <-second:
+		if code != http.StatusOK {
+			t.Fatalf("第二个请求状态码 = %d，期望 200（换账号）", code)
+		}
+	case <-time.After(3 * time.Second):
+		release()
+		<-done
+		t.Fatal("第二个请求仍落到被阻塞的账号 A：渠道级约束的并发限流没有生效（没有换号）")
+	}
+	waitForHits(t, rec, 2)
+	hits := rec.list()
+	if hits[0] != "key-account-a" || hits[1] != "key-account-b" {
+		t.Fatalf("渠道级约束下并发占满应换到 B，实际 hits=%v", hits)
+	}
+
+	release()
+	<-done
+}
+
 // waitForHits 等待上游命中数达到 want（带超时，避免测试挂死）。
 func waitForHits(t *testing.T, rec *hitRecorder, want int) {
 	t.Helper()
@@ -405,4 +482,3 @@ func waitForHits(t *testing.T, rec *hitRecorder, want int) {
 	}
 	t.Fatalf("等待上游命中 %d 次超时，实际 %d", want, len(rec.list()))
 }
-

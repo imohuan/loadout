@@ -250,6 +250,78 @@ export function keySwitchState(key: ChannelStatus): { value: boolean; disabled: 
 }
 
 /**
+ * 左栏 Key 列表的分组。
+ *
+ * 「排序」与「筛选标签」必须共用同一口径：两处各算一遍，迟早会出现
+ * 「筛了可用，列表里却夹着一个不可用的 Key」这种自相矛盾的画面。
+ */
+export type KeyGroup = 'ok' | 'manual' | 'issue' | 'bad'
+
+/**
+ * 把 Key 归到四档：
+ *   ok     可用（现在就能路由）
+ *   manual 手动关闭（用户自己关的，打开开关即可恢复）
+ *   issue  其他异常（冷却中 / 额度用尽，会随时间自愈）
+ *   bad    不可用（鉴权失效 / 账号禁用，要人工介入）
+ */
+export function keyGroup(key: ChannelStatus): KeyGroup {
+  if (key.effective_available) return 'ok'
+  if (!key.manual_enabled) return 'manual'
+  return keyStatusBrief(key).tone === 'bad' ? 'bad' : 'issue'
+}
+
+/** 分组展示顺序：可用 → 手动关闭 → 其他异常 → 不可用。 */
+export const KEY_GROUP_ORDER: KeyGroup[] = ['ok', 'manual', 'issue', 'bad']
+
+/** 分组的中文名（筛选标签用）。 */
+export const KEY_GROUP_LABEL: Record<KeyGroup, string> = {
+  ok: '可用',
+  manual: '手动关闭',
+  issue: '异常',
+  bad: '不可用',
+}
+
+/**
+ * 左栏排序：可用的排最上面、不可用的排最下面，其余按「手动关闭 → 其他异常」排中间。
+ *
+ * 用 Array.sort（ES2019 起保证稳定）而不是自己写插入：同组内保持后端返回的顺序，
+ * 也就是路由优先级顺序，用户看到的先后不会因为点了几次刷新就乱掉。
+ */
+export function sortKeysByGroup(keys: ChannelStatus[]): ChannelStatus[] {
+  return [...keys].sort(
+    (a, b) => KEY_GROUP_ORDER.indexOf(keyGroup(a)) - KEY_GROUP_ORDER.indexOf(keyGroup(b)),
+  )
+}
+
+/**
+ * 左栏列表最终要渲染的 Key：先按分组排序，再按选中的标签过滤。
+ *
+ * 抽成纯函数是为了让「列表显示什么」和「批量测试测什么」用同一份结果 ——
+ * 各算一遍的话，界面上写「测试 10 项」却跑了 17 个，这种事迟早发生。
+ */
+export function filterKeysByGroup(
+  keys: ChannelStatus[],
+  filter: 'all' | KeyGroup,
+): ChannelStatus[] {
+  const sorted = sortKeysByGroup(keys)
+  return filter === 'all' ? sorted : sorted.filter((key) => keyGroup(key) === filter)
+}
+
+/**
+ * 单个 Key 的测试进度（左栏列表里那一行状态）。
+ *
+ * 三种取值都会留在列表上，测完不自动消失 —— 同一批里哪些通过、哪些没过，
+ * 扫一眼列表就能对上账；只有下一次点测试才会清掉重来。
+ */
+export interface KeyTestState {
+  phase: 'running' | 'ok' | 'failed'
+  /** 本次测试用的模型（三种取值都带，成功时也要说明测的是哪个）。 */
+  model?: string
+  /** 失败原因（上游原文，可能很长，列表里截断显示）。 */
+  error?: string
+}
+
+/**
  * Key 的二元状态（开 / 关），给列表与详情头部的徽章用。
  *
  * 故障成因（额度用尽、账号禁用…）是另一层信息，用 keyStatusBrief 展示；
@@ -274,4 +346,39 @@ export const PLATFORM_TONE_LABEL: Record<PlatformTone, string> = {
   warn: '部分异常',
   bad: '不可用',
   off: '手动关闭',
+}
+
+/**
+ * 状态语义色的唯一来源：绿=可用、琥珀=异常、红=不可用、灰=关闭/手动关闭。
+ *
+ * 同一个状态在页面上有多个落点（列表短标签、筛选标签、开关徽标、平台圆点），
+ * 各画各的迟早会出现「同一个可用，两处绿得不一样」。这里集中一份，各处引用；
+ * 绿必须和 PlatformTagGrid 的圆点、ModelHealthBadge 对齐。
+ */
+export const TONE_STYLE: Record<KeyTone, string> = {
+  ok: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300',
+  warn: 'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300',
+  bad: 'border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-300',
+  off: 'border-slate-500/30 bg-slate-500/10 text-slate-700 dark:text-slate-300',
+}
+
+/** 同色板的加重版：用于「当前选中」这类需要更醒目的场合。 */
+export const TONE_STYLE_STRONG: Record<KeyTone, string> = {
+  ok: 'border-emerald-500 bg-emerald-500/25 font-semibold text-emerald-800 dark:text-emerald-200',
+  warn: 'border-amber-500 bg-amber-500/25 font-semibold text-amber-800 dark:text-amber-200',
+  bad: 'border-red-500 bg-red-500/25 font-semibold text-red-800 dark:text-red-200',
+  off: 'border-slate-500 bg-slate-500/25 font-semibold text-slate-800 dark:text-slate-200',
+}
+
+/**
+ * 同色板的「无描边纯色块」版：用于列表里那种一行小徽标（开关态、故障成因短标签）。
+ *
+ * 与 TONE_STYLE 分开写而不是从它派生：在类名字符串上做替换拼字符串，读的人
+ * 得在脑子里跑一遍正则才知道最终长什么样，不如直接写清楚。
+ */
+export const TONE_STYLE_SOFT: Record<KeyTone, string> = {
+  ok: 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300',
+  warn: 'bg-amber-500/15 text-amber-700 dark:text-amber-300',
+  bad: 'bg-red-500/15 text-red-700 dark:text-red-300',
+  off: 'bg-slate-500/15 text-slate-700 dark:text-slate-300',
 }

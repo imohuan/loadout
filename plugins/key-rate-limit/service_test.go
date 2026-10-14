@@ -524,3 +524,81 @@ func TestBothDimensionsBothMustAllow(t *testing.T) {
 	}
 }
 
+// TestChannelScopedRouteTakesEffect 渠道级约束（channel_base_urls = 界面上「渠道」那一列）的规则
+// 必须真正生效。
+//
+// 回归：候选解析阶段 metadata 里还没有 __current_channel（它由每次尝试前才写入），
+// 只用 metadata 解析渠道作用域时，「渠道 = workbuddy」这类路由在这里匹配不到，
+// 表现为「配了限流完全没有效果」。候选渠道本身就是该请求的渠道上下文，必须参与匹配。
+func TestChannelScopedRouteTakesEffect(t *testing.T) {
+	svc := newTestService(t)
+	// 渠道表：两个 Key 同属一个平台（渠道级约束靠 base_url 命中）。
+	if err := svc.st.Write(types.FileChannels, []types.Channel{
+		{ID: "a", Name: "KeyA", ChannelName: "workbuddy", BaseURL: "https://api.example.com/v1", Enabled: true, ManualEnabled: true},
+		{ID: "b", Name: "KeyB", ChannelName: "workbuddy", BaseURL: "https://api.example.com/v1", Enabled: true, ManualEnabled: true},
+	}); err != nil {
+		t.Fatalf("写渠道失败: %v", err)
+	}
+	writeRoutes(t, svc, []types.CapabilityRoute{{
+		Models:          []string{"*"},
+		Capability:      capabilityName,
+		Route:           types.RouteProxy,
+		ChannelBaseURLs: []string{"https://api.example.com/v1"},
+		RateLimit:       &types.RateLimitRule{MaxRequests: 1, WindowSeconds: 60, OnExhausted: types.RateLimitReject},
+	}})
+
+	// 第 1 次：取第一个候选（a）并记一次消费，a 的配额随即用满。
+	first, err := resolve(t, svc, testPipe("gpt-4o"), "gpt-4o", channels("a", "b"))
+	if err != nil {
+		t.Fatalf("第 1 次 resolve 报错: %v", err)
+	}
+	if len(first) == 0 {
+		t.Fatal("第 1 次应有候选")
+	}
+	consumed := testPipe("gpt-4o")
+	consumed.Metadata["__current_channel"] = first[0].ID
+	if _, err := svc.HandleBeforeAttempt(consumed); err != nil {
+		t.Fatalf("记账报错: %v", err)
+	}
+
+	// 第 2 次：a 已用满 → 必须换到 b（按渠道级规则生效）。
+	second, err := resolve(t, svc, testPipe("gpt-4o"), "gpt-4o", channels("a", "b"))
+	if err != nil {
+		t.Fatalf("a 用满、b 尚可用时不应拒绝: %v", err)
+	}
+	if len(second) == 0 || second[0].ID != "b" {
+		t.Fatalf("渠道级约束的规则应把 b 排到首位，实际 %v", idsOf(second))
+	}
+}
+
+// TestSweepKeepsLongWindowCounts 长窗口规则的计数不能被后台清扫清零。
+//
+// 回归：清扫口径原先是固定 1 小时，配「每 24 小时 N 次」时，请求发出 1 小时后
+// 计数桶被当空闲桶清掉、计数归零，长窗口限流静默失效。
+func TestSweepKeepsLongWindowCounts(t *testing.T) {
+	svc := newTestService(t)
+	const windowSeconds = 24 * 3600
+	writeRoutes(t, svc, []types.CapabilityRoute{rateLimitRoute(2, windowSeconds, types.RateLimitReject)})
+
+	pipe := testPipe("gpt-4o")
+	pipe.Metadata["__current_channel"] = "a"
+	for i := 0; i < 2; i++ {
+		if _, err := svc.HandleBeforeAttempt(pipe); err != nil {
+			t.Fatalf("第 %d 次记账报错: %v", i+1, err)
+		}
+	}
+	key := bucketKey("a", scopeKey([]string{"*"}, 0))
+	if used := svc.counter.used(key, 2, windowSeconds*time.Second, time.Now()); used != 2 {
+		t.Fatalf("前置：窗口内应为 2 次，实际 %d", used)
+	}
+
+	// 清扫口径必须覆盖最长窗口；90 分钟后（远超默认 1 小时）计数仍应保留。
+	if idle := svc.sweepIdle(); idle < windowSeconds*time.Second {
+		t.Fatalf("清扫口径 %v 小于最长窗口 %ds：长窗口计数会被清掉", idle, windowSeconds)
+	}
+	later := time.Now().Add(90 * time.Minute)
+	svc.counter.sweep(svc.sweepIdle(), later)
+	if used := svc.counter.used(key, 2, windowSeconds*time.Second, later); used != 2 {
+		t.Fatalf("24 小时窗口内的计数被清扫清零：used=%d", used)
+	}
+}

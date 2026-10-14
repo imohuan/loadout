@@ -30,6 +30,7 @@ import {
 } from '@/lib/templateStore'
 import PageHeader from '@/components/PageHeader.vue'
 import RouteLogTable from '@/components/route-logs/RouteLogTable.vue'
+import ChannelRef from '@/components/ChannelRef.vue'
 import ChannelGroupPicker, { type ChannelSelection } from '@/components/ChannelGroupPicker.vue'
 import { getLoadoutBase } from '@/lib/base'
 
@@ -44,6 +45,13 @@ type ParallelOutcome = {
   text: string
   error?: string
   durationMs?: number
+  // 本次请求实际落到的渠道（渠道名 + Key 名）与模型：并发测试要看的就是
+  // 「网关有没有把并发分散到不同账号」，所以每条都要带上真实落点。
+  channelId?: string
+  channelName?: string
+  model?: string
+  /** 网关回带的 request_id：用它去 request-log 查这次请求的完整落点。 */
+  requestId?: string
 }
 
 const channelService = useChannels()
@@ -726,20 +734,66 @@ async function sendParallel() {
   }))
 
   const target = buildTarget()
+  // 每一条并发请求都单独建一条请求记录：一条请求一个 request_id，展开就能看到
+  // 它真正落到哪个平台、哪个账号 —— 这正是「并发有没有换账号」的唯一证据。
+  // 之前并发分支完全不写 logs，所以界面上「没有进入记录」，也就无从判断换没换号。
+  const selectedChannel = channels.value?.find((item) => item.id === config.channelId)
+  const channelName = selectedChannel?.channel_name || selectedChannel?.name || undefined
   // 全部同时启动（不 await 单条），这才是「并发」；pump 已连接，响应会实时逐条更新。
   const tasks = parallelOutcomes.value.map(async (row) => {
     const controller = new AbortController()
     activeControllers.push(controller)
-    const startedAt = Date.now()
+    const startedAt = new Date()
+    const summaryHolder: { value: RouteLog | null } = { value: null }
+    const entry: RouteLog = {
+      request_id: `parallel-${startedAt.getTime()}-${row.index}`,
+      meta: {
+        suffix_mode: suffixMode.value,
+        stream: streamEnabled.value,
+        channel_id: config.channelId,
+        base_url: config.baseUrl,
+        api_key: config.apiKey,
+        sk_key_hash: config.skKeyHash,
+        model: config.model,
+        messages: messages.value
+          .filter((m) => m.content.trim())
+          .map((m) => ({ role: m.role, content: m.content })),
+        draft: draft.value,
+        attachments: attachments.value.map((a) => ({ name: a.name, kind: a.kind })),
+      },
+      requested_model: config.model,
+      final_model: config.model,
+      final_channel_id: config.channelId || undefined,
+      final_channel_name: channelName,
+      started_at: startedAt.toISOString(),
+      result: 'running',
+      attempts: [
+        {
+          step_no: '1',
+          action: `并发 #${row.index}`,
+          result: 'running',
+          model: config.model,
+          channel_id: config.channelId || undefined,
+          channel_name: channelName,
+          started_at: startedAt.toISOString(),
+        },
+      ],
+    }
+    logs.value.unshift(entry)
     try {
-      await modelTest.chat(target, config.model, requestMessages, {
+      const result = await modelTest.chat(target, config.model, requestMessages, {
         onDelta: (delta) => {
           row.text += delta
+        },
+        onSummary: (summary) => {
+          summaryHolder.value = summary
         },
         signal: controller.signal,
       })
       row.result = 'success'
-      row.durationMs = Date.now() - startedAt
+      row.requestId = result.request_id || undefined
+      entry.request_id = result.request_id || entry.request_id
+      entry.result = 'success'
     } catch (error) {
       const aborted = error instanceof DOMException && error.name === 'AbortError'
       row.result = 'failed'
@@ -748,10 +802,23 @@ async function sendParallel() {
         : error instanceof Error
           ? error.message
           : '请求失败'
-      row.durationMs = Date.now() - startedAt
+      if (summaryHolder.value?.request_id) entry.request_id = summaryHolder.value.request_id
+      row.requestId = entry.request_id
+      entry.result = 'failed'
+      entry.error_message = row.error
     } finally {
+      row.durationMs = Date.now() - startedAt.getTime()
+      entry.duration_ms = row.durationMs
       const at = activeControllers.indexOf(controller)
       if (at >= 0) activeControllers.splice(at, 1)
+      // 拉一次后端详情：拿到本次请求真实落到的渠道（账号）并写回日志与结果行。
+      await syncTestLog(entry, summaryHolder.value)
+      const settled = logs.value.find((log) => log.request_id === entry.request_id)
+      // BUILTIN_CHANNEL 是「Loadout 自带」的哨兵值，不是真实渠道，别当渠道 id 显示。
+      const settledChannelId = settled?.final_channel_id || entry.final_channel_id
+      row.channelId = settledChannelId === BUILTIN_CHANNEL ? undefined : settledChannelId
+      row.channelName = settled?.final_channel_name || entry.final_channel_name
+      row.model = settled?.final_model || config.model
     }
   })
   try {
@@ -1325,6 +1392,21 @@ onBeforeUnmount(() => {
                   >
                   <span v-if="row.durationMs != null" class="text-muted-foreground"
                     >{{ row.durationMs }} ms</span
+                  >
+                  <!--
+                    真实落点：这次请求实际用的是哪个平台、哪个账号。
+                    并发测试的全部意义就在这里 —— 若 N 条全是同一个账号，说明并发控制
+                    没生效；显示不出来（未回带）时给一句明确说明，而不是留空让人猜。
+                  -->
+                  <span v-if="row.channelId || row.channelName" class="text-muted-foreground">
+                    <span v-if="row.model" class="font-mono">{{ row.model }}</span>
+                    <ChannelRef
+                      :target="{ channel_id: row.channelId, channel_name: row.channelName }"
+                      :channels="channels || []"
+                    />
+                  </span>
+                  <span v-else-if="row.result !== 'running'" class="text-muted-foreground"
+                    >未回带目标渠道</span
                   >
                 </div>
                 <p v-if="row.error" class="text-xs text-destructive">{{ row.error }}</p>

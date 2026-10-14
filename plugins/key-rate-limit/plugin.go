@@ -58,4 +58,3 @@ func (p *keyRateLimitPlugin) Apply(ctx plugin.Context) error {
 	ctx.Effect(svc.StartSweeper())
 	return nil
 }
-

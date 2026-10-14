@@ -223,6 +223,19 @@ const MetadataRequestLogAttemptID = "__request_log_attempt_id"
 // 选择、分流），只是告诉核心「本请求的转发要按强制流式处理」。
 const MetadataForceStream = "__force_stream"
 
+// MetadataPinChannel 标记：本请求由 X-Loadout-Pin-Channel 锁定到单个渠道，
+// 且要求「无视健康状态，实际打一次」。
+//
+// 服务对象是管理后台「模型状态」页的逐 Key 测试按钮：
+//   - 不锁定时，网关按模型自动路由，测出来的是同平台第一个可用账号，
+//     而不是用户点的那一个；
+//   - 被熔断的 Key 会被 resolveChannels 的健康过滤直接跳过 —— 而用户点测试
+//     往往正是想知道「这个已经不可用的 Key 到底还行不行」，跳过就得不到答案。
+//
+// 与 __current_channel 分开是必要的：后者是聚合模型的渠道约束，语义是
+// 「指定渠道不可用则 failover 到其他目标」，不能顺带绕开熔断保护。
+const MetadataPinChannel = "__pin_channel"
+
 // ProxyAttemptFailed 单次渠道尝试失败的纯通知事件（proxy:attempt-failed）。
 // 与 ProxyUpstreamFailed（聚合全败后 failover 专用，仅聚合路径触发）的区别：
 // 本事件在**每次**渠道尝试写 failed attempt 行时 emit（普通模型与聚合模型的

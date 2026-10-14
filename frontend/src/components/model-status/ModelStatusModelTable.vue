@@ -10,6 +10,7 @@ import {
   RiDeleteBinLine,
   RiToggleLine,
   RiCloseLine,
+  RiFlaskLine,
 } from '@remixicon/vue'
 import type { ChannelStatus, ModelStatus } from '@/lib/types'
 import ModelHealthBadge from '@/components/model-status/ModelHealthBadge.vue'
@@ -21,6 +22,8 @@ const props = defineProps<{
   item: ChannelStatus
   mode: 'table' | 'tags'
   isPending?: (key: string) => boolean
+  /** 这个「Key + 模型」组合是否正在测试：每行按钮各自的 loading。 */
+  isTesting?: (model: string) => boolean
 }>()
 
 const emit = defineEmits<{
@@ -30,6 +33,7 @@ const emit = defineEmits<{
   batchRecoverModel: [models: ModelStatus[]]
   batchDeleteModel: [models: ModelStatus[]]
   deleteModel: [model: ModelStatus]
+  testModel: [model: ModelStatus]
 }>()
 
 const selected = ref(new Set<string>())
@@ -70,6 +74,16 @@ function toggleAllSelect() {
 // 按钮级 loading/disabled 依赖 key 精确匹配，不能改格式。
 function busy(action: string) {
   return props.isPending ? props.isPending(`ms:${props.item.channel.id}:${action}`) : false
+}
+
+/**
+ * 这一行的测试按钮是否在转。
+ *
+ * 只认自己这一行的状态：之前用 Key 级状态驱动整列按钮，点一个就整列一起转，
+ * 用户根本看不出是哪个在跑。
+ */
+function testing(model: ModelStatus) {
+  return props.isTesting ? props.isTesting(model.model) : false
 }
 
 // 切换 Key 时清空勾选：否则会看到「已选 3 个」但表格里一个都没勾。
@@ -243,6 +257,16 @@ defineExpose({ resetSelection })
                   formatShortCN(model.last_success_at)
                 }}</TableCell>
                 <TableCell class="flex items-center justify-end gap-1">
+                  <!-- 测试：测这个模型在当前 Key 下能不能出结果，与顶部批量测试同一条链路。 -->
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    :disabled="testing(model)"
+                    @click="emit('testModel', model)"
+                  >
+                    <RiLoader4Line v-if="testing(model)" class="animate-spin" size="14" />
+                    <RiFlaskLine v-else size="14" />测试
+                  </Button>
                   <Button
                     v-if="model.source === 'manual'"
                     variant="outline"

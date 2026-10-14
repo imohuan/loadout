@@ -2,10 +2,15 @@
 // 统一收敛到后台转发，避免前端直连不支持 CORS 的上游 base_url。
 //
 // 目标既可通过 channel_id 复用已存渠道（后端解密密钥，不回传明文），
-// 也可直接提供临时 base_url + api_key（不落盘）。测试请求是「旁路探针」：
-// 不写入转发日志（route-log），访问摘要（request_id、模型、耗时、tokens、
-// 错误等）随响应回带，由前端「请求记录」面板直显；仅当上游是 Loadout
-// 自身的导出服务时，由 router 内部正常写日志。
+// 也可直接提供临时 base_url + api_key（不落盘）。
+//
+// 两种目标走两条本质不同的路径：
+//   - 「Loadout 自带」（sk_key_hash）：解析自建 SK key 明文后请求本机 /v1，
+//     与普通客户端无差别，因此有完整转发日志、并会真实影响渠道健康状态
+//     （走自家网关 = 真转发）。
+//   - 渠道 / 临时地址：直连上游 base_url 的「旁路探针」，不写转发日志，
+//     访问摘要（request_id、模型、耗时、tokens、错误等）随响应回带，
+//     由前端「请求记录」面板直显。
 package adminapi
 
 import (
@@ -22,6 +27,7 @@ import (
 
 	"loadout/core/config"
 	"loadout/plugins/contracts"
+	gatewaykeys "loadout/plugins/gateway-keys"
 	"loadout/plugins/types"
 )
 
@@ -36,6 +42,12 @@ type testTarget struct {
 	APIKey     string `json:"api_key"`
 	SkKeyHash  string `json:"sk_key_hash"`
 	SuffixMode string `json:"suffix_mode"` // chat(默认/常规) | gpt | claude
+
+	// ViaGateway 让本次请求改走「本机 /v1」而不是直连上游。
+	//
+	// 给「模型状态」页的逐 Key 测试用：只有经过自家网关的请求才会写转发日志、
+	// 也才会真实更新渠道健康状态 —— 直连上游的旁路探针两样都不做。
+	ViaGateway bool `json:"via_gateway"`
 }
 
 // testChatRequest 模型测试的 chat 请求体。
@@ -49,11 +61,24 @@ type testChatRequest struct {
 }
 
 // resolveTestTarget 解析出 base_url 与明文 api_key。
+//
+// via_gateway 为 true 时（管理后台逐 Key 测试）改走「本机 /v1」：解析一个自建
+// SK key 当凭据，base_url 指向 127.0.0.1:<本机端口>。这样请求与外部客户端完全
+// 同路，因而会写转发日志并真实更新渠道健康状态。
+//
 // 优先级：
 //  1. sk_key_hash 非空 → 「Loadout 自带」：按哈希解析自建 SK key 明文，base_url 用请求携带值。
 //  2. channel_id 非空 → 渠道记录为准取 base_url；key 优先级：请求自定义 key > 渠道存储 key。
 //  3. 否则用临时 base_url + api_key。
-func (s *Service) resolveTestTarget(r *http.Request, in testTarget) (string, string, string, error) {
+func (s *Service) resolveTestTarget(r *http.Request, in testTarget, model string) (string, string, string, error) {
+	if in.ViaGateway {
+		plain, name, err := s.resolveAnySKKey(model)
+		if err != nil {
+			return "", "", "", err
+		}
+		// 带上 /v1：网关的转发路由挂在 /v1/{path...} 下，与外部客户端一致。
+		return internalBaseURL() + "/v1", plain, name, nil
+	}
 	if in.SkKeyHash != "" {
 		// 自带模式：按 sk_key_hash 识别（非 base_url）。base_url 解析规则：
 		//   - 相对路径（/v1、/ 或空）→ 用当前请求 Host 补全 scheme://Host；
@@ -123,13 +148,58 @@ func (s *Service) resolveTestTarget(r *http.Request, in testTarget) (string, str
 	return strings.TrimSpace(in.BaseURL), in.APIKey, "", nil
 }
 
-// handleTestModels 代理上游 /models，返回模型 id 列表。上游失败以 error 字段返回（HTTP 200）。
+// resolveAnySKKey 取一把能访问 model 的自建 SK key 明文，供内部请求走本机 /v1 做鉴权。
+//
+// 与模型测试页「Loadout 自带」是同一套凭据：内部请求也要像外部客户端一样带上
+// Authorization，网关的 sk- 校验才会放行，route-log / 健康状态也才照常落库。
+//
+// 必须按 model 过滤（白名单非空且不含 model 的 key 一律跳过）：内部请求会做
+// model 白名单校验，随便挑一把配了白名单的 key，网关会直接回 403
+// 「API key 无权访问模型」—— 那个 Key 本身是好的，却被测成失败。
+func (s *Service) resolveAnySKKey(model string) (string, string, error) {
+	if s.keys == nil {
+		return "", "", errors.New("管理密钥服务未初始化")
+	}
+	keys, err := s.keys.ListAPIKeys()
+	if err != nil {
+		return "", "", fmt.Errorf("读取本机 API Key 失败: %w", err)
+	}
+	for _, k := range keys {
+		if !k.Enabled || k.Hash == "" {
+			continue
+		}
+		if !gatewaykeys.AllowedModel(k.Models, model) {
+			continue
+		}
+		plain, name, err := s.keys.ResolveAPIKey(k.Hash)
+		if err == nil && plain != "" {
+			return plain, name, nil
+		}
+	}
+	if model != "" {
+		return "", "", fmt.Errorf("没有可访问模型 %q 的本机 API Key，请到「设置」检查 Key 的模型白名单", model)
+	}
+	return "", "", errors.New("没有可用的本机 API Key，请先到「设置」创建")
+}
+
+// internalBaseURL 本机内部调用地址：按 ServerAddr 的端口连 127.0.0.1。
+// 与 translate / model-health 的同名函数口径一致。
+func internalBaseURL() string {
+	addr := config.ServerAddr
+	if i := strings.LastIndex(addr, ":"); i >= 0 {
+		if p := strings.TrimPrefix(addr[i:], ":"); p != "" {
+			return "http://127.0.0.1:" + p
+		}
+	}
+	return "http://127.0.0.1"
+}
+
 func (s *Service) handleTestModels(w http.ResponseWriter, r *http.Request) {
 	var in testTarget
 	if !decodeJSON(w, r, &in) {
 		return
 	}
-	baseURL, apiKey, _, err := s.resolveTestTarget(r, in)
+	baseURL, apiKey, _, err := s.resolveTestTarget(r, in, "")
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -323,7 +393,7 @@ func (s *Service) handleTestChat(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	baseURL, apiKey, skKeyName, err := s.resolveTestTarget(r, req.testTarget)
+	baseURL, apiKey, skKeyName, err := s.resolveTestTarget(r, req.testTarget, req.Model)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -340,6 +410,13 @@ func (s *Service) handleTestChat(w http.ResponseWriter, r *http.Request) {
 	channelID := req.ChannelID
 	if req.SkKeyHash != "" {
 		channelID = builtinChannelID
+	}
+	// 逐 Key 测试：把渠道钉死在请求头上，网关据此只打这一个 Key。
+	// 走 /v1 时网关按模型自动路由，同平台的多个账号无法区分，测出来的是
+	// 「第一个可用账号」，而不是用户点的那一个。
+	pinChannel := ""
+	if req.ViaGateway && req.ChannelID != "" {
+		pinChannel = req.ChannelID
 	}
 
 	payload := buildTestPayload(req)
@@ -363,6 +440,17 @@ func (s *Service) handleTestChat(w http.ResponseWriter, r *http.Request) {
 	upReq.Header.Set("Content-Type", "application/json")
 	if apiKey != "" {
 		upReq.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+	if pinChannel != "" {
+		// 与 model-gateway 的 headerPinChannel 同值：锁渠道 + 绕开健康过滤。
+		upReq.Header.Set("X-Loadout-Pin-Channel", pinChannel)
+	}
+	if req.ViaGateway || req.SkKeyHash != "" {
+		// 目标是自家网关（「Loadout 自带」或 via_gateway）：带上本次请求的 request_id。
+		// 网关会复用它写转发日志，前端据此能查到这次请求真正落到哪个渠道/账号 ——
+		// 并发测试必须看得到「是不是同一个账号」，否则测了也没结论。
+		// 只对自家网关发送：第三方上游不需要这个头，不必替它们做假设。
+		upReq.Header.Set("X-Request-Id", requestID)
 	}
 
 	resp, err := (&http.Client{Timeout: config.UpstreamTimeout}).Do(upReq)
