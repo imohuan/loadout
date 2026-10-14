@@ -32,6 +32,10 @@ const props = defineProps<{
 const emit = defineEmits<{ save: [value: CapabilityRoute]; cancel: [] }>()
 const open = defineModel<boolean>('open', { required: true })
 
+// formError 保存校验失败的提示（在弹窗底部显性展示）。
+// 这些校验早前是静默 return，用户点保存毫无反应也不知原因（见 submit）。
+const formError = ref('')
+
 // 敏感词列表子组件引用：Label 行右侧的「导出 / 导入」按钮调用其暴露的方法。
 type SensitiveWordListHandle = {
   exportToClipboard: () => Promise<void> | void
@@ -377,7 +381,14 @@ const routeHint = computed(() => {
 })
 
 function submit() {
-  if (!form.models.length) return
+  // 校验失败原因：写进 formError 并在弹窗底部显性提示。
+  // 早前这些分支都是「静默 return」——按钮能点、页面毫无反应、也没有任何说明，
+  // 用户完全不知道少了什么（尤其「目标模型为空」时最容易被当成界面卡住）。
+  formError.value = ''
+  if (!form.models.length) {
+    formError.value = '请至少选择一个目标模型（支持 * 通配，留空无法保存）'
+    return
+  }
   const isSensitive = form.capability === CAP_SENSITIVE
   const isFieldFilter = form.capability === CAP_FIELD_FILTER
   const isMessageInject = form.capability === CAP_MESSAGE_INJECT
@@ -386,11 +397,20 @@ function submit() {
   if (form.route === 'error') form.route = 'native'
   if (form.route === 'proxy') {
     if (isSensitive) {
-      if (!form.replacements.some((r) => r.from.trim())) return
+      if (!form.replacements.some((r) => r.from.trim())) {
+        formError.value = '请至少填写一条敏感词替换规则（原文不能为空）'
+        return
+      }
     } else if (isFieldFilter) {
-      if (!hasFieldRulesText()) return
+      if (!hasFieldRulesText()) {
+        formError.value = '请至少填写一条字段过滤规则'
+        return
+      }
     } else if (isMessageInject) {
-      if (!form.injections.some((i) => i.content.trim())) return
+      if (!form.injections.some((i) => i.content.trim())) {
+        formError.value = '请至少填写一条消息注入内容'
+        return
+      }
     } else if (form.capability === CAP_REQUEST_LOG) {
       // request_log 无额外配置（脱敏开关在独立 config 表），直接放行
     } else if (form.capability === CAP_FORCE_STREAM) {
@@ -398,9 +418,11 @@ function submit() {
     } else if (form.capability === CAP_KEY_RATE_LIMIT) {
       // key_rate_limit 两个维度（次数 / 并发）至少要配一个，否则规则没有意义。
       if (!parsePositiveInt(form.rateLimit.maxRequests) && !parsePositiveInt(form.rateLimit.maxConcurrency)) {
+        formError.value = '请至少填写一项限制：窗口内最大请求数 或 并发上限'
         return
       }
     } else if (!form.viaOptions.some((o) => o.model.trim())) {
+      formError.value = '请至少填写一个视觉候选模型'
       return
     }
   }
@@ -790,7 +812,8 @@ function submit() {
           <ModelChannelList v-model="form.viaOptions" :channels="channels" add-label="添加候选" />
         </div>
         <DialogFooter class="sm:justify-between">
-          <p class="text-xs text-muted-foreground">{{ routeHint }}</p>
+          <p v-if="formError" class="text-xs font-medium text-destructive">{{ formError }}</p>
+          <p v-else class="text-xs text-muted-foreground">{{ routeHint }}</p>
           <div class="flex gap-2">
             <Button type="submit" :disabled="pending">{{ pending ? '正在保存' : '保存' }}</Button>
             <Button type="button" variant="outline" :disabled="pending" @click="open = false"
