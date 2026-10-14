@@ -36,6 +36,15 @@ import { getLoadoutBase } from '@/lib/base'
 type MessageRole = 'system' | 'user' | 'assistant'
 type TestMessage = { id: number; role: MessageRole; content: string }
 type Attachment = { id: number; name: string; kind: 'image' | 'file'; preview?: string }
+// 并发测试时单个请求的结果：并发数 > 1 时每个请求各占一行，展示自己的输出与结局
+// （成功 / 429 等失败原因），便于直接看出并发控制是怎么处理的。
+type ParallelOutcome = {
+  index: number
+  result: 'running' | 'success' | 'failed'
+  text: string
+  error?: string
+  durationMs?: number
+}
 
 const channelService = useChannels()
 const modelTest = useModelTest()
@@ -162,6 +171,26 @@ const streamEnabled = ref(true)
 function toggleStream(v: boolean) {
   streamEnabled.value = v
 }
+
+// 并发上限：纯前端保护，避免手滑填 1000 直接把上游/浏览器打满。
+const MAX_CONCURRENCY = 20
+// 并发数量：本次点「发送」同时发出的请求条数（1 = 原来的单发行为）。
+// 用来直接观察网关侧的并发限流：并发数 > 1 时多个请求同时打上游，
+// 每个请求各占一行结果，「限流换 Key / 超限 429」一眼可见。
+// 输入框存字符串（允许清空/中间态），提交时解析；非法/超上限按 1 / 上限处理。
+const concurrencyInput = ref('1')
+const concurrency = computed(() => {
+  const n = Number.parseInt(concurrencyInput.value.trim(), 10)
+  if (!Number.isFinite(n) || n < 1) return 1
+  return Math.min(n, MAX_CONCURRENCY)
+})
+
+// 在途请求的中止控制器集合：单发时只有一个，并发时每条各一个。
+// 用数组是为了「停止」按钮能一次性中断全部在途请求（含并发场景）。
+const activeControllers: AbortController[] = []
+
+// 并发运行的逐条结果（仅并发数 > 1 时填充）。
+const parallelOutcomes = ref<ParallelOutcome[]>([])
 
 // 只放真实消息与用户主动添加的可编辑行；空消息不会发送到接口。
 // 输入区由右侧「用户输入」卡片承担（绑定 draft）。
@@ -377,6 +406,13 @@ async function send() {
     return
   }
 
+  // 并发数 > 1：同时发出 N 条相同请求，逐条记录结果。
+  // 分流到独立实现，避免给单发路径（含日志面板/摘要回带）引入并发分支的复杂度。
+  if (concurrency.value > 1) {
+    await sendParallel()
+    return
+  }
+
   // 图片附件转 base64 data URL（后台代理不支持前端 blob URL）。
   const imageParts: string[] = []
   for (const attachment of attachments.value) {
@@ -413,6 +449,8 @@ async function send() {
 
   const startedAt = new Date()
   assistantReply.value = ''
+  // 单发模式清掉上一次并发测试的结果，避免两种模式的输出混在同一个响应卡片里。
+  parallelOutcomes.value = []
   // 本次请求的摘要快照容器（响应头 X-Test-Log / SSE route_log 事件回带）：
   // onSummary 写入、catch/finally 读取。用对象属性而非局部变量，规避 TS 在
   // try-catch 中对闭包赋值变量的保守窄化，且天然与本次请求一一对应。
@@ -420,6 +458,7 @@ async function send() {
   streaming.value = true
   const controller = new AbortController()
   abortController.value = controller
+  activeControllers.push(controller)
 
   // 渠道名称快照：生成日志时从 channels 取，Key 后续被删除也能兜底显示「@渠道名(Unknown)」。
   const selectedChannel = channels.value?.find((item) => item.id === config.channelId)
@@ -519,6 +558,8 @@ async function send() {
   } finally {
     streaming.value = false
     abortController.value = null
+    const at = activeControllers.indexOf(controller)
+    if (at >= 0) activeControllers.splice(at, 1)
     // 请求结束（成功/失败/停止）后用 detail 接口拉后端真实记录覆盖本地占位，
     // 拿到完整 attempts / error_message 并写回 localStorage；拉取失败保留本地 entry。
     await syncTestLog(entry, summaryHolder.value)
@@ -633,7 +674,91 @@ function clearTestLogs() {
 }
 
 function stop() {
-  abortController.value?.abort()
+  // 单发与并发共用：并发时一次性中断全部在途请求。
+  if (abortController.value) abortController.value.abort()
+  for (const c of activeControllers) c.abort()
+}
+
+// sendParallel 并发发送：同时发出 N 条完全相同的请求，每条各占一行结果。
+//
+// 用途是「看网关的并发限流怎么处理」：N 条同时打过去，正常情况下网关会把超出的
+// 请求自动换到同平台另一个账号；若所有账号都满则回 429。每条结果独立展示，
+// 因此换 Key、429、各自耗时都直接可见。
+//
+// 不复用单发路径的日志面板：并发下 request_id 会互相覆盖，摘要回带与本地占位
+// 会错位。这里只做「同时发、分别显示」，不写转发日志（与单发一致的语义）。
+async function sendParallel() {
+  // 与单发同样构造本次输入对应的 messages（含图片附件）。
+  const imageParts: string[] = []
+  for (const attachment of attachments.value) {
+    if (attachment.kind !== 'image' || !attachment.preview) continue
+    try {
+      imageParts.push(await blobUrlToDataUrl(attachment.preview))
+    } catch {
+      // 忽略转换失败的附件
+    }
+  }
+  const text = draft.value.trim() || (attachments.value.length ? '[附带资源]' : '')
+  const requestMessages: Array<{ role: string; content: unknown }> = messages.value
+    .filter((m) => m.content.trim())
+    .map((m) => ({ role: m.role, content: m.content }))
+  const currentMessage: { role: string; content: unknown } = {
+    role: 'user',
+    content: text || '[附带资源]',
+  }
+  if (imageParts.length) {
+    const parts: Array<{ type: string; text?: string; image_url?: { url: string } }> = [
+      { type: 'text', text },
+    ]
+    for (const url of imageParts) parts.push({ type: 'image_url', image_url: { url } })
+    currentMessage.content = parts
+  }
+  requestMessages.push(currentMessage)
+
+  const n = concurrency.value
+  streaming.value = true
+  abortController.value = null
+  assistantReply.value = ''
+  parallelOutcomes.value = Array.from({ length: n }, (_, i) => ({
+    index: i + 1,
+    result: 'running' as const,
+    text: '',
+  }))
+
+  const target = buildTarget()
+  // 全部同时启动（不 await 单条），这才是「并发」；pump 已连接，响应会实时逐条更新。
+  const tasks = parallelOutcomes.value.map(async (row) => {
+    const controller = new AbortController()
+    activeControllers.push(controller)
+    const startedAt = Date.now()
+    try {
+      await modelTest.chat(target, config.model, requestMessages, {
+        onDelta: (delta) => {
+          row.text += delta
+        },
+        signal: controller.signal,
+      })
+      row.result = 'success'
+      row.durationMs = Date.now() - startedAt
+    } catch (error) {
+      const aborted = error instanceof DOMException && error.name === 'AbortError'
+      row.result = 'failed'
+      row.error = aborted
+        ? '已手动停止'
+        : error instanceof Error
+          ? error.message
+          : '请求失败'
+      row.durationMs = Date.now() - startedAt
+    } finally {
+      const at = activeControllers.indexOf(controller)
+      if (at >= 0) activeControllers.splice(at, 1)
+    }
+  })
+  try {
+    await Promise.all(tasks)
+  } finally {
+    streaming.value = false
+  }
 }
 
 // ---- 快速模板：IndexedDB 本地存储，保存当前输入（文本 + 附件 Blob），一键回填 ----
@@ -851,16 +976,34 @@ onBeforeUnmount(() => {
                   </SelectContent>
                 </Select>
               </div>
+            </div>
+            <!-- 开关/并发行：是否开启流 + 并发数量（flex 布局并排）。 -->
+            <div class="flex flex-wrap items-end gap-4">
               <div class="space-y-2">
-                <Label for="test-stream">是否开启流</Label>
-                <!-- Switch 放 Label 下方（与其它字段一样 label 在控件上方），值开在接口后缀右侧。 -->
+                <Label for="test-stream-row">是否开启流</Label>
                 <div class="flex h-8 items-center">
                   <Switch
-                    id="test-stream"
+                    id="test-stream-row"
                     :model-value="streamEnabled"
                     @update:model-value="toggleStream"
                   />
                 </div>
+              </div>
+              <div class="space-y-2">
+                <Label for="test-concurrency">并发数量</Label>
+                <Input
+                  id="test-concurrency"
+                  v-model="concurrencyInput"
+                  class="w-24"
+                  inputmode="numeric"
+                  placeholder="1"
+                  :disabled="streaming"
+                  @blur="concurrencyInput = String(concurrency)"
+                />
+                <p class="text-xs text-muted-foreground">
+                  同时发出 {{ concurrency }} 条相同请求（上限 {{ MAX_CONCURRENCY }}）；选「Loadout
+                  自带」时才会经过本网关的能力路由，用它观察限流换 Key / 429。
+                </p>
               </div>
             </div>
             <div class="space-y-2">
@@ -1123,7 +1266,7 @@ onBeforeUnmount(() => {
                     :disabled="streaming || (!config.model.trim() && !config.channelId)"
                     @click="send"
                   >
-                    <RiPlayLine size="16" />发送
+                    <RiPlayLine size="16" />{{ concurrency > 1 ? `并发发送 ${concurrency}` : '发送' }}
                   </Button>
                   <Button
                     type="button"
@@ -1153,7 +1296,48 @@ onBeforeUnmount(() => {
               v-if="assistantReply"
               class="max-h-96 overflow-y-auto whitespace-pre-wrap break-words rounded-md border border-border bg-muted/20 p-3 font-sans text-sm text-foreground"
               >{{ assistantReply }}</pre>
-            <p v-if="!streaming && !assistantReply" class="text-sm text-muted-foreground">
+            <!-- 并发模式（并发数量 > 1）的逐条结果：每条各占一行，直接看出网关怎么处理并发。 -->
+            <div v-if="parallelOutcomes.length" class="space-y-2">
+              <div
+                v-for="row in parallelOutcomes"
+                :key="row.index"
+                class="rounded-md border border-border bg-muted/20 p-3 text-sm"
+              >
+                <div class="mb-1.5 flex flex-wrap items-center gap-2 text-xs">
+                  <span class="font-medium text-foreground">#{{ row.index }}</span>
+                  <Badge
+                    :variant="
+                      row.result === 'success'
+                        ? 'default'
+                        : row.result === 'failed'
+                          ? 'destructive'
+                          : 'outline'
+                    "
+                    >{{
+                      row.result === 'success'
+                        ? '成功'
+                        : row.result === 'failed'
+                          ? '失败'
+                          : '进行中'
+                    }}</Badge
+                  >
+                  <span v-if="row.durationMs != null" class="text-muted-foreground"
+                    >{{ row.durationMs }} ms</span
+                  >
+                </div>
+                <p v-if="row.error" class="text-xs text-destructive">{{ row.error }}</p>
+                <pre
+                  v-else-if="row.text"
+                  class="max-h-48 overflow-y-auto whitespace-pre-wrap break-words font-sans text-xs text-foreground"
+                  >{{ row.text }}</pre
+                >
+                <p v-else class="text-xs text-muted-foreground">等待响应…</p>
+              </div>
+            </div>
+            <p
+              v-if="!streaming && !assistantReply && !parallelOutcomes.length"
+              class="text-sm text-muted-foreground"
+            >
               发送请求后，这里会显示模型回复。
             </p>
           </CardContent>
