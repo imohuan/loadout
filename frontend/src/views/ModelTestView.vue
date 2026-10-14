@@ -977,9 +977,11 @@ onBeforeUnmount(() => {
                 </Select>
               </div>
             </div>
-            <!-- 开关/并发行：是否开启流 + 并发数量（flex 布局并排）。 -->
-            <div class="flex flex-wrap items-end gap-4">
-              <div class="space-y-2">
+            <!-- 开关/并发行：是否开启流 + 并发数量（flex 横向并排，不换行）。
+                 说明文字必须放在这一行**外面**：早前它写在并发格子里，长文案把格子撑得很宽，
+                 flex 只能换行，两个控件看起来就变成上下堆叠了。 -->
+            <div class="flex items-end gap-6">
+              <div class="shrink-0 space-y-2">
                 <Label for="test-stream-row">是否开启流</Label>
                 <div class="flex h-8 items-center">
                   <Switch
@@ -989,23 +991,23 @@ onBeforeUnmount(() => {
                   />
                 </div>
               </div>
-              <div class="space-y-2">
+              <div class="shrink-0 space-y-2">
                 <Label for="test-concurrency">并发数量</Label>
                 <Input
                   id="test-concurrency"
                   v-model="concurrencyInput"
-                  class="w-24"
+                  class="w-24 shrink-0"
                   inputmode="numeric"
                   placeholder="1"
                   :disabled="streaming"
                   @blur="concurrencyInput = String(concurrency)"
                 />
-                <p class="text-xs text-muted-foreground">
-                  同时发出 {{ concurrency }} 条相同请求（上限 {{ MAX_CONCURRENCY }}）；选「Loadout
-                  自带」时才会经过本网关的能力路由，用它观察限流换 Key / 429。
-                </p>
               </div>
             </div>
+            <p class="text-xs text-muted-foreground">
+              并发数量：同时发出 {{ concurrency }} 条相同请求（上限 {{ MAX_CONCURRENCY }}）；选「Loadout
+              自带」时才会经过本网关的能力路由，用它观察限流换 Key / 429。
+            </p>
             <div class="space-y-2">
               <Label for="test-base-url">Base URL</Label
               ><Input
