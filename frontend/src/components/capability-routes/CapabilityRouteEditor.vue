@@ -383,12 +383,10 @@ const routeHint = computed(() => {
 function submit() {
   // 校验失败原因：写进 formError 并在弹窗底部显性提示。
   // 早前这些分支都是「静默 return」——按钮能点、页面毫无反应、也没有任何说明，
-  // 用户完全不知道少了什么（尤其「目标模型为空」时最容易被当成界面卡住）。
+  // 用户完全不知道少了什么。
+  // 注意：目标模型**允许为空**——空 = 全匹配（等价 `*`），与目标渠道「通用（全匹配）」
+  // 同一套语义，因此这里不做非空校验（早前误加过一次，会把合法配置挡在门外）。
   formError.value = ''
-  if (!form.models.length) {
-    formError.value = '请至少选择一个目标模型（支持 * 通配，留空无法保存）'
-    return
-  }
   const isSensitive = form.capability === CAP_SENSITIVE
   const isFieldFilter = form.capability === CAP_FIELD_FILTER
   const isMessageInject = form.capability === CAP_MESSAGE_INJECT
@@ -417,6 +415,18 @@ function submit() {
       // force_stream 无额外配置（纯 on/off 能力），直接放行
     } else if (form.capability === CAP_KEY_RATE_LIMIT) {
       // key_rate_limit 两个维度（次数 / 并发）至少要配一个，否则规则没有意义。
+      // 注意：格子填了内容但解析不出正整数（如手滑打成 "faf"）必须明确指出是哪一格，
+      // 否则用户看到的就是「点保存毫无反应」，与早前那批静默 return 是同一个坑。
+      const maxReqRaw = form.rateLimit.maxRequests.trim()
+      const concRaw = form.rateLimit.maxConcurrency.trim()
+      if (maxReqRaw && !parsePositiveInt(form.rateLimit.maxRequests)) {
+        formError.value = '「单个 Key 窗口内最大请求数」需为正整数（留空 = 不限次数）'
+        return
+      }
+      if (concRaw && !parsePositiveInt(form.rateLimit.maxConcurrency)) {
+        formError.value = '「单个 Key 并发上限」需为正整数（留空 = 不限并发）'
+        return
+      }
       if (!parsePositiveInt(form.rateLimit.maxRequests) && !parsePositiveInt(form.rateLimit.maxConcurrency)) {
         formError.value = '请至少填写一项限制：窗口内最大请求数 或 并发上限'
         return
@@ -480,7 +490,8 @@ function submit() {
   // 渠道级新增 Key 仍能命中，无需在前端展开。
   const channel_ids = [...(channelSel.channel_ids || [])]
   emit('save', {
-    models: [...form.models],
+    // 目标模型留空 = 全部模型：保存时直接落成 "*"，与「目标渠道」留空=通用（全匹配）同一套语义。
+    models: form.models.length ? [...form.models] : ['*'],
     channel_ids,
     channel_base_urls: [...(channelSel.channel_base_urls || [])],
     capability: form.capability,
@@ -560,8 +571,9 @@ function submit() {
             allow-custom
           />
           <p class="text-xs text-muted-foreground">
-            支持 <code class="font-mono">*</code> 通配与前缀匹配；候选随目标渠道过滤（通用/空 =
-            全部渠道模型）。 未命中默认原生透传。
+            <b>留空 = 全部模型</b>（等价 <code class="font-mono">*</code>）；也支持
+            <code class="font-mono">*</code> 通配与前缀匹配。候选随目标渠道过滤（通用/空 = 全部渠道模型）。
+            未命中默认原生透传。
           </p>
         </div>
         <div class="grid gap-4 sm:grid-cols-2">
