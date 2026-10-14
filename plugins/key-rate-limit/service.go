@@ -270,6 +270,7 @@ func (s *Service) activeRules(routes []*types.CapabilityRoute) ([]activeRule, bo
 //   - 一个候选都抢不到（次数用满或并发都占满）：
 //   - on_exhausted=reject（默认）→ 返回 GatewayError(429)；
 //   - on_exhausted=reuse → 原样返回全量候选（忽略限制，继续使用）。
+//   - **测试锁定请求完全绕过限流**（见 isPinned）：不筛候选、不占名额、不返回 429。
 //
 // 占到的名额记在管线的 metadata 上，由 proxy:attempt-finished 释放（核心用 defer 保证触发）。
 func (s *Service) HandleChannelsResolved(payload any) (any, error) {
@@ -287,6 +288,10 @@ func (s *Service) HandleChannelsResolved(payload any) (any, error) {
 		return payload, nil
 	}
 	// 同一管线可能多次走到这里（聚合 failover 会递归回到 proxyForward 重新解析候选）。
+	// 测试锁定请求（模型状态页逐 Key「测试」按钮）：直接放行，不做任何筛选与占位。
+	if isPinned(p.Pipe) {
+		return payload, nil
+	}
 	// 上一轮占的并发名额先按当时记下的桶键精确归还，避免重复占位导致名额泄漏。
 	s.releaseHold(p.Pipe.Metadata)
 
@@ -447,11 +452,16 @@ type concHold struct {
 //
 // 并发维度不在这里占用——已在 proxy:channels-resolved 候选筛选阶段占好（否则突发请求会
 // 各自挑中同一个 Key 再集体失败，并发限制失效）。这里只负责次数记账。
+// 测试锁定请求既不记账也不补占并发名额（与候选阶段一样完全绕过限流）。
 //
 // 只做计数，永不改 body/响应，也永不返回 error（返回 error 会让核心视为安检拒绝而中断请求）。
 func (s *Service) HandleBeforeAttempt(payload any) (any, error) {
 	pipe, ok := payload.(*modelgateway.ProxyPipeline)
 	if !ok || pipe == nil || pipe.Request == nil || pipe.Metadata == nil {
+		return payload, nil
+	}
+	// 测试锁定请求：不计数（否则探测流量会白占配额），也不补占并发名额。
+	if isPinned(pipe) {
 		return payload, nil
 	}
 	channelID, _ := pipe.Metadata["__current_channel"].(string)
@@ -513,6 +523,22 @@ func (s *Service) HandleAttemptFinished(payload any) (any, error) {
 	}
 	s.releaseHold(p.Pipe.Metadata)
 	return payload, nil
+}
+
+// isPinned 判断本次请求是否是「测试锁定」请求（模型状态页逐 Key 的「测试」按钮）。
+//
+// 该按钮的语义是「探测这个 Key 本身现在还能不能用」：用户点它，往往正是想知道一个
+// 已被熔断/已被限流跳过的 Key 到底还行不行。因此这类请求必须**完全绕过限流**——
+// 不筛候选（否则目标 Key 被剔除，测的根本不是它）、不占并发、不计数、也不返回 429。
+//
+// 判据只看管线 metadata 上的 pin 标记：该标记由 model-gateway 在入口按
+// X-Loadout-Pin-Channel 头写入（且只认回环来源），本插件不必也不该重复校验来源。
+func isPinned(pipe *modelgateway.ProxyPipeline) bool {
+	if pipe == nil || pipe.Metadata == nil {
+		return false
+	}
+	s, _ := pipe.Metadata[modelgateway.MetadataPinChannel].(string)
+	return s != ""
 }
 
 // bucketKey 计数桶键：(渠道 Key, 作用域签名)。

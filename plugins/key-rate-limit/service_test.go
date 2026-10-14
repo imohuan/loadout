@@ -307,6 +307,74 @@ func idsOf(chs []modelgateway.ResolvedChannel) []string {
 	return out
 }
 
+// pinnedPipe 构造一个「测试锁定」管线：带上 model-gateway 写入的 pin 标记。
+func pinnedPipe(model, channelID string) *modelgateway.ProxyPipeline {
+	p := testPipe(model)
+	p.Metadata[modelgateway.MetadataPinChannel] = channelID
+	return p
+}
+
+// TestPinnedBypassesLimitWhenExhausted 测试锁定请求在限流已用满时仍必须放行到目标 Key。
+//
+// 场景：次数配额已被日常流量用满，用户点某个 Key 的「测试」按钮想知道它还能不能用。
+// 若限流照常生效，目标 Key 会被剔除 → 测的根本不是它；配置了 reject 时还会直接 429
+// → 用户永远得不到答案。这正是「测试按钮要能探测被限流跳过的 Key」所要求的语义。
+func TestPinnedBypassesLimitWhenExhausted(t *testing.T) {
+	svc := newTestService(t)
+	writeRoutes(t, svc, []types.CapabilityRoute{rateLimitRoute(1, 60, types.RateLimitReject)})
+
+	// 先用日常流量把 a 的配额用满。
+	normal := testPipe("gpt-4o")
+	normal.Metadata["__current_channel"] = "a"
+	if _, err := svc.HandleBeforeAttempt(normal); err != nil {
+		t.Fatalf("日常流量消费失败: %v", err)
+	}
+
+	// 日常流量此刻应被限流挡住（回归保护：确认前置条件成立）。
+	if _, err := resolve(t, svc, testPipe("gpt-4o"), "gpt-4o", channels("a")); err == nil {
+		t.Fatal("日常流量在配额用满时应被拒绝（前置条件不成立，测试无意义）")
+	}
+
+	// 测试锁定请求：必须原样放行，且候选不被裁剪。
+	pinned := pinnedPipe("gpt-4o", "a")
+	got, err := resolve(t, svc, pinned, "gpt-4o", channels("a"))
+	if err != nil {
+		t.Fatalf("测试锁定请求不应被限流拒绝: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "a" {
+		t.Fatalf("测试锁定请求应保留目标 Key a，实际 %v", idsOf(got))
+	}
+
+	// 测试锁定请求不占并发名额：并发配 1 也不该因为它而挤掉日常流量。
+	pipeWithConc := pinnedPipe("gpt-4o", "a")
+	if _, err := svc.HandleBeforeAttempt(pipeWithConc); err != nil {
+		t.Fatalf("测试锁定请求消费不应报错: %v", err)
+	}
+	if n := svc.conc.size(); n != 0 {
+		t.Fatalf("测试锁定请求不应占并发名额，实际残留 %d 个键", n)
+	}
+}
+
+// TestPinnedDoesNotConsumeQuota 测试锁定请求不消耗配额：
+// 反复探测同一个 Key，不应把它的窗口配额吃光而影响真实流量。
+func TestPinnedDoesNotConsumeQuota(t *testing.T) {
+	svc := newTestService(t)
+	writeRoutes(t, svc, []types.CapabilityRoute{rateLimitRoute(2, 60, types.RateLimitReject)})
+
+	// 连点 10 次「测试」按钮。
+	for i := 0; i < 10; i++ {
+		p := pinnedPipe("gpt-4o", "a")
+		if _, err := svc.HandleBeforeAttempt(p); err != nil {
+			t.Fatalf("第 %d 次探测不应报错: %v", i+1, err)
+		}
+	}
+	// 探测若计入配额，日常流量的这两个名额就没了；这里应仍有余量。
+	key := bucketKey("a", scopeKey([]string{"*"}, 0))
+	if used := svc.counter.used(key, 2, time.Minute, time.Now()); used != 0 {
+		t.Fatalf("测试探测不应计入窗口配额，实际已用 %d 次", used)
+	}
+}
+
 // concRoute 构造一条「只限并发、不限次数」的 key_rate_limit 路由。
 func concRoute(maxConcurrency int, onExhausted string) types.CapabilityRoute {
 	return types.CapabilityRoute{
