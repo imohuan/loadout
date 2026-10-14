@@ -13,6 +13,7 @@ import (
 	fieldfilter "loadout/plugins/field-filter"
 	forcestream "loadout/plugins/force-stream"
 	gatewaykeys "loadout/plugins/gateway-keys"
+	keyratelimit "loadout/plugins/key-rate-limit"
 	mcphub "loadout/plugins/mcp-hub"
 	messageinject "loadout/plugins/message-inject"
 	modelgateway "loadout/plugins/model-gateway"
@@ -42,6 +43,7 @@ func All() []plugin.Plugin {
 		routelog.New(),
 		requestlog.New(),
 		aggregate.New(),
+		keyratelimit.New(),
 		// 原 vision 插件已停用，由 visionv2 取代
 		visionv2.New(),
 		sensitivefilter.New(),

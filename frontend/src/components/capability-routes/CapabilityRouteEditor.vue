@@ -53,6 +53,19 @@ const CAP_FIELD_FILTER = 'field_filter'
 const CAP_MESSAGE_INJECT = 'message_inject'
 const CAP_REQUEST_LOG = 'request_log'
 const CAP_FORCE_STREAM = 'force_stream'
+const CAP_KEY_RATE_LIMIT = 'key_rate_limit'
+
+// 限流参数编辑态：模板绑定原始文本，提交时才解析为数字——避免输入过程中被受控转换吞字符。
+type RateLimitForm = {
+  maxRequests: string
+  windowSeconds: string
+  onExhausted: string
+}
+const emptyRateLimitForm = (): RateLimitForm => ({
+  maxRequests: '20',
+  windowSeconds: '60',
+  onExhausted: 'reject',
+})
 
 // 字段过滤规则编辑态：模板用 v-model 绑定原始文本（每行一个字段路径），
 // 提交时才 split/trim 解析为数组——避免输入时受控转换吞字符/丢空格。
@@ -81,6 +94,7 @@ const form = reactive<{
   replacements: SensitiveReplacement[]
   injections: MessageInjection[]
   fieldRulesText: Record<FieldRulesKey, string>
+  rateLimit: RateLimitForm
 }>({
   models: [],
   capability: CAP_VISION,
@@ -89,6 +103,7 @@ const form = reactive<{
   replacements: [{ from: '', to: '', regex: false }],
   injections: [{ role: 'system', content: '', position: 'prepend' }],
   fieldRulesText: emptyFieldRulesText(),
+  rateLimit: emptyRateLimitForm(),
 })
 
 // 目标渠道选择态（由 ChannelGroupPicker 直接 v-model；空 = 全渠道生效）。
@@ -142,6 +157,15 @@ watch(
         response_keep: (route?.field_rules?.response_keep || []).join('\n'),
         response_header_strip: (route?.field_rules?.response_header_strip || []).join('\n'),
       },
+      rateLimit: {
+        maxRequests:
+          route?.rate_limit?.max_requests != null ? String(route.rate_limit.max_requests) : '20',
+        windowSeconds:
+          route?.rate_limit?.window_seconds != null
+            ? String(route.rate_limit.window_seconds)
+            : '60',
+        onExhausted: route?.rate_limit?.on_exhausted || 'reject',
+      },
     })
     // 老数据 `*`（通用全匹配）归一化为空 = 全渠道生效，语义一致。
     // channel_base_urls 在 CapabilityRoute 里持久化（渠道级原意图）；新版本才写入，老数据为空是预期。
@@ -168,6 +192,8 @@ function onCapabilityChange(value: string) {
     form.injections = [{ role: 'system', content: '', position: 'prepend' }]
   } else if (value === CAP_FIELD_FILTER) {
     form.fieldRulesText = emptyFieldRulesText()
+  } else if (value === CAP_KEY_RATE_LIMIT) {
+    form.rateLimit = emptyRateLimitForm()
   } else {
     form.viaOptions = [{ model: '', channel_id: '', channel_ids: [] }]
   }
@@ -194,6 +220,30 @@ function parseFieldRules(): FieldRules {
 function hasFieldRulesText(): boolean {
   return Object.values(form.fieldRulesText).some((v) => v.trim().length > 0)
 }
+
+// parsePositiveInt 把输入框文本解析为正整数；非法（空/0/负数/非数字）返回 undefined。
+function parsePositiveInt(raw: string): number | undefined {
+  const n = Number.parseInt((raw || '').trim(), 10)
+  if (!Number.isFinite(n) || n <= 0) return undefined
+  return n
+}
+
+// rateLimitSummary 当前限流设置的一句话摘要（编辑时即时反馈，避免填错单位）。
+const rateLimitSummary = computed(() => {
+  const max = parsePositiveInt(form.rateLimit.maxRequests)
+  const secs = parsePositiveInt(form.rateLimit.windowSeconds) ?? 60
+  if (!max) return '请填写窗口内最大请求数（正整数）'
+  const windowText =
+    secs % 86400 === 0
+      ? `${secs / 86400} 天`
+      : secs % 3600 === 0
+        ? `${secs / 3600} 小时`
+        : secs % 60 === 0
+          ? `${secs / 60} 分钟`
+          : `${secs} 秒`
+  const tail = form.rateLimit.onExhausted === 'reuse' ? '用满后继续使用' : '全部用满返回 429'
+  return `每 ${windowText} 每个 Key 最多 ${max} 次，${tail}`
+})
 
 // ===== 目标渠道（ChannelGroupPicker 多选；空 = 全渠道生效）=====
 const channelOpen = ref(false)
@@ -250,6 +300,7 @@ const capabilityOptions = [
   { value: CAP_MESSAGE_INJECT, label: 'message_inject（消息注入）' },
   { value: CAP_REQUEST_LOG, label: 'request_log（完整请求日志）' },
   { value: CAP_FORCE_STREAM, label: 'force_stream（强制流式·非流式客户端兼容）' },
+  { value: CAP_KEY_RATE_LIMIT, label: 'key_rate_limit（Key 限流·账号轮换）' },
 ]
 // 路由方式选项：sensitive_filter 三态里 error（命中拒绝）已废弃移除——
 // 「不支持就不管他」：命中敏感词不再直接拒绝，只能替换（proxy）或透传（native）。
@@ -301,6 +352,13 @@ const routeHint = computed(() => {
       native: '请求体原样透传，不做消息注入（适合通配规则下的精确豁免）。',
     }[form.route]
   }
+  if (form.capability === CAP_KEY_RATE_LIMIT) {
+    return {
+      proxy:
+        '在窗口内限制单个渠道 Key 的请求数：用满后该 Key 暂时跳过，请求自动落到同平台的另一个账号；全部账号都用满时按「超额处理」配置。',
+      native: '该模型/渠道不限流（适合通配规则下的精确豁免）。',
+    }[form.route]
+  }
   return {
     proxy: '图片被拦截，候选视觉模型看图生成文字描述后再转发给目标模型。',
     native: '图片原样透传给目标模型自行处理（适合支持视觉的模型，或通配规则下的精确豁免）。',
@@ -326,10 +384,22 @@ function submit() {
       // request_log 无额外配置（脱敏开关在独立 config 表），直接放行
     } else if (form.capability === CAP_FORCE_STREAM) {
       // force_stream 无额外配置（纯 on/off 能力），直接放行
+    } else if (form.capability === CAP_KEY_RATE_LIMIT) {
+      // key_rate_limit 需要有效的窗口内最大次数（正整数）。
+      if (!parsePositiveInt(form.rateLimit.maxRequests)) return
     } else if (!form.viaOptions.some((o) => o.model.trim())) {
       return
     }
   }
+
+  const rate_limit =
+    form.route !== 'native' && form.capability === CAP_KEY_RATE_LIMIT
+      ? {
+          max_requests: parsePositiveInt(form.rateLimit.maxRequests) ?? 0,
+          window_seconds: parsePositiveInt(form.rateLimit.windowSeconds) ?? 60,
+          on_exhausted: form.rateLimit.onExhausted === 'reuse' ? 'reuse' : 'reject',
+        }
+      : undefined
   const viaOptions =
     form.route === 'proxy' && form.capability === CAP_VISION
       ? form.viaOptions
@@ -375,6 +445,7 @@ function submit() {
     replacements,
     field_rules,
     injections,
+    rate_limit,
   })
 }
 </script>
@@ -655,6 +726,37 @@ function submit() {
             v-model="form.injections"
             add-label="添加注入"
           />
+        </div>
+        <div
+          v-else-if="form.capability === CAP_KEY_RATE_LIMIT && form.route !== 'native'"
+          class="space-y-3"
+        >
+          <div class="grid gap-3 sm:grid-cols-2">
+            <div class="space-y-1">
+              <Label class="text-xs text-muted-foreground">单个 Key 窗口内最大请求数</Label>
+              <Input v-model="form.rateLimit.maxRequests" inputmode="numeric" placeholder="20" />
+            </div>
+            <div class="space-y-1">
+              <Label class="text-xs text-muted-foreground">窗口长度（秒）</Label>
+              <Input v-model="form.rateLimit.windowSeconds" inputmode="numeric" placeholder="60" />
+            </div>
+          </div>
+          <div class="space-y-1">
+            <Label class="text-xs text-muted-foreground">所有账号都用满时</Label>
+            <Select v-model="form.rateLimit.onExhausted">
+              <SelectTrigger><SelectValue placeholder="选择处理方式" /></SelectTrigger>
+              <SelectContent position="popper" side="bottom" align="start" :side-offset="2">
+                <SelectGroup>
+                  <SelectItem value="reject">返回 429（推荐）</SelectItem>
+                  <SelectItem value="reuse">忽略限流，继续使用</SelectItem>
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+          </div>
+          <p class="text-xs text-muted-foreground">
+            滑动窗口：看「从此刻往回数这么多秒」。窗口内用满的 Key 会被暂时跳过，请求自动落到同平台的另一个账号；
+            计数只存在内存里，重启后清零。当前设置 = {{ rateLimitSummary }}。
+          </p>
         </div>
         <div v-else-if="form.capability === CAP_VISION && form.route === 'proxy'" class="space-y-2">
           <Label>视觉候选（从上到下依次请求，失败换下一个）</Label>

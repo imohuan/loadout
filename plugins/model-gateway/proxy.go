@@ -611,6 +611,22 @@ func (s *Service) proxyForward(w http.ResponseWriter, r *http.Request, pipe *Pro
 		}
 	}
 
+	// 候选解析完成：给能力插件一次筛选/重排的机会（key-rate-limit 用「未达配额」
+	// 的 Key 覆盖候选，实现账号轮换）。拒绝（返回 error）走 rejectBySecurity，
+	// 与安检拒绝同路（写 failed attempt + finish 日志 + 带原因的错误响应）。
+	// 空候选（订阅方未改写 / 没有可用候选）沿用原候选，避免限流把请求打成无渠道。
+	if out, ferr := s.ctx.Waterfall(ProxyChannelsResolved, &ChannelCandidatesPayload{Pipe: pipe, Model: model, Candidates: candidates}); ferr != nil {
+		s.rejectBySecurity(w, r, pipe, model, started, ferr)
+		return nil
+	} else if rewritten, ok := out.(*ChannelCandidatesPayload); ok && rewritten != nil && len(rewritten.Candidates) > 0 {
+		if len(rewritten.Candidates) != len(candidates) {
+			s.lg.Info("候选渠道被能力插件筛选",
+				"request_id", pipe.RequestID, "model", model,
+				"before", len(candidates), "after", len(rewritten.Candidates))
+		}
+		candidates = rewritten.Candidates
+	}
+
 	var lastErr error
 	var lastChannelID string
 	var lastStatusCode int

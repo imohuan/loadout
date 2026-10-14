@@ -1015,6 +1015,16 @@ UPDATE failure_rules SET id = 'seed-015-swap' WHERE id = 'seed-005' AND name = '
 UPDATE failure_rules SET id = 'seed-005' WHERE id = 'seed-015' AND name = '限速（冷却2分钟，连续5次升级为次日恢复）';
 UPDATE failure_rules SET id = 'seed-015' WHERE id = 'seed-015-swap';
 `,
+}, {
+	version: 50,
+	name:    "capability-routes-rate-limit",
+	sql: `
+-- key_rate_limit 能力插件的限流参数（嵌套 JSON 列，与 via_options/replacements/field_rules
+-- 同模式）：{max_requests, window_seconds, on_exhausted}。
+-- 注意：只持久化**规则配置**——「已用了几次」是运行期滑动窗口计数，只放内存
+-- （重启清零，用户已确认），因此不建计数表。
+ALTER TABLE capability_routes ADD COLUMN rate_limit_json TEXT NOT NULL DEFAULT '{}';
+`,
 }}
 
 // Migrate applies all pending schema migrations and rejects an incompatible

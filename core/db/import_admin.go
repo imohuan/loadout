@@ -185,7 +185,14 @@ func importCapabilityRoutes(ctx context.Context, tx *sql.Tx, values []types.Capa
 				fieldRulesJSON = string(b)
 			}
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO capability_routes (position, capability, route, models_json, channel_ids_json, channel_base_urls_json, via_options_json, replacements_json, field_rules_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, i, route.Capability, route.Route, string(models), string(channels), string(baseURLs), string(via), string(repl), fieldRulesJSON); err != nil {
+		inj, _ := json.Marshal(route.Injections)
+		rateLimitJSON := "{}"
+		if route.RateLimit != nil {
+			if b, err := json.Marshal(route.RateLimit); err == nil {
+				rateLimitJSON = string(b)
+			}
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO capability_routes (position, capability, route, models_json, channel_ids_json, channel_base_urls_json, via_options_json, replacements_json, field_rules_json, injections_json, rate_limit_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, i, route.Capability, route.Route, string(models), string(channels), string(baseURLs), string(via), string(repl), fieldRulesJSON, string(inj), rateLimitJSON); err != nil {
 			return fmt.Errorf("db: import capability route: %w", err)
 		}
 	}

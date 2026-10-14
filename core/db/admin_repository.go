@@ -18,7 +18,7 @@ import (
 
 // ListCapabilityRoutes 返回全部能力路由（按 position 排序）。
 func (r *Repository) ListCapabilityRoutes(ctx context.Context) ([]types.CapabilityRoute, error) {
-	rows, err := r.database.QueryContext(ctx, `SELECT capability, route, models_json, channel_ids_json, channel_base_urls_json, via_options_json, replacements_json, field_rules_json, injections_json FROM capability_routes ORDER BY position, id`)
+	rows, err := r.database.QueryContext(ctx, `SELECT capability, route, models_json, channel_ids_json, channel_base_urls_json, via_options_json, replacements_json, field_rules_json, injections_json, rate_limit_json FROM capability_routes ORDER BY position, id`)
 	if err != nil {
 		return nil, fmt.Errorf("db: list capability routes: %w", err)
 	}
@@ -26,8 +26,8 @@ func (r *Repository) ListCapabilityRoutes(ctx context.Context) ([]types.Capabili
 	var routes []types.CapabilityRoute
 	for rows.Next() {
 		var route types.CapabilityRoute
-		var modelsJSON, channelsJSON, baseURLsJSON, viaJSON, replJSON, fieldRulesJSON, injJSON string
-		if err := rows.Scan(&route.Capability, &route.Route, &modelsJSON, &channelsJSON, &baseURLsJSON, &viaJSON, &replJSON, &fieldRulesJSON, &injJSON); err != nil {
+		var modelsJSON, channelsJSON, baseURLsJSON, viaJSON, replJSON, fieldRulesJSON, injJSON, rateLimitJSON string
+		if err := rows.Scan(&route.Capability, &route.Route, &modelsJSON, &channelsJSON, &baseURLsJSON, &viaJSON, &replJSON, &fieldRulesJSON, &injJSON, &rateLimitJSON); err != nil {
 			return nil, fmt.Errorf("db: scan capability route: %w", err)
 		}
 		if err := unmarshalEach(modelsJSON, &route.Models, channelsJSON, &route.ChannelIDs, baseURLsJSON, &route.ChannelBaseURLs, viaJSON, &route.ViaOptions, replJSON, &route.Replacements, injJSON, &route.Injections); err != nil {
@@ -36,6 +36,11 @@ func (r *Repository) ListCapabilityRoutes(ctx context.Context) ([]types.Capabili
 		if fieldRulesJSON != "" && fieldRulesJSON != "{}" {
 			if err := json.Unmarshal([]byte(fieldRulesJSON), &route.FieldRules); err != nil {
 				return nil, fmt.Errorf("db: parse field rules: %w", err)
+			}
+		}
+		if rateLimitJSON != "" && rateLimitJSON != "{}" {
+			if err := json.Unmarshal([]byte(rateLimitJSON), &route.RateLimit); err != nil {
+				return nil, fmt.Errorf("db: parse rate limit: %w", err)
 			}
 		}
 		routes = append(routes, route)
@@ -86,7 +91,15 @@ func (r *Repository) ReplaceCapabilityRoutes(ctx context.Context, routes []types
 					fieldRulesJSON = string(b)
 				}
 			}
-			if _, err := tx.ExecContext(ctx, `INSERT INTO capability_routes (position, capability, route, models_json, channel_ids_json, channel_base_urls_json, via_options_json, replacements_json, field_rules_json, injections_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, i, route.Capability, route.Route, string(models), string(channels), string(baseURLs), string(via), string(repl), fieldRulesJSON, string(inj)); err != nil {
+			rateLimitJSON := "{}"
+			if route.RateLimit != nil {
+				if b, err := json.Marshal(route.RateLimit); err != nil {
+					return fmt.Errorf("db: marshal rate limit: %w", err)
+				} else {
+					rateLimitJSON = string(b)
+				}
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO capability_routes (position, capability, route, models_json, channel_ids_json, channel_base_urls_json, via_options_json, replacements_json, field_rules_json, injections_json, rate_limit_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, i, route.Capability, route.Route, string(models), string(channels), string(baseURLs), string(via), string(repl), fieldRulesJSON, string(inj), rateLimitJSON); err != nil {
 				return fmt.Errorf("db: insert capability route: %w", err)
 			}
 		}

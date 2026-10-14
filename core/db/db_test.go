@@ -467,6 +467,50 @@ func TestCapabilityRouteFieldRulesPersist(t *testing.T) {
 	}
 }
 
+// TestCapabilityRouteRateLimitPersist 锁住 v50 的 rate_limit_json 往返：
+// 写入 → 读出后参数完整（key_rate_limit 的限流规则靠它持久化）。
+// 同时验证未配置限流的条目读出仍为 nil（不影响其他能力的既有行为）。
+func TestCapabilityRouteRateLimitPersist(t *testing.T) {
+	database := mustOpen(t, filepath.Join(t.TempDir(), "loadout.db"))
+	defer database.Close()
+	repo, err := NewRepository(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	routes := []types.CapabilityRoute{
+		{
+			Models:     []string{"*"},
+			Capability: "key_rate_limit",
+			Route:      "proxy",
+			RateLimit:  &types.RateLimitRule{MaxRequests: 20, WindowSeconds: 60, OnExhausted: "reuse"},
+		},
+		{
+			Models:     []string{"gpt-4o"},
+			Capability: "force_stream",
+			Route:      "proxy",
+		},
+	}
+	if err := repo.ReplaceCapabilityRoutes(context.Background(), routes); err != nil {
+		t.Fatal(err)
+	}
+	got, err := repo.ListCapabilityRoutes(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("读出 %d 条能力路由，期望 2", len(got))
+	}
+	if got[0].RateLimit == nil {
+		t.Fatalf("rate_limit 未持久化: %+v", got[0])
+	}
+	if got[0].RateLimit.MaxRequests != 20 || got[0].RateLimit.WindowSeconds != 60 || got[0].RateLimit.OnExhausted != "reuse" {
+		t.Fatalf("rate_limit 参数错误: %+v", got[0].RateLimit)
+	}
+	if got[1].RateLimit != nil {
+		t.Fatalf("未配置限流的条目读出应为 nil，实际 %+v", got[1].RateLimit)
+	}
+}
+
 // TestMigrateIndexesPreviousAttemptAndDropsOrphans 锁住 v42 迁移的两个行为：
 //  1. route_attempts.previous_attempt_id 必须有索引——它是自引用外键（ON DELETE SET NULL），
 //     缺索引时清空日志的级联删除会退化成平方级全表扫描（页面点「清空」直接卡死）；

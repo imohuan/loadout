@@ -353,6 +353,16 @@ export interface CapabilityRoute {
   replacements?: SensitiveReplacement[] // proxy 时的敏感词替换规则，顺序即替换顺序（sensitive_filter 用）
   field_rules?: FieldRules // 字段过滤规则（field_filter 用；nil/undefined = 未配置，原样透传）
   injections?: MessageInjection[] // 消息注入配置，顺序即注入顺序（message_inject 用）
+  rate_limit?: RateLimitRule // 限流参数（key_rate_limit 用；undefined = 未配置，不限流）
+}
+
+// RateLimitRule 单个上游渠道 Key 的限流参数（key_rate_limit 能力）。
+// 语义：在「往回看 window_seconds 秒」的滑动窗口里，单个渠道 Key 最多放行 max_requests 次；
+// 达上限的 Key 会被剔除，请求自动落到下一个账号。全部候选都达上限时按 on_exhausted 处理。
+export interface RateLimitRule {
+  max_requests: number // 窗口内单个 Key 允许的请求数（<=0 = 未配置，不限流）
+  window_seconds?: number // 滑动窗口长度（秒）；缺省 60
+  on_exhausted?: 'reject' | 'reuse' | string // 全部账号都用满时：reject（默认，返回 429）/ reuse（忽略限流继续用）
 }
 
 // ---- MCP 调用统计 ----

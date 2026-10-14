@@ -230,6 +230,29 @@ const MetadataForceStream = "__force_stream"
 // 本事件（不触发 failover）；request-log 订阅它即时收尾失败 attempt 的半条日志。
 const ProxyAttemptFailed = "proxy:attempt-failed"
 
+// ProxyChannelsResolved 候选渠道解析完成的 waterfall 事件（proxy:channels-resolved）。
+//
+// 在 proxyForward 解析出候选渠道、并施加完聚合/前缀等既有约束之后、真正开始逐个
+// 尝试之前触发。订阅方（如 key-rate-limit）可以据此做**候选层面的筛选/重排**，
+// 例如把「本窗口配额已用满」的渠道 Key 从候选里剔除，让请求落到下一个账号。
+//
+// 之所以放在这里而不是入口的 ProxyBeforeUpstream：此时 channel_states/model_states
+// 熔断过滤、aggregate 的 __channel_candidates、v2 渠道名前缀锁定都已生效，订阅方
+// 只需在最终候选上做减法，不必复刻核心的候选解析逻辑（避免日后核心一改就静默失配）。
+const ProxyChannelsResolved = "proxy:channels-resolved"
+
+// ChannelCandidatesPayload proxy:channels-resolved 的载荷：最终候选渠道 + 订阅方改写结果。
+//
+// 约定：
+//   - 订阅方返回同一个 *ChannelCandidatesPayload（原地改写 Candidates）表示「按新候选转发」；
+//   - Candidates 为空切片表示「不改动」，调用方沿用原候选（避免订阅方漏设导致无渠道可用）；
+//   - 订阅方返回 error（建议 *GatewayError）表示直接拒绝本次请求，不再尝试任何渠道。
+type ChannelCandidatesPayload struct {
+	Pipe       *ProxyPipeline
+	Model      string // 本次转发使用的真实模型名
+	Candidates []ResolvedChannel
+}
+
 // ProxyRequest 透明代理请求侧：原始字节，不做字段清洗。
 type ProxyRequest struct {
 	Method string      // 原样透传的方法
