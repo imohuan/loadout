@@ -253,6 +253,25 @@ type ChannelCandidatesPayload struct {
 	Candidates []ResolvedChannel
 }
 
+// ProxyAttemptFinished 单次渠道尝试结束的纯通知事件（proxy:attempt-finished）。
+//
+// 核心用 defer 保证**每次** proxyAttempt 无论成功、失败、还是被安检拒绝，都会触发一次
+// （与 ProxyAttemptFailed 的区别：后者只在写 failed attempt 行时触发，成功路径不触发；
+// 本事件是「尝试生命周期结束」的配对点）。
+//
+// 用途：key-rate-limit 用它释放并发占位——proxy:before-attempt 里占一个并发名额，
+// 这里释放，保证在途计数在请求结束（含客户端断连）后一定回落。
+type ProxyAttemptFinishedPayload struct {
+	Pipe      *ProxyPipeline
+	Model     string
+	ChannelID string
+	// Result 本次尝试的结果：success / failed / rejected。
+	Result string
+}
+
+// ProxyAttemptFinished 事件名常量。
+const ProxyAttemptFinished = "proxy:attempt-finished"
+
 // ProxyRequest 透明代理请求侧：原始字节，不做字段清洗。
 type ProxyRequest struct {
 	Method string      // 原样透传的方法

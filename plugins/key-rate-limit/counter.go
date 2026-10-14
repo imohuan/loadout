@@ -135,3 +135,66 @@ func (c *windowCounter) size() int {
 	return len(c.buckets)
 }
 
+// concurrencyCounter 在途并发计数器（纯内存，进程重启清零）。
+//
+// 每个计数键 = (渠道 Key, 作用域签名)，值为「当前正在进行中的请求数」。占用/释放必须
+// 严格配对：占位在 proxy:before-attempt（真正要发请求时），释放在 proxy:attempt-finished
+// （核心用 defer 保证每次尝试结束都会触发）。
+//
+// 与 windowCounter 分开存：两个维度独立配置，也不该互相影响清扫。
+type concurrencyCounter struct {
+	mu      sync.Mutex
+	inFlight map[string]int
+}
+
+func newConcurrencyCounter() *concurrencyCounter {
+	return &concurrencyCounter{inFlight: map[string]int{}}
+}
+
+// used 返回当前在途数（不改变计数）。
+func (c *concurrencyCounter) used(key string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.inFlight[key]
+}
+
+// acquire 尝试占一个并发名额。返回 (是否占到, 占位后的在途数)。
+// max <= 0 视为不限并发：不占位，返回 (true, 0)（调用方据此跳过释放）。
+func (c *concurrencyCounter) acquire(key string, max int) (bool, int) {
+	if max <= 0 {
+		return true, 0
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	cur := c.inFlight[key]
+	if cur >= max {
+		return false, cur
+	}
+	c.inFlight[key] = cur + 1
+	return true, cur + 1
+}
+
+// release 释放一个并发名额（在途数减 1，减到 0 时删掉该键）。
+// 未占位却调用（如 max<=0 时跳过占位）也不会把计数压成负数。
+func (c *concurrencyCounter) release(key string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	cur, ok := c.inFlight[key]
+	if !ok {
+		return 0
+	}
+	if cur <= 1 {
+		delete(c.inFlight, key)
+		return 0
+	}
+	c.inFlight[key] = cur - 1
+	return cur - 1
+}
+
+// size 当前键数量（测试/调试用）。
+func (c *concurrencyCounter) size() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.inFlight)
+}
+

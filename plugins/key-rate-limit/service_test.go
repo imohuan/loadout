@@ -278,10 +278,10 @@ func TestWindowExpiryRestoresKey(t *testing.T) {
 	r := rules[0]
 	key := bucketKey("a", r.scope)
 	svc.counter.record(key, r.rule.MaxRequests, r.window, now)
-	if svc.channelAvailable("a", rules, now) {
+	if svc.windowHasRoom("a", rules, now) {
 		t.Fatal("刚用满的 Key 应判定为不可用")
 	}
-	if !svc.channelAvailable("a", rules, now.Add(61*time.Second)) {
+	if !svc.windowHasRoom("a", rules, now.Add(61*time.Second)) {
 		t.Fatal("窗口滑出后 Key 应恢复可用")
 	}
 }
@@ -305,5 +305,154 @@ func idsOf(chs []modelgateway.ResolvedChannel) []string {
 		out = append(out, ch.ID)
 	}
 	return out
+}
+
+// concRoute 构造一条「只限并发、不限次数」的 key_rate_limit 路由。
+func concRoute(maxConcurrency int, onExhausted string) types.CapabilityRoute {
+	return types.CapabilityRoute{
+		Models:     []string{"*"},
+		Capability: capabilityName,
+		Route:      types.RouteProxy,
+		RateLimit:  &types.RateLimitRule{MaxConcurrency: maxConcurrency, OnExhausted: onExhausted},
+	}
+}
+
+// TestConcurrencyOnlyDoesNotLimitCounts 只配并发、不配次数时，请求次数不受限制
+// （次数维度 MaxRequests=0 应被忽略，而不是当成「最多 0 次」把请求全拒）。
+func TestConcurrencyOnlyDoesNotLimitCounts(t *testing.T) {
+	svc := newTestService(t)
+	// 并发上限设为 1：若「占」与「放」没有严格配对，第 2 轮就会开始被拒。
+	writeRoutes(t, svc, []types.CapabilityRoute{concRoute(1, types.RateLimitReject)})
+
+	pipe := testPipe("gpt-4o")
+	const rounds = 20
+	for i := 0; i < rounds; i++ {
+		// 每次都完整走一遍「占用 → 消费 → 释放」，模拟 20 个串行请求。
+		got, err := resolve(t, svc, pipe, "gpt-4o", channels("a"))
+		if err != nil {
+			t.Fatalf("第 %d 次 resolve 不应报错（不限次数）: %v", i+1, err)
+		}
+		if len(got) != 1 {
+			t.Fatalf("第 %d 次应保留候选，实际 %v", i+1, idsOf(got))
+		}
+		pipe.Metadata["__current_channel"] = "a"
+		if _, err := svc.HandleBeforeAttempt(pipe); err != nil {
+			t.Fatalf("第 %d 次消费失败: %v", i+1, err)
+		}
+		_, _ = svc.HandleAttemptFinished(&modelgateway.ProxyAttemptFinishedPayload{Pipe: pipe, Model: "gpt-4o", ChannelID: "a", Result: "success"})
+	}
+	// 名额必须全部归还：并发计数器里不应残留任何键（否则就是泄漏，长跑后会把渠道卡死）。
+	if n := svc.conc.size(); n != 0 {
+		t.Fatalf("%d 轮结束后并发占位应清零，实际残留 %d 个键", rounds, n)
+	}
+}
+
+// TestConcurrencyRejectsWhenInFlightFull 并发占满时按 reject 策略返回 429。
+// 关键：占用发生在候选筛选阶段，因此第二次请求（前一次尚未结束）就必须被拒。
+func TestConcurrencyRejectsWhenInFlightFull(t *testing.T) {
+	svc := newTestService(t)
+	writeRoutes(t, svc, []types.CapabilityRoute{concRoute(1, types.RateLimitReject)})
+
+	pipe1 := testPipe("gpt-4o")
+	// 第 1 个请求：占住唯一名额，且**不释放**（模拟请求还在进行中）。
+	got, err := resolve(t, svc, pipe1, "gpt-4o", channels("a"))
+	if err != nil {
+		t.Fatalf("第 1 个请求 resolve 报错: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "a" {
+		t.Fatalf("第 1 个请求应保留候选 a，实际 %v", idsOf(got))
+	}
+	pipe1.Metadata["__current_channel"] = "a"
+	if _, err := svc.HandleBeforeAttempt(pipe1); err != nil {
+		t.Fatalf("第 1 个请求消费失败: %v", err)
+	}
+
+	// 第 2 个请求（第 1 个仍在途）：并发已满 → 429。
+	pipe2 := testPipe("gpt-4o")
+	_, err = resolve(t, svc, pipe2, "gpt-4o", channels("a"))
+	if err == nil {
+		t.Fatal("在途并发已满时应拒绝第 2 个请求")
+	}
+	gw, ok := err.(*modelgateway.GatewayError)
+	if !ok || gw.Status != http.StatusTooManyRequests {
+		t.Fatalf("应返回 429 GatewayError，实际 %T %v", err, err)
+	}
+
+	// 第 1 个请求结束后名额释放，第 3 个请求可以正常通过。
+	_, _ = svc.HandleAttemptFinished(&modelgateway.ProxyAttemptFinishedPayload{Pipe: pipe1, Model: "gpt-4o", ChannelID: "a", Result: "success"})
+	got3, err := resolve(t, svc, testPipe("gpt-4o"), "gpt-4o", channels("a"))
+	if err != nil {
+		t.Fatalf("前一个请求结束后应能再次放行: %v", err)
+	}
+	if len(got3) != 1 {
+		t.Fatalf("结束的请求应已释放名额，实际候选 %v", idsOf(got3))
+	}
+}
+
+// TestConcurrencyRotatesToOtherKey 并发占满时自动换到另一个账号（而不是直接拒绝）。
+func TestConcurrencyRotatesToOtherKey(t *testing.T) {
+	svc := newTestService(t)
+	writeRoutes(t, svc, []types.CapabilityRoute{concRoute(1, types.RateLimitReject)})
+
+	pipe1 := testPipe("gpt-4o")
+	got, _ := resolve(t, svc, pipe1, "gpt-4o", channels("a", "b"))
+	if len(got) == 0 || got[0].ID != "a" {
+		t.Fatalf("第 1 个请求应占用第一个候选 a（b 保留作 failover），实际 %v", idsOf(got))
+	}
+	pipe1.Metadata["__current_channel"] = "a"
+	_, _ = svc.HandleBeforeAttempt(pipe1)
+
+	// a 的并发已满（1 个在途）：第 2 个请求应落到 b。
+	got2, err := resolve(t, svc, testPipe("gpt-4o"), "gpt-4o", channels("a", "b"))
+	if err != nil {
+		t.Fatalf("a 满 b 空时不应拒绝: %v", err)
+	}
+	if len(got2) == 0 || got2[0].ID != "b" {
+		t.Fatalf("a 并发占满后应把 b 排到首位（自动换账号），实际 %v", idsOf(got2))
+	}
+}
+
+// TestConcurrencyReuseKeepsServing reuse 策略下并发占满仍放行。
+func TestConcurrencyReuseKeepsServing(t *testing.T) {
+	svc := newTestService(t)
+	writeRoutes(t, svc, []types.CapabilityRoute{concRoute(1, types.RateLimitReuse)})
+
+	pipe1 := testPipe("gpt-4o")
+	_, _ = resolve(t, svc, pipe1, "gpt-4o", channels("a"))
+	pipe1.Metadata["__current_channel"] = "a"
+	_, _ = svc.HandleBeforeAttempt(pipe1)
+
+	got, err := resolve(t, svc, testPipe("gpt-4o"), "gpt-4o", channels("a"))
+	if err != nil {
+		t.Fatalf("reuse 策略不应拒绝: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("reuse 策略应原样返回候选，实际 %v", idsOf(got))
+	}
+}
+
+// TestBothDimensionsBothMustAllow 两个维度都配时，任一维度达上限即换 Key。
+func TestBothDimensionsBothMustAllow(t *testing.T) {
+	svc := newTestService(t)
+	writeRoutes(t, svc, []types.CapabilityRoute{{
+		Models:     []string{"*"},
+		Capability: capabilityName,
+		Route:      types.RouteProxy,
+		RateLimit:  &types.RateLimitRule{MaxRequests: 5, WindowSeconds: 60, MaxConcurrency: 1, OnExhausted: types.RateLimitReject},
+	}})
+
+	// a 的次数还剩很多，但并发已满 → 换 b。
+	pipe1 := testPipe("gpt-4o")
+	_, _ = resolve(t, svc, pipe1, "gpt-4o", channels("a", "b"))
+	pipe1.Metadata["__current_channel"] = "a"
+	_, _ = svc.HandleBeforeAttempt(pipe1)
+
+	got, err := resolve(t, svc, testPipe("gpt-4o"), "gpt-4o", channels("a", "b"))
+	if err != nil {
+		t.Fatalf("a 并发满 b 空时不应拒绝: %v", err)
+	}
+	if len(got) == 0 || got[0].ID != "b" {
+		t.Fatalf("应因并发维度把 b 排到首位，实际 %v", idsOf(got))
+	}
 }
 

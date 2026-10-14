@@ -435,18 +435,32 @@ type CapabilityRoute struct {
 
 // RateLimitRule 单个上游渠道 Key 的限流参数（key_rate_limit 能力用；nil = 未配置，不限流）。
 //
-// 语义：在「往回看 WindowSeconds 秒」这个滑动窗口里，单个渠道 Key 最多放行 MaxRequests 次。
-// 达到上限的 Key 会被从候选里剔除，请求自动落到下一个账号的 Key；所有候选 Key 都达上限时
-// 按 OnExhausted 决定是直接拒绝（429）还是忽略限流继续用。
+// 两个维度互相独立，可只配一个：
+//   - 「次数」：在「往回看 WindowSeconds 秒」的滑动窗口里，单个 Key 最多放行 MaxRequests 次；
+//   - 「并发」：单个 Key 同时最多有 MaxConcurrency 个请求在进行中。
+//
+// 任一维度达到上限的 Key 都会被从候选里剔除，请求自动落到下一个账号的 Key；
+// 所有候选 Key 都达到上限时，按 OnExhausted 决定是直接拒绝（429）还是忽略限制继续用。
 type RateLimitRule struct {
-	// MaxRequests 滑动窗口内单个 Key 允许的请求数（<=0 视为未配置，不限流）。
-	MaxRequests int `json:"max_requests"`
+	// MaxRequests 滑动窗口内单个 Key 允许的请求数（<=0 表示不限制次数）。
+	MaxRequests int `json:"max_requests,omitempty"`
 	// WindowSeconds 滑动窗口长度（秒）：判定时看「从此刻往回数这么多秒」。<=0 时按 60 处理。
 	WindowSeconds int `json:"window_seconds,omitempty"`
+	// MaxConcurrency 单个 Key 允许的在途并发请求数（<=0 表示不限制并发）。
+	// 与 MaxRequests 相互独立：只配并发时，次数不限、只限同时在跑几个。
+	MaxConcurrency int `json:"max_concurrency,omitempty"`
 	// OnExhausted 全部候选 Key 都达上限时的动作：
 	//   "reject"（默认）= 返回 429 key_rate_limited；
-	//   "reuse"         = 忽略限流继续使用，宁可某个账号小幅超额也不让请求失败。
+	//   "reuse"         = 忽略限制继续使用，宁可某个账号小幅超额也不让请求失败。
 	OnExhausted string `json:"on_exhausted,omitempty"`
+}
+
+// Configured 判断规则是否至少配了一个限制维度（两个都不配 = 不生效）。
+func (r *RateLimitRule) Configured() bool {
+	if r == nil {
+		return false
+	}
+	return r.MaxRequests > 0 || r.MaxConcurrency > 0
 }
 
 // RateLimitOnExhausted 取值常量（RateLimitRule.OnExhausted）。

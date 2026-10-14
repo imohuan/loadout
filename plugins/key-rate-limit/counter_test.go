@@ -104,3 +104,79 @@ func TestCounterSweepReclaimsIdle(t *testing.T) {
 	}
 }
 
+// TestConcurrencyAcquireRelease 并发占位的占用/释放与上限判定。
+func TestConcurrencyAcquireRelease(t *testing.T) {
+	c := newConcurrencyCounter()
+	const max = 2
+
+	if ok, n := c.acquire("k", max); !ok || n != 1 {
+		t.Fatalf("第 1 次占用应成功且计数为 1，实际 ok=%v n=%d", ok, n)
+	}
+	if ok, n := c.acquire("k", max); !ok || n != 2 {
+		t.Fatalf("第 2 次占用应成功且计数为 2，实际 ok=%v n=%d", ok, n)
+	}
+	// 第 3 次：已到上限，占用失败且计数不变。
+	if ok, n := c.acquire("k", max); ok || n != 2 {
+		t.Fatalf("到上限后占用应失败且计数保持 2，实际 ok=%v n=%d", ok, n)
+	}
+	if used := c.used("k"); used != 2 {
+		t.Fatalf("在途数应为 2，实际 %d", used)
+	}
+
+	// 释放一个后可以再占一个。
+	if got := c.release("k"); got != 1 {
+		t.Fatalf("释放后应在途 1，实际 %d", got)
+	}
+	if ok, _ := c.acquire("k", max); !ok {
+		t.Fatal("释放出名额后应能再占用")
+	}
+
+	// 全部释放 → 键被回收，不会无限累积。
+	c.release("k")
+	c.release("k")
+	if c.size() != 0 {
+		t.Fatalf("在途归零后键应被回收，实际剩 %d 个", c.size())
+	}
+}
+
+// TestConcurrencyUnlimitedNoop max<=0（不限并发）时不占位、不建键。
+func TestConcurrencyUnlimitedNoop(t *testing.T) {
+	c := newConcurrencyCounter()
+	for i := 0; i < 100; i++ {
+		if ok, n := c.acquire("k", 0); !ok || n != 0 {
+			t.Fatalf("不限并发时应始终放行且不计数，实际 ok=%v n=%d", ok, n)
+		}
+	}
+	if c.size() != 0 {
+		t.Fatalf("不限并发不应建立计数键，实际 %d 个", c.size())
+	}
+	// 未占位就释放不应把计数压成负数。
+	if got := c.release("k"); got != 0 {
+		t.Fatalf("未占位时释放应返回 0，实际 %d", got)
+	}
+	if c.size() != 0 {
+		t.Fatalf("未占位时释放不应建立键，实际 %d 个", c.size())
+	}
+}
+
+// TestConcurrencyReleaseIsPerKey 不同键的并发计数互不影响。
+func TestConcurrencyReleaseIsPerKey(t *testing.T) {
+	c := newConcurrencyCounter()
+	c.acquire("a", 1)
+	c.acquire("b", 1)
+	if ok, _ := c.acquire("a", 1); ok {
+		t.Fatal("a 已占满，再占应失败")
+	}
+	if ok, _ := c.acquire("b", 1); ok {
+		t.Fatal("b 已占满，再占应失败")
+	}
+	c.release("a")
+	if ok, _ := c.acquire("a", 1); !ok {
+		t.Fatal("a 释放后应能再占")
+	}
+	// b 仍在途，未受 a 的释放影响。
+	if used := c.used("b"); used != 1 {
+		t.Fatalf("b 的在途数不应受 a 影响，实际 %d", used)
+	}
+}
+

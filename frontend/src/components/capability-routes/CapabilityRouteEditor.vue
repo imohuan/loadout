@@ -59,11 +59,14 @@ const CAP_KEY_RATE_LIMIT = 'key_rate_limit'
 type RateLimitForm = {
   maxRequests: string
   windowSeconds: string
+  maxConcurrency: string
   onExhausted: string
 }
+// 默认：按次数限流（每 60 秒 20 次），并发留空 = 不限并发。
 const emptyRateLimitForm = (): RateLimitForm => ({
   maxRequests: '20',
   windowSeconds: '60',
+  maxConcurrency: '',
   onExhausted: 'reject',
 })
 
@@ -164,6 +167,10 @@ watch(
           route?.rate_limit?.window_seconds != null
             ? String(route.rate_limit.window_seconds)
             : '60',
+        maxConcurrency:
+          route?.rate_limit?.max_concurrency != null
+            ? String(route.rate_limit.max_concurrency)
+            : '',
         onExhausted: route?.rate_limit?.on_exhausted || 'reject',
       },
     })
@@ -232,7 +239,8 @@ function parsePositiveInt(raw: string): number | undefined {
 const rateLimitSummary = computed(() => {
   const max = parsePositiveInt(form.rateLimit.maxRequests)
   const secs = parsePositiveInt(form.rateLimit.windowSeconds) ?? 60
-  if (!max) return '请填写窗口内最大请求数（正整数）'
+  const conc = parsePositiveInt(form.rateLimit.maxConcurrency)
+  if (!max && !conc) return '请至少填写一项：窗口内最大请求数 或 并发上限'
   const windowText =
     secs % 86400 === 0
       ? `${secs / 86400} 天`
@@ -241,8 +249,11 @@ const rateLimitSummary = computed(() => {
         : secs % 60 === 0
           ? `${secs / 60} 分钟`
           : `${secs} 秒`
-  const tail = form.rateLimit.onExhausted === 'reuse' ? '用满后继续使用' : '全部用满返回 429'
-  return `每 ${windowText} 每个 Key 最多 ${max} 次，${tail}`
+  const parts: string[] = []
+  if (max) parts.push(`每 ${windowText} 每个 Key 最多 ${max} 次`)
+  if (conc) parts.push(`每个 Key 同时最多 ${conc} 个请求`)
+  const tail = form.rateLimit.onExhausted === 'reuse' ? '超额继续使用' : '全部超额返回 429'
+  return parts.join('，') + `，${tail}`
 })
 
 // ===== 目标渠道（ChannelGroupPicker 多选；空 = 全渠道生效）=====
@@ -385,8 +396,10 @@ function submit() {
     } else if (form.capability === CAP_FORCE_STREAM) {
       // force_stream 无额外配置（纯 on/off 能力），直接放行
     } else if (form.capability === CAP_KEY_RATE_LIMIT) {
-      // key_rate_limit 需要有效的窗口内最大次数（正整数）。
-      if (!parsePositiveInt(form.rateLimit.maxRequests)) return
+      // key_rate_limit 两个维度（次数 / 并发）至少要配一个，否则规则没有意义。
+      if (!parsePositiveInt(form.rateLimit.maxRequests) && !parsePositiveInt(form.rateLimit.maxConcurrency)) {
+        return
+      }
     } else if (!form.viaOptions.some((o) => o.model.trim())) {
       return
     }
@@ -395,8 +408,17 @@ function submit() {
   const rate_limit =
     form.route !== 'native' && form.capability === CAP_KEY_RATE_LIMIT
       ? {
-          max_requests: parsePositiveInt(form.rateLimit.maxRequests) ?? 0,
-          window_seconds: parsePositiveInt(form.rateLimit.windowSeconds) ?? 60,
+          // 次数维度：两个字段要么都给，要么都不给（只填一个没有意义）。
+          ...(parsePositiveInt(form.rateLimit.maxRequests)
+            ? {
+                max_requests: parsePositiveInt(form.rateLimit.maxRequests),
+                window_seconds: parsePositiveInt(form.rateLimit.windowSeconds) ?? 60,
+              }
+            : {}),
+          // 并发维度：留空 = 不限并发。
+          ...(parsePositiveInt(form.rateLimit.maxConcurrency)
+            ? { max_concurrency: parsePositiveInt(form.rateLimit.maxConcurrency) }
+            : {}),
           on_exhausted: form.rateLimit.onExhausted === 'reuse' ? 'reuse' : 'reject',
         }
       : undefined
@@ -740,22 +762,27 @@ function submit() {
               <Label class="text-xs text-muted-foreground">窗口长度（秒）</Label>
               <Input v-model="form.rateLimit.windowSeconds" inputmode="numeric" placeholder="60" />
             </div>
-          </div>
-          <div class="space-y-1">
-            <Label class="text-xs text-muted-foreground">所有账号都用满时</Label>
-            <Select v-model="form.rateLimit.onExhausted">
-              <SelectTrigger><SelectValue placeholder="选择处理方式" /></SelectTrigger>
-              <SelectContent position="popper" side="bottom" align="start" :side-offset="2">
-                <SelectGroup>
-                  <SelectItem value="reject">返回 429（推荐）</SelectItem>
-                  <SelectItem value="reuse">忽略限流，继续使用</SelectItem>
-                </SelectGroup>
-              </SelectContent>
-            </Select>
+            <div class="space-y-1">
+              <Label class="text-xs text-muted-foreground">单个 Key 并发上限（留空 = 不限）</Label>
+              <Input v-model="form.rateLimit.maxConcurrency" inputmode="numeric" placeholder="不限" />
+            </div>
+            <div class="space-y-1">
+              <Label class="text-xs text-muted-foreground">所有账号都用满时</Label>
+              <Select v-model="form.rateLimit.onExhausted">
+                <SelectTrigger><SelectValue placeholder="选择处理方式" /></SelectTrigger>
+                <SelectContent position="popper" side="bottom" align="start" :side-offset="2">
+                  <SelectGroup>
+                    <SelectItem value="reject">返回 429（推荐）</SelectItem>
+                    <SelectItem value="reuse">忽略限流，继续使用</SelectItem>
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+            </div>
           </div>
           <p class="text-xs text-muted-foreground">
-            滑动窗口：看「从此刻往回数这么多秒」。窗口内用满的 Key 会被暂时跳过，请求自动落到同平台的另一个账号；
-            计数只存在内存里，重启后清零。当前设置 = {{ rateLimitSummary }}。
+            两个维度可单独启用或同时启用：<b>次数</b>=滑动窗口看「从此刻往回数这么多秒」，用完暂时跳过；
+            <b>并发</b>=同一时刻这个 Key 上最多有几个请求在跑。超额都会自动落到同平台的另一个账号，
+            计数只存在内存里、重启后清零。当前设置 = {{ rateLimitSummary }}。
           </p>
         </div>
         <div v-else-if="form.capability === CAP_VISION && form.route === 'proxy'" class="space-y-2">

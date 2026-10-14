@@ -136,6 +136,7 @@ func newGatewayWithLimit(t *testing.T, max, windowSeconds int, onExhausted strin
 	// 与 plugin.go 一致的订阅。
 	ctx.On(modelgateway.ProxyChannelsResolved, svc.HandleChannelsResolved)
 	ctx.On(modelgateway.ProxyBeforeAttempt, svc.HandleBeforeAttempt)
+	ctx.On(modelgateway.ProxyAttemptFinished, svc.HandleAttemptFinished)
 	return modelgateway.NewService(st, slog.Default(), ctx)
 }
 
@@ -251,5 +252,157 @@ func TestE2EWindowExpiryRotatesBack(t *testing.T) {
 	if len(hits) != 3 || hits[2] != "key-account-a" {
 		t.Fatalf("窗口滑出后应重新从账号 A 开始，实际 hits=%v", hits)
 	}
+}
+
+// newGatewayWithConcurrency 组装「两个账号 + 只限并发」的网关。
+//
+// gatedKeys 里的账号在上游会被阻塞（直到调用方释放），其他账号立即返回——这样才能分别制造
+// 「某个账号有一个请求还在途」的状态。返回的 release 用于放行全部被阻塞的请求。
+func newGatewayWithConcurrency(t *testing.T, maxConcurrency int, onExhausted string, rec *hitRecorder, gatedKeys ...string) (gw *modelgateway.Service, release func()) {
+	t.Helper()
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	gates := map[string]chan struct{}{}
+	gateMu := sync.Mutex{}
+	for _, k := range gatedKeys {
+		gates[k] = make(chan struct{})
+	}
+	// 假上游：被 gate 的账号先阻塞（模拟请求仍在进行中），其余账号立即返回。
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		_, _ = io.ReadAll(r.Body)
+		key := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		mu.Lock()
+		rec.add(key)
+		mu.Unlock()
+		gateMu.Lock()
+		gate := gates[key]
+		gateMu.Unlock()
+		if gate != nil {
+			<-gate
+		}
+		rw.Header().Set("Content-Type", "application/json")
+		_, _ = rw.Write([]byte(respBody))
+	}))
+	t.Cleanup(srv.Close)
+	var releaseOnce sync.Once
+	release = func() {
+		releaseOnce.Do(func() {
+			gateMu.Lock()
+			defer gateMu.Unlock()
+			for _, g := range gates {
+				close(g)
+			}
+		})
+	}
+
+	cipherA, err := st.Encrypt("key-account-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cipherB, err := st.Encrypt("key-account-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Write(types.FileChannels, []types.Channel{
+		{ID: "keyA", Name: "账号A", BaseURL: srv.URL, APIKeyCipher: cipherA, Enabled: true, ManualEnabled: true},
+		{ID: "keyB", Name: "账号B", BaseURL: srv.URL, APIKeyCipher: cipherB, Enabled: true, ManualEnabled: true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Write(types.FileCapabilityRoutes, []types.CapabilityRoute{{
+		Models:     []string{"*"},
+		Capability: capabilityName,
+		Route:      types.RouteProxy,
+		RateLimit:  &types.RateLimitRule{MaxConcurrency: maxConcurrency, OnExhausted: onExhausted},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := newMockCtx()
+	svc := NewService(st, slog.Default())
+	ctx.On(modelgateway.ProxyChannelsResolved, svc.HandleChannelsResolved)
+	ctx.On(modelgateway.ProxyBeforeAttempt, svc.HandleBeforeAttempt)
+	ctx.On(modelgateway.ProxyAttemptFinished, svc.HandleAttemptFinished)
+	return modelgateway.NewService(st, slog.Default(), ctx), release
+}
+
+// TestE2EConcurrencyRotatesAccounts 在途并发占满时自动换到另一个账号。
+//
+// 上游故意阻塞住第一个请求，使账号 A 的并发名额保持在「已占」状态；此时第二个请求
+// 必须落到账号 B，而不是排队或 429。
+func TestE2EConcurrencyRotatesAccounts(t *testing.T) {
+	rec := &hitRecorder{}
+	// 只让账号 A 的请求阻塞：A 的名额被占住后，第二个请求应落到 B（B 立即可用）。
+	gw, release := newGatewayWithConcurrency(t, 1, types.RateLimitReject, rec, "key-account-a")
+
+	// 第一个请求：会卡在上游（占用 A 的并发名额）。
+	done := make(chan int, 1)
+	go func() {
+		code, _ := doChat(t, gw)
+		done <- code
+	}()
+	// 等上游确实收到第一个请求（A 的名额已被占住）。
+	waitForHits(t, rec, 1)
+
+	// 第二个请求：A 并发已满 → 应落到 B（B 也有请求在途，但 B 名额尚空）。
+	code2, body2 := doChat(t, gw)
+	if code2 != http.StatusOK {
+		t.Fatalf("第二个请求状态码 = %d，期望 200（自动换账号）：%s", code2, body2)
+	}
+	waitForHits(t, rec, 2)
+	hits := rec.list()
+	if hits[0] != "key-account-a" || hits[1] != "key-account-b" {
+		t.Fatalf("并发占满后应自动换到账号 B，实际 hits=%v", hits)
+	}
+
+	release() // 放行上游，让卡住的请求收尾
+	<-done
+}
+
+// TestE2EConcurrencyRejectsWhenAllBusy 两个账号的并发都占满 → 429，且不再访问上游。
+func TestE2EConcurrencyRejectsWhenAllBusy(t *testing.T) {
+	rec := &hitRecorder{}
+	// 两个账号都阻塞：两个请求各占住一个名额后，第三个请求应被 429 拒绝。
+	gw, release := newGatewayWithConcurrency(t, 1, types.RateLimitReject, rec, "key-account-a", "key-account-b")
+
+	// 两个请求分别占住 A、B 的名额（都卡在上游）。
+	doneA := make(chan int, 1)
+	go func() { code, _ := doChat(t, gw); doneA <- code }()
+	waitForHits(t, rec, 1)
+	doneB := make(chan int, 1)
+	go func() { code, _ := doChat(t, gw); doneB <- code }()
+	waitForHits(t, rec, 2)
+
+	// 第三个请求：两个账号的并发都满 → 429，且不应触达上游。
+	code, body := doChat(t, gw)
+	if code != http.StatusTooManyRequests {
+		t.Fatalf("并发全满时状态码 = %d，期望 429：%s", code, body)
+	}
+	if !strings.Contains(body, "key_rate_limited") {
+		t.Fatalf("429 响应体应包含 key_rate_limited，实际：%s", body)
+	}
+	if got := len(rec.list()); got != 2 {
+		t.Fatalf("429 时不应再访问上游，命中数应为 2，实际 %d", got)
+	}
+
+	release()
+	<-doneA
+	<-doneB
+}
+
+// waitForHits 等待上游命中数达到 want（带超时，避免测试挂死）。
+func waitForHits(t *testing.T, rec *hitRecorder, want int) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(rec.list()) >= want {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("等待上游命中 %d 次超时，实际 %d", want, len(rec.list()))
 }
 

@@ -99,10 +99,15 @@ function fieldRulesLabel(route: CapabilityRoute): string {
 // key_rate_limit 的限流摘要：如「每 Key 60s 最多 20 次，超额换 Key」。
 function rateLimitLabel(route: CapabilityRoute): string {
   const rl = route.rate_limit
-  if (!rl || !rl.max_requests) return ''
-  const secs = rl.window_seconds && rl.window_seconds > 0 ? rl.window_seconds : 60
+  if (!rl || (!rl.max_requests && !rl.max_concurrency)) return ''
+  const parts: string[] = []
+  if (rl.max_requests) {
+    const secs = rl.window_seconds && rl.window_seconds > 0 ? rl.window_seconds : 60
+    parts.push(`每 ${secs}s 每 Key 最多 ${rl.max_requests} 次`)
+  }
+  if (rl.max_concurrency) parts.push(`并发 ${rl.max_concurrency}`)
   const tail = rl.on_exhausted === 'reuse' ? '全部用满继续使用' : '全部用满返回 429'
-  return `每 ${secs}s 每 Key 最多 ${rl.max_requests} 次（${tail}）`
+  return `${parts.join(' + ')}（${tail}）`
 }
 // 目标渠道展示：空 / 含 `*`（老数据全匹配）= 全渠道；否则按 base_url 分组聚合「渠道名(Key1, Key2)」
 // （渠道级段无括号、Key 级段带括号——与 ChannelRef 组件规范一致）。
@@ -245,7 +250,7 @@ function channelScopeLabel(channels: Channel[], ids?: string[], baseURLs?: strin
                       </template>
                       <template v-else-if="route.capability === 'key_rate_limit'">
                         <span class="whitespace-pre-wrap"
-                          >窗口内用满的渠道 Key 会被暂时跳过，请求自动落到同平台的另一个账号</span
+                          >窗口内次数用满、或在途并发占满的渠道 Key 会被暂时跳过，请求自动落到同平台的另一个账号</span
                         >
                       </template>
                       <template v-else-if="route.capability === 'force_stream'">

@@ -52,6 +52,8 @@ func (p *keyRateLimitPlugin) Apply(ctx plugin.Context) error {
 	ctx.On(modelgateway.ProxyChannelsResolved, svc.HandleChannelsResolved)
 	// 每次渠道尝试前：对本次真实要用的 Key 记一次消费。
 	ctx.On(modelgateway.ProxyBeforeAttempt, svc.HandleBeforeAttempt)
+	// 每次尝试结束（成功/失败/拒绝均由核心 defer 触发）：释放并发占位。
+	ctx.On(modelgateway.ProxyAttemptFinished, svc.HandleAttemptFinished)
 	// 后台清扫空闲计数桶（内存有界）。
 	ctx.Effect(svc.StartSweeper())
 	return nil

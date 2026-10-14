@@ -289,11 +289,25 @@ func newRequestInstanceID() string {
 
 // 与 ProxyBeforeUpstream（入口只执行一次：聚合改写/额度拦截）的区别：本函数每次
 // 渠道尝试都触发安检，切换渠道/切换模型后能力路由按当前渠道上下文重新匹配。
-func (s *Service) proxyAttempt(w http.ResponseWriter, r *http.Request, pipe *ProxyPipeline, ch ResolvedChannel, model string, started time.Time, res *attemptResult) (*ProxyPipeline, bool) {
+func (s *Service) proxyAttempt(w http.ResponseWriter, r *http.Request, pipe *ProxyPipeline, ch ResolvedChannel, model string, started time.Time, res *attemptResult) (outPipe *ProxyPipeline, handled bool) {
 	if res == nil {
 		res = &attemptResult{}
 	}
 	attemptStarted := time.Now()
+	// 尝试生命周期结束通知（proxy:attempt-finished）：defer 保证成功/失败/安检拒绝等
+	// 所有返回路径都恰好触发一次。key-rate-limit 用它释放并发占位——占位发生在
+	// proxy:before-attempt，不释放会把该渠道 Key 的名额永久占死。
+	defer func() {
+		result := "failed"
+		if handled {
+			result = "success"
+		} else if _, isReject := res.err.(*GatewayError); isReject {
+			result = "rejected"
+		}
+		s.ctx.Emit(ProxyAttemptFinished, &ProxyAttemptFinishedPayload{
+			Pipe: pipe, Model: model, ChannelID: ch.ID, Result: result,
+		})
+	}()
 	pipe.Metadata["__last_tried_channel"] = ch.ID
 	// 注入当前渠道上下文：安检钩子（sensitive/field-filter）按真实渠道重新匹配
 	// 能力路由；聚合 failover 递归后 resolveChannels 也会据此锁定渠道（failover

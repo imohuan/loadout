@@ -511,6 +511,42 @@ func TestCapabilityRouteRateLimitPersist(t *testing.T) {
 	}
 }
 
+// TestCapabilityRouteRateLimitConcurrencyPersist 锁住并发维度（max_concurrency）的往返，
+// 并验证「只配并发、不配次数」的规则可以不带 max_requests 存读。
+func TestCapabilityRouteRateLimitConcurrencyPersist(t *testing.T) {
+	database := mustOpen(t, filepath.Join(t.TempDir(), "loadout.db"))
+	defer database.Close()
+	repo, err := NewRepository(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	routes := []types.CapabilityRoute{{
+		Models:     []string{"*"},
+		Capability: "key_rate_limit",
+		Route:      "proxy",
+		RateLimit:  &types.RateLimitRule{MaxConcurrency: 3, OnExhausted: "reject"},
+	}}
+	if err := repo.ReplaceCapabilityRoutes(context.Background(), routes); err != nil {
+		t.Fatal(err)
+	}
+	got, err := repo.ListCapabilityRoutes(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].RateLimit == nil {
+		t.Fatalf("rate_limit 未持久化: %+v", got)
+	}
+	if got[0].RateLimit.MaxConcurrency != 3 {
+		t.Fatalf("max_concurrency 应为 3，实际 %d", got[0].RateLimit.MaxConcurrency)
+	}
+	if got[0].RateLimit.MaxRequests != 0 {
+		t.Fatalf("只配并发时 max_requests 应为 0（不限制次数），实际 %d", got[0].RateLimit.MaxRequests)
+	}
+	if !got[0].RateLimit.Configured() {
+		t.Fatal("只配并发也应视为已配置（规则生效）")
+	}
+}
+
 // TestMigrateIndexesPreviousAttemptAndDropsOrphans 锁住 v42 迁移的两个行为：
 //  1. route_attempts.previous_attempt_id 必须有索引——它是自引用外键（ON DELETE SET NULL），
 //     缺索引时清空日志的级联删除会退化成平方级全表扫描（页面点「清空」直接卡死）；

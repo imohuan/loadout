@@ -360,8 +360,9 @@ export interface CapabilityRoute {
 // 语义：在「往回看 window_seconds 秒」的滑动窗口里，单个渠道 Key 最多放行 max_requests 次；
 // 达上限的 Key 会被剔除，请求自动落到下一个账号。全部候选都达上限时按 on_exhausted 处理。
 export interface RateLimitRule {
-  max_requests: number // 窗口内单个 Key 允许的请求数（<=0 = 未配置，不限流）
+  max_requests?: number // 窗口内单个 Key 允许的请求数（<=0 或缺省 = 不限次数）
   window_seconds?: number // 滑动窗口长度（秒）；缺省 60
+  max_concurrency?: number // 单个 Key 允许的在途并发请求数（<=0 或缺省 = 不限并发）
   on_exhausted?: 'reject' | 'reuse' | string // 全部账号都用满时：reject（默认，返回 429）/ reuse（忽略限流继续用）
 }
 

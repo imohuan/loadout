@@ -62,6 +62,8 @@ type Service struct {
 	repo *db.Repository // SQLite 能力路由/渠道数据源（装配后注入；nil 时回退 JSON）
 
 	counter *windowCounter
+	// conc 在途并发计数：与 counter 分开存（两个维度独立配置，也不该互相影响清扫）。
+	conc *concurrencyCounter
 
 	// sweepOnce 保证后台清扫 goroutine 只启动一次（测试可重复调用 Start）。
 	sweepOnce sync.Once
@@ -69,7 +71,7 @@ type Service struct {
 
 // NewService 创建限流适配器。
 func NewService(st *store.Store, lg *slog.Logger) *Service {
-	return &Service{st: st, lg: lg, counter: newWindowCounter()}
+	return &Service{st: st, lg: lg, counter: newWindowCounter(), conc: newConcurrencyCounter()}
 }
 
 // SetRepository 注入 SQLite 仓储（由装配层在 db 就绪后调用；测试可省略）。
@@ -213,11 +215,12 @@ type activeRule struct {
 	scope   string // 作用域签名（决定共用桶的模型集合）
 	window  time.Duration
 	onExh   string
-	exempt  bool // native 路由 = 豁免（不限流），用于短路
+	// holds 该规则占用/释放并发名额用的计数器（与次数计数分开，避免互相影响）。
+	holds *concurrencyCounter
 }
 
 // activeRules 把命中路由归一化为生效规则列表。
-//   - 未配置 rate_limit / MaxRequests<=0 的条目直接忽略（未配置 = 不限流）；
+//   - 未配置 rate_limit（或两个维度都没配）的条目直接忽略（未配置 = 不限流）；
 //   - 命中 native 路由返回「豁免」信号：该模型/渠道不限流（精确豁免通配规则）。
 //
 // 返回 (rules, exempt)：exempt=true 时调用方应立即按「不限流」处理。
@@ -232,8 +235,8 @@ func (s *Service) activeRules(routes []*types.CapabilityRoute) ([]activeRule, bo
 			return nil, true
 		}
 		rl := r.RateLimit
-		if rl == nil || rl.MaxRequests <= 0 {
-			continue // 未配参数视为不限流
+		if !rl.Configured() {
+			continue // 两个维度都没配视为不限流
 		}
 		window := time.Duration(rl.WindowSeconds) * time.Second
 		if rl.WindowSeconds <= 0 {
@@ -249,6 +252,7 @@ func (s *Service) activeRules(routes []*types.CapabilityRoute) ([]activeRule, bo
 			scope:  scopeKey(r.Models, i),
 			window: window,
 			onExh:  onExh,
+			holds:  s.conc,
 		})
 	}
 	return out, false
@@ -258,12 +262,16 @@ func (s *Service) activeRules(routes []*types.CapabilityRoute) ([]activeRule, bo
 //
 // 行为：
 //   - 未命中规则 / 命中 native 豁免 / 规则未配参数 → 原样返回（不限流）；
-//   - 逐个候选 Key 判断「在每条生效规则的窗口内是否还有余量」；任一规则已达上限即视为该 Key
-//     本轮不可用，从候选里剔除；
-//   - 剔除后仍有关键字可选 → 用精简后的候选覆盖 Candidates（请求自动落到下一个账号）；
-//   - 全部候选都达上限：
-//   - on_exhausted=reject（默认）→ 返回 GatewayError(429)，交由核心拒绝本次请求；
-//   - on_exhausted=reuse → 原样返回全量候选（忽略限流，继续使用）。
+//   - 先按「滑动窗口内次数还有余量」筛出候选（次数维度，纯查询不掉名额）；
+//   - 再为**将要使用的那个 Key** 抢占一个并发名额（次数够 + 并发有位的第一个候选），
+//     并把它排到候选最前，保证 proxyForward 用的正是占到位的那一个。
+//     抢占必须在候选阶段完成：若等每次尝试前才占，突发并发会先各自挑中同一个 Key、随后
+//     集体让步，并发限制形同虚设。抢占是原子的（先查后占在同一把锁内），不会被竞态绕过。
+//   - 一个候选都抢不到（次数用满或并发都占满）：
+//   - on_exhausted=reject（默认）→ 返回 GatewayError(429)；
+//   - on_exhausted=reuse → 原样返回全量候选（忽略限制，继续使用）。
+//
+// 占到的名额记在管线的 metadata 上，由 proxy:attempt-finished 释放（核心用 defer 保证触发）。
 func (s *Service) HandleChannelsResolved(payload any) (any, error) {
 	p, ok := payload.(*modelgateway.ChannelCandidatesPayload)
 	if !ok || p == nil || p.Pipe == nil || len(p.Candidates) == 0 {
@@ -278,41 +286,71 @@ func (s *Service) HandleChannelsResolved(payload any) (any, error) {
 	if exempt || len(rules) == 0 {
 		return payload, nil
 	}
+	// 同一管线可能多次走到这里（聚合 failover 会递归回到 proxyForward 重新解析候选）。
+	// 上一轮占的并发名额先按当时记下的桶键精确归还，避免重复占位导致名额泄漏。
+	s.releaseHold(p.Pipe.Metadata)
 
 	now := time.Now()
-	var available []modelgateway.ResolvedChannel
+	// 1) 次数维度筛选：窗口内还有余额的候选保留（排序不变，保持原有偏好顺序）。
+	var byWindow []modelgateway.ResolvedChannel
 	for _, ch := range p.Candidates {
-		if s.channelAvailable(ch.ID, rules, now) {
-			available = append(available, ch)
+		if s.windowHasRoom(ch.ID, rules, now) {
+			byWindow = append(byWindow, ch)
 		}
 	}
-	if len(available) == 0 {
-		// 全部达上限：按第一条生效规则的 on_exhausted 决定拒绝还是放行。
-		if rules[0].onExh == types.RateLimitReuse {
-			s.lg.Warn("key-rate-limit: 所有候选 Key 均达上限，按 reuse 策略继续使用",
-				"model", p.Model, "candidates", len(p.Candidates))
-			return payload, nil
-		}
-		s.lg.Info("key-rate-limit: 所有候选 Key 均达上限，拒绝本次请求",
-			"model", p.Model, "candidates", len(p.Candidates),
-			"max_requests", rules[0].rule.MaxRequests, "window_seconds", int(rules[0].window.Seconds()))
-		return payload, &modelgateway.GatewayError{
-			Status: http.StatusTooManyRequests,
-			Type:   "key_rate_limited",
-			Msg:    "当前模型的全部渠道 Key 均已达到限流上限，请稍后重试",
+	if len(byWindow) == 0 {
+		// 次数维度已全部用满。
+		return s.rejectOrReuse(payload, p, rules, "window")
+	}
+	// 2) 并发维度：为「次数够 + 并发有位」的第一个候选原子抢占名额。
+	//    不限并发（规则里没配 max_concurrency）时直接取第一个，不做占位。
+	grantedIdx := -1
+	for i := range byWindow {
+		if s.acquireConc(byWindow[i].ID, rules, p.Pipe.Metadata) {
+			grantedIdx = i
+			break
 		}
 	}
-	if len(available) == len(p.Candidates) {
-		return payload, nil // 没有剔除任何 Key：不改动，避免无谓的候选重写
+	if grantedIdx < 0 {
+		// 候选的并发名额全被占满。
+		return s.rejectOrReuse(payload, p, rules, "concurrency")
 	}
-	p.Candidates = available
+	// 3) 把占到位的那一个排到最前，保证 proxyForward 首选的正是已占住名额的 Key。
+	if grantedIdx > 0 {
+		byWindow[0], byWindow[grantedIdx] = byWindow[grantedIdx], byWindow[0]
+	}
+	if len(byWindow) != len(p.Candidates) || grantedIdx > 0 {
+		p.Candidates = byWindow
+	}
 	return p, nil
 }
 
-// channelAvailable 判断某渠道 Key 在全部生效规则下是否还有余量（任一规则达上限即不可用）。
-// 计数查询失败按「可用」处理（fail-open）。
-func (s *Service) channelAvailable(channelID string, rules []activeRule, now time.Time) bool {
+// rejectOrReuse 全部候选都达上限时的统一出口：reject（默认）返回 429，reuse 原样放行。
+// dimension 只用于日志（window = 次数用满，concurrency = 并发占满）。
+func (s *Service) rejectOrReuse(payload any, p *modelgateway.ChannelCandidatesPayload, rules []activeRule, dimension string) (any, error) {
+	if rules[0].onExh == types.RateLimitReuse {
+		s.lg.Warn("key-rate-limit: 所有候选 Key 均达上限，按 reuse 策略继续使用",
+			"model", p.Model, "candidates", len(p.Candidates), "dimension", dimension)
+		return payload, nil
+	}
+	s.lg.Info("key-rate-limit: 所有候选 Key 均达上限，拒绝本次请求",
+		"model", p.Model, "candidates", len(p.Candidates), "dimension", dimension,
+		"max_requests", rules[0].rule.MaxRequests, "window_seconds", int(rules[0].window.Seconds()),
+		"max_concurrency", rules[0].rule.MaxConcurrency)
+	return payload, &modelgateway.GatewayError{
+		Status: http.StatusTooManyRequests,
+		Type:   "key_rate_limited",
+		Msg:    "当前模型的全部渠道 Key 均已达到限流上限，请稍后重试",
+	}
+}
+
+// windowHasRoom 判断某渠道 Key 在全部生效规则的滑动窗口内是否还有次数余量
+// （任一规则达上限即不可用）。计数查询失败按「有余额」处理（fail-open）。
+func (s *Service) windowHasRoom(channelID string, rules []activeRule, now time.Time) bool {
 	for _, r := range rules {
+		if r.rule.MaxRequests <= 0 {
+			continue // 该规则不限次数
+		}
 		key := bucketKey(channelID, r.scope)
 		if s.counter.used(key, r.rule.MaxRequests, r.window, now) >= r.rule.MaxRequests {
 			return false
@@ -321,7 +359,94 @@ func (s *Service) channelAvailable(channelID string, rules []activeRule, now tim
 	return true
 }
 
-// HandleBeforeAttempt proxy:before-attempt 事件：对本次真实要用的渠道 Key 记一次消费。
+// concPlan 某渠道 Key 在全部生效规则下的并发占用方案：待占的桶键 + 各自的并发上限。
+// 不限并发的规则不参与。每个桶按各自规则的上限判定（不用统一最小值，避免宽松规则被误伤）。
+type concPlan struct {
+	keys []string
+	max  []int
+}
+
+// concPlanFor 计算某渠道 Key 的并发占用方案。none=true 表示该规则集不限制并发。
+func concPlanFor(channelID string, rules []activeRule) (plan concPlan, none bool) {
+	for _, r := range rules {
+		if r.rule.MaxConcurrency <= 0 {
+			continue
+		}
+		plan.keys = append(plan.keys, bucketKey(channelID, r.scope))
+		plan.max = append(plan.max, r.rule.MaxConcurrency)
+	}
+	if len(plan.keys) == 0 {
+		return concPlan{}, true
+	}
+	return plan, false
+}
+
+// acquireConc 原子占用某渠道 Key 的并发名额。任一桶占不到即回滚全部并返回 false；
+// 全部占到返回 true 并记下**实际占用的桶键**——调用方据此精确释放，不必反推规则。
+func (s *Service) acquireConc(channelID string, rules []activeRule, md map[string]any) bool {
+	plan, none := concPlanFor(channelID, rules)
+	if none {
+		return true // 该规则集不限并发：无需占位
+	}
+	var acquired []string
+	for i, key := range plan.keys {
+		if ok, _ := s.conc.acquire(key, plan.max[i]); !ok {
+			for _, back := range acquired {
+				s.conc.release(back)
+			}
+			return false
+		}
+		acquired = append(acquired, key)
+	}
+	md[concMarkKey] = &concHold{channelID: channelID, keys: acquired}
+	return true
+}
+
+// releaseHold 精确归还一批已占的并发桶键（幂等：归还后清空标记）。
+func (s *Service) releaseHold(md map[string]any) {
+	if md == nil {
+		return
+	}
+	hold, _ := md[concMarkKey].(*concHold)
+	if hold != nil {
+		for _, key := range hold.keys {
+			s.conc.release(key)
+		}
+	}
+	delete(md, concMarkKey)
+}
+
+// heldChannel 当前并发名额归属的渠道 Key（无占位返回空串）。
+func heldChannel(md map[string]any) string {
+	if md == nil {
+		return ""
+	}
+	hold, _ := md[concMarkKey].(*concHold)
+	if hold == nil {
+		return ""
+	}
+	return hold.channelID
+}
+
+// 并发占位标记的 metadata 键：值为本次请求已抢占的**并发计数桶键**列表（每个生效规则一个）。
+//
+// 记桶键而不是渠道 ID：释放时不必再反推规则与作用域（failover 换模型后规则集可能已变，
+// 按渠道 ID 反推会释放到错的桶、造成名额泄漏）。记下当时占的确切键，释放就永远精确。
+// 由 HandleChannelsResolved 写入、HandleAttemptFinished 读取并释放；一个请求同一时刻只占
+// 一组键，保证「占」与「放」严格配对。
+const concMarkKey = "__key_rate_limit_conc"
+
+// concHold 一次并发占位的记录：占的是哪个渠道 Key、占到了哪些并发计数桶。
+// 记下来是为了精确释放——failover 换模型后规则集可能已变，靠渠道 ID 反推会释放到错的桶。
+type concHold struct {
+	channelID string
+	keys      []string
+}
+
+// HandleBeforeAttempt proxy:before-attempt 事件：对本次真实要用的渠道 Key 记一次次数消费。
+//
+// 并发维度不在这里占用——已在 proxy:channels-resolved 候选筛选阶段占好（否则突发请求会
+// 各自挑中同一个 Key 再集体失败，并发限制失效）。这里只负责次数记账。
 //
 // 只做计数，永不改 body/响应，也永不返回 error（返回 error 会让核心视为安检拒绝而中断请求）。
 func (s *Service) HandleBeforeAttempt(payload any) (any, error) {
@@ -345,6 +470,9 @@ func (s *Service) HandleBeforeAttempt(payload any) (any, error) {
 	}
 	now := time.Now()
 	for _, r := range rules {
+		if r.rule.MaxRequests <= 0 {
+			continue // 该规则不限次数
+		}
 		key := bucketKey(channelID, r.scope)
 		used := s.counter.record(key, r.rule.MaxRequests, r.window, now)
 		if used > r.rule.MaxRequests {
@@ -353,6 +481,37 @@ func (s *Service) HandleBeforeAttempt(payload any) (any, error) {
 				"used", used, "max_requests", r.rule.MaxRequests)
 		}
 	}
+	// 不变量：正在使用某个渠道 Key 的请求，必须持有该 Key 的一个并发名额。
+	// 常规路径下候选阶段占的就是本次要用的 Key（筛选时已把它排到候选首位），这里无需动作。
+	// 不一致只会出现在 failover 切到别的候选时（上一 Key 的名额已由 attempt-finished 释放）：
+	// 此时补占新 Key；补不到就按「软超额」放行并告警——宁可偶尔多放一个，也不能让名额永久
+	// 泄漏（那会把该渠道彻底卡死）。
+	if heldChannel(pipe.Metadata) != channelID {
+		s.releaseHold(pipe.Metadata)
+		if !s.acquireConc(channelID, rules, pipe.Metadata) {
+			s.lg.Warn("key-rate-limit: failover 到新渠道时并发名额已满，本次按软超额放行",
+				"channel_id", channelID, "model", pipe.Request.Model)
+		}
+	}
+	return payload, nil
+}
+
+// HandleAttemptFinished proxy:attempt-finished 事件：释放本次尝试占住的并发名额。
+//
+// 纯通知、无返回值语义，只做释放。标记里记录的是候选筛选阶段抢占到的那个 Key，本次尝试
+// 若是该 Key 就释放（乐观标记由更晚的那个事件清理；同一时刻只有一个事件在跑，不会重复释放
+// ——标记一经释放即删除，后续竞速事件读到的 slug 为空自然跳过）。
+func (s *Service) HandleAttemptFinished(payload any) (any, error) {
+	p, ok := payload.(*modelgateway.ProxyAttemptFinishedPayload)
+	if !ok || p == nil || p.Pipe == nil || p.Pipe.Metadata == nil {
+		return payload, nil
+	}
+	// 只释放「本次尝试实际用到的那个 Key」上的名额：同一管线上其它 Key 的占位不该被本事件
+	// 顺手清掉（failover 场景下名额归属会随 __current_channel 迁移，归属一致才释放）。
+	if heldChannel(p.Pipe.Metadata) == "" || heldChannel(p.Pipe.Metadata) != p.ChannelID {
+		return payload, nil
+	}
+	s.releaseHold(p.Pipe.Metadata)
 	return payload, nil
 }
 
