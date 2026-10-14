@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, nextTick, reactive, ref, watch } from 'vue'
 import { RiClipboardLine, RiCloseLine, RiSearchLine, RiUploadLine } from '@remixicon/vue'
 import ModelChannelList from '@/components/ModelChannelList.vue'
 import SensitiveWordList from '@/components/capability-routes/SensitiveWordList.vue'
@@ -35,6 +35,15 @@ const open = defineModel<boolean>('open', { required: true })
 // formError 保存校验失败的提示（在弹窗底部显性展示）。
 // 这些校验早前是静默 return，用户点保存毫无反应也不知原因（见 submit）。
 const formError = ref('')
+// footerRef 用于校验失败时把提示滚进视野：弹窗内容整体滚动，表单长时底部提示
+// 可能落在视口之外，用户仍会觉得「点了没反应」。
+const footerRef = ref<HTMLElement | null>(null)
+
+// fail 记录校验失败原因并把提示滚到可见处。
+function fail(message: string) {
+  formError.value = message
+  void nextTick(() => footerRef.value?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }))
+}
 
 // 敏感词列表子组件引用：Label 行右侧的「导出 / 导入」按钮调用其暴露的方法。
 type SensitiveWordListHandle = {
@@ -396,17 +405,17 @@ function submit() {
   if (form.route === 'proxy') {
     if (isSensitive) {
       if (!form.replacements.some((r) => r.from.trim())) {
-        formError.value = '请至少填写一条敏感词替换规则（原文不能为空）'
+        fail('请至少填写一条敏感词替换规则（原文不能为空）')
         return
       }
     } else if (isFieldFilter) {
       if (!hasFieldRulesText()) {
-        formError.value = '请至少填写一条字段过滤规则'
+        fail('请至少填写一条字段过滤规则')
         return
       }
     } else if (isMessageInject) {
       if (!form.injections.some((i) => i.content.trim())) {
-        formError.value = '请至少填写一条消息注入内容'
+        fail('请至少填写一条消息注入内容')
         return
       }
     } else if (form.capability === CAP_REQUEST_LOG) {
@@ -420,19 +429,19 @@ function submit() {
       const maxReqRaw = form.rateLimit.maxRequests.trim()
       const concRaw = form.rateLimit.maxConcurrency.trim()
       if (maxReqRaw && !parsePositiveInt(form.rateLimit.maxRequests)) {
-        formError.value = '「单个 Key 窗口内最大请求数」需为正整数（留空 = 不限次数）'
+        fail('「单个 Key 窗口内最大请求数」需为正整数（留空 = 不限次数）')
         return
       }
       if (concRaw && !parsePositiveInt(form.rateLimit.maxConcurrency)) {
-        formError.value = '「单个 Key 并发上限」需为正整数（留空 = 不限并发）'
+        fail('「单个 Key 并发上限」需为正整数（留空 = 不限并发）')
         return
       }
       if (!parsePositiveInt(form.rateLimit.maxRequests) && !parsePositiveInt(form.rateLimit.maxConcurrency)) {
-        formError.value = '请至少填写一项限制：窗口内最大请求数 或 并发上限'
+        fail('请至少填写一项限制：窗口内最大请求数 或 并发上限')
         return
       }
     } else if (!form.viaOptions.some((o) => o.model.trim())) {
-      formError.value = '请至少填写一个视觉候选模型'
+      fail('请至少填写一个视觉候选模型')
       return
     }
   }
@@ -823,7 +832,7 @@ function submit() {
           <Label>视觉候选（从上到下依次请求，失败换下一个）</Label>
           <ModelChannelList v-model="form.viaOptions" :channels="channels" add-label="添加候选" />
         </div>
-        <DialogFooter class="sm:justify-between">
+        <DialogFooter ref="footerRef" class="sm:justify-between">
           <p v-if="formError" class="text-xs font-medium text-destructive">{{ formError }}</p>
           <p v-else class="text-xs text-muted-foreground">{{ routeHint }}</p>
           <div class="flex gap-2">
