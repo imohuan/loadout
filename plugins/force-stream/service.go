@@ -152,13 +152,6 @@ func (s *Service) HandleProxyBeforeUpstream(payload any) (any, error) {
 	if !ok || pipe == nil || pipe.Request == nil || len(pipe.Request.Body) == 0 {
 		return payload, nil
 	}
-	// 子请求（vision_v2 视觉识别/续流走网关通道）：跳过安检——识别 body 含数 MB base64，
-	// 且子请求本就按自身语义走，不应被强制改流式。
-	if pipe.Metadata != nil {
-		if v, _ := pipe.Metadata["__sub_request_skip_security"].(bool); v {
-			return payload, nil
-		}
-	}
 	// 客户端本来就是流式请求：本能力只服务于「非流式客户端 + 只能流式上游」的场景，
 	// 流式请求保持现状（SSE 透传），无需打标记。
 	if pipe.Request.Stream {

@@ -85,6 +85,35 @@ func TestHandle_NonStreamChat_Hit(t *testing.T) {
 	}
 }
 
+// TestHandle_SubRequestHit 回归：子请求（MCP 图片识别等走网关子请求通道的调用）
+// 同样命中 force_stream —— 修复前 handler 把「子请求跳过安检」标记错误地当成
+// 「跳过自己」，导致 MCP 识别以非流式发给只支持流式的上游（workbuddy 400 11101）。
+// force-stream 不是安检：它是协议适配器，恰是子请求场景最需要的能力。
+func TestHandle_SubRequestHit(t *testing.T) {
+	svc, st := newTestService(t)
+	// proxyPipe 的 body/model 写死 deepseek-chat，路由也按它配。
+	writeForceRoute(t, st, types.CapabilityRoute{Models: []string{"deepseek-chat"}})
+
+	pipe := proxyPipe(t, "chat/completions", map[string]any{"model": "deepseek-chat", "stream": false, "messages": []any{}})
+	pipe.Metadata["__sub_request"] = true
+	pipe.Metadata["__sub_request_skip_security"] = true // 子请求跳过安检标记（model-gateway 注入）
+	out, err := svc.HandleProxyBeforeUpstream(pipe)
+	if err != nil {
+		t.Fatalf("handler 出错: %v", err)
+	}
+	got, ok := out.(*modelgateway.ProxyPipeline)
+	if !ok {
+		t.Fatalf("返回值类型错误: %T", out)
+	}
+	stream, present := getStream(t, got)
+	if !present || !stream {
+		t.Fatalf("子请求也应被转流式: present=%v stream=%v", present, stream)
+	}
+	if v, _ := got.Metadata[modelgateway.MetadataForceStream].(bool); !v {
+		t.Fatalf("子请求命中时应打 __force_stream 标记")
+	}
+}
+
 // TestHandle_AlreadyStream 客户端本来就是 stream:true → 不动（本能力只管非流式客户端）。
 func TestHandle_AlreadyStream(t *testing.T) {
 	svc, st := newTestService(t)
