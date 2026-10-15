@@ -63,10 +63,5 @@ func (p *aggregatePlugin) Apply(ctx plugin.Context) error {
 	ctx.On(modelgateway.ProxyUpstreamFailed, svc.HandleProxyUpstreamFailed)
 	ctx.On(modelgateway.ProxyUpstreamSucceeded, svc.HandleProxyUpstreamSucceeded)
 
-	// 订阅旧 chat 事件（过渡期保留，旧 HandleChat 下线后移除）
-	ctx.On(modelgateway.EventBeforeUpstream, svc.HandleBeforeUpstream)
-	ctx.On(modelgateway.EventUpstreamFailed, svc.HandleUpstreamFailed)
-	ctx.On(modelgateway.EventUpstreamSucceeded, svc.HandleUpstreamSucceeded)
-
 	return nil
 }

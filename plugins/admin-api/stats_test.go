@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -61,13 +60,11 @@ func newStatsTestServer(t *testing.T) (*httptest.Server, *mcphub.Service, *sql.D
 	t.Cleanup(func() { config.AdminPasswordFile = old })
 
 	authSvc := adminauth.NewService(st, slog.Default())
-	if _, err := authSvc.EnsureFirstRun(); err != nil {
-		t.Fatalf("EnsureFirstRun: %v", err)
+	if err := authSvc.SetupAdminKey("test-access-key"); err != nil {
+		t.Fatalf("SetupAdminKey: %v", err)
 	}
-	pw, err := os.ReadFile(config.AdminPasswordFile)
-	if err != nil {
-		t.Fatalf("读取初始密码: %v", err)
-	}
+	pw := "test-access-key"
+	_ = pw
 
 	keys := gatewaykeys.NewManager(st)
 	skillSvc := skills.NewService(st, slog.Default(), t.TempDir(), t.TempDir())
@@ -208,8 +205,12 @@ func TestStatsModelsMergeArchivedOnClear(t *testing.T) {
 	cookie := login(t, ts, pw)
 
 	// 清空前的日志：2 条成功请求，今天与昨天各一条。
-	today := time.Now().Format("2006-01-02")
-	yesterday := time.Now().AddDate(0, 0, -1).Format("2006-01-02")
+	// 注意时间口径：归档桶按 UTC 日界聚合（route-log.Clear 用 started_at 前缀），
+	// 统计接口按本地日（tz 参数）展示。北京 0:00–8:00 之间「本地今天」还是「UTC 昨天」，
+	// 直接拿本地日期断言会踩日界 flake。这里统一用 UTC 日界生成期望日期，
+	// 请求也带 tz=UTC，让断言口径与归档口径一致。
+	today := time.Now().UTC().Format("2006-01-02")
+	yesterday := time.Now().UTC().AddDate(0, 0, -1).Format("2006-01-02")
 	insertReq := func(id, started string) {
 		t.Helper()
 		if _, err := sqlDB.Exec("INSERT INTO route_requests (request_id, requested_model, final_model, started_at, finished_at, result, duration_ms, prompt_tokens, completion_tokens, cached_tokens) VALUES (?, ?, ?, ?, ?, ?, 120, 100, 20, 5)", id, "gpt-4o", "gpt-4o", started, started, "success"); err != nil {
@@ -241,7 +242,7 @@ func TestStatsModelsMergeArchivedOnClear(t *testing.T) {
 	}
 
 	// 统计接口：归档数据仍然在。
-	resp, data = apiReq(t, ts, http.MethodGet, "/api/stats/models?days=7", nil, cookie)
+	resp, data = apiReq(t, ts, http.MethodGet, "/api/stats/models?days=7&tz=UTC", nil, cookie)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET /api/stats/models: %d %s", resp.StatusCode, data)
 	}
@@ -290,7 +291,11 @@ func TestStatsModelsArchivedPersistsAcrossWindows(t *testing.T) {
 		t.Fatalf("预置归档: %v", err)
 	}
 
-	resp, data := apiReq(t, ts, http.MethodGet, "/api/stats/models?days=7", nil, cookie)
+	// 带 tz：归档桶的日期是 UTC 日界（route-log.Clear 按 started_at 前缀聚合），
+	// 而断言的 today/yesterday 是本地日。北京 0:00–8:00 之间本地今天=UTC 昨天，
+	// 不带 tz 会用服务器本地时区（GMT+8）以外的口径——本地时区恰好也是 GMT+8，
+	// 但显式传 tz 让断言与生产前端口径一致，且在其他时区的机器上跑也不 flake。
+	resp, data := apiReq(t, ts, http.MethodGet, "/api/stats/models?days=7&tz=UTC", nil, cookie)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET /api/stats/models: %d %s", resp.StatusCode, data)
 	}

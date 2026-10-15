@@ -10,7 +10,6 @@ import (
 
 	"loadout/core/db"
 	"loadout/core/store"
-	modelgateway "loadout/plugins/model-gateway"
 	"loadout/plugins/types"
 )
 
@@ -83,36 +82,6 @@ func TestFindAggregate(t *testing.T) {
 	}
 	if agg != nil {
 		t.Errorf("文件不存在时应返回 nil: %+v", agg)
-	}
-}
-
-// TestHandleUpstreamSucceeded 将聚合目标的成功转发标记为可用。
-func TestHandleUpstreamSucceeded(t *testing.T) {
-	st, err := store.New(t.TempDir())
-	if err != nil {
-		t.Fatalf("创建 store 失败: %v", err)
-	}
-	svc := NewService(st, slog.Default(), nil)
-	key := "deepseek-v4-pro-ga-260813@volcengine"
-	svc.healthMap[key] = &types.ModelHealth{
-		Model:     key,
-		Status:    "cooling",
-		FailCount: 2,
-		LastError: "上游返回 503",
-	}
-
-	payload := &modelgateway.SuccessPayload{
-		Pipe:      &modelgateway.Pipeline{Metadata: map[string]any{"__virtual_model": "auto-demo"}},
-		Model:     "deepseek-v4-pro-ga-260813",
-		ChannelID: "volcengine",
-	}
-	if _, err := svc.HandleUpstreamSucceeded(payload); err != nil {
-		t.Fatalf("处理成功事件失败: %v", err)
-	}
-
-	health := svc.healthMap[key]
-	if health == nil || health.Status != "available" || health.FailCount != 0 || health.LastError != "" || health.DisabledUntil != nil {
-		t.Fatalf("成功后健康状态不正确: %+v", health)
 	}
 }
 
