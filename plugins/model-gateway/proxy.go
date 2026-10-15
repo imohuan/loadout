@@ -564,7 +564,18 @@ func (s *Service) proxyAttempt(w http.ResponseWriter, r *http.Request, pipe *Pro
 // 全部失败时把最后一个渠道的 状态码+错误体 原样透传（透明代理语义），并返回 nil；
 // 只有内部构造错误（无法发起任何请求）才返回 error。
 func (s *Service) proxyForward(w http.ResponseWriter, r *http.Request, pipe *ProxyPipeline, model string, started time.Time) error {
-	candidates := s.resolveProxyChannels(r.Context(), model, pipe)
+	candidates, resolveErr := s.resolveProxyChannels(r.Context(), model, pipe)
+	if resolveErr != nil {
+		// 候选解析本身失败（DB 查询出错等内部错误）：必须把真实原因透出——
+		// 旧实现在这里吞掉错误返回空列表，上层会把它伪装成"没有可用渠道"，
+		// 用户看到的错误与真实故障（如 SQLite 锁死）完全对不上。
+		gwErr := &GatewayError{Status: http.StatusInternalServerError, Type: "channel_resolve_error", Msg: fmt.Sprintf("渠道解析失败: %v", resolveErr)}
+		s.lg.Error("渠道解析失败", "model", model, "err", resolveErr)
+		s.proxyAttemptLog(r, pipe, model, "", "", nil, "", time.Now(), "failed", "channel_resolve_error", 0, pipe.Request.Stream, contracts.TokenUsage{}, gwErr, truncateErrorBody(gwErr.Error()))
+		s.proxyFinishLog(r, pipe, model, "", "", "failed", http.StatusInternalServerError, time.Since(started), gwErr, false, contracts.TokenUsage{}, "")
+		writeGatewayError(w, gwErr)
+		return nil
+	}
 	if len(candidates) == 0 {
 		// 记录"候选解析失败"的 attempt，让 route-log UI 显示尝试过该模型
 		//（聚合跳过不存在的目标场景下，用户能看到每个目标都试过）。
@@ -1207,11 +1218,14 @@ func isCJK(r rune) bool {
 // 的启用 Key。hint 过滤必须在此函数最前（早退判断之前）——否则「有 hint 但 model 为空」
 // 会绕过锁定。实现复用 __channel_candidates（Key 多选）机制：把 hint 组所有 channel ID
 // 塞入 candidates，resolveChannels / allEnabledChannels 的既有过滤逻辑天然生效。
-func (s *Service) resolveProxyChannels(ctx context.Context, model string, pipe *ProxyPipeline) []ResolvedChannel {
+// resolveProxyChannels 解析模型候选渠道。返回 (nil, nil) 表示「确实没有匹配渠道」
+// （正常业务态，调用方走 no_available_channel）；返回 (nil, err) 表示解析过程本身
+// 出错（DB 查询失败等内部错误），调用方必须把真实错误透出而不是伪装成没渠道。
+func (s *Service) resolveProxyChannels(ctx context.Context, model string, pipe *ProxyPipeline) ([]ResolvedChannel, error) {
 	if hint, _ := pipe.Metadata["__channel_hint"].(string); hint != "" {
 		ids := s.channelIDsByChannelName(ctx, hint)
 		if len(ids) == 0 {
-			return nil // 前缀渠道不存在/全禁用：无候选（调用方走 no_available_channel 400）
+			return nil, nil // 前缀渠道不存在/全禁用：无候选（调用方走 no_available_channel 400）
 		}
 		pipe.Metadata["__channel_candidates"] = ids
 	}
@@ -1225,7 +1239,7 @@ func (s *Service) resolveProxyChannels(ctx context.Context, model string, pipe *
 					out = append(out, ch)
 				}
 			}
-			return out
+			return out, nil
 		}
 		if hint, _ := pipe.Metadata["__channel_hint"].(string); hint != "" {
 			var out []ResolvedChannel
@@ -1234,15 +1248,15 @@ func (s *Service) resolveProxyChannels(ctx context.Context, model string, pipe *
 					out = append(out, ch)
 				}
 			}
-			return out
+			return out, nil
 		}
-		return channels
+		return channels, nil
 	}
 	channels, err := s.resolveChannels(ctx, model, pipe.Metadata)
 	if err != nil {
-		return nil
+		return nil, err // 内部错误：让调用方看到真实原因
 	}
-	return channels
+	return channels, nil
 }
 
 // channelIDsByChannelName 返回指定 ChannelName（渠道组）下全部启用 Key 的 ID 列表。
@@ -1578,7 +1592,9 @@ func (s *Service) proxyAttemptLog(r *http.Request, pipe *ProxyPipeline, model, c
 	// 写入 MetadataRequestLogAttemptID（并覆写 MetadataRequestLogID）；写 attempt 行时
 	// 落 request_log_id 列，前端内层行据此渲染「日志」跳转。
 	requestLogID, _ := pipe.Metadata[MetadataRequestLogAttemptID].(string)
-	if _, logErr := s.routeLog.Attempt(r.Context(), contracts.RouteAttempt{
+	// 用与断连解耦的 ctx：子请求（MCP 图片识别等）的调用方 ctx 在识别失败/超时后
+	// 可能已取消，用它写 attempt 会静默失败 → route_attempts 缺行 → 日志详情空。
+	if _, logErr := s.routeLog.Attempt(context.WithoutCancel(r.Context()), contracts.RouteAttempt{
 		RequestID:        pipe.RequestID,
 		StepNo:           fmt.Sprintf("%d", step),
 		Action:           action,
