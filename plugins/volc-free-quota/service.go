@@ -484,6 +484,32 @@ func (s *Service) checkAllCandidatesExhausted(candidateIDs []string, requestMode
 	if len(candidateIDs) == 0 {
 		return false, false, nil
 	}
+	// 先确认「请求的模型确实是这些火山渠道提供的」。
+	//
+	// 候选渠道兜底（candidateChannelIDs 回退 allVolcChannelIDs）会把火山渠道带进
+	// 非火山请求的判定里：比如模型测试页测 workbuddy 的 glm-5.2，火山只有
+	// 	glm-5-2-260617 这类带日期后缀的名字。若只按包名模糊匹配（matchOne 双向包含），
+	// glm-5-2 的空账本就会命中 glm-5.2 → 聚合 0 → 误拦，而请求根本不去火山。
+	// 用渠道自身提供的模型清单做归属检查：不在清单里的一律放行（fail-open）。
+	provided, err := s.channelsAPIModels(context.Background(), candidateIDs)
+	if err != nil {
+		s.lg.Warn("volc-free-quota: 读取渠道模型清单失败，按放行处理", "err", err)
+		return false, false, nil
+	}
+	// 渠道还没有任何已配模型（首次同步前）：无从判断归属，按放行处理。
+	if len(provided) == 0 {
+		return false, false, nil
+	}
+	ownedByVolc := false
+	for _, m := range provided {
+		if matchOne(m, requestModel) {
+			ownedByVolc = true
+			break
+		}
+	}
+	if !ownedByVolc {
+		return false, false, nil
+	}
 	// 候选渠道 → 账号集合（一个渠道可能未配置 AK/SK，跳过；同账号多渠道去重）。
 	accountIDs := s.accountsForChannels(candidateIDs)
 	if len(accountIDs) == 0 {

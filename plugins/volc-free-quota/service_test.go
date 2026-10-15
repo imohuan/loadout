@@ -360,6 +360,48 @@ func TestCheckAllCandidatesExhaustedAggregatesAcrossPackages(t *testing.T) {
 	}
 }
 
+// TestHandleProxyBeforeUpstreamSkipsForeignModels 端到端回归：候选渠道兜底把火山
+// 渠道带进来时，请求的模型若不是火山渠道自己提供的（如测 workbuddy 的 glm-5.2，
+// 火山只有 glm-5-2-260617），即使火山有模型的额度耗尽，也不应拦截。
+//
+// 修复前的判定只按包名模糊匹配（matchOne("glm-5-2","glm-5.2") 命中）+ 聚合余额 0
+// → 误拦。修复后先确认「请求模型属于火山渠道提供的模型清单」，不属于直接放行。
+func TestHandleProxyBeforeUpstreamSkipsForeignModels(t *testing.T) {
+	svc := newTestService(t)
+	aid := accountID("AKxxx")
+	// 火山账本里造一个与 glm-5.2 模糊匹配、已耗尽的包。
+	// 渠道模型清单里没有 glm-5.2（只有 doubao / deepseek-v4-flash，见 newTestService）。
+	if _, err := svc.db.Exec(`INSERT INTO volc_quota_packages(account_id, instance_no, product, product_name, configuration_code,
+	       configuration_name, model, total_amount, available_amount, used_amount, initial_total, local_remaining, unit, status, synced_at)
+		VALUES (?, 'inst-glm', 'ark_bd', 'GLM 5.2', 'GLM_5_2_pack', 'pack', 'glm-5-2',
+		        2000000, 0, 2000000, 2000000, 0, 'Tokens', 'Effective', 'now')`, aid); err != nil {
+		t.Fatal(err)
+	}
+
+	// 请求 glm-5.2（不是火山渠道提供的模型）→ 不应被拦截。
+	pipe := &modelgateway.ProxyPipeline{
+		RequestID: "req-x",
+		Request:   &modelgateway.ProxyRequest{Model: "glm-5.2", Path: "chat/completions"},
+		Metadata:  map[string]any{},
+	}
+	if _, err := svc.HandleProxyBeforeUpstream(pipe); err != nil {
+		t.Fatalf("模型不属于火山渠道时不应拦截，实际 err=%v", err)
+	}
+
+	// 对照：请求火山自己提供的模型（doubao-1-5-pro-32k-250115），账本耗尽 → 应拦截。
+	if _, err := svc.db.Exec(`UPDATE volc_quota_packages SET local_remaining=0, status='UsedUp' WHERE account_id=? AND model='doubao-pro-32k'`, aid); err != nil {
+		t.Fatal(err)
+	}
+	pipe2 := &modelgateway.ProxyPipeline{
+		RequestID: "req-y",
+		Request:   &modelgateway.ProxyRequest{Model: "doubao-1-5-pro-32k-250115", Path: "chat/completions"},
+		Metadata:  map[string]any{},
+	}
+	if _, err := svc.HandleProxyBeforeUpstream(pipe2); err == nil {
+		t.Fatal("火山自有模型额度耗尽时应拦截")
+	}
+}
+
 func TestHandleProxyUpstreamSucceededDecrements(t *testing.T) {
 	svc := newTestService(t)
 	aid := accountID("AKxxx")
