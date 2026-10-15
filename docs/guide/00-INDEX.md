@@ -23,6 +23,8 @@
 
 - **新人不求甚解**：[01-架构总览](./01-architecture.md) → [02-插件系统](./02-plugin-system.md) → [03-插件开发指南](./03-plugin-dev-guide.md)
 - **要扩展插件（最重要）**：直奔 [03-插件开发指南](./03-plugin-dev-guide.md)（含新增插件 step-by-step + 最小可运行骨架）
+- **写插件前先看红线**：仓库根目录的 [AGENTS.md](../../AGENTS.md) —— 子请求标记语义、
+  渠道上下文时序、模糊匹配误伤面等真实事故沉淀的避坑清单（本指南的补充，冲突时以本 guide 为准）
 - **理解各业务能力**：[04-模型网关](./04-model-gateway.md)、[05-聚合与健康检查](./05-aggregate-health.md)、[06-MCP 聚合](./06-mcp-hub.md)、[07-skills 预设](./07-skills-presets.md)
 - **运维 / 部署**：[08-数据存储](./08-data-storage.md)、[09-管理后台 API](./09-admin-api.md)、[10-部署与排错](./10-deployment.md)
 

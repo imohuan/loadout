@@ -348,6 +348,12 @@ func (s *Service) HandleProxyBeforeUpstream(payload any) (any, error) {
 	if !ok || p == nil || p.Request == nil {
 		return payload, nil
 	}
+	// 子请求态度（显式声明）：子请求（vision_v2 视觉识别、multimodal-mcp 识别等经
+	// ForwardSubRequest 的内部调用）**同样参与额度检查**，不豁免。理由：额度按火山
+	// 账号归属，子请求打火山渠道同样消耗真实额度；若豁免，识别流量会绕过强制关停。
+	// 防误拦依赖 checkAllCandidatesExhausted 开头的「模型归属检查」：请求的模型不是
+	// 火山渠道提供的（channel_models 里没有），直接放行——即使火山账本里有同名/相近
+	// 包名（matchOne 模糊匹配）也不会误拦其他平台的请求。
 	model := p.Request.Model
 	if model == "" {
 		return payload, nil

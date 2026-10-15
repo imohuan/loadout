@@ -228,6 +228,10 @@ ctx.On(modelgateway.ProxyBeforeAttempt, func(payload any) (any, error) {
 5. **依赖必须有人 `Provide`**：`Inject` 的服务若没有任何插件/基础服务提供，装配报错"依赖的服务无人提供"。
 6. **不要import `core` 之外的业务包**：插件之间、插件对 core 都应依赖接口，而非具体实现（保持 core 零业务）。
 7. **流式响应不做字段级处理**：增量 delta 无法删除具体字段，字段过滤类插件只在非流式（`ProxyAfterUpstream`）生效。
+8. **子请求两个标记的语义严格区分**：`__sub_request` 防递归、`__sub_request_skip_security` 仅限安检类插件响应，
+   其他插件禁止见标记就跳过（force-stream 曾因此对 MCP 识别失效）。完整红线清单见根目录 [AGENTS.md](../../AGENTS.md)。
+9. **按模型查账前先确认渠道归属**：账本记录名是模糊匹配，「账本里有同名空记录」不代表其他平台的请求归你管。
+   判定前用 `channel_models` 核对模型归属，否则会误拦（volc-free-quota 曾误报「免费额度用完」）。
 
 ## 6. 自检（RegisterCheck）
 
