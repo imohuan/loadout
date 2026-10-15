@@ -1749,6 +1749,9 @@ func (s *Service) proxyRejectedLog(r *http.Request, pipe *ProxyPipeline, err err
 	if s.routeLog == nil || isSubRequest(pipe) {
 		return
 	}
+	// 与 proxyFinishLog / proxyAttemptLog 同口径：拒绝路径也可能来自已取消的
+	// 调用方 ctx（如 MCP 识别的子请求链路），裸 ctx 会静默写丢日志。
+	logCtx := context.WithoutCancel(r.Context())
 	if pipe.RequestID == "" {
 		pipe.RequestID = newRequestID()
 	}
@@ -1767,7 +1770,7 @@ func (s *Service) proxyRejectedLog(r *http.Request, pipe *ProxyPipeline, err err
 	}
 	stream := pipe.Request != nil && pipe.Request.Stream
 	// 占位日志已在 hook 之前写入（HandleProxy），此处 Start 为幂等 UPSERT（补虚拟模型）。
-	if sErr := s.routeLog.Start(r.Context(), contracts.RouteRequest{RequestID: pipe.RequestID, RequestedModel: requested, VirtualModel: virtual, StartedAt: time.Now()}); sErr != nil {
+	if sErr := s.routeLog.Start(logCtx, contracts.RouteRequest{RequestID: pipe.RequestID, RequestedModel: requested, VirtualModel: virtual, StartedAt: time.Now()}); sErr != nil {
 		s.lg.Warn("route log start failed", "err", sErr)
 		return
 	}
@@ -1776,7 +1779,7 @@ func (s *Service) proxyRejectedLog(r *http.Request, pipe *ProxyPipeline, err err
 	//（Key 删除后前端仍能显示「@渠道名(Unknown)」）。
 	nameByID := map[string]string{}
 	if s.routing != nil {
-		if chans, err := s.routing.ListChannels(r.Context()); err == nil {
+		if chans, err := s.routing.ListChannels(logCtx); err == nil {
 			for _, c := range chans {
 				nameByID[c.ID] = c.ChannelName
 			}
@@ -1822,7 +1825,7 @@ func (s *Service) proxyRejectedLog(r *http.Request, pipe *ProxyPipeline, err err
 			s.proxyAttemptLog(r, pipe, requested, "", "", nil, "", started, "skipped", rejectedClass(err), status, stream, contracts.TokenUsage{}, err, "")
 		}
 	}
-	if fErr := s.routeLog.Finish(r.Context(), contracts.RouteFinish{
+	if fErr := s.routeLog.Finish(logCtx, contracts.RouteFinish{
 		RequestID:           pipe.RequestID,
 		FinishedAt:          time.Now(),
 		Result:              "failed",
