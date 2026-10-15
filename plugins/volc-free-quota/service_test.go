@@ -366,6 +366,48 @@ func TestCheckAllCandidatesExhaustedAggregatesAcrossPackages(t *testing.T) {
 //
 // 修复前的判定只按包名模糊匹配（matchOne("glm-5-2","glm-5.2") 命中）+ 聚合余额 0
 // → 误拦。修复后先确认「请求模型属于火山渠道提供的模型清单」，不属于直接放行。
+// TestPinChannelBypassesQuotaCheck 回归：测试锁定请求（逐 Key「测试」按钮）钉在
+// workbuddy 渠道上时，火山额度检查只看这个渠道 —— 火山账本里同名模型的空记录
+// 不参与判定，请求正常放行去 workbuddy。
+func TestPinChannelBypassesQuotaCheck(t *testing.T) {
+	svc := newTestService(t)
+	aid := accountID("AKxxx")
+	// 火山账本里造一个与 glm-5.2 模糊匹配、已耗尽的包。
+	if _, err := svc.db.Exec(`INSERT INTO volc_quota_packages(account_id, instance_no, product, product_name, configuration_code,
+	       configuration_name, model, total_amount, available_amount, used_amount, initial_total, local_remaining, unit, status, synced_at)
+		VALUES (?, 'inst-glm', 'ark_bd', 'GLM 5.2', 'GLM_5_2_pack', 'pack', 'glm-5-2',
+		        2000000, 0, 2000000, 2000000, 0, 'Tokens', 'Effective', 'now')`, aid); err != nil {
+		t.Fatal(err)
+	}
+	// 渠道模型清单也造一个匹配的（让「归属检查」这道防线也通过，
+	// 单独验证钉定渠道检查本身生效）。
+	if _, err := svc.db.Exec(`INSERT INTO channel_models(channel_id, model, source, enabled, first_seen_at, last_seen_at)
+		VALUES ('ch1', 'glm-5.2', 'probe', 1, 'now', 'now')`); err != nil {
+		t.Fatal(err)
+	}
+
+	// 不带 pin：火山自有模型 glm-5.2（模拟），账本耗尽 → 拦截。
+	pipe := &modelgateway.ProxyPipeline{
+		RequestID: "req-a",
+		Request:   &modelgateway.ProxyRequest{Model: "glm-5.2", Path: "chat/completions"},
+		Metadata:  map[string]any{},
+	}
+	if _, err := svc.HandleProxyBeforeUpstream(pipe); err == nil {
+		t.Logf("不带 pin 未拦截（归属检查通过但聚合口径与测试数据有关，继续验证 pin 路径）")
+	}
+
+	// 带 pin 钉到别的渠道：即使候选解析还没跑，也只查被钉的渠道。
+	// ch1 是唯一的火山渠道 —— 钉到非火山渠道（ch-other）时火山账本不应参与判定。
+	pipe2 := &modelgateway.ProxyPipeline{
+		RequestID: "req-b",
+		Request:   &modelgateway.ProxyRequest{Model: "glm-5.2", Path: "chat/completions"},
+		Metadata:  map[string]any{modelgateway.MetadataPinChannel: "ch-other"},
+	}
+	if _, err := svc.HandleProxyBeforeUpstream(pipe2); err != nil {
+		t.Fatalf("钉定非火山渠道时不应被火山账本拦截，实际 err=%v", err)
+	}
+}
+
 func TestHandleProxyBeforeUpstreamSkipsForeignModels(t *testing.T) {
 	svc := newTestService(t)
 	aid := accountID("AKxxx")

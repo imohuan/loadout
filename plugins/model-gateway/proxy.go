@@ -1797,6 +1797,13 @@ func (s *Service) proxyRejectedLog(r *http.Request, pipe *ProxyPipeline, err err
 				s.proxyAttemptLog(r, pipe, t.Model, t.ChannelID, nameByID[t.ChannelID], append([]string(nil), t.ChannelIDs...), t.ChannelBaseURL, started, "skipped", failureClass, 0, stream, contracts.TokenUsage{}, errors.New(msg), "")
 			}
 			lastTarget = targets[len(targets)-1]
+		} else {
+			// 非聚合模型的前置拦截（volc-free-quota 额度拦截、key-rate-limit 429 等）
+			// 也要写一条 skipped attempt：否则步骤详情是空的，用户只看到凭空冒出来的
+			// 一句错误，不知道是谁拦的、依据什么拦的。渠道/平台归属此时未知
+			//（拦截发生在渠道解析之前），写请求模型 + 拦截方标识即可定位。
+			started := time.Now()
+			s.proxyAttemptLog(r, pipe, requested, "", "", nil, "", started, "skipped", rejectedClass(err), status, stream, contracts.TokenUsage{}, err, "")
 		}
 	}
 	if fErr := s.routeLog.Finish(r.Context(), contracts.RouteFinish{
@@ -1815,6 +1822,17 @@ func (s *Service) proxyRejectedLog(r *http.Request, pipe *ProxyPipeline, err err
 	}); fErr != nil {
 		s.lg.Warn("route log finish failed", "err", fErr)
 	}
+}
+
+// rejectedClass 从前置拒绝错误提取 failure_class：GatewayError（插件拒绝）用其
+// Type 作为分类（free_quota_exhausted / key_rate_limited 等），其余归 no_available。
+// 拦截发生在渠道解析之前，渠道归属未知，分类只用于日志筛选定位。
+func rejectedClass(err error) string {
+	var gw *GatewayError
+	if errors.As(err, &gw) && gw.Type != "" {
+		return gw.Type
+	}
+	return "no_available"
 }
 
 // unavailableReason 查询 model_states 获取目标模型当前不可用的具体原因

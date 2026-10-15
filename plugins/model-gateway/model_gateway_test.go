@@ -523,6 +523,55 @@ func TestUnavailableReasonReadsModelStates(t *testing.T) {
 	})
 }
 
+// TestProxyRejectedLogPlainModel 端到端回归：普通模型（非聚合）被前置拦截
+// （volc-free-quota 额度拦截、key-rate-limit 429 等）时，也应写一条 skipped attempt。
+// 修复前只有聚合模型路径写 attempt，普通模型被拦截后步骤详情为空，用户看到的是
+// 凭空冒出来的一句错误，无从定位是哪个插件拦的。
+func TestProxyRejectedLogPlainModel(t *testing.T) {
+	svc, _ := newTestService(t)
+	log := &mockRouteLog{}
+	svc.SetRoutingServices(nil, nil, log)
+
+	ctx := newMockCtx()
+	ctx.On(ProxyBeforeUpstream, func(payload any) (any, error) {
+		return nil, &GatewayError{
+			Status: http.StatusTooManyRequests,
+			Type:   "free_quota_exhausted",
+			Msg:    "模型免费额度用完",
+		}
+	})
+	svc.ctx = ctx
+
+	body := `{"model":"glm-5.2","messages":[{"role":"user","content":"hi"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.RemoteAddr = "127.0.0.1:12345"
+	rec := httptest.NewRecorder()
+	svc.HandleProxy(rec, req)
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("状态码应为 429，实际 %d: %s", rec.Code, rec.Body.String())
+	}
+	if len(log.attempts) != 1 {
+		t.Fatalf("普通模型被前置拦截应写 1 条 skipped attempt，实际 %d", len(log.attempts))
+	}
+	a := log.attempts[0]
+	if a.Result != "skipped" {
+		t.Fatalf("attempt result 应为 skipped，实际 %q", a.Result)
+	}
+	if a.FailureClass != "free_quota_exhausted" {
+		t.Fatalf("attempt failure_class 应为拦截方标识，实际 %q", a.FailureClass)
+	}
+	if !strings.Contains(a.ErrorMessage, "模型免费额度用完") {
+		t.Fatalf("attempt error_message 应包含拦截原因，实际 %q", a.ErrorMessage)
+	}
+	if a.Model != "glm-5.2" {
+		t.Fatalf("attempt model 应为请求模型，实际 %q", a.Model)
+	}
+	if len(log.finishs) != 1 || log.finishs[0].Result != "failed" {
+		t.Fatalf("应写 1 条 failed finish，实际 %+v", log.finishs)
+	}
+}
+
 // TestProxyRejectedLogCarriesUnavailableReason 端到端：before-upstream 拒绝时，
 // skipped attempt 的 error_message 应包含 model_states 中的真实原因。
 func TestProxyRejectedLogCarriesUnavailableReason(t *testing.T) {

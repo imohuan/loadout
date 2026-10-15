@@ -419,6 +419,13 @@ func (s *Service) disableCandidatesForQuota(ctx context.Context, channelIDs []st
 //   - aggregate 注入的 __current_channel（单 Key 目标）。
 //   - 都为空时回退到「所有火山引擎渠道」（即 base_url 含 ark.cn-beijing.volces.com）。
 func (s *Service) candidateChannelIDs(p *modelgateway.ProxyPipeline) []string {
+	// 测试锁定（逐 Key「测试」按钮）优先：请求已钉死在某个渠道上，就只查这个渠道。
+	// 兜底逻辑（回退全部火山渠道）只适用于「没钉渠道、也没有候选」的普通请求；
+	// 不加这道检查，测 workbuddy 的 glm-5.2 会被火山 glm-5-2 的空账本误拦
+	//（拦截发生在渠道解析之前，此时管线里还没有平台归属信息）。
+	if pin, ok := p.Metadata[modelgateway.MetadataPinChannel].(string); ok && pin != "" {
+		return []string{pin}
+	}
 	if p.Metadata == nil {
 		return s.allVolcChannelIDs()
 	}
