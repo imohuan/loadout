@@ -102,22 +102,40 @@ const opencodexExpanded = ref(false)
                 {{ modelLabel[modelSource.kind].text }}
               </Badge>
               <template v-if="modelSource.kind === 'openrouter'">
-                <Badge variant="secondary" class="font-normal">{{ modelSource.modelCount }} 个模型</Badge>
-                <Badge variant="outline" class="font-normal">👁 {{ modelSource.visionCount }} 视觉</Badge>
-                <Badge variant="outline" class="font-normal">🧠 {{ modelSource.reasoningCount }} 思考</Badge>
+                <Badge variant="secondary" class="font-normal"
+                  >{{ modelSource.modelCount }} 个模型</Badge
+                >
+                <Badge variant="outline" class="font-normal"
+                  >👁 {{ modelSource.visionCount }} 视觉</Badge
+                >
+                <Badge variant="outline" class="font-normal"
+                  >🧠 {{ modelSource.reasoningCount }} 思考</Badge
+                >
               </template>
             </div>
             <p class="mt-0.5 truncate font-mono text-xs text-muted-foreground">
               {{ modelSource.baseUrl || 'https://openrouter.ai/api/v1' }}
-              <template v-if="modelSource.apiKeyMasked"> · API Key {{ modelSource.apiKeyMasked }}</template>
+              <template v-if="modelSource.apiKeyMasked">
+                · API Key {{ modelSource.apiKeyMasked }}</template
+              >
             </p>
-            <p v-if="modelSource.kind === 'none' && modelSource.degraded" class="mt-0.5 text-xs text-amber-600">
+            <p
+              v-if="modelSource.kind === 'none' && modelSource.degraded"
+              class="mt-0.5 text-xs text-amber-600"
+            >
               {{ modelSource.degraded }}
             </p>
-            <p v-if="modelSource.kind === 'openrouter'" class="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs">
-              <span v-if="cachedAtText" class="text-emerald-600">元数据缓存：{{ cachedAtText }} 已刷新</span>
+            <p
+              v-if="modelSource.kind === 'openrouter'"
+              class="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs"
+            >
+              <span v-if="cachedAtText" class="text-emerald-600"
+                >元数据缓存：{{ cachedAtText }} 已刷新</span
+              >
               <span v-else class="text-amber-600">元数据缓存：尚未刷新</span>
-              <span v-if="modelSource.apiKeyMasked" class="text-muted-foreground">公开端点，无需密钥</span>
+              <span v-if="modelSource.apiKeyMasked" class="text-muted-foreground"
+                >公开端点，无需密钥</span
+              >
             </p>
           </div>
         </div>
@@ -165,7 +183,10 @@ const opencodexExpanded = ref(false)
               <Badge v-if="opencodexModels.hasApiKey" variant="outline" class="font-normal">
                 Key {{ opencodexModels.apiKeyPreview }}
               </Badge>
-              <label v-if="showVision !== false" class="ml-auto flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
+              <label
+                v-if="showVision !== false"
+                class="ml-auto flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground"
+              >
                 <span>强制视觉</span>
                 <Switch :model-value="enableVision" @update:model-value="onToggleVision" />
               </label>
@@ -190,7 +211,11 @@ const opencodexExpanded = ref(false)
                 {{ opencodexExpanded ? '收起' : '展开' }}（按 provider 分组）
               </button>
               <div v-show="opencodexExpanded" class="mt-1.5 space-y-2">
-                <div v-for="g in opencodexGroups" :key="g.provider" class="rounded-md border bg-muted/30 p-2">
+                <div
+                  v-for="g in opencodexGroups"
+                  :key="g.provider"
+                  class="rounded-md border bg-muted/30 p-2"
+                >
                   <p class="text-xs font-medium text-muted-foreground">
                     {{ g.provider }}（{{ g.models.length }}）
                   </p>
@@ -234,7 +259,12 @@ const opencodexExpanded = ref(false)
             <RiBracesLine size="13" />同步配置（sync.json 内容，执行前写入，实时更新）
           </p>
           <div class="max-h-64 overflow-y-auto rounded-md border bg-background p-3">
-            <AxJsonViewer :data="configData" :expand-level="3" :default-expand-all="true" :wrap-enabled="false" />
+            <AxJsonViewer
+              :data="configData"
+              :expand-level="3"
+              :default-expand-all="true"
+              :wrap-enabled="false"
+            />
           </div>
         </template>
         <p class="mt-2 flex items-center gap-1 text-xs text-muted-foreground">

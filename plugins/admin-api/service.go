@@ -98,6 +98,8 @@ func (s *Service) Routes() []plugin.RouteSpec {
 	return []plugin.RouteSpec{
 		// 认证
 		{Method: http.MethodPost, Pattern: "POST /api/login", Auth: plugin.AuthPublic, Handler: http.HandlerFunc(s.handleLogin)},
+		{Method: http.MethodGet, Pattern: "GET /api/setup-status", Auth: plugin.AuthPublic, Handler: http.HandlerFunc(s.handleSetupStatus)},
+		{Method: http.MethodPost, Pattern: "POST /api/setup-key", Auth: plugin.AuthPublic, Handler: http.HandlerFunc(s.handleSetupKey)},
 		{Method: http.MethodPost, Pattern: "POST /api/sso/login", Auth: plugin.AuthPublic, Handler: http.HandlerFunc(s.handleSSOLogin)},
 		// 登出幂等：无论当前是否有会话都返回成功、清空 Cookie；避免 UI 在会话失效态调登出时 401。
 		{Method: http.MethodPost, Pattern: "POST /api/logout", Auth: plugin.AuthPublic, Handler: http.HandlerFunc(s.handleLogout)},
@@ -325,18 +327,24 @@ func (s *Service) selfCheck() []plugin.Issue {
 
 // ===== 认证 =====
 
-// handleLogin 校验用户名密码，成功后签发会话并写入 HttpOnly Cookie。
+// handleLogin 校验访问密钥（无用户名概念，username 字段仅兼容旧前端，传入即忽略），
+// 成功后签发会话并写入 HttpOnly Cookie。
 func (s *Service) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Username string `json:"username"`
 		Password string `json:"password"`
+		// 兼容旧前端字段；单账号系统忽略 username。
+		Username string `json:"username"`
 	}
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	token, err := s.auth.Login(req.Username, req.Password)
+	if req.Password == "" {
+		writeError(w, http.StatusBadRequest, "请输入访问密钥")
+		return
+	}
+	token, err := s.auth.Login("admin", req.Password)
 	if err != nil {
-		writeError(w, http.StatusUnauthorized, "用户名或密码错误")
+		writeError(w, http.StatusUnauthorized, "访问密钥错误")
 		return
 	}
 	http.SetCookie(w, &http.Cookie{
@@ -348,7 +356,42 @@ func (s *Service) handleLogin(w http.ResponseWriter, r *http.Request) {
 	})
 	// 来源是桌面端 WebView 才记录「桌面已登录」标记（托盘据此决定是否签发免登录 token）。
 	if isDesktopOrigin(r) {
-		s.markDesktopSession(req.Username)
+		s.markDesktopSession("admin")
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// handleSetupStatus 返回是否已设置访问密钥（未设置时前端展示初始化表单）。
+func (s *Service) handleSetupStatus(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"initialized": s.auth.Initialized()})
+}
+
+// handleSetupKey 首次设置访问密钥（仅未初始化时可用，成功后自动登录）。
+func (s *Service) handleSetupKey(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Key string `json:"key"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if err := s.auth.SetupAdminKey(req.Key); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	token, err := auth.SignToken(s.st.SecretKey(), "admin", time.Duration(config.SessionTTLHours)*time.Hour)
+	if err != nil {
+		s.writeServerError(w, err)
+		return
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     sessionCookieName,
+		Value:    token,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	})
+	if isDesktopOrigin(r) {
+		s.markDesktopSession("admin")
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }

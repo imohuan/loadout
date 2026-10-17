@@ -111,7 +111,10 @@ const copied = ref(false)
   </HoverCard>
 
   <!-- 完全无内容时的 trigger 降级：不弹卡片（避免空悬浮层） -->
-  <span v-else-if="props.trigger" class="inline-flex max-w-full items-center rounded px-1 text-xs text-destructive">
+  <span
+    v-else-if="props.trigger"
+    class="inline-flex max-w-full items-center rounded px-1 text-xs text-destructive"
+  >
     <slot :message="summary">
       <span class="truncate underline">{{ summary }}</span>
     </slot>

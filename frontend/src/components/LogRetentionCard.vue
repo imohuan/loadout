@@ -166,7 +166,11 @@ const unlimited = computed(() => !props.maxAgeDays && !props.maxSizeMb)
           type="button"
           variant="outline"
           :disabled="saving || cleaning || clearing"
-          :title="unlimited ? '当前未设限制，清理不会删除任何日志' : '按上面的设置立刻清理一次，不用等新请求'"
+          :title="
+            unlimited
+              ? '当前未设限制，清理不会删除任何日志'
+              : '按上面的设置立刻清理一次，不用等新请求'
+          "
           @click="emit('clean')"
         >
           <RiLoader4Line v-if="cleaning" class="animate-spin" size="16" /><RiDeleteBinLine
@@ -189,9 +193,8 @@ const unlimited = computed(() => !props.maxAgeDays && !props.maxSizeMb)
         </Button>
       </div>
       <p class="text-xs text-muted-foreground">
-        「保存」只写设置，不动日志；想让新设置马上生效（比如刚把上限改小、库里还堆着
-        十几 GB），点「立即清理」按当前设置跑一次。「清空占用」直接删光这个库，
-        转发日志不受影响。
+        「保存」只写设置，不动日志；想让新设置马上生效（比如刚把上限改小、库里还堆着 十几
+        GB），点「立即清理」按当前设置跑一次。「清空占用」直接删光这个库， 转发日志不受影响。
       </p>
     </CardContent>
   </Card>

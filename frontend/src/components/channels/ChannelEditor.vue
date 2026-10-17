@@ -272,7 +272,8 @@ function submit() {
             placeholder="http://127.0.0.1:3001/v1"
           />
           <p class="text-xs text-muted-foreground">
-            基础 URL 请填写到接口前缀的完整路径，如需 /v1 前缀请自行包含在 URL 中，系统不会自动补全。
+            基础 URL 请填写到接口前缀的完整路径，如需 /v1 前缀请自行包含在 URL
+            中，系统不会自动补全。
           </p>
         </div>
         <div class="space-y-2" v-if="!lockBaseUrl">
@@ -290,7 +291,8 @@ function submit() {
             <option value="voapi" />
           </datalist>
           <p class="text-xs text-muted-foreground">
-            标注框架后，失败规则可按框架匹配（同框架平台共用一条规则，如所有 New API 站的额度规则）。同组渠道自动继承标注。
+            标注框架后，失败规则可按框架匹配（同框架平台共用一条规则，如所有 New API
+            站的额度规则）。同组渠道自动继承标注。
           </p>
         </div>
         <div class="space-y-2">
@@ -336,11 +338,7 @@ function submit() {
                 </SelectTrigger>
                 <SelectContent position="popper" side="bottom" align="end" :side-offset="4">
                   <SelectGroup>
-                    <SelectItem
-                      v-for="s in siblingChannels"
-                      :key="s.id"
-                      :value="s.id"
-                    >
+                    <SelectItem v-for="s in siblingChannels" :key="s.id" :value="s.id">
                       <TooltipProvider :delay-duration="150" :skip-delay-duration="100">
                         <Tooltip>
                           <TooltipTrigger as-child>

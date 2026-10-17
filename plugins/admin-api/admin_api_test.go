@@ -29,8 +29,8 @@ import (
 	fakemcp "loadout/testkit/fake-mcp"
 )
 
-// newTestServer 用临时目录组装完整服务：store、admin-auth（首启建 admin 账号）、
-// gateway-keys、skills，并启动 httptest.Server。返回服务器、store 与初始密码。
+// newTestServer 用临时目录组装完整服务：store、admin-auth（SetupAdminKey 设置访问密钥）、
+// gateway-keys、skills，并启动 httptest.Server。返回服务器、store 与访问密钥。
 func newTestServer(t *testing.T) (*httptest.Server, *store.Store, string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -44,12 +44,9 @@ func newTestServer(t *testing.T) (*httptest.Server, *store.Store, string) {
 	t.Cleanup(func() { config.AdminPasswordFile = old })
 
 	authSvc := adminauth.NewService(st, slog.Default())
-	if _, err := authSvc.EnsureFirstRun(); err != nil {
-		t.Fatalf("EnsureFirstRun: %v", err)
-	}
-	pw, err := os.ReadFile(config.AdminPasswordFile)
-	if err != nil {
-		t.Fatalf("读取初始密码: %v", err)
+	pw := "test-access-key"
+	if err := authSvc.SetupAdminKey(pw); err != nil {
+		t.Fatalf("SetupAdminKey: %v", err)
 	}
 
 	keys := gatewaykeys.NewManager(st)
@@ -58,7 +55,7 @@ func newTestServer(t *testing.T) (*httptest.Server, *store.Store, string) {
 
 	ts := httptest.NewServer(svc.Handler())
 	t.Cleanup(ts.Close)
-	return ts, st, string(pw)
+	return ts, st, pw
 }
 
 // apiReq 向测试服务器发请求；body 非 nil 时按 JSON 编码，cookie 非 nil 时附带。
@@ -98,7 +95,7 @@ func apiReq(t *testing.T, ts *httptest.Server, method, path string, body any, co
 func login(t *testing.T, ts *httptest.Server, password string) *http.Cookie {
 	t.Helper()
 	resp, _ := apiReq(t, ts, http.MethodPost, "/api/login",
-		map[string]string{"username": "admin", "password": password}, nil)
+		map[string]string{"password": password}, nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("登录期望 200，实际 %d", resp.StatusCode)
 	}
@@ -1249,12 +1246,8 @@ func TestModelTestBuiltinSkKey(t *testing.T) {
 	config.AdminPasswordFile = filepath.Join(dir, "admin-password")
 	t.Cleanup(func() { config.AdminPasswordFile = old })
 	authSvc := adminauth.NewService(st, slog.Default())
-	if _, err := authSvc.EnsureFirstRun(); err != nil {
-		t.Fatalf("EnsureFirstRun: %v", err)
-	}
-	pw, err := os.ReadFile(config.AdminPasswordFile)
-	if err != nil {
-		t.Fatalf("读取初始密码: %v", err)
+	if err := authSvc.SetupAdminKey("test-access-key"); err != nil {
+		t.Fatalf("SetupAdminKey: %v", err)
 	}
 	keys := gatewaykeys.NewManager(st)
 	skillSvc := skills.NewService(st, slog.Default(), t.TempDir(), t.TempDir())
@@ -1275,7 +1268,7 @@ func TestModelTestBuiltinSkKey(t *testing.T) {
 	})
 	ts := httptest.NewServer(combined)
 	t.Cleanup(ts.Close)
-	cookie := login(t, ts, string(pw))
+	cookie := login(t, ts, "test-access-key")
 
 	// 创建 SK key。
 	resp, data := apiReq(t, ts, http.MethodPost, "/api/keys/sk", map[string]any{"name": "本机"}, cookie)

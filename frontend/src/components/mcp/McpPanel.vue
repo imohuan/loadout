@@ -418,228 +418,231 @@ async function copyConfig(endpoint: { path: string; label: string }) {
           <CardContent class="p-0">
             <div v-if="mcp.servers.length" class="w-full overflow-hidden">
               <AxTable>
-              <Table>
-                <colgroup>
-                  <col class="w-10" />
-                  <col />
-                  <col class="" />
-                  <col class="w-[100px]" />
-                  <col class="w-[180px]" />
-                </colgroup>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead></TableHead>
-                    <TableHead>名称</TableHead>
-                    <TableHead>传输</TableHead>
-                    <TableHead>状态</TableHead>
-                    <TableHead class="text-right">操作</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  <template v-for="server in mcp.servers" :key="server.id">
+                <Table>
+                  <colgroup>
+                    <col class="w-10" />
+                    <col />
+                    <col class="" />
+                    <col class="w-[100px]" />
+                    <col class="w-[180px]" />
+                  </colgroup>
+                  <TableHeader>
                     <TableRow>
-                      <TableCell class="px-0"
-                        ><Button
-                          variant="ghost"
-                          size="icon"
-                          class="size-8"
-                          :aria-label="isServerExpanded(server.id) ? '收起工具' : '展开工具'"
-                          :aria-expanded="isServerExpanded(server.id)"
-                          @click="toggleServer(server.id)"
-                        >
-                          <RiArrowDownSLine v-if="isServerExpanded(server.id)" size="16" />
-                          <RiArrowRightSLine v-else size="16" /> </Button
-                      ></TableCell>
-                      <TableCell>
-                        <div class="font-medium flex items-center gap-2">
-                          <span>{{ server.name }}</span>
-                          <Badge v-if="server.builtin" variant="secondary">内置</Badge>
-                        </div>
-                        <div class="w-full truncate text-xs text-muted-foreground">
-                          {{ server.url || server.command }}
-                        </div>
-                      </TableCell>
-                      <TableCell>{{ labels[server.transport] || server.transport }}</TableCell>
-                      <TableCell>
-                        <TooltipProvider>
-                          <Tooltip v-if="server.status === 'failed'">
-                            <TooltipTrigger as-child
-                              ><Badge variant="destructive">失败</Badge></TooltipTrigger
-                            >
-                            <TooltipContent class="max-w-xs break-words">{{
-                              server.error || '进程启动失败或已退出'
-                            }}</TooltipContent>
-                          </Tooltip>
-                          <Badge
-                            v-else-if="server.status === 'running'"
-                            class="bg-green-500/15 text-green-700 border-green-500/20 dark:text-green-300"
-                            >运行中</Badge
+                      <TableHead></TableHead>
+                      <TableHead>名称</TableHead>
+                      <TableHead>传输</TableHead>
+                      <TableHead>状态</TableHead>
+                      <TableHead class="text-right">操作</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    <template v-for="server in mcp.servers" :key="server.id">
+                      <TableRow>
+                        <TableCell class="px-0"
+                          ><Button
+                            variant="ghost"
+                            size="icon"
+                            class="size-8"
+                            :aria-label="isServerExpanded(server.id) ? '收起工具' : '展开工具'"
+                            :aria-expanded="isServerExpanded(server.id)"
+                            @click="toggleServer(server.id)"
                           >
-                          <Badge
-                            v-else
-                            :variant="server.enabled === false ? 'secondary' : 'default'"
-                            >{{ server.enabled === false ? '已停止' : '启用' }}</Badge
-                          >
-                        </TooltipProvider>
-                      </TableCell>
-                      <TableCell>
-                        <div v-if="!server.builtin" class="flex justify-end gap-1">
+                            <RiArrowDownSLine v-if="isServerExpanded(server.id)" size="16" />
+                            <RiArrowRightSLine v-else size="16" /> </Button
+                        ></TableCell>
+                        <TableCell>
+                          <div class="font-medium flex items-center gap-2">
+                            <span>{{ server.name }}</span>
+                            <Badge v-if="server.builtin" variant="secondary">内置</Badge>
+                          </div>
+                          <div class="w-full truncate text-xs text-muted-foreground">
+                            {{ server.url || server.command }}
+                          </div>
+                        </TableCell>
+                        <TableCell>{{ labels[server.transport] || server.transport }}</TableCell>
+                        <TableCell>
                           <TooltipProvider>
-                            <Tooltip>
+                            <Tooltip v-if="server.status === 'failed'">
                               <TooltipTrigger as-child
-                                ><Button
-                                  variant="ghost"
-                                  size="icon"
-                                  aria-label="测试"
-                                  :disabled="mcp.isPending(`server:${server.id}:test`)"
-                                  @click="mcp.testServer(server, server.name)"
-                                >
-                                  <RiLoader4Line
-                                    v-if="mcp.isPending(`server:${server.id}:test`)"
-                                    class="animate-spin"
-                                    size="16"
-                                  /><RiTestTubeLine v-else size="16" /> </Button
-                              ></TooltipTrigger>
-                              <TooltipContent>测试连接</TooltipContent>
-                            </Tooltip>
-                            <Tooltip>
-                              <TooltipTrigger as-child
-                                ><Button
-                                  variant="ghost"
-                                  size="icon"
-                                  aria-label="编辑"
-                                  @click="openServerDialog(server)"
-                                >
-                                  <RiEditLine size="16" /> </Button
-                              ></TooltipTrigger>
-                              <TooltipContent>编辑</TooltipContent>
-                            </Tooltip>
-                            <Tooltip>
-                              <TooltipTrigger as-child
-                                ><Button
-                                  variant="ghost"
-                                  size="icon"
-                                  class="size-8"
-                                  :aria-label="
-                                    isServerActive(server)
-                                      ? `禁用 ${server.name}`
-                                      : server.enabled === false
-                                        ? `启用 ${server.name}`
-                                        : `重试启动 ${server.name}`
-                                  "
-                                  :disabled="mcp.isPending(`server:${server.id}:toggle`)"
-                                  @click="mcp.toggleServer(server)"
-                                >
-                                  <RiLoader4Line
-                                    v-if="mcp.isPending(`server:${server.id}:toggle`)"
-                                    class="animate-spin"
-                                    size="16"
-                                  /><RiToggleFill
-                                    v-else-if="isServerActive(server)"
-                                    class="size-5 text-emerald-600"
-                                  /><RiToggleLine
-                                    v-else
-                                    class="size-5 text-muted-foreground"
-                                  /> </Button
-                              ></TooltipTrigger>
-                              <TooltipContent>{{
-                                isServerActive(server)
-                                  ? '禁用'
-                                  : server.enabled === false
-                                    ? '启用'
-                                    : '进程失败，点击重试'
+                                ><Badge variant="destructive">失败</Badge></TooltipTrigger
+                              >
+                              <TooltipContent class="max-w-xs break-words">{{
+                                server.error || '进程启动失败或已退出'
                               }}</TooltipContent>
                             </Tooltip>
-                            <Tooltip>
-                              <TooltipTrigger as-child
-                                ><Button
-                                  variant="ghost"
-                                  size="icon"
-                                  aria-label="删除"
-                                  :disabled="mcp.isPending(`server:${server.id}:remove`)"
-                                  @click="mcp.removeServer(server)"
-                                >
-                                  <RiLoader4Line
-                                    v-if="mcp.isPending(`server:${server.id}:remove`)"
-                                    class="animate-spin"
-                                    size="16"
-                                  /><RiDeleteBinLine v-else size="16" /> </Button
-                              ></TooltipTrigger>
-                              <TooltipContent>删除</TooltipContent>
-                            </Tooltip>
+                            <Badge
+                              v-else-if="server.status === 'running'"
+                              class="bg-green-500/15 text-green-700 border-green-500/20 dark:text-green-300"
+                              >运行中</Badge
+                            >
+                            <Badge
+                              v-else
+                              :variant="server.enabled === false ? 'secondary' : 'default'"
+                              >{{ server.enabled === false ? '已停止' : '启用' }}</Badge
+                            >
                           </TooltipProvider>
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                    <TableRow
-                      v-if="isServerExpanded(server.id)"
-                      class="bg-muted/30 hover:bg-muted/30"
-                    >
-                      <TableCell :colspan="5" class="whitespace-normal p-0 w-full overflow-hidden">
-                        <div class="space-y-3 px-4 py-4">
-                          <div class="flex items-center justify-between gap-3">
-                            <div class="min-w-0">
-                              <div class="font-medium">工具列表</div>
-                              <div class="text-xs text-muted-foreground">
-                                显示该上游服务器提供的工具名称和描述。
-                              </div>
-                            </div>
-                            <Badge variant="outline" class="shrink-0"
-                              >{{ serverTools(server.id).length }} 个工具</Badge
-                            >
+                        </TableCell>
+                        <TableCell>
+                          <div v-if="!server.builtin" class="flex justify-end gap-1">
+                            <TooltipProvider>
+                              <Tooltip>
+                                <TooltipTrigger as-child
+                                  ><Button
+                                    variant="ghost"
+                                    size="icon"
+                                    aria-label="测试"
+                                    :disabled="mcp.isPending(`server:${server.id}:test`)"
+                                    @click="mcp.testServer(server, server.name)"
+                                  >
+                                    <RiLoader4Line
+                                      v-if="mcp.isPending(`server:${server.id}:test`)"
+                                      class="animate-spin"
+                                      size="16"
+                                    /><RiTestTubeLine v-else size="16" /> </Button
+                                ></TooltipTrigger>
+                                <TooltipContent>测试连接</TooltipContent>
+                              </Tooltip>
+                              <Tooltip>
+                                <TooltipTrigger as-child
+                                  ><Button
+                                    variant="ghost"
+                                    size="icon"
+                                    aria-label="编辑"
+                                    @click="openServerDialog(server)"
+                                  >
+                                    <RiEditLine size="16" /> </Button
+                                ></TooltipTrigger>
+                                <TooltipContent>编辑</TooltipContent>
+                              </Tooltip>
+                              <Tooltip>
+                                <TooltipTrigger as-child
+                                  ><Button
+                                    variant="ghost"
+                                    size="icon"
+                                    class="size-8"
+                                    :aria-label="
+                                      isServerActive(server)
+                                        ? `禁用 ${server.name}`
+                                        : server.enabled === false
+                                          ? `启用 ${server.name}`
+                                          : `重试启动 ${server.name}`
+                                    "
+                                    :disabled="mcp.isPending(`server:${server.id}:toggle`)"
+                                    @click="mcp.toggleServer(server)"
+                                  >
+                                    <RiLoader4Line
+                                      v-if="mcp.isPending(`server:${server.id}:toggle`)"
+                                      class="animate-spin"
+                                      size="16"
+                                    /><RiToggleFill
+                                      v-else-if="isServerActive(server)"
+                                      class="size-5 text-emerald-600"
+                                    /><RiToggleLine
+                                      v-else
+                                      class="size-5 text-muted-foreground"
+                                    /> </Button
+                                ></TooltipTrigger>
+                                <TooltipContent>{{
+                                  isServerActive(server)
+                                    ? '禁用'
+                                    : server.enabled === false
+                                      ? '启用'
+                                      : '进程失败，点击重试'
+                                }}</TooltipContent>
+                              </Tooltip>
+                              <Tooltip>
+                                <TooltipTrigger as-child
+                                  ><Button
+                                    variant="ghost"
+                                    size="icon"
+                                    aria-label="删除"
+                                    :disabled="mcp.isPending(`server:${server.id}:remove`)"
+                                    @click="mcp.removeServer(server)"
+                                  >
+                                    <RiLoader4Line
+                                      v-if="mcp.isPending(`server:${server.id}:remove`)"
+                                      class="animate-spin"
+                                      size="16"
+                                    /><RiDeleteBinLine v-else size="16" /> </Button
+                                ></TooltipTrigger>
+                                <TooltipContent>删除</TooltipContent>
+                              </Tooltip>
+                            </TooltipProvider>
                           </div>
-                          <div
-                            v-if="serverTools(server.id).length"
-                            class="divide-y rounded-md border bg-background"
-                          >
-                            <div
-                              v-for="tool in serverTools(server.id)"
-                              :key="tool.name"
-                              class="flex flex-col gap-3 px-3 py-3 sm:flex-row sm:items-center sm:justify-between"
-                            >
-                              <div class="min-w-0 flex-1 overflow-hidden">
-                                <div class="truncate font-mono text-sm">{{ tool.name }}</div>
-                                <div
-                                  class="mt-1 line-clamp-2 break-words text-xs leading-5 text-muted-foreground"
-                                >
-                                  <TranslateText
-                                    v-if="tool.description"
-                                    :source="tool.description"
-                                    :text-key="toolDescKey(server.name, tool.name)"
-                                    source-type="mcp"
-                                    :source-id="`${server.name}/${tool.name}`"
-                                  />
-                                  <span v-else>暂无描述</span>
+                        </TableCell>
+                      </TableRow>
+                      <TableRow
+                        v-if="isServerExpanded(server.id)"
+                        class="bg-muted/30 hover:bg-muted/30"
+                      >
+                        <TableCell
+                          :colspan="5"
+                          class="whitespace-normal p-0 w-full overflow-hidden"
+                        >
+                          <div class="space-y-3 px-4 py-4">
+                            <div class="flex items-center justify-between gap-3">
+                              <div class="min-w-0">
+                                <div class="font-medium">工具列表</div>
+                                <div class="text-xs text-muted-foreground">
+                                  显示该上游服务器提供的工具名称和描述。
                                 </div>
                               </div>
-                              <div class="flex shrink-0 gap-2">
-                                <Button
-                                  variant="outline"
-                                  size="sm"
-                                  @click="openToolTest(server, tool)"
-                                >
-                                  <RiTestTubeLine size="16" />测试 </Button
-                                ><Button
-                                  variant="ghost"
-                                  size="sm"
-                                  @click="openToolEdit(server, tool)"
-                                >
-                                  <RiEditLine size="16" />编辑
-                                </Button>
+                              <Badge variant="outline" class="shrink-0"
+                                >{{ serverTools(server.id).length }} 个工具</Badge
+                              >
+                            </div>
+                            <div
+                              v-if="serverTools(server.id).length"
+                              class="divide-y rounded-md border bg-background"
+                            >
+                              <div
+                                v-for="tool in serverTools(server.id)"
+                                :key="tool.name"
+                                class="flex flex-col gap-3 px-3 py-3 sm:flex-row sm:items-center sm:justify-between"
+                              >
+                                <div class="min-w-0 flex-1 overflow-hidden">
+                                  <div class="truncate font-mono text-sm">{{ tool.name }}</div>
+                                  <div
+                                    class="mt-1 line-clamp-2 break-words text-xs leading-5 text-muted-foreground"
+                                  >
+                                    <TranslateText
+                                      v-if="tool.description"
+                                      :source="tool.description"
+                                      :text-key="toolDescKey(server.name, tool.name)"
+                                      source-type="mcp"
+                                      :source-id="`${server.name}/${tool.name}`"
+                                    />
+                                    <span v-else>暂无描述</span>
+                                  </div>
+                                </div>
+                                <div class="flex shrink-0 gap-2">
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    @click="openToolTest(server, tool)"
+                                  >
+                                    <RiTestTubeLine size="16" />测试 </Button
+                                  ><Button
+                                    variant="ghost"
+                                    size="sm"
+                                    @click="openToolEdit(server, tool)"
+                                  >
+                                    <RiEditLine size="16" />编辑
+                                  </Button>
+                                </div>
                               </div>
                             </div>
+                            <EmptyState
+                              v-else
+                              title="没有工具"
+                              description="该服务器当前没有返回可用工具。"
+                            />
                           </div>
-                          <EmptyState
-                            v-else
-                            title="没有工具"
-                            description="该服务器当前没有返回可用工具。"
-                          />
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  </template>
-                </TableBody>
-              </Table>
+                        </TableCell>
+                      </TableRow>
+                    </template>
+                  </TableBody>
+                </Table>
               </AxTable>
             </div>
             <EmptyState
@@ -659,47 +662,47 @@ async function copyConfig(endpoint: { path: string; label: string }) {
           <CardContent class="p-0">
             <div v-if="mcp.groups.length" class="overflow-x-auto">
               <AxTable>
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>分组</TableHead>
-                    <TableHead>工具数</TableHead>
-                    <TableHead class="text-right">操作</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  <TableRow v-for="group in mcp.groups" :key="group.name">
-                    <TableCell class="font-medium">{{ group.name }}</TableCell>
-                    <TableCell>{{ group.tools?.length || 0 }}</TableCell>
-                    <TableCell class="text-right">
-                      <div class="flex justify-end gap-1">
-                        <Button variant="ghost" size="sm" @click="openGroupDialog(group)">
-                          <RiEditLine size="16" />编辑
-                        </Button>
-                        <TooltipProvider>
-                          <Tooltip>
-                            <TooltipTrigger as-child
-                              ><Button
-                                variant="ghost"
-                                size="icon"
-                                aria-label="删除分组"
-                                :disabled="mcp.isPending(`group:${group.name}:remove`)"
-                                @click="mcp.removeGroup(group)"
-                              >
-                                <RiLoader4Line
-                                  v-if="mcp.isPending(`group:${group.name}:remove`)"
-                                  class="animate-spin"
-                                  size="16"
-                                /><RiDeleteBinLine v-else size="16" /> </Button
-                            ></TooltipTrigger>
-                            <TooltipContent>删除分组</TooltipContent>
-                          </Tooltip>
-                        </TooltipProvider>
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                </TableBody>
-              </Table>
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>分组</TableHead>
+                      <TableHead>工具数</TableHead>
+                      <TableHead class="text-right">操作</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    <TableRow v-for="group in mcp.groups" :key="group.name">
+                      <TableCell class="font-medium">{{ group.name }}</TableCell>
+                      <TableCell>{{ group.tools?.length || 0 }}</TableCell>
+                      <TableCell class="text-right">
+                        <div class="flex justify-end gap-1">
+                          <Button variant="ghost" size="sm" @click="openGroupDialog(group)">
+                            <RiEditLine size="16" />编辑
+                          </Button>
+                          <TooltipProvider>
+                            <Tooltip>
+                              <TooltipTrigger as-child
+                                ><Button
+                                  variant="ghost"
+                                  size="icon"
+                                  aria-label="删除分组"
+                                  :disabled="mcp.isPending(`group:${group.name}:remove`)"
+                                  @click="mcp.removeGroup(group)"
+                                >
+                                  <RiLoader4Line
+                                    v-if="mcp.isPending(`group:${group.name}:remove`)"
+                                    class="animate-spin"
+                                    size="16"
+                                  /><RiDeleteBinLine v-else size="16" /> </Button
+                              ></TooltipTrigger>
+                              <TooltipContent>删除分组</TooltipContent>
+                            </Tooltip>
+                          </TooltipProvider>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  </TableBody>
+                </Table>
               </AxTable>
             </div>
             <EmptyState v-else title="没有分组 MCP" description="添加一个分组来组合上游工具。" />
@@ -716,174 +719,178 @@ async function copyConfig(endpoint: { path: string; label: string }) {
           </CardHeader>
           <CardContent class="p-0">
             <AxTable>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead class="w-10 min-w-10 max-w-10"></TableHead>
-                  <TableHead>类型</TableHead>
-                  <TableHead>地址</TableHead>
-                  <TableHead>工具数</TableHead>
-                  <TableHead>认证</TableHead>
-                  <TableHead class="text-right">操作</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                <template v-for="endpoint in mcp.endpoints" :key="endpoint.path">
+              <Table>
+                <TableHeader>
                   <TableRow>
-                    <TableCell class="w-10 pr-0">
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        class="size-8"
-                        :aria-label="
-                          isEndpointExpanded(endpoint.path) ? '收起端点详情' : '展开端点详情'
-                        "
-                        :aria-expanded="isEndpointExpanded(endpoint.path)"
-                        @click="toggleEndpoint(endpoint.path)"
-                      >
-                        <RiArrowDownSLine v-if="isEndpointExpanded(endpoint.path)" size="16" />
-                        <RiArrowRightSLine v-else size="16" />
-                      </Button>
-                    </TableCell>
-                    <TableCell>
-                      <div class="flex items-center gap-1.5">
-                        <Badge variant="secondary">{{ endpoint.kind }}</Badge>
-                        <Badge v-if="endpoint.builtin" variant="outline">内置</Badge>
-                      </div>
-                    </TableCell>
-                    <TableCell class="font-mono text-xs">{{ endpoint.path }}</TableCell>
-                    <TableCell>{{ endpoint.count }}</TableCell>
-                    <TableCell>
-                      <Badge :variant="mcp.endpointHasKey(endpoint.path) ? 'default' : 'outline'">
-                        <RiKey2Line
-                          v-if="mcp.endpointHasKey(endpoint.path)"
-                          size="12"
-                          class="mr-1"
-                        />
-                        {{ mcp.endpointHasKey(endpoint.path) ? '已配置' : '无认证' }}
-                      </Badge>
-                    </TableCell>
-                    <TableCell>
-                      <div class="flex justify-end gap-2">
-                        <Button variant="outline" size="sm" @click="mcp.copy(endpoint.path)">
-                          <RiClipboardLine size="16" />复制地址
-                        </Button>
-                        <Button variant="outline" size="sm" @click="copyConfig(endpoint)">
-                          <RiFileCopyLine size="16" />复制配置
-                        </Button>
-                        <Button
-                          v-if="mcp.endpointHasKey(endpoint.path)"
-                          variant="destructive"
-                          size="sm"
-                          :disabled="isKeyPending(`endpoint:${endpoint.path}:delete`)"
-                          @click="deleteMcpKey(endpoint.path)"
-                        >
-                          <RiLoader4Line
-                            v-if="isKeyPending(`endpoint:${endpoint.path}:delete`)"
-                            class="animate-spin"
-                            size="16"
-                          /><RiDeleteBinLine v-else size="16" />删除认证
-                        </Button>
-                        <Button
-                          v-else
-                          variant="secondary"
-                          size="sm"
-                          :disabled="isKeyPending(`endpoint:${endpoint.path}:create`)"
-                          @click="createMcpKey(endpoint.path)"
-                        >
-                          <RiLoader4Line
-                            v-if="isKeyPending(`endpoint:${endpoint.path}:create`)"
-                            class="animate-spin"
-                            size="16"
-                          /><RiKey2Line v-else size="16" />创建端点密钥
-                        </Button>
-                      </div>
-                    </TableCell>
+                    <TableHead class="w-10 min-w-10 max-w-10"></TableHead>
+                    <TableHead>类型</TableHead>
+                    <TableHead>地址</TableHead>
+                    <TableHead>工具数</TableHead>
+                    <TableHead>认证</TableHead>
+                    <TableHead class="text-right">操作</TableHead>
                   </TableRow>
-                  <TableRow
-                    v-if="isEndpointExpanded(endpoint.path)"
-                    class="bg-muted/30 hover:bg-muted/30"
-                  >
-                    <TableCell :colspan="6" class="p-0">
-                      <div class="grid gap-4 px-4 py-4 md:grid-cols-2">
-                        <div class="space-y-3">
-                          <div>
-                            <div class="text-xs font-medium text-muted-foreground">端点地址</div>
-                            <code
-                              class="mt-1 block break-all rounded bg-background px-2 py-1 font-mono text-xs"
-                              >{{ endpointUrl(endpoint.path) }}</code
-                            >
-                          </div>
-                          <div>
-                            <div class="text-xs font-medium text-muted-foreground">认证 Header</div>
-                            <code
-                              class="mt-1 block rounded bg-background px-2 py-1 font-mono text-xs"
-                              >X-Loadout-Key</code
-                            >
-                          </div>
-                          <div>
-                            <div class="text-xs font-medium text-muted-foreground">认证状态</div>
-                            <Badge
-                              :variant="mcp.endpointHasKey(endpoint.path) ? 'default' : 'secondary'"
-                              >{{
-                                mcp.endpointHasKey(endpoint.path) ? '已配置密钥' : '未配置'
-                              }}</Badge
-                            >
-                          </div>
+                </TableHeader>
+                <TableBody>
+                  <template v-for="endpoint in mcp.endpoints" :key="endpoint.path">
+                    <TableRow>
+                      <TableCell class="w-10 pr-0">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          class="size-8"
+                          :aria-label="
+                            isEndpointExpanded(endpoint.path) ? '收起端点详情' : '展开端点详情'
+                          "
+                          :aria-expanded="isEndpointExpanded(endpoint.path)"
+                          @click="toggleEndpoint(endpoint.path)"
+                        >
+                          <RiArrowDownSLine v-if="isEndpointExpanded(endpoint.path)" size="16" />
+                          <RiArrowRightSLine v-else size="16" />
+                        </Button>
+                      </TableCell>
+                      <TableCell>
+                        <div class="flex items-center gap-1.5">
+                          <Badge variant="secondary">{{ endpoint.kind }}</Badge>
+                          <Badge v-if="endpoint.builtin" variant="outline">内置</Badge>
                         </div>
-                        <div class="space-y-3">
-                          <div class="flex items-center justify-between">
-                            <div>
-                              <div class="font-medium">Token 列表</div>
-                              <div class="text-xs text-muted-foreground">
-                                后续接入后端 token 历史记录。
-                              </div>
-                            </div>
-                            <Badge variant="outline">{{
-                              endpointKeys[endpoint.path] ? '1 条临时记录' : '暂无记录'
-                            }}</Badge>
-                          </div>
-                          <div
-                            v-if="endpointKeys[endpoint.path]"
-                            class="rounded-md border bg-background p-3"
+                      </TableCell>
+                      <TableCell class="font-mono text-xs">{{ endpoint.path }}</TableCell>
+                      <TableCell>{{ endpoint.count }}</TableCell>
+                      <TableCell>
+                        <Badge :variant="mcp.endpointHasKey(endpoint.path) ? 'default' : 'outline'">
+                          <RiKey2Line
+                            v-if="mcp.endpointHasKey(endpoint.path)"
+                            size="12"
+                            class="mr-1"
+                          />
+                          {{ mcp.endpointHasKey(endpoint.path) ? '已配置' : '无认证' }}
+                        </Badge>
+                      </TableCell>
+                      <TableCell>
+                        <div class="flex justify-end gap-2">
+                          <Button variant="outline" size="sm" @click="mcp.copy(endpoint.path)">
+                            <RiClipboardLine size="16" />复制地址
+                          </Button>
+                          <Button variant="outline" size="sm" @click="copyConfig(endpoint)">
+                            <RiFileCopyLine size="16" />复制配置
+                          </Button>
+                          <Button
+                            v-if="mcp.endpointHasKey(endpoint.path)"
+                            variant="destructive"
+                            size="sm"
+                            :disabled="isKeyPending(`endpoint:${endpoint.path}:delete`)"
+                            @click="deleteMcpKey(endpoint.path)"
                           >
-                            <div class="mb-2 flex items-center justify-between gap-2">
-                              <span class="text-xs text-muted-foreground"
-                                >刚刚创建的 Token（仅本次可见）</span
-                              >
-                              <TooltipProvider>
-                                <Tooltip>
-                                  <TooltipTrigger as-child
-                                    ><Button
-                                      variant="ghost"
-                                      size="icon"
-                                      class="size-8"
-                                      aria-label="复制 Token"
-                                      @click="copyKey(endpointKeys[endpoint.path])"
-                                    >
-                                      <RiClipboardLine size="16" /> </Button
-                                  ></TooltipTrigger>
-                                  <TooltipContent>复制 Token</TooltipContent>
-                                </Tooltip>
-                              </TooltipProvider>
-                            </div>
-                            <code class="block break-all font-mono text-xs">{{
-                              endpointKeys[endpoint.path]
-                            }}</code>
-                          </div>
-                          <div
+                            <RiLoader4Line
+                              v-if="isKeyPending(`endpoint:${endpoint.path}:delete`)"
+                              class="animate-spin"
+                              size="16"
+                            /><RiDeleteBinLine v-else size="16" />删除认证
+                          </Button>
+                          <Button
                             v-else
-                            class="rounded-md border border-dashed p-3 text-sm text-muted-foreground"
+                            variant="secondary"
+                            size="sm"
+                            :disabled="isKeyPending(`endpoint:${endpoint.path}:create`)"
+                            @click="createMcpKey(endpoint.path)"
                           >
-                            暂无 token 记录
+                            <RiLoader4Line
+                              v-if="isKeyPending(`endpoint:${endpoint.path}:create`)"
+                              class="animate-spin"
+                              size="16"
+                            /><RiKey2Line v-else size="16" />创建端点密钥
+                          </Button>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                    <TableRow
+                      v-if="isEndpointExpanded(endpoint.path)"
+                      class="bg-muted/30 hover:bg-muted/30"
+                    >
+                      <TableCell :colspan="6" class="p-0">
+                        <div class="grid gap-4 px-4 py-4 md:grid-cols-2">
+                          <div class="space-y-3">
+                            <div>
+                              <div class="text-xs font-medium text-muted-foreground">端点地址</div>
+                              <code
+                                class="mt-1 block break-all rounded bg-background px-2 py-1 font-mono text-xs"
+                                >{{ endpointUrl(endpoint.path) }}</code
+                              >
+                            </div>
+                            <div>
+                              <div class="text-xs font-medium text-muted-foreground">
+                                认证 Header
+                              </div>
+                              <code
+                                class="mt-1 block rounded bg-background px-2 py-1 font-mono text-xs"
+                                >X-Loadout-Key</code
+                              >
+                            </div>
+                            <div>
+                              <div class="text-xs font-medium text-muted-foreground">认证状态</div>
+                              <Badge
+                                :variant="
+                                  mcp.endpointHasKey(endpoint.path) ? 'default' : 'secondary'
+                                "
+                                >{{
+                                  mcp.endpointHasKey(endpoint.path) ? '已配置密钥' : '未配置'
+                                }}</Badge
+                              >
+                            </div>
+                          </div>
+                          <div class="space-y-3">
+                            <div class="flex items-center justify-between">
+                              <div>
+                                <div class="font-medium">Token 列表</div>
+                                <div class="text-xs text-muted-foreground">
+                                  后续接入后端 token 历史记录。
+                                </div>
+                              </div>
+                              <Badge variant="outline">{{
+                                endpointKeys[endpoint.path] ? '1 条临时记录' : '暂无记录'
+                              }}</Badge>
+                            </div>
+                            <div
+                              v-if="endpointKeys[endpoint.path]"
+                              class="rounded-md border bg-background p-3"
+                            >
+                              <div class="mb-2 flex items-center justify-between gap-2">
+                                <span class="text-xs text-muted-foreground"
+                                  >刚刚创建的 Token（仅本次可见）</span
+                                >
+                                <TooltipProvider>
+                                  <Tooltip>
+                                    <TooltipTrigger as-child
+                                      ><Button
+                                        variant="ghost"
+                                        size="icon"
+                                        class="size-8"
+                                        aria-label="复制 Token"
+                                        @click="copyKey(endpointKeys[endpoint.path])"
+                                      >
+                                        <RiClipboardLine size="16" /> </Button
+                                    ></TooltipTrigger>
+                                    <TooltipContent>复制 Token</TooltipContent>
+                                  </Tooltip>
+                                </TooltipProvider>
+                              </div>
+                              <code class="block break-all font-mono text-xs">{{
+                                endpointKeys[endpoint.path]
+                              }}</code>
+                            </div>
+                            <div
+                              v-else
+                              class="rounded-md border border-dashed p-3 text-sm text-muted-foreground"
+                            >
+                              暂无 token 记录
+                            </div>
                           </div>
                         </div>
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                </template>
-              </TableBody>
-            </Table>
+                      </TableCell>
+                    </TableRow>
+                  </template>
+                </TableBody>
+              </Table>
             </AxTable>
           </CardContent>
         </Card>

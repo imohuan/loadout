@@ -186,7 +186,13 @@ function detectStreamFormat(body: string): StreamFormat {
     const type = (json as Record<string, unknown>).type
     if (typeof type === 'string') {
       if (type.startsWith('response.')) return 'responses'
-      if (type.includes('content_block') || type === 'message_start' || type === 'message_stop' || type === 'message_delta') return 'claude'
+      if (
+        type.includes('content_block') ||
+        type === 'message_start' ||
+        type === 'message_stop' ||
+        type === 'message_delta'
+      )
+        return 'claude'
     }
     if ((json as Record<string, unknown>).choices) return 'chat'
   }
@@ -203,7 +209,14 @@ class ToolCallAggregator {
   addFragment(frag: ToolCallDeltaFragment) {
     let agg = this.byIndex.get(frag.index)
     if (!agg) {
-      agg = { index: frag.index, id: '', type: 'function', name: '', argumentsRaw: '', argumentsParsed: null }
+      agg = {
+        index: frag.index,
+        id: '',
+        type: 'function',
+        name: '',
+        argumentsRaw: '',
+        argumentsParsed: null,
+      }
       this.byIndex.set(frag.index, agg)
       this.order.push(frag.index)
     }
@@ -276,7 +289,13 @@ function parseChatStream(body: string): ParsedStream {
     const payload = line.slice(5).trim()
     if (payload === '[DONE]') {
       isDone = true
-      chunks.push({ index: chunks.length + 1, parsed: false, format: 'chat', rawJson: '[DONE]', charOffset: cursor - line.length - 1 })
+      chunks.push({
+        index: chunks.length + 1,
+        parsed: false,
+        format: 'chat',
+        rawJson: '[DONE]',
+        charOffset: cursor - line.length - 1,
+      })
       continue
     }
 
@@ -284,13 +303,25 @@ function parseChatStream(body: string): ParsedStream {
     try {
       parsedJson = JSON.parse(payload)
     } catch {
-      chunks.push({ index: chunks.length + 1, parsed: false, format: 'chat', rawJson: payload, charOffset: cursor - line.length - 1 })
+      chunks.push({
+        index: chunks.length + 1,
+        parsed: false,
+        format: 'chat',
+        rawJson: payload,
+        charOffset: cursor - line.length - 1,
+      })
       continue
     }
 
     const fields = extractChatChunkFields(parsedJson)
     if (!fields) {
-      chunks.push({ index: chunks.length + 1, parsed: true, format: 'chat', rawJsonString: payload, charOffset: cursor - line.length - 1 })
+      chunks.push({
+        index: chunks.length + 1,
+        parsed: true,
+        format: 'chat',
+        rawJsonString: payload,
+        charOffset: cursor - line.length - 1,
+      })
       continue
     }
 
@@ -303,10 +334,27 @@ function parseChatStream(body: string): ParsedStream {
       for (const frag of fields.toolCallsDelta) agg.addFragment(frag)
     }
 
-    chunks.push({ index: chunks.length + 1, parsed: true, format: 'chat', rawJsonString: payload, fields, charOffset: cursor - line.length - 1 })
+    chunks.push({
+      index: chunks.length + 1,
+      parsed: true,
+      format: 'chat',
+      rawJsonString: payload,
+      fields,
+      charOffset: cursor - line.length - 1,
+    })
   }
 
-  return { chunks, contentAccum, reasoningAccum, toolCalls: agg.flush(), format: 'chat', usage, isDone, finishReason, parsedCount }
+  return {
+    chunks,
+    contentAccum,
+    reasoningAccum,
+    toolCalls: agg.flush(),
+    format: 'chat',
+    usage,
+    isDone,
+    finishReason,
+    parsedCount,
+  }
 }
 
 /**
@@ -374,7 +422,9 @@ function extractChatChunkFields(json: unknown): ParsedChunk['fields'] | null {
     // 不去会被 ToolCallAggregator 当成一次有效工具调用，渲染成空 ToolCallCard。
     // 只保留至少带 id/name/type/arguments 之一的真正片段。
     if (toolCallsDelta?.length) {
-      toolCallsDelta = toolCallsDelta.filter((frag) => frag.id || frag.name || frag.type || frag.arguments)
+      toolCallsDelta = toolCallsDelta.filter(
+        (frag) => frag.id || frag.name || frag.type || frag.arguments,
+      )
       if (!toolCallsDelta.length) toolCallsDelta = undefined
     }
     if (typeof first.finish_reason === 'string') finishReason = first.finish_reason
@@ -431,7 +481,13 @@ function parseClaudeStream(body: string): ParsedStream {
     try {
       json = JSON.parse(payload)
     } catch {
-      chunks.push({ index: chunks.length + 1, parsed: false, format: 'claude', rawJson: payload, charOffset: cursor - line.length - 1 })
+      chunks.push({
+        index: chunks.length + 1,
+        parsed: false,
+        format: 'claude',
+        rawJson: payload,
+        charOffset: cursor - line.length - 1,
+      })
       continue
     }
     if (!json || typeof json !== 'object') continue
@@ -504,15 +560,39 @@ function parseClaudeStream(body: string): ParsedStream {
       }
       default:
         // ping 等忽略，但保留 rawJson 供时间轴
-        chunks.push({ index: chunks.length + 1, parsed: true, format: 'claude', rawJsonString: payload, fields, charOffset: cursor - line.length - 1 })
+        chunks.push({
+          index: chunks.length + 1,
+          parsed: true,
+          format: 'claude',
+          rawJsonString: payload,
+          fields,
+          charOffset: cursor - line.length - 1,
+        })
         continue
     }
 
     parsedCount++
-    chunks.push({ index: chunks.length + 1, parsed: true, format: 'claude', rawJsonString: payload, fields, charOffset: cursor - line.length - 1 })
+    chunks.push({
+      index: chunks.length + 1,
+      parsed: true,
+      format: 'claude',
+      rawJsonString: payload,
+      fields,
+      charOffset: cursor - line.length - 1,
+    })
   }
 
-  return { chunks, contentAccum, reasoningAccum, toolCalls: agg.flush(), format: 'claude', usage, isDone, finishReason, parsedCount }
+  return {
+    chunks,
+    contentAccum,
+    reasoningAccum,
+    toolCalls: agg.flush(),
+    format: 'claude',
+    usage,
+    isDone,
+    finishReason,
+    parsedCount,
+  }
 }
 
 // ---- OpenAI Responses API 流 ----
@@ -549,7 +629,13 @@ function parseResponsesStream(body: string): ParsedStream {
     try {
       json = JSON.parse(payload)
     } catch {
-      chunks.push({ index: chunks.length + 1, parsed: false, format: 'responses', rawJson: payload, charOffset: cursor - line.length - 1 })
+      chunks.push({
+        index: chunks.length + 1,
+        parsed: false,
+        format: 'responses',
+        rawJson: payload,
+        charOffset: cursor - line.length - 1,
+      })
       continue
     }
     if (!json || typeof json !== 'object') continue
@@ -567,12 +653,18 @@ function parseResponsesStream(body: string): ParsedStream {
       if (typeof ev.text === 'string') {
         fields.contentDelta = ev.text
       }
-    } else if (type === 'response.reasoning_summary_text.delta' || type === 'response.reasoning_text.delta') {
+    } else if (
+      type === 'response.reasoning_summary_text.delta' ||
+      type === 'response.reasoning_text.delta'
+    ) {
       if (typeof ev.delta === 'string') {
         fields.reasoningDelta = ev.delta
         reasoningAccum += ev.delta
       }
-    } else if (type === 'response.reasoning_summary_text.done' || type === 'response.reasoning_text.done') {
+    } else if (
+      type === 'response.reasoning_summary_text.done' ||
+      type === 'response.reasoning_text.done'
+    ) {
       // done 事件带全文（summary_text/text），delta 已逐片累加过；这里只落到
       // fields 供时间轴展示，不重复累加（与 output_text.done 语义一致）。
       const seg = ev.summary_text ?? ev.text
@@ -633,15 +725,39 @@ function parseResponsesStream(body: string): ParsedStream {
       fields.finishReason = 'failed'
     } else {
       // 其它事件类型（response.output_item.added 非 function_call 等）保留原文
-      chunks.push({ index: chunks.length + 1, parsed: true, format: 'responses', rawJsonString: payload, fields, charOffset: cursor - line.length - 1 })
+      chunks.push({
+        index: chunks.length + 1,
+        parsed: true,
+        format: 'responses',
+        rawJsonString: payload,
+        fields,
+        charOffset: cursor - line.length - 1,
+      })
       continue
     }
 
     parsedCount++
-    chunks.push({ index: chunks.length + 1, parsed: true, format: 'responses', rawJsonString: payload, fields, charOffset: cursor - line.length - 1 })
+    chunks.push({
+      index: chunks.length + 1,
+      parsed: true,
+      format: 'responses',
+      rawJsonString: payload,
+      fields,
+      charOffset: cursor - line.length - 1,
+    })
   }
 
-  return { chunks, contentAccum, reasoningAccum, toolCalls: agg.flush(), format: 'responses', usage, isDone, finishReason, parsedCount }
+  return {
+    chunks,
+    contentAccum,
+    reasoningAccum,
+    toolCalls: agg.flush(),
+    format: 'responses',
+    usage,
+    isDone,
+    finishReason,
+    parsedCount,
+  }
 }
 
 /**
@@ -710,7 +826,8 @@ function parseNonStreamChat(obj: Record<string, unknown>, rawBody: string): Pars
   let model: string | undefined
   const toolCalls: ParsedToolCall[] = []
 
-  const choice0 = (Array.isArray(obj.choices) ? obj.choices[0] : undefined) as Record<string, unknown> | undefined
+  const choice0 = (Array.isArray(obj.choices) ? obj.choices[0] : undefined) as
+    Record<string, unknown> | undefined
   if (choice0 && typeof choice0 === 'object') {
     const msg = choice0.message as Record<string, unknown> | undefined
     if (msg && typeof msg === 'object') {
@@ -768,7 +885,17 @@ function parseNonStreamChat(obj: Record<string, unknown>, rawBody: string): Pars
     fields,
     charOffset: 0,
   })
-  return { chunks, contentAccum, reasoningAccum, toolCalls, format: 'chat', usage, isDone: true, finishReason, parsedCount: 1 }
+  return {
+    chunks,
+    contentAccum,
+    reasoningAccum,
+    toolCalls,
+    format: 'chat',
+    usage,
+    isDone: true,
+    finishReason,
+    parsedCount: 1,
+  }
 }
 
 // ---- 非流式：claude/messages 完整响应 ----
@@ -840,7 +967,17 @@ function parseNonStreamClaude(obj: Record<string, unknown>, rawBody: string): Pa
     fields,
     charOffset: 0,
   })
-  return { chunks, contentAccum, reasoningAccum, toolCalls, format: 'claude', usage, isDone: true, finishReason, parsedCount: 1 }
+  return {
+    chunks,
+    contentAccum,
+    reasoningAccum,
+    toolCalls,
+    format: 'claude',
+    usage,
+    isDone: true,
+    finishReason,
+    parsedCount: 1,
+  }
 }
 
 // ---- 非流式：responses API 完整响应 ----
@@ -912,7 +1049,17 @@ function parseNonStreamResponses(obj: Record<string, unknown>, rawBody: string):
     fields,
     charOffset: 0,
   })
-  return { chunks, contentAccum, reasoningAccum, toolCalls, format: 'responses', usage, isDone: true, finishReason, parsedCount: 1 }
+  return {
+    chunks,
+    contentAccum,
+    reasoningAccum,
+    toolCalls,
+    format: 'responses',
+    usage,
+    isDone: true,
+    finishReason,
+    parsedCount: 1,
+  }
 }
 
 /** 从 OpenAI message.content（字符串或多模态数组）提取纯文本（与 ChatPreviewPanel.extractContent 同规则：只拼 text，忽略图片/其它） */

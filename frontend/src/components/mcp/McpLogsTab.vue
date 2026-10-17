@@ -164,9 +164,7 @@ async function selectServer(name: string) {
 
 async function readLog(name: string, file: string, offset: number): Promise<LogReadResp> {
   const q = new URLSearchParams({ file, offset: String(offset) })
-  return api<LogReadResp>(
-    `/api/mcp-servers/${encodeURIComponent(name)}/log?${q.toString()}`,
-  )
+  return api<LogReadResp>(`/api/mcp-servers/${encodeURIComponent(name)}/log?${q.toString()}`)
 }
 
 // 「加载更早」：向前翻 64KB；当前段读完（offset=0）则切换到更早一段。
@@ -284,7 +282,10 @@ onMounted(loadServers)
   <Card class="rounded-md">
     <CardHeader>
       <CardTitle class="text-base">会话日志</CardTitle>
-      <CardDescription>三种连接方式（stdio / Streamable HTTP / SSE）的完整连接与调用日志，实时写入磁盘。</CardDescription>
+      <CardDescription
+        >三种连接方式（stdio / Streamable HTTP /
+        SSE）的完整连接与调用日志，实时写入磁盘。</CardDescription
+      >
     </CardHeader>
     <CardContent class="space-y-3">
       <!-- 工具栏 -->
@@ -312,7 +313,9 @@ onMounted(loadServers)
           >
             {{ (latestInfo()!.size / 1024).toFixed(1) }} KB
           </Badge>
-          <Badge v-if="latestInfo()!.last_ts" variant="outline">最近 {{ latestInfo()!.last_ts }}</Badge>
+          <Badge v-if="latestInfo()!.last_ts" variant="outline"
+            >最近 {{ latestInfo()!.last_ts }}</Badge
+          >
         </template>
         <div class="ml-auto flex items-center gap-3">
           <Button
@@ -330,10 +333,7 @@ onMounted(loadServers)
       </div>
 
       <!-- 初次加载失败（可重试，不污染主区域） -->
-      <div
-        v-if="errorMsg"
-        class="rounded-md border border-dashed p-8 text-center"
-      >
+      <div v-if="errorMsg" class="rounded-md border border-dashed p-8 text-center">
         <p class="text-sm text-muted-foreground">加载失败</p>
         <p class="mt-1 text-xs text-muted-foreground/70">{{ errorMsg }}</p>
         <Button size="sm" variant="outline" class="mt-3" :disabled="loading" @click="retryLoad">
@@ -396,5 +396,3 @@ onMounted(loadServers)
     </CardContent>
   </Card>
 </template>
-
-

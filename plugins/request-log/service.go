@@ -28,7 +28,9 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -59,13 +61,15 @@ const attemptMetadataKey = modelgateway.MetadataRequestLogAttemptID
 // request_id 反查兜底——防止把上一个已记录 attempt 的日志行错误收尾/覆盖。
 const skippedKey = "__request_log_skipped"
 
-// Service 完整请求日志适配器：查能力路由、抓请求/响应快照落独立库。
+// Service 完整请求日志适配器：查能力路由、抓请求/响应快照，正文写块存储
+// （manifests/ + blobs/），request-log.db 只存元数据行。
 // 所有写库 best-effort：handler 永不 return error（否则中断整个 /v1 转发），
 // 出错仅记日志。
 type Service struct {
 	st      *store.Store
 	lg      *slog.Logger
-	reqDB   *sql.DB        // 独立库 request-log.db（request_logs / request_log_config）
+	reqDB   *sql.DB        // 元数据库 request-log.db（request_logs 元数据 / request_log_config）
+	blobs   *blobStore     // 内容块存储（唯一正文存储；装配层必须 SetBlobDir 指定目录）
 	loadout *sql.DB        // loadout.db：UPDATE route_requests.request_log_id 关联列
 	repo    *db.Repository // SQLite 能力路由数据源（装配后注入；nil 时回退 JSON）
 	// dbPath 独立库文件路径：Stats 报「日志占用空间」要的是文件大小（含 WAL），
@@ -73,10 +77,20 @@ type Service struct {
 	dbPath string
 }
 
-// NewService 创建完整请求日志适配器。
-// database 为 loadout.db（写关联列用，测试可传 nil 跳过 UPDATE）。
+// NewService 创建完整请求日志适配器。database 为 loadout.db（写关联列用，
+// 测试可传 nil 跳过 UPDATE）。块存储目录由装配层 SetBlobDir 指定。
 func NewService(st *store.Store, lg *slog.Logger, reqDB, database *sql.DB) *Service {
 	return &Service{st: st, lg: lg, reqDB: reqDB, loadout: database}
+}
+
+// SetBlobDir 显式指定块存储目录（装配层调用；测试注入临时目录）。
+func (s *Service) SetBlobDir(dir string) error {
+	bs, err := newBlobStore(dir)
+	if err != nil {
+		return err
+	}
+	s.blobs = bs
+	return nil
 }
 
 // SetDBPath 记录独立库文件路径（装配层开库后调用），供 Stats 报文件大小。
@@ -93,10 +107,6 @@ type RetentionConfig struct {
 
 // retentionTimeFormat 与写入时一致的 RFC3339Nano：字符串比较即时间比较（SQLite TEXT 列）。
 const retentionTimeFormat = time.RFC3339Nano
-
-// retentionMinKeep 容量清理的下限保护：无论阈值多小，至少保留最近这么多条，
-// 避免用户把 MaxSizeMB 设成 1 时把库清得只剩 0 条（前端也设了下限，这里是后端兜底）。
-const retentionMinKeep = 100
 
 // RequestLogStats 日志库统计：前端「日志大小」按钮显示的就是 Size。
 type RequestLogStats struct {
@@ -174,35 +184,40 @@ func (s *Service) Clear(ctx context.Context) (int64, error) {
 	if s.reqDB == nil {
 		return 0, fmt.Errorf("request-log: 独立库未装配")
 	}
-	result, err := s.reqDB.ExecContext(ctx, `DELETE FROM request_logs`)
+	if s.blobs == nil {
+		return 0, fmt.Errorf("request-log: 块存储未装配")
+	}
+	// 清空 = 删全部清单文件 + GC 无引用块（纯文件操作，无 VACUUM）+ 清元数据行。
+	ids, err := s.blobs.manifestIDs()
 	if err != nil {
 		return 0, err
 	}
-	affected, _ := result.RowsAffected()
-	// 删完必须把空间真正还回去，否则用户点「清空」后看到大小几乎没变，会以为没生效：
-	//   - DELETE 只是把页标记为空闲，文件不会自动收缩；
-	//   - VACUUM 重建库文件、把空闲页还给操作系统（这是唯一真正缩小文件的办法）；
-	//   - 顺序要紧：先 checkpoint 把 WAL 内容并回主文件，VACUUM 才能看到全部空闲页，
-	//     否则 WAL 里未合并的部分会在 VACUUM 后又被写回来。
-	s.compactedSize(ctx)
+	var removed int64
+	for _, id := range ids {
+		if s.blobs.deleteManifest(id) {
+			removed++
+		}
+	}
+	if _, err := s.blobs.collectGarbage(); err != nil {
+		s.lg.Warn("request-log: 清空后块回收失败", "err", err)
+	}
+	if _, err := s.reqDB.ExecContext(ctx, `DELETE FROM request_logs`); err != nil {
+		return removed, err
+	}
 	if s.loadout != nil {
 		if _, err := s.loadout.ExecContext(ctx, `UPDATE route_requests SET request_log_id = NULL WHERE COALESCE(request_log_id, '') <> ''`); err != nil {
 			s.lg.Warn("request-log: 清空关联列失败", "err", err)
 		}
 	}
-	return affected, nil
+	return removed, nil
 }
 
 // ApplyRetention 按保留策略清理旧日志（FIFO：先删最旧的）。
 //
 // 双通道，任意一个开启即生效：
 //   - 时间：删除 started_at 早于 now-MaxAgeDays 的行；
-//   - 容量：删除后如果文件仍超过 MaxSizeMB，按 started_at 升序继续删最旧的行，
-//     直到降到阈值以下（或只剩 retentionMinKeep 条）。
-//
-// 容量通道按「文件大小」而不是「行大小求和」判断：日志主体是 request_json/
-// response_json 大文本，行数无法反映真实占用。删除后 SQLite 不会自动归还磁盘，
-// 循环里按估算的已删字节推算，收尾再 checkpoint 一次拿真实值。
+//   - 容量：request-logs 文件夹真实占用超过 MaxSizeMB 时，从最旧的清单开始删
+//     （文件夹大小 = 磁盘真相，去重后块共享与否都不影响判断）。
 //
 // 调用点：写日志后（HandleBeforeAttempt 末尾，best-effort）、服务启动时一次、
 // 以及在设置页保存保留策略 / 点「立即清理」时手动触发（用户改完上限不必等下一个请求）。
@@ -211,15 +226,73 @@ func (s *Service) ApplyRetention(ctx context.Context, cfg RetentionConfig) {
 	if s.reqDB == nil || (cfg.MaxAgeDays <= 0 && cfg.MaxSizeMB <= 0) {
 		return
 	}
-	if cfg.MaxAgeDays > 0 {
-		cutoff := time.Now().UTC().AddDate(0, 0, -cfg.MaxAgeDays).Format(retentionTimeFormat)
-		if _, err := s.reqDB.ExecContext(ctx, `DELETE FROM request_logs WHERE started_at < ?`, cutoff); err != nil {
-			s.lg.Warn("request-log: 按天数清理日志失败", "err", err)
+	s.applyBlobRetention(ctx, cfg)
+}
+
+// applyBlobRetention 块存储路径的保留策略：删除过期清单文件 + GC 无引用块。
+// 无 VACUUM、无库锁；清单删除后页面立刻不可见（ExistingIDs 走元数据表，
+// 元数据行同步删除）。
+func (s *Service) applyBlobRetention(ctx context.Context, cfg RetentionConfig) {
+	ids, err := s.blobs.manifestIDs()
+	if err != nil {
+		s.lg.Warn("request-log: 列出清单失败", "err", err)
+		return
+	}
+	type entry struct {
+		id      string
+		started time.Time
+	}
+	entries := make([]entry, 0, len(ids))
+	for _, id := range ids {
+		m, err := s.blobs.readManifest(id)
+		if err != nil {
+			continue
+		}
+		started, err := time.Parse(time.RFC3339Nano, m.StartedAt)
+		if err != nil {
+			continue
+		}
+		entries = append(entries, entry{id: id, started: started})
+	}
+	limit := int64(cfg.MaxSizeMB) * 1024 * 1024
+	used := s.blobDirSize()
+	removed := 0
+	// 从最旧开始删（entries 保持清单顺序即可，过期判断逐条；容量判断从最旧起删）
+	sort.Slice(entries, func(i, j int) bool { return entries[i].started.Before(entries[j].started) })
+	for _, e := range entries {
+		expired := cfg.MaxAgeDays > 0 && time.Since(e.started) > time.Duration(cfg.MaxAgeDays)*24*time.Hour
+		overSize := cfg.MaxSizeMB > 0 && used > limit
+		if !expired && !overSize {
+			continue
+		}
+		if s.blobs.deleteManifest(e.id) {
+			if _, err := s.reqDB.ExecContext(ctx, `DELETE FROM request_logs WHERE id = ?`, e.id); err != nil {
+				s.lg.Warn("request-log: 删元数据行失败", "id", e.id, "err", err)
+			}
+			removed++
+			used = s.blobDirSize() // 删完重算（简单可靠；清理不频繁，开销可忽略）
 		}
 	}
-	if cfg.MaxSizeMB > 0 {
-		s.trimBySize(ctx, int64(cfg.MaxSizeMB)*1024*1024)
+	if removed > 0 {
+		if n, err := s.blobs.collectGarbage(); err == nil && n > 0 {
+			s.lg.Info("request-log: 块回收完成", "manifests", removed, "blobs", n)
+		}
 	}
+}
+
+// blobDirSize 统计块存储目录的真实磁盘占用（blobs/ + manifests/ 全部文件）。
+// 清理判断用它而不是任何估算列：这就是用户在磁盘上看到的数字。
+func (s *Service) blobDirSize() int64 {
+	var total int64
+	_ = filepath.WalkDir(s.blobs.dir, func(path string, d os.DirEntry, err error) error {
+		if err == nil && d.IsDir() == false {
+			if info, ierr := d.Info(); ierr == nil {
+				total += info.Size()
+			}
+		}
+		return nil
+	})
+	return total
 }
 
 // ApplyCurrentRetention 按当前设置里的策略清理一次，返回执行后的统计。
@@ -227,194 +300,6 @@ func (s *Service) ApplyRetention(ctx context.Context, cfg RetentionConfig) {
 func (s *Service) ApplyCurrentRetention(ctx context.Context) RequestLogStats {
 	s.ApplyRetention(ctx, s.currentRetention())
 	return s.Stats(ctx)
-}
-
-// trimBySize 容量通道：文件超过 limit 时从最旧的行开始删（FIFO），直到低于 limit
-// 或触及 retentionMinKeep 下限。
-//
-// 【为什么不能只看文件大小】SQLite 删行只是把页标成空闲、文件不会跟着缩小，只有
-// VACUUM 才真正还磁盘。所以「删一轮 → 看文件大小 → 还超就再删」如果在中间不做
-// VACUUM，就会一路删到保留下限（曾实际发生：301 行只有 19MB、上限 20MB 却被删到
-// 100 行，用户白丢日志）。
-//
-// 【为什么不能只按内容体积估算】反过来，纯估算（把 length(request_json)+... 求和
-// 当作占用）也有个坑：SQLite 还有页头、B 树碎片、索引、schema 等固定开销，估算值
-// 与文件实际大小对不上。差得少时会出现「估算说到顶了、文件其实还超」，于是反复
-// VACUUM 却怎么都不达标。
-//
-// 【做法】分两步，各自只做一次重活：
-//  1. 按 bytes 列估算：从最新往旧累加，找到「累计量 <= 预算」的那批行留下，
-//     一次 DELETE 掉更旧的全部（FIFO）。bytes 是写入时记好的，这一步只是纯
-//     数值的窗口求和，不碰正文。
-//  2. 收尾 VACUUM 一次，把删掉的空间真正还给磁盘。
-//
-// 【为什么不像早先那样循环 VACUUM】VACUUM 要重建整个库文件，是整个流程里唯一的
-// 大头，且耗时与库大小成正比（实测 300MB 约 1.2s，15GB 要 1 分钟左右）。早先每轮
-// 都 VACUUM 来「拿真实大小判断还超不超」，300MB 的库要跑十几秒、15GB 就是十几
-// 分钟。但 VACUUM 只影响文件占多少磁盘、不影响还剩几行数据——把判断依据换成
-// bytes（内容体积）后，一次就能删到位，VACUUM 只需要收尾那一次。
-//
-// 【估算偏差怎么补】内容体积总是略小于文件大小（页头、索引、碎片），所以先在
-// 预算里按比例留出余量；VACUUM 后若仍超限，用实测到的「文件/内容」比值再删一轮
-// （最多 allowExtraRounds 轮，避免极端情况无限重试）。
-func (s *Service) trimBySize(ctx context.Context, limit int64) {
-	if limit <= 0 {
-		return
-	}
-	var total int64
-	if err := s.reqDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM request_logs`).Scan(&total); err != nil {
-		s.lg.Warn("request-log: 清理前统计行数失败", "err", err)
-		return
-	}
-	if total <= retentionMinKeep {
-		s.lg.Info("request-log: 已触及保留下限，停止容量清理",
-			"limit", limit, "remaining", total, "min_keep", retentionMinKeep)
-		s.compactOnly(ctx)
-		return
-	}
-
-	// 删除辅助：删掉当前最旧的 need 行（FIFO），返回真实删掉的行数。
-	deleteOldest := func(need int64) int64 {
-		if need <= 0 {
-			return 0
-		}
-		result, err := s.reqDB.ExecContext(ctx,
-			`DELETE FROM request_logs WHERE id IN (SELECT id FROM request_logs ORDER BY started_at ASC LIMIT ?)`, need)
-		if err != nil {
-			s.lg.Warn("request-log: 按容量清理日志失败", "err", err)
-			return 0
-		}
-		n, _ := result.RowsAffected()
-		return n
-	}
-
-	// 先量一次真实文件大小，没超限就直接收工（大多数「写日志后顺手清理」都走这里，
-	// 此时超限通常只是 WAL 没合并，VACUUM 一次让文件回落即可）。
-	size := s.diskSize()
-	if size <= limit {
-		return
-	}
-
-	// 按 bytes 估算要保留的行数，一次删到位。
-	if keep := s.keepRowsWithin(ctx, limit); keep < total {
-		if keep < retentionMinKeep {
-			keep = retentionMinKeep
-		}
-		if deleted := deleteOldest(total - keep); deleted > 0 {
-			total -= deleted
-			s.lg.Info("request-log: 容量清理删除旧日志",
-				"deleted", deleted, "remaining", total, "limit", limit)
-		}
-	}
-
-	// 收尾 VACUUM：把删掉的空间真正还给磁盘（唯一能让文件变小的手段）。
-	after := s.compactedSize(ctx)
-	if after <= limit {
-		s.lg.Info("request-log: 容量清理完成", "size", after, "limit", limit, "remaining", total)
-		return
-	}
-
-	// 仍超限：说明「文件 / 内容体积」的比值比预估更大（碎片、索引膨胀等）。
-	// 用实测比值反推还要删多少行，最多再补几轮；每轮只多一次 VACUUM。
-	const allowExtraRounds = 3
-	for round := 1; round <= allowExtraRounds; round++ {
-		if total <= retentionMinKeep {
-			s.lg.Warn("request-log: 已触及保留下限，清理后仍超限（可能单条日志就超过上限）",
-				"size", after, "limit", limit, "remaining", total, "min_keep", retentionMinKeep)
-			return
-		}
-		// 超出量按比例折算成行数：剩余行均摊了 after 的占用，删掉超标那部分即可。
-		need := (after - limit) * total / after
-		if need < 1 {
-			need = 1
-		}
-		if total-need < retentionMinKeep {
-			need = total - retentionMinKeep
-		}
-		deleted := deleteOldest(need)
-		if deleted <= 0 {
-			return
-		}
-		total -= deleted
-		after = s.compactedSize(ctx)
-		if after <= limit {
-			s.lg.Info("request-log: 容量清理完成", "size", after, "limit", limit, "remaining", total, "rounds", round)
-			return
-		}
-		s.lg.Info("request-log: 容量清理补删一轮", "round", round, "size", after, "deleted", deleted, "remaining", total)
-	}
-	s.lg.Warn("request-log: 容量清理后仍超限", "size", after, "limit", limit, "remaining", total)
-}
-
-// keepRowsWithin 估算「保留最近多少行时，内容体积落到预算内」。
-//
-// 从最新往旧累加写入时记好的 bytes，找累计量 <= 预算的那批行——纯数值窗口求和，
-// 不需要把 request_json/response_json 读出来量长度。
-//
-// 【索引方向很要命】rn 由 ROW_NUMBER() OVER (ORDER BY started_at DESC) 得到，
-// 最新一行的 rn = 1。要「保留最新的 k 行」，就得问「rn <= k 的这批行内容量是否
-// 还装得下」——所以这里是按 rn 升序（从最新往旧）累加，然后取满足 acc <= budget
-// 的 MAX(rn)，它就是能保留的最新行数 k。
-//
-// 注意别把累加方向写反（写成 ORDER BY rn DESC 就是从最旧往新累加，acc 命中的
-// 是最旧的几行，算出来的数含义完全不同，会导致怎么都删不到位）。
-func (s *Service) keepRowsWithin(ctx context.Context, limit int64) int64 {
-	budget := s.contentBudget(limit)
-	var keep int64
-	query := `
-		SELECT COALESCE(MAX(rn), 0) FROM (
-			SELECT rn, SUM(row_bytes) OVER (ORDER BY rn ASC) AS acc
-			FROM (
-				SELECT ROW_NUMBER() OVER (ORDER BY started_at DESC) AS rn, bytes AS row_bytes
-				FROM request_logs
-			)
-		) WHERE acc <= ?`
-	if err := s.reqDB.QueryRowContext(ctx, query, budget).Scan(&keep); err != nil {
-		s.lg.Warn("request-log: 估算可保留行数失败", "err", err)
-		return 0
-	}
-	return keep
-}
-
-// sizeRatio 文件大小 / 内容体积 的兜底比值。
-//
-// SQLite 的文件除了正文还有页头、B 树填充、各索引、schema。实测这个比值很接近 1
-// （3000 行 × 64KB：1.009；剩 300 行：1.011），因为没有额外的独立索引占大块空间。
-// 取 1.05 略偏保守，既留出碎片余量，又不会像 1.10 那样多删掉一成的日志。
-const sizeRatio = 1.05
-
-// fixedSizeOverhead 库里与行数无关的固定占用（schema、页头等），约 256KB。
-const fixedSizeOverhead = 256 * 1024
-
-// contentBudget 把「目标文件大小」折算成「允许的内容体积」。
-//
-// 反比折算：文件 ≈ 内容 × sizeRatio + 固定开销，所以要留的内容体积就是
-// (目标 - 固定开销) / sizeRatio。再压 95% 留余量，避免刚清完又立刻超限。
-func (s *Service) contentBudget(limit int64) int64 {
-	target := limit - limit/20 // 95%
-	budget := int64(float64(target-fixedSizeOverhead) / sizeRatio)
-	if budget < 1 {
-		budget = 1
-	}
-	return budget
-}
-
-// compactOnly 只做 VACUUM 收尾（把已删数据的空闲页还给磁盘），不改数据。
-func (s *Service) compactOnly(ctx context.Context) {
-	_, _ = s.reqDB.ExecContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`)
-	if _, err := s.reqDB.ExecContext(ctx, `VACUUM`); err != nil {
-		s.lg.Warn("request-log: VACUUM 回收空间失败，文件暂不收缩", "err", err)
-	}
-	_, _ = s.reqDB.ExecContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`)
-}
-
-// compactedSize 当前的实时占用：先 checkpoint 把 WAL 并回主文件，再 VACUUM 收缩，
-// 最后返回真实文件大小。用于「清空后」「容量清理收尾」这类需要真实数字的场合。
-//
-// 注意它很贵（VACUUM 重建整个库），大库上会明显耗时；只做判定时请用 diskSize。
-func (s *Service) compactedSize(ctx context.Context) int64 {
-	s.compactOnly(ctx)
-	return s.diskSize()
 }
 
 // SetRepository 注入 SQLite 仓储（由装配层在 db 就绪后调用；测试可省略）。
@@ -566,16 +451,95 @@ func (s *Service) HandleBeforeAttempt(payload any) (any, error) {
 		return payload, nil
 	}
 	// 纯 INSERT：每次 attempt 独立 UUID 恒不冲突（无需 ON CONFLICT 分支）。
-	// bytes 在这里先记「请求体 + 固定开销」；响应收尾时再重算一次总量。
-	if _, err := s.reqDB.Exec(`INSERT INTO request_logs(id, request_id, model, channel, stream, started_at, result, request_json, bytes, created_at) VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?, ?)`,
-		uuid, pipe.RequestID, model, channel, boolToInt(pipe.Request.Stream), started.Format(time.RFC3339Nano), string(reqJSON), rowBytes(string(reqJSON), ""), started.Format(time.RFC3339Nano)); err != nil {
-		s.lg.Warn("request-log: 写 request_logs 半条失败", "request_id", pipe.RequestID, "err", err)
-		return payload, nil
+	// 正文走块存储（beginBlobLog），元数据行 request_json 置空。
+	return payload, s.beginBlobLog(pipe, model, uuid, channel, started, reqJSON)
+}
+
+// beginBlobLog 块存储路径的「写半条」：请求体拆消息块（逐条 SHA-256 去重）+
+// 剩余参数块，正文写 blobs/，清单写 manifests/；request_logs 表只落一行元数据
+// （request_json 列存空串占位——详情从块存储组装，列表/统计/搜索不读正文）。
+// 拆块失败（非 JSON / 无 messages）自动退回整体单块（ReqRaw），语义不丢。
+func (s *Service) beginBlobLog(pipe *modelgateway.ProxyPipeline, model, uuid, channel string, started time.Time, reqJSON []byte) error {
+	if s.blobs == nil {
+		// 块存储未装配：退化为只写元数据行（正文缺失会在详情页看到空 body，
+		// 但不阻塞请求——best-effort 语义与整个插件一致）。
+		if _, err := s.reqDB.Exec(`INSERT INTO request_logs(id, request_id, model, channel, stream, started_at, result, created_at) VALUES (?, ?, ?, ?, ?, ?, 'running', ?)`,
+			uuid, pipe.RequestID, model, channel, boolToInt(pipe.Request.Stream), started.Format(time.RFC3339Nano), started.Format(time.RFC3339Nano)); err != nil {
+			s.lg.Warn("request-log: 写 request_logs 元数据行失败", "request_id", pipe.RequestID, "err", err)
+		}
+		return nil
 	}
-	// 保留策略：新日志写入后顺带清理一次旧数据（best-effort，同步执行但只删少量行）。
-	// 放在这里而不是定时器：库只会被请求撑大，写日志的时刻就是最该检查容量的时刻。
-	s.ApplyRetention(context.Background(), s.currentRetention())
-	return payload, nil
+	m := requestManifest{
+		ID:        uuid,
+		RequestID: pipe.RequestID,
+		Model:     model,
+		Stream:    pipe.Request.Stream,
+		StartedAt: started.Format(time.RFC3339Nano),
+		Result:    "running",
+	}
+	// 快照 headers/method 等进 ReqExtra 的包装层（组装时还原 requestSnapshot 结构）
+	snap := buildRequestSnapshot(pipe, model, s.redactEnabled())
+	// snap.Body 已含完整请求体（脱敏后）；拆的是脱敏后的 body——脱敏是确定性
+	// 替换，同一条消息前后轮脱敏结果一致，哈希命中不受影响。
+	body := []byte(snap.Body)
+	msgs, contents, extra, ok := splitRequestMessages(body)
+	if ok {
+		for i := range msgs {
+			if _, err := s.blobs.putBlob(contents[i]); err != nil {
+				s.lg.Warn("request-log: 写消息块失败", "request_id", pipe.RequestID, "err", err)
+				return nil
+			}
+			m.Messages = append(m.Messages, msgs[i].Hash)
+		}
+		if extraHash, err := s.blobs.putBlob([]byte(extra)); err != nil {
+			s.lg.Warn("request-log: 写参数块失败", "request_id", pipe.RequestID, "err", err)
+			return nil
+		} else {
+			m.ReqExtra = extraHash
+		}
+	} else {
+		// 不可拆：整个请求体一个块
+		hash, err := s.blobs.putBlob(body)
+		if err != nil {
+			s.lg.Warn("request-log: 写请求块失败", "request_id", pipe.RequestID, "err", err)
+			return nil
+		}
+		m.ReqRaw = hash
+	}
+	// headers 等包装元数据也存块（脱敏后序列化，同请求头基本不变 → 命中率高）
+	envJSON, err := json.Marshal(requestEnvelope{
+		Method:  snap.Method,
+		Path:    snap.Path,
+		Query:   snap.Query,
+		Headers: snap.Headers,
+		Stream:  snap.Stream,
+	})
+	if err == nil {
+		if envHash, err := s.blobs.putBlob(envJSON); err == nil {
+			m.Envelope = envHash
+		}
+	}
+	if err := s.blobs.writeManifest(uuid, m); err != nil {
+		s.lg.Warn("request-log: 写清单失败", "request_id", pipe.RequestID, "err", err)
+		return nil
+	}
+	// 清单快照留在 metadata：收尾事件直接复用（不必重读文件），也供流式缓冲定位。
+	pipe.Metadata[manifestKey] = &m
+	// 元数据行：只有小字段，正文全部在块存储（详情走块组装）。
+	if _, err := s.reqDB.Exec(`INSERT INTO request_logs(id, request_id, model, channel, stream, started_at, result, created_at) VALUES (?, ?, ?, ?, ?, ?, 'running', ?)`,
+		uuid, pipe.RequestID, model, channel, boolToInt(pipe.Request.Stream), started.Format(time.RFC3339Nano), started.Format(time.RFC3339Nano)); err != nil {
+		s.lg.Warn("request-log: 写 request_logs 元数据行失败", "request_id", pipe.RequestID, "err", err)
+	}
+	return nil
+}
+
+// requestEnvelope 请求的包装元数据（headers/method/path 等），存块、按哈希去重。
+type requestEnvelope struct {
+	Method  string         `json:"method"`
+	Path    string         `json:"path"`
+	Query   string         `json:"query"`
+	Headers headerSnapshot `json:"headers"`
+	Stream  bool           `json:"stream"`
 }
 
 // currentRetention 读全局运行时设置里的日志保留配置；读不到返回零值（= 不清理）。
@@ -681,28 +645,43 @@ func (s *Service) pipeRequestLogID(pipe *modelgateway.ProxyPipeline) string {
 }
 
 // finishRequestLog 收尾：写响应快照、状态码、结束时刻、时长、result；channel 非空时回填。
-// best-effort，出错仅记日志。
+// finishRequestLog 收尾：响应体写块（响应各不相同，无去重价值，gzip 已压掉
+// 重复）、manifest 落盘、request_logs 元数据行回填状态/耗时/结果。
+// best-effort，出错仅记日志。幂等：清单已收尾（非 running）直接返回，对齐
+// 旧版 finished_at IS NULL 语义（聚合末次失败 attempt 会先后收到两个收尾事件）。
 func (s *Service) finishRequestLog(uuid string, status int, respJSON, channel, result string) {
-	var startedStr string
-	if err := s.reqDB.QueryRow(`SELECT started_at FROM request_logs WHERE id = ?`, uuid).Scan(&startedStr); err != nil {
-		s.lg.Warn("request-log: 收尾时找不到记录", "id", uuid, "err", err)
-		return
+	if s.blobs == nil {
+		return // 块存储未装配：无正文可收尾
 	}
-	started, err := time.Parse(time.RFC3339Nano, startedStr)
+	m, err := s.blobs.readManifest(uuid)
 	if err != nil {
-		s.lg.Warn("request-log: 解析 started_at 失败", "id", uuid, "err", err)
+		s.lg.Warn("request-log: 收尾读清单失败", "id", uuid, "err", err)
 		return
 	}
-	now := time.Now().UTC()
-	duration := now.Sub(started).Milliseconds()
-	// 【P1 幂等】WHERE 加 finished_at IS NULL：聚合末次失败 attempt 会先后收到
-	// ProxyAttemptFailed（每次失败 emit）与 ProxyUpstreamFailed（聚合全败 failover）
-	// 两个事件，重复收尾同一条；限定仅首次生效可避免二次 UPDATE 与结果覆盖。
-	// bytes 就地重算：用库里的 length(request_json) 加上本次响应体长度与固定开销，
-	// 不必把请求体读回内存。
-	if _, err := s.reqDB.Exec(`UPDATE request_logs SET response_json = ?, http_status = ?, finished_at = ?, duration_ms = ?, result = ?, bytes = length(request_json) + length(?) + ?, channel = CASE WHEN ? = '' THEN channel ELSE ? END WHERE id = ? AND finished_at IS NULL`,
-		respJSON, status, now.Format(time.RFC3339Nano), duration, result, respJSON, rowFixedOverhead, channel, channel, uuid); err != nil {
-		s.lg.Warn("request-log: 收尾写库失败", "id", uuid, "err", err)
+	if m.Result != "running" {
+		return
+	}
+	respHash, err := s.blobs.putBlob([]byte(respJSON))
+	if err != nil {
+		s.lg.Warn("request-log: 写响应块失败", "id", uuid, "err", err)
+		return
+	}
+	m.Resp = respHash
+	m.HTTPStatus = status
+	m.Result = result
+	if channel != "" {
+		m.Channel = channel
+	}
+	if started, err := time.Parse(time.RFC3339Nano, m.StartedAt); err == nil {
+		m.DurationMS = time.Since(started).Milliseconds()
+		m.FinishedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	}
+	if err := s.blobs.writeManifest(uuid, m); err != nil {
+		s.lg.Warn("request-log: 收尾写清单失败", "id", uuid, "err", err)
+	}
+	if _, err := s.reqDB.Exec(`UPDATE request_logs SET http_status = ?, finished_at = ?, duration_ms = ?, result = ?, channel = CASE WHEN ? = '' THEN channel ELSE ? END WHERE id = ?`,
+		status, m.FinishedAt, m.DurationMS, result, channel, channel, uuid); err != nil {
+		s.lg.Warn("request-log: 收尾写元数据行失败", "id", uuid, "err", err)
 	}
 }
 
@@ -713,6 +692,10 @@ const streamBufferKey = "__request_log_buffer"
 
 // streamTruncatedKey 流式缓冲触顶截断标记（response_json 会带 "truncated": true）。
 const streamTruncatedKey = "__request_log_truncated"
+
+// manifestKey 本次 attempt 的清单指针（*requestManifest）在 metadata 中的键：
+// begin 时写入，收尾事件直接改内存对象并落盘，免去文件重读。
+const manifestKey = "__request_log_manifest"
 
 // maxStreamBuffer 流式响应缓冲上限（防大流式 OOM；超限后丢弃后续 chunk 并标记截断）。
 var maxStreamBuffer = 32 << 20 // 32MB
@@ -807,6 +790,7 @@ type requestLogDetail struct {
 	Result       string          `json:"result"`
 	RequestJSON  json.RawMessage `json:"request_json"`
 	ResponseJSON json.RawMessage `json:"response_json,omitempty"`
+	BodyError    string          `json:"body_error,omitempty"` // 请求体块缺失/损坏无法还原时的错误说明
 }
 
 // requestLogFilter 列表过滤条件（对应 GET /api/request-logs 的 query 参数）。
@@ -909,46 +893,108 @@ func (s *Service) List(ctx context.Context, filter requestLogFilter) (requestLog
 	return requestLogPage{Items: items, Total: total}, rows.Err()
 }
 
-// Detail 按 UUID 查详情。命中且卡 running 超时 → 先 self-heal 再返回；
-// 未命中返回 sql.ErrNoRows 语义的错误（由 handler 转 404）。
-func (s *Service) Detail(ctx context.Context, id string) (requestLogDetail, error) {
-	if s.reqDB == nil {
-		return requestLogDetail{}, fmt.Errorf("request-log: 独立库未装配")
+// healStuckList 批量收尾超时 running 清单（List 每次调用前执行）。running 行
+// 数量少（正常秒级收尾），扫描开销可忽略。
+func (s *Service) healStuckList(ctx context.Context) {
+	if s.blobs == nil {
+		return
 	}
-	var d requestLogDetail
-	var status int
-	var stream int
-	var finished sql.NullString
-	var respJSON sql.NullString
-	var reqJSON string
-	var started string
-	if err := s.reqDB.QueryRowContext(ctx, `SELECT id, request_id, model, channel, COALESCE(http_status, 0), stream, started_at, finished_at, COALESCE(duration_ms, 0), result, request_json, response_json FROM request_logs WHERE id = ?`, id).
-		Scan(&d.ID, &d.RequestID, &d.Model, &d.Channel, &status, &stream, &started, &finished, &d.DurationMS, &d.Result, &reqJSON, &respJSON); err != nil {
+	ids, err := s.blobs.manifestIDs()
+	if err != nil {
+		return
+	}
+	for _, id := range ids {
+		m, err := s.blobs.readManifest(id)
+		if err != nil || m.Result != "running" {
+			continue
+		}
+		started, err := time.Parse(time.RFC3339Nano, m.StartedAt)
+		if err != nil {
+			continue
+		}
+		s.healStuckBlob(id, m.RequestID, started)
+	}
+}
+
+// Detail 按 UUID 查详情：读清单 → 逐块取回正文 → 组装成 requestSnapshot /
+// responseSnapshot 结构（与旧表时代的 API 结构一致，前端零改动）。
+// 卡 running 超时先 self-heal 再返回。
+func (s *Service) Detail(ctx context.Context, id string) (requestLogDetail, error) {
+	if s.blobs == nil {
+		return requestLogDetail{}, fmt.Errorf("request-log: 块存储未装配")
+	}
+	if !s.blobs.hasManifest(id) {
+		return requestLogDetail{}, sql.ErrNoRows // 未命中：handler 转 404
+	}
+	m, err := s.blobs.readManifest(id)
+	if err != nil {
 		return requestLogDetail{}, err
 	}
-	d.HTTPStatus = status
-	d.Stream = stream != 0
-	d.StartedAt = started
-	d.RequestJSON = json.RawMessage(reqJSON)
-	if finished.Valid {
-		d.FinishedAt = &finished.String
+	d := requestLogDetail{
+		ID:         m.ID,
+		RequestID:  m.RequestID,
+		Model:      m.Model,
+		Channel:    m.Channel,
+		HTTPStatus: m.HTTPStatus,
+		Stream:     m.Stream,
+		StartedAt:  m.StartedAt,
+		DurationMS: m.DurationMS,
+		Result:     m.Result,
 	}
-	if respJSON.Valid && respJSON.String != "" {
-		d.ResponseJSON = json.RawMessage(respJSON.String)
+	if m.FinishedAt != "" {
+		f := m.FinishedAt
+		d.FinishedAt = &f
 	}
-	// self-heal：卡 running 超时（断连/EOF 无 [DONE]、failover 中断等）收尾
-	if d.Result == "running" && !finished.Valid {
-		if parsed, err := time.Parse(time.RFC3339Nano, started); err == nil {
-			s.healStuck(d.ID, d.RequestID, parsed)
-			// 重读收尾结果（含 response_json：heal 可能从 route_requests 还原 error_body）
-			if err := s.reqDB.QueryRowContext(ctx, `SELECT result, finished_at, COALESCE(http_status, 0), COALESCE(duration_ms, 0), response_json FROM request_logs WHERE id = ?`, id).
-				Scan(&d.Result, &finished, &status, &d.DurationMS, &respJSON); err == nil {
-				if finished.Valid {
-					d.FinishedAt = &finished.String
+	// 组装 request_json：envelope（headers/method/path）+ body（拼回的请求体）。
+	var snap requestSnapshot
+	bodyErr := ""
+	if m.Envelope != "" {
+		envData, err := s.blobs.getBlob(m.Envelope)
+		if err == nil {
+			_ = json.Unmarshal(envData, &snap)
+		}
+	}
+	body, err := s.blobs.rebuildRequestBody(m)
+	if err != nil {
+		// 不静默吞错：块缺失/损坏时把原因带给前端（body_error），而不是
+		// 让用户以为请求本来就没 body（真实事故：GC 误删后详情页 body 显示为空）。
+		bodyErr = err.Error()
+	}
+	if body != "" {
+		// 部分块缺失时 rebuildRequestBody 仍返回已还原的部分（占位符标注缺失块），
+		// 优先展示，err 只作提示。
+		snap.Body = body
+	}
+	snap.Model = m.Model
+	snap.Stream = m.Stream
+	if reqJSON, err := json.Marshal(snap); err == nil {
+		d.RequestJSON = reqJSON
+	}
+	if bodyErr != "" {
+		d.BodyError = bodyErr
+	}
+	// 响应块 → response_json
+	if m.Resp != "" {
+		if respData, err := s.blobs.getBlob(m.Resp); err == nil {
+			d.ResponseJSON = json.RawMessage(respData)
+		}
+	}
+	// self-heal：卡 running 超时收尾（对齐旧版语义）
+	if d.Result == "running" && d.FinishedAt == nil {
+		if parsed, err := time.Parse(time.RFC3339Nano, m.StartedAt); err == nil {
+			s.healStuckBlob(id, m.RequestID, parsed)
+			if m2, err := s.blobs.readManifest(id); err == nil {
+				d.Result = m2.Result
+				d.HTTPStatus = m2.HTTPStatus
+				d.DurationMS = m2.DurationMS
+				if m2.FinishedAt != "" {
+					f := m2.FinishedAt
+					d.FinishedAt = &f
 				}
-				d.HTTPStatus = status
-				if respJSON.Valid && respJSON.String != "" {
-					d.ResponseJSON = json.RawMessage(respJSON.String)
+				if m2.Resp != "" {
+					if respData, err := s.blobs.getBlob(m2.Resp); err == nil {
+						d.ResponseJSON = json.RawMessage(respData)
+					}
 				}
 			}
 		}
@@ -956,38 +1002,9 @@ func (s *Service) Detail(ctx context.Context, id string) (requestLogDetail, erro
 	return d, nil
 }
 
-// healStuckList 批量收尾超时 running 行（List 每次调用前执行）。
-// running 行数量少（正常秒级收尾），扫描开销可忽略。
-// 注意：必须先收集并 Close rows 再写库——SQLite 单连接（SetMaxOpenConns(1)）下
-// 在 rows 迭代期间执行写操作会让新查询阻塞等连接释放，死锁。
-func (s *Service) healStuckList(ctx context.Context) {
-	rows, err := s.reqDB.QueryContext(ctx, `SELECT id, request_id, started_at FROM request_logs WHERE result = 'running' AND finished_at IS NULL`)
-	if err != nil {
-		return
-	}
-	type stuckRow struct{ id, reqID, startedStr string }
-	var stuck []stuckRow
-	for rows.Next() {
-		var r stuckRow
-		if err := rows.Scan(&r.id, &r.reqID, &r.startedStr); err != nil {
-			continue
-		}
-		stuck = append(stuck, r)
-	}
-	_ = rows.Close() // 关键：释放连接后再写库
-	for _, r := range stuck {
-		started, err := time.Parse(time.RFC3339Nano, r.startedStr)
-		if err != nil {
-			continue
-		}
-		s.healStuck(r.id, r.reqID, started)
-	}
-}
-
-// healStuck 卡 running 超时收尾：route_requests 侧已 failed（可反查）则标 failed
-// 并带上已捕获的 http_status/error_body（写入 response_json），否则标
-// stream_interrupted。复用 route-log 的 SelfHeal 阈值（config.RouteLogSelfHealTimeout）。
-func (s *Service) healStuck(id, requestID string, started time.Time) {
+// healStuckBlob 自愈收尾：反查 route_attempts / route_requests 拿错误体，
+// 走 finishRequestLog 落盘。
+func (s *Service) healStuckBlob(id, requestID string, started time.Time) {
 	if time.Since(started) < config.RouteLogSelfHealTimeout {
 		return
 	}
@@ -995,12 +1012,6 @@ func (s *Service) healStuck(id, requestID string, started time.Time) {
 	status := 0
 	errBody := ""
 	if s.loadout != nil {
-		// per-attempt 优先：失败 attempt 的错误信息在 route_attempts 表（429 等真实上游
-		// 错误体），按 request_log_id 精确反查本行对应的 attempt。route_requests 只存
-		// 外层最终结果——per-attempt 语义下外层 success 时它为空，反查 attempt 才能
-		// 拿到失败详情（原实现只查 route_requests 会把失败 attempt 误标 stream_interrupted）。
-		// 【P0 修复】必须限定 result='failed'：流式断开（无 [DONE]）场景 attempt 行可能是
-		// success+200，若只看 error_body/status_code 会把成功 attempt 误标 failed。
 		var attemptErr string
 		var attemptStatus int
 		if err := s.loadout.QueryRow(`SELECT COALESCE(error_body, ''), COALESCE(status_code, 0) FROM route_attempts WHERE request_log_id = ? AND result = 'failed' ORDER BY started_at DESC LIMIT 1`, id).Scan(&attemptErr, &attemptStatus); err == nil && (attemptErr != "" || attemptStatus != 0) {
@@ -1016,7 +1027,6 @@ func (s *Service) healStuck(id, requestID string, started time.Time) {
 			}
 		}
 	}
-	// error_body 还原进 response_json（普通模型失败无事件，这是唯一拿到错误详情的途径）
 	respJSON := ""
 	if errBody != "" {
 		snap := responseSnapshot{StatusCode: status, Body: redactBody(errBody, s.redactEnabled())}
@@ -1024,12 +1034,10 @@ func (s *Service) healStuck(id, requestID string, started time.Time) {
 			respJSON = string(b)
 		}
 	}
-	now := time.Now().UTC()
-	// bytes 与 response_json 用同一个 CASE 条件：只有在真的写入了响应体时才重算，
-	// 否则保持原值（否则会把已有的响应体字节数抹掉）。
-	_, _ = s.reqDB.Exec(`UPDATE request_logs SET finished_at = ?, duration_ms = ?, result = ?, http_status = CASE WHEN ? = 0 THEN http_status ELSE ? END, response_json = CASE WHEN ? = '' THEN response_json ELSE ? END, bytes = CASE WHEN ? = '' THEN bytes ELSE length(request_json) + length(?) + ? END WHERE id = ?`,
-		now.Format(time.RFC3339Nano), now.Sub(started).Milliseconds(), result, status, status, respJSON, respJSON, respJSON, respJSON, rowFixedOverhead, id)
+	s.finishRequestLog(id, status, respJSON, "", result)
 }
+
+// healStuckList 批量收尾超时 running 行（List 每次调用前执行）。
 
 // ---- HTTP handlers（RegisterRoute 注册，Auth: AuthSession 由框架挂 session） ----
 

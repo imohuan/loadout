@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"path/filepath"
 	"time"
 
 	"loadout/core/auth"
@@ -176,44 +175,48 @@ func (s *Service) HasUsers() bool {
 	return len(users) > 0
 }
 
-// EnsureFirstRun 首启流程：无账号时生成随机密码（auth.GeneratePassword(16)）、
-// 创建 admin 用户、把明文密码写入 config.AdminPasswordFile（0600）、日志打印提示。
-// 已有账号则不做任何事。返回是否执行了首启。
-func (s *Service) EnsureFirstRun() (bool, error) {
-	if s.HasUsers() {
-		return false, nil
+// Initialized 判断是否已完成初始化（用户自己设置过访问密钥）。
+// 无任何用户，或所有用户都还是首次自动生成的密码（PasswordChanged=false，
+// 旧版本升级遗留）时，视为未初始化，前端展示"设置访问密钥"表单。
+func (s *Service) Initialized() bool {
+	users, err := s.readUsers()
+	if err != nil || len(users) == 0 {
+		return false
 	}
+	for _, u := range users {
+		if u.PasswordChanged {
+			return true
+		}
+	}
+	return false
+}
 
-	pw, err := auth.GeneratePassword(16)
-	if err != nil {
-		return false, err
+// SetupAdminKey 初始化访问密钥：写入（或覆盖）admin 用户的密钥哈希并标记
+// PasswordChanged=true，同时清理旧版本的明文密码文件。仅在未初始化时允许调用。
+func (s *Service) SetupAdminKey(key string) error {
+	if s.Initialized() {
+		return errors.New("adminauth: 已初始化，请使用原密钥登录后在设置中修改")
 	}
-	hash, err := auth.HashPassword(pw)
-	if err != nil {
-		return false, err
+	if len(key) < 6 {
+		return errors.New("adminauth: 访问密钥至少 6 位")
 	}
-
+	hash, err := auth.HashPassword(key)
+	if err != nil {
+		return err
+	}
 	users := []types.User{{
 		Username:        "admin",
 		PasswordHash:    hash,
-		PasswordChanged: false,
+		PasswordChanged: true,
 	}}
 	if err := s.writeUsers(users); err != nil {
-		return false, err
+		return err
 	}
-
-	// 明文写入 admin-password 文件（0600，目录不存在先建）。
-	if dir := filepath.Dir(config.AdminPasswordFile); dir != "" && dir != "." {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return false, err
-		}
+	if err := os.Remove(config.AdminPasswordFile); err != nil && !os.IsNotExist(err) {
+		return err
 	}
-	if err := os.WriteFile(config.AdminPasswordFile, []byte(pw), 0o600); err != nil {
-		return false, err
-	}
-
-	s.lg.Info("首次启动，管理员账号 admin，初始密码见 " + config.AdminPasswordFile)
-	return true, nil
+	s.lg.Info("访问密钥初始化完成")
+	return nil
 }
 
 // writeUnauthorized 写出 401 的 JSON 错误响应。

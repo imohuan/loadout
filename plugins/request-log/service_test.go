@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -31,7 +33,12 @@ func testService(t *testing.T, routes []types.CapabilityRoute) *Service {
 			t.Fatal(err)
 		}
 	}
-	return NewService(st, slog.New(slog.DiscardHandler), nil, nil)
+	svc := NewService(st, slog.New(slog.DiscardHandler), nil, nil)
+	// 测试统一装配块存储（生产装配层同样总是装配）。
+	if err := svc.SetBlobDir(filepath.Join(t.TempDir(), "request-logs")); err != nil {
+		t.Fatal(err)
+	}
+	return svc
 }
 
 // scopeFor 构造单渠道 scope（复用共享 routetest.ScopeWithChannelID）。
@@ -157,16 +164,20 @@ func TestHandleBeforeAttemptCapturesRequest(t *testing.T) {
 		t.Fatal("metadata __request_log_id missing")
 	}
 
-	// 半条：running + request_json 脱敏
-	var result, reqJSON string
-	if err := reqDB.QueryRow(`SELECT result, request_json FROM request_logs WHERE id = ?`, uuid).Scan(&result, &reqJSON); err != nil {
+	// 半条：running + 详情组装出的 request_json 脱敏
+	var result string
+	if err := reqDB.QueryRow(`SELECT result FROM request_logs WHERE id = ?`, uuid).Scan(&result); err != nil {
 		t.Fatal(err)
 	}
 	if result != "running" {
 		t.Fatalf("result = %q, want running", result)
 	}
+	d, err := svc.Detail(context.Background(), uuid)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var snap requestSnapshot
-	if err := json.Unmarshal([]byte(reqJSON), &snap); err != nil {
+	if err := json.Unmarshal(d.RequestJSON, &snap); err != nil {
 		t.Fatal(err)
 	}
 	if got := snap.Headers.Get("Authorization"); got != "***" {
@@ -174,12 +185,12 @@ func TestHandleBeforeAttemptCapturesRequest(t *testing.T) {
 	}
 	// 回归：单值 header 应序列化为字符串，而非 []string
 	var raw map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(reqJSON), &raw); err != nil {
+	if err := json.Unmarshal(d.RequestJSON, &raw); err != nil {
 		t.Fatal(err)
 	}
 	headersJSON, ok := raw["headers"]
 	if !ok {
-		t.Fatalf("headers field missing in %s", reqJSON)
+		t.Fatalf("headers field missing in %s", d.RequestJSON)
 	}
 	var rawHeaders map[string]json.RawMessage
 	if err := json.Unmarshal(headersJSON, &rawHeaders); err != nil {
@@ -377,10 +388,17 @@ func TestHandleAfterUpstreamSuccess(t *testing.T) {
 
 	var result, respJSON, channel string
 	var status int
-	var finished sql.NullString
-	if err := reqDB.QueryRow(`SELECT result, http_status, channel, response_json, finished_at FROM request_logs WHERE id = ?`, uuid).
-		Scan(&result, &status, &channel, &respJSON, &finished); err != nil {
+	m, err := svc.blobs.readManifest(uuid)
+	if err != nil {
 		t.Fatal(err)
+	}
+	result = m.Result
+	status = m.HTTPStatus
+	channel = m.Channel
+	if m.Resp != "" {
+		if data, err := svc.blobs.getBlob(m.Resp); err == nil {
+			respJSON = string(data)
+		}
 	}
 	if result != "success" {
 		t.Fatalf("result = %q, want success", result)
@@ -391,7 +409,7 @@ func TestHandleAfterUpstreamSuccess(t *testing.T) {
 	if channel != "c9" {
 		t.Fatalf("channel = %q, want c9 (回填)", channel)
 	}
-	if !finished.Valid {
+	if ma, merr := svc.blobs.readManifest(uuid); merr != nil || ma.FinishedAt == "" {
 		t.Fatal("finished_at should be set")
 	}
 	if !strings.Contains(respJSON, "hi") {
@@ -427,9 +445,16 @@ func TestHandleUpstreamFailed(t *testing.T) {
 
 	var result, respJSON string
 	var status int
-	if err := reqDB.QueryRow(`SELECT result, http_status, response_json FROM request_logs WHERE id = ?`, uuid).
-		Scan(&result, &status, &respJSON); err != nil {
+	m6, err := svc.blobs.readManifest(uuid)
+	if err != nil {
 		t.Fatal(err)
+	}
+	result = m6.Result
+	status = m6.HTTPStatus
+	if m6.Resp != "" {
+		if data, err := svc.blobs.getBlob(m6.Resp); err == nil {
+			respJSON = string(data)
+		}
 	}
 	if result != "failed" {
 		t.Fatalf("result = %q, want failed", result)
@@ -472,9 +497,15 @@ func TestHandleStreamChunkAssemblesUntilDone(t *testing.T) {
 	}
 
 	var result, respJSON string
-	if err := reqDB.QueryRow(`SELECT result, response_json FROM request_logs WHERE id = ?`, uuid).
-		Scan(&result, &respJSON); err != nil {
+	m7, err := svc.blobs.readManifest(uuid)
+	if err != nil {
 		t.Fatal(err)
+	}
+	result = m7.Result
+	if m7.Resp != "" {
+		if data, err := svc.blobs.getBlob(m7.Resp); err == nil {
+			respJSON = string(data)
+		}
 	}
 	if result != "success" {
 		t.Fatalf("result = %q, want success", result)
@@ -516,13 +547,36 @@ func TestHandleStreamChunkNoDoneStaysRunning(t *testing.T) {
 	}
 }
 
-// seedRows 直接插入 request_logs 测试行。
-func seedRows(t *testing.T, reqDB *sql.DB, rows ...[]any) {
+// seedManifest 测试辅助：直接写一个 running 清单 + 元数据行（绕过 HandleBeforeAttempt，
+// 供 self-heal / 清理类测试造数据）。started 用当前时间或过去时间。
+func seedManifest(t *testing.T, svc *Service, id, requestID string, started time.Time, result string) {
 	t.Helper()
-	for _, r := range rows {
-		if _, err := reqDB.Exec(`INSERT INTO request_logs(id, request_id, model, channel, http_status, stream, started_at, result, request_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '{}', ?)`, r...); err != nil {
-			t.Fatal(err)
-		}
+	seedManifestAt(t, svc, id, requestID, started, result)
+}
+
+// seedManifestAt 同 seedManifest，但显式传时间。
+func seedManifestAt(t *testing.T, svc *Service, id, requestID string, started time.Time, result string) {
+	t.Helper()
+	m := requestManifest{
+		ID:        id,
+		RequestID: requestID,
+		Model:     "gpt-4o",
+		Channel:   "c1",
+		StartedAt: started.Format(time.RFC3339Nano),
+		Result:    result,
+	}
+	// 写一个占位消息块：让"种子即有 blob"的断言（清空后 GC 归零）有意义。
+	h, err := svc.blobs.putBlob([]byte("msg:" + id))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.Messages = []string{h}
+	if err := svc.blobs.writeManifest(id, m); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.reqDB.Exec(`INSERT INTO request_logs(id, request_id, model, channel, stream, started_at, result, created_at) VALUES (?, ?, ?, ?, 0, ?, ?, ?)`,
+		id, requestID, m.Model, m.Channel, m.StartedAt, result, m.StartedAt); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -535,10 +589,10 @@ func TestListFilters(t *testing.T) {
 	svc := testService(t, nil)
 	svc.reqDB = reqDB
 
-	seedRows(t, reqDB,
-		[]any{"u1", "r1", "gpt-4o", "c1", 200, 0, "2026-08-01T00:00:00Z", "success", "2026-08-01T00:00:00Z"},
-		[]any{"u2", "r2", "gpt-4o", "c2", 429, 0, "2026-08-02T00:00:00Z", "failed", "2026-08-02T00:00:00Z"},
-		[]any{"u3", "r3", "claude-3", "c1", 200, 1, "2026-08-03T00:00:00Z", "success", "2026-08-03T00:00:00Z"},
+	seedFilterRows(t, reqDB,
+		metaFilterRow{id: "u1", reqID: "r1", model: "gpt-4o", channel: "c1", status: 200, stream: 0, started: "2026-08-01T00:00:00Z", result: "success"},
+		metaFilterRow{id: "u2", reqID: "r2", model: "gpt-4o", channel: "c2", status: 429, stream: 0, started: "2026-08-02T00:00:00Z", result: "failed"},
+		metaFilterRow{id: "u3", reqID: "r3", model: "claude-3", channel: "c1", status: 200, stream: 1, started: "2026-08-03T00:00:00Z", result: "success"},
 	)
 	ctx := context.Background()
 
@@ -616,11 +670,12 @@ func TestDetailSelfHealStuckRunning(t *testing.T) {
 	defer reqDB.Close()
 	svc := testService(t, nil)
 	svc.reqDB = reqDB
+	if err := svc.SetBlobDir(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
 	// 卡 running：2 小时前开始（远超 60s 阈值），无 loadout（route_requests 查不到 → stream_interrupted）
 	old := time.Now().Add(-2 * time.Hour).UTC()
-	seedRows(t, reqDB,
-		[]any{"stuck1", "req-stuck", "gpt-4o", "c1", 0, 1, old.Format(time.RFC3339Nano), "running", old.Format(time.RFC3339Nano)},
-	)
+	seedManifest(t, svc, "stuck1", "req-stuck", old, "running")
 	d, err := svc.Detail(context.Background(), "stuck1")
 	if err != nil {
 		t.Fatal(err)
@@ -644,11 +699,12 @@ func TestDetailSelfHealPromotesToFailed(t *testing.T) {
 	svc := testService(t, nil)
 	svc.reqDB = reqDB
 	svc.loadout = loadout
+	if err := svc.SetBlobDir(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
 
 	old := time.Now().Add(-2 * time.Hour).UTC()
-	seedRows(t, reqDB,
-		[]any{"stuck2", "req-failed", "gpt-4o", "c1", 0, 0, old.Format(time.RFC3339Nano), "running", old.Format(time.RFC3339Nano)},
-	)
+	seedManifest(t, svc, "stuck2", "req-failed", old, "running")
 	// route_requests 侧已 failed（429）
 	if _, err := loadout.Exec(`INSERT INTO route_requests(request_id, requested_model, started_at, result, http_status) VALUES ('req-failed', 'gpt-4o', ?, 'failed', 429)`, old.Format(time.RFC3339Nano)); err != nil {
 		t.Fatal(err)
@@ -672,12 +728,13 @@ func TestListSelfHealsStuckRunning(t *testing.T) {
 	defer reqDB.Close()
 	svc := testService(t, nil)
 	svc.reqDB = reqDB
+	if err := svc.SetBlobDir(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
 
 	old := time.Now().Add(-2 * time.Hour).UTC()
-	seedRows(t, reqDB,
-		[]any{"stuck-l1", "req-s1", "gpt-4o", "c1", 0, 1, old.Format(time.RFC3339Nano), "running", old.Format(time.RFC3339Nano)},
-		[]any{"fresh-l2", "req-s2", "gpt-4o", "c1", 0, 0, time.Now().UTC().Format(time.RFC3339Nano), "running", time.Now().UTC().Format(time.RFC3339Nano)},
-	)
+	seedManifest(t, svc, "stuck-l1", "req-s1", old, "running")
+	seedManifest(t, svc, "fresh-l2", "req-s2", time.Now().UTC(), "running")
 	page, err := svc.List(context.Background(), requestLogFilter{})
 	if err != nil {
 		t.Fatal(err)
@@ -708,11 +765,12 @@ func TestHealStuckCarriesErrorBody(t *testing.T) {
 	svc := testService(t, nil)
 	svc.reqDB = reqDB
 	svc.loadout = loadout
+	if err := svc.SetBlobDir(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
 
 	old := time.Now().Add(-2 * time.Hour).UTC()
-	seedRows(t, reqDB,
-		[]any{"stuck-e1", "req-err", "gpt-4o", "c1", 0, 0, old.Format(time.RFC3339Nano), "running", old.Format(time.RFC3339Nano)},
-	)
+	seedManifest(t, svc, "stuck-e1", "req-err", old, "running")
 	if _, err := loadout.Exec(`INSERT INTO route_requests(request_id, requested_model, started_at, result, http_status, error_body) VALUES ('req-err', 'gpt-4o', ?, 'failed', 500, '{"error":{"message":"boom"}}')`, old.Format(time.RFC3339Nano)); err != nil {
 		t.Fatal(err)
 	}
@@ -751,8 +809,12 @@ func TestHandleStreamChunkRedacts(t *testing.T) {
 		t.Fatal(err)
 	}
 	var respJSON string
-	if err := reqDB.QueryRow(`SELECT response_json FROM request_logs WHERE id = ?`, uuid).Scan(&respJSON); err != nil {
-		t.Fatal(err)
+	if mhr, herr := svc.blobs.readManifest(uuid); herr == nil && mhr.Resp != "" {
+		if data, gerr := svc.blobs.getBlob(mhr.Resp); gerr == nil {
+			respJSON = string(data)
+		}
+	} else if herr != nil {
+		t.Fatal(herr)
 	}
 	if strings.Contains(respJSON, "sk-abc123xyz") {
 		t.Fatal("stream body contains raw sk- secret")
@@ -789,8 +851,12 @@ func TestHandleStreamChunkTruncates(t *testing.T) {
 		t.Fatal(err)
 	}
 	var respJSON string
-	if err := reqDB.QueryRow(`SELECT response_json FROM request_logs WHERE id = ?`, uuid).Scan(&respJSON); err != nil {
-		t.Fatal(err)
+	if mtk, terr := svc.blobs.readManifest(uuid); terr == nil && mtk.Resp != "" {
+		if data, gerr := svc.blobs.getBlob(mtk.Resp); gerr == nil {
+			respJSON = string(data)
+		}
+	} else if terr != nil {
+		t.Fatal(terr)
 	}
 	if !strings.Contains(respJSON, `"truncated":true`) {
 		t.Fatalf("response_json missing truncated flag: %s", respJSON)
@@ -822,19 +888,28 @@ func TestHealStuckFetchesAttemptErrorBody(t *testing.T) {
 	svc := testService(t, nil)
 	svc.reqDB = reqDB
 	svc.loadout = loadout
-
-	// 种子 running 行（started_at 设为很久以前，超出 60s self-heal 阈值）
-	started, _ := time.Parse(time.RFC3339Nano, "2026-08-23T00:00:00Z")
-	if _, err := reqDB.Exec(`INSERT INTO request_logs(id, request_id, model, channel, stream, started_at, result, request_json, created_at) VALUES ('uuid-failed-1', 'r-heal', 'hy3', 'c1', 0, '2026-08-23T00:00:00Z', 'running', '{}', '2026-08-23T00:00:00Z')`); err != nil {
+	if err := svc.SetBlobDir(t.TempDir()); err != nil {
 		t.Fatal(err)
 	}
 
-	svc.healStuck("uuid-failed-1", "r-heal", started)
+	// 种子 running 行（started_at 设为很久以前，超出 60s self-heal 阈值）
+	started, _ := time.Parse(time.RFC3339Nano, "2026-08-23T00:00:00Z")
+	seedManifestAt(t, svc, "uuid-failed-1", "r-heal", started, "running")
+
+	svc.healStuckBlob("uuid-failed-1", "r-heal", started)
 
 	var result, resp string
 	var status int
-	if err := reqDB.QueryRow(`SELECT result, COALESCE(http_status, 0), COALESCE(response_json, '') FROM request_logs WHERE id = ?`, "uuid-failed-1").Scan(&result, &status, &resp); err != nil {
+	m, err := svc.blobs.readManifest("uuid-failed-1")
+	if err != nil {
 		t.Fatal(err)
+	}
+	result = m.Result
+	status = m.HTTPStatus
+	if m.Resp != "" {
+		if data, err := svc.blobs.getBlob(m.Resp); err == nil {
+			resp = string(data)
+		}
 	}
 	if result != "failed" {
 		t.Fatalf("result = %q, want failed (must NOT mislabel as stream_interrupted)", result)
@@ -869,18 +944,21 @@ func TestHealStuckSuccessAttemptNotMislabeled(t *testing.T) {
 	svc := testService(t, nil)
 	svc.reqDB = reqDB
 	svc.loadout = loadout
+	if err := svc.SetBlobDir(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
 
 	started, _ := time.Parse(time.RFC3339Nano, "2026-08-23T00:00:00Z")
-	if _, err := reqDB.Exec(`INSERT INTO request_logs(id, request_id, model, channel, stream, started_at, result, request_json, created_at) VALUES ('uuid-ok-1', 'r-heal-ok', 'hy3', 'c1', 1, '2026-08-23T00:00:00Z', 'running', '{}', '2026-08-23T00:00:00Z')`); err != nil {
-		t.Fatal(err)
-	}
+	seedManifestAt(t, svc, "uuid-ok-1", "r-heal-ok", started, "running")
 
-	svc.healStuck("uuid-ok-1", "r-heal-ok", started)
+	svc.healStuckBlob("uuid-ok-1", "r-heal-ok", started)
 
 	var result string
-	if err := reqDB.QueryRow(`SELECT result FROM request_logs WHERE id = ?`, "uuid-ok-1").Scan(&result); err != nil {
+	m, err := svc.blobs.readManifest("uuid-ok-1")
+	if err != nil {
 		t.Fatal(err)
 	}
+	result = m.Result
 	if result == "failed" {
 		t.Fatalf("result = failed, want NOT failed (success attempt must not be mislabeled)")
 	}
@@ -928,14 +1006,30 @@ func TestBeforeAttemptMissClearsAttemptKeys(t *testing.T) {
 
 // ---- 保留策略 / 统计 / 清空 / 存在性 ----
 
-// seedLogRow 直接插一行日志（绕过 handler，便于精确控制 started_at 与体积）。
-func seedLogRow(t *testing.T, reqDB *sql.DB, id, startedAt string, bodySize int) {
+// seedMetaRow 直接插一行元数据（绕过 handler，便于精确控制 started_at）。
+func seedMetaRow(t *testing.T, reqDB *sql.DB, id, startedAt string) {
 	t.Helper()
-	body := strings.Repeat("x", bodySize)
-	// bytes 与生产写入路径保持一致（rowBytes），容量清理按这一列求和。
-	if _, err := reqDB.Exec(`INSERT INTO request_logs(id, request_id, model, channel, stream, started_at, result, request_json, bytes, created_at) VALUES (?, ?, 'm', 'c', 0, ?, 'success', ?, ?, ?)`,
-		id, id, startedAt, body, rowBytes(body, ""), startedAt); err != nil {
+	if _, err := reqDB.Exec(`INSERT INTO request_logs(id, request_id, model, channel, stream, started_at, result, created_at) VALUES (?, ?, 'm', 'c', 0, ?, 'success', ?)`,
+		id, id, startedAt, startedAt); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// metaFilterRow TestListFilters 造数用：完整元数据字段。
+type metaFilterRow struct {
+	id, reqID, model, channel string
+	status, stream            int
+	started, result           string
+}
+
+// seedFilterRows 批量插入列表过滤测试用的元数据行。
+func seedFilterRows(t *testing.T, reqDB *sql.DB, rows ...metaFilterRow) {
+	t.Helper()
+	for _, r := range rows {
+		if _, err := reqDB.Exec(`INSERT INTO request_logs(id, request_id, model, channel, http_status, stream, started_at, result, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			r.id, r.reqID, r.model, r.channel, r.status, r.stream, r.started, r.result, r.started); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
@@ -947,10 +1041,13 @@ func TestApplyRetentionByAge(t *testing.T) {
 	}
 	defer reqDB.Close()
 	svc := NewService(nil, slog.New(slog.DiscardHandler), reqDB, nil)
+	if err := svc.SetBlobDir(filepath.Join(t.TempDir(), "request-logs")); err != nil {
+		t.Fatal(err)
+	}
 
 	now := time.Now().UTC()
-	seedLogRow(t, reqDB, "old", now.AddDate(0, 0, -30).Format(time.RFC3339Nano), 10)
-	seedLogRow(t, reqDB, "recent", now.AddDate(0, 0, -1).Format(time.RFC3339Nano), 10)
+	seedManifest(t, svc, "old", "old", now.AddDate(0, 0, -30).UTC(), "success")
+	seedManifest(t, svc, "recent", "recent", now.AddDate(0, 0, -1).UTC(), "success")
 
 	svc.ApplyRetention(context.Background(), RetentionConfig{MaxAgeDays: 7})
 
@@ -978,10 +1075,13 @@ func TestApplyRetentionNoLimitIsNoop(t *testing.T) {
 	}
 	defer reqDB.Close()
 	svc := NewService(nil, slog.New(slog.DiscardHandler), reqDB, nil)
+	if err := svc.SetBlobDir(filepath.Join(t.TempDir(), "request-logs")); err != nil {
+		t.Fatal(err)
+	}
 
 	now := time.Now().UTC()
 	for _, id := range []string{"a", "b", "c"} {
-		seedLogRow(t, reqDB, id, now.Format(time.RFC3339Nano), 10)
+		seedManifest(t, svc, id, id, now, "success")
 	}
 	svc.ApplyRetention(context.Background(), RetentionConfig{})
 
@@ -994,8 +1094,8 @@ func TestApplyRetentionNoLimitIsNoop(t *testing.T) {
 	}
 }
 
-// TestClearRemovesRowsAndResetsSize 清空后行数为 0，且文件大小回落
-// （验证 wal_checkpoint 确实让磁盘占用跟着掉，否则用户点完清空会以为没生效）。
+// TestClearRemovesRowsAndResetsSize 清空后：清单文件与元数据行都清零，
+// GC 把无引用块一并回收（磁盘占用真实下降——块存储下没有 VACUUM）。
 func TestClearRemovesRowsAndResetsSize(t *testing.T) {
 	path := t.TempDir() + "/request-log.db"
 	reqDB, err := openRequestLogDB(path)
@@ -1005,17 +1105,20 @@ func TestClearRemovesRowsAndResetsSize(t *testing.T) {
 	defer reqDB.Close()
 	svc := NewService(nil, slog.New(slog.DiscardHandler), reqDB, nil)
 	svc.SetDBPath(path)
+	if err := svc.SetBlobDir(filepath.Join(t.TempDir(), "request-logs")); err != nil {
+		t.Fatal(err)
+	}
 
 	now := time.Now().UTC()
 	for i := 0; i < 20; i++ {
-		seedLogRow(t, reqDB, fmt.Sprintf("row-%d", i), now.Format(time.RFC3339Nano), 64*1024)
+		seedManifest(t, svc, fmt.Sprintf("row-%d", i), fmt.Sprintf("req-%d", i), now, "success")
 	}
-	// 用 compactedSize 取 before：它先 checkpoint 把 WAL 并回主文件再量，
-	// 否则 before 会少算还在 WAL 里的部分、after 反而"变大"（清空后 VACUUM 把
-	// 数据从 WAL 搬进主文件，两个文件加起来才是真实占用）。
-	before := svc.compactedSize(context.Background())
-	if before <= 0 {
-		t.Fatalf("diskSize before clear = %d, want > 0", before)
+	blobsBefore, err := countBlobs(svc.blobs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if blobsBefore == 0 {
+		t.Fatal("seeded blobs = 0, want > 0")
 	}
 
 	affected, err := svc.Clear(context.Background())
@@ -1032,10 +1135,33 @@ func TestClearRemovesRowsAndResetsSize(t *testing.T) {
 	if count != 0 {
 		t.Fatalf("rows after clear = %d, want 0", count)
 	}
-	// 必须真正收缩：只删行不 VACUUM 的话文件几乎不变，用户会以为清空没生效。
-	if after := svc.diskSize(); after > before/4 {
-		t.Fatalf("diskSize after clear = %d, want well under a quarter of %d (VACUUM must reclaim space)", after, before)
+	blobsAfter, err := countBlobs(svc.blobs)
+	if err != nil {
+		t.Fatal(err)
 	}
+	if blobsAfter != 0 {
+		t.Fatalf("blobs after clear = %d, want 0 (GC must collect all)", blobsAfter)
+	}
+}
+
+// countBlobs 统计块文件数量（遍历分片目录）。
+func countBlobs(bs *blobStore) (int, error) {
+	n := 0
+	entries, err := os.ReadDir(bs.blobsDir)
+	if err != nil {
+		return 0, err
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		files, err := os.ReadDir(filepath.Join(bs.blobsDir, e.Name()))
+		if err != nil {
+			continue
+		}
+		n += len(files)
+	}
+	return n, nil
 }
 
 // TestClearResetsRouteRequestLink 清空后必须把 loadout.db 的关联列一起清掉，
@@ -1060,7 +1186,10 @@ func TestClearResetsRouteRequestLink(t *testing.T) {
 	}
 	defer reqDB.Close()
 	svc := NewService(nil, slog.New(slog.DiscardHandler), reqDB, loadoutDB)
-	seedLogRow(t, reqDB, "uuid-1", time.Now().UTC().Format(time.RFC3339Nano), 10)
+	if err := svc.SetBlobDir(filepath.Join(dir, "request-logs")); err != nil {
+		t.Fatal(err)
+	}
+	seedManifest(t, svc, "uuid-1", "uuid-1", time.Now().UTC(), "success")
 
 	if _, err := svc.Clear(context.Background()); err != nil {
 		t.Fatal(err)
@@ -1084,8 +1213,8 @@ func TestExistingIDs(t *testing.T) {
 	svc := NewService(nil, slog.New(slog.DiscardHandler), reqDB, nil)
 
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	seedLogRow(t, reqDB, "alive-1", now, 10)
-	seedLogRow(t, reqDB, "alive-2", now, 10)
+	seedMetaRow(t, reqDB, "alive-1", now)
+	seedMetaRow(t, reqDB, "alive-2", now)
 
 	// 候选里混入 600 个不存在的 id，跨过 500 的分段边界，最后再放两个真实存在的
 	candidates := []string{"gone-0"}
@@ -1116,8 +1245,8 @@ func TestStatsDiskSizeAndConfig(t *testing.T) {
 	svc.SetDBPath(path)
 
 	now := time.Now().UTC()
-	seedLogRow(t, reqDB, "one", now.Add(-time.Hour).Format(time.RFC3339Nano), 4096)
-	seedLogRow(t, reqDB, "two", now.Format(time.RFC3339Nano), 4096)
+	seedMetaRow(t, reqDB, "one", now.Add(-time.Hour).Format(time.RFC3339Nano))
+	seedMetaRow(t, reqDB, "two", now.Format(time.RFC3339Nano))
 
 	stats := svc.Stats(context.Background())
 	if stats.Count != 2 {
@@ -1135,469 +1264,6 @@ func TestStatsDiskSizeAndConfig(t *testing.T) {
 }
 
 // TestTrimBySizeKeepsNewest 容量清理必须是 FIFO：删最旧的，保留最新的。
-func TestTrimBySizeKeepsNewest(t *testing.T) {
-	path := t.TempDir() + "/request-log.db"
-	reqDB, err := openRequestLogDB(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer reqDB.Close()
-	svc := NewService(nil, slog.New(slog.DiscardHandler), reqDB, nil)
-	svc.SetDBPath(path)
-
-	base := time.Now().UTC()
-	// 200 行、每行 32KB ≈ 6.4MB；阈值设 1MB 必然触发清理。
-	for i := 0; i < 200; i++ {
-		seedLogRow(t, reqDB, fmt.Sprintf("row-%03d", i), base.Add(time.Duration(i)*time.Minute).Format(time.RFC3339Nano), 32*1024)
-	}
-	before := svc.diskSize()
-
-	svc.ApplyRetention(context.Background(), RetentionConfig{MaxSizeMB: 1})
-
-	after := svc.diskSize()
-	if after >= before {
-		t.Fatalf("size after trim = %d, want < %d", after, before)
-	}
-	// FIFO：剩下的必须是最新的那批（row-199 一定还在，row-000 一定被删）。
-	var newestExists, oldestExists int
-	if err := reqDB.QueryRow(`SELECT count(*) FROM request_logs WHERE id = 'row-199'`).Scan(&newestExists); err != nil {
-		t.Fatal(err)
-	}
-	if err := reqDB.QueryRow(`SELECT count(*) FROM request_logs WHERE id = 'row-000'`).Scan(&oldestExists); err != nil {
-		t.Fatal(err)
-	}
-	if newestExists != 1 {
-		t.Fatal("newest row must survive FIFO trim")
-	}
-	if oldestExists != 0 {
-		t.Fatal("oldest row must be deleted first by FIFO trim")
-	}
-}
-
-// TestTrimBySizeRespectsMinKeep 阈值小到不可能达成时，也不能把库删空——
-// 至少保留 retentionMinKeep 条（防用户设 1MB 反而丢掉全部日志）。
-func TestTrimBySizeRespectsMinKeep(t *testing.T) {
-	path := t.TempDir() + "/request-log.db"
-	reqDB, err := openRequestLogDB(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer reqDB.Close()
-	svc := NewService(nil, slog.New(slog.DiscardHandler), reqDB, nil)
-	svc.SetDBPath(path)
-
-	now := time.Now().UTC()
-	// 只放 10 行（远少于下限），阈值设 1MB
-	for i := 0; i < 10; i++ {
-		seedLogRow(t, reqDB, fmt.Sprintf("row-%d", i), now.Add(time.Duration(i)*time.Minute).Format(time.RFC3339Nano), 64*1024)
-	}
-	svc.ApplyRetention(context.Background(), RetentionConfig{MaxSizeMB: 1})
-
-	var count int
-	if err := reqDB.QueryRow(`SELECT count(*) FROM request_logs`).Scan(&count); err != nil {
-		t.Fatal(err)
-	}
-	if count != 10 {
-		t.Fatalf("rows = %d, want 10 (below min-keep floor, must not delete)", count)
-	}
-}
-
-// TestTrimBySizeDrainsLargeDatabase 回归：大库必须真的一路删到阈值以下。
-//
-// 历史 bug：早期实现限制「最多 5 轮、每轮最多 200 行」，15GB 的库（两万多条）
-// 最多删 1000 行就停，用户把上限从「不限」改成 1000MB 后大小毫无变化。
-// 本测试造一个远超阈值的库，断言清理后确实降到了上限以下。
-func TestTrimBySizeDrainsLargeDatabase(t *testing.T) {
-	path := t.TempDir() + "/request-log.db"
-	reqDB, err := openRequestLogDB(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer reqDB.Close()
-	svc := NewService(nil, slog.New(slog.DiscardHandler), reqDB, nil)
-	svc.SetDBPath(path)
-
-	base := time.Now().UTC()
-	// 2000 行 × 16KB ≈ 32MB。阈值 2MB → 必须删掉绝大多数行才可能达标，
-	// 远远超过旧的「5 轮 × 200 行 = 1000 行」上限能删的量。
-	for i := 0; i < 2000; i++ {
-		seedLogRow(t, reqDB, fmt.Sprintf("d%04d", i), base.Add(time.Duration(i)*time.Second).Format(time.RFC3339Nano), 16*1024)
-	}
-	before := svc.diskSize()
-	if before < 8*1024*1024 {
-		t.Fatalf("seeded size = %d, want tens of MB for a meaningful test", before)
-	}
-
-	svc.ApplyRetention(context.Background(), RetentionConfig{MaxSizeMB: 2})
-
-	after := svc.compactedSize(context.Background())
-	limit := int64(2 * 1024 * 1024)
-	if after > limit {
-		t.Fatalf("size after trim = %d, want <= %d (large DB must drain to the cap)", after, limit)
-	}
-
-	// 仍然必须是 FIFO：最新的留下，最旧的先走。
-	var newestKept, oldestKept int
-	if err := reqDB.QueryRow(`SELECT count(*) FROM request_logs WHERE id = 'd1999'`).Scan(&newestKept); err != nil {
-		t.Fatal(err)
-	}
-	if err := reqDB.QueryRow(`SELECT count(*) FROM request_logs WHERE id = 'd0000'`).Scan(&oldestKept); err != nil {
-		t.Fatal(err)
-	}
-	if newestKept != 1 {
-		t.Fatal("newest row must survive")
-	}
-	if oldestKept != 0 {
-		t.Fatal("oldest row must be deleted first")
-	}
-
-	// 下限保护：不能把库清空。删了这么多行之后仍应远多于... 实际上这里会删到下限，
-	// 因为 2MB 装不下 100 条 16KB 的行；断言至少保留下限条数。
-	var remaining int
-	if err := reqDB.QueryRow(`SELECT count(*) FROM request_logs`).Scan(&remaining); err != nil {
-		t.Fatal(err)
-	}
-	if remaining < retentionMinKeep {
-		t.Fatalf("remaining = %d, want >= %d (never drain the DB completely)", remaining, retentionMinKeep)
-	}
-}
-
-// TestTrimBySizeBelowCapIsNoop 未超阈值时不得删任何行。
-func TestTrimBySizeBelowCapIsNoop(t *testing.T) {
-	path := t.TempDir() + "/request-log.db"
-	reqDB, err := openRequestLogDB(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer reqDB.Close()
-	svc := NewService(nil, slog.New(slog.DiscardHandler), reqDB, nil)
-	svc.SetDBPath(path)
-
-	now := time.Now().UTC()
-	for i := 0; i < 5; i++ {
-		seedLogRow(t, reqDB, fmt.Sprintf("k%d", i), now.Format(time.RFC3339Nano), 1024)
-	}
-	svc.ApplyRetention(context.Background(), RetentionConfig{MaxSizeMB: 100})
-
-	var count int
-	if err := reqDB.QueryRow(`SELECT count(*) FROM request_logs`).Scan(&count); err != nil {
-		t.Fatal(err)
-	}
-	if count != 5 {
-		t.Fatalf("rows = %d, want 5 (under cap must not delete)", count)
-	}
-}
-
-// TestApplyCurrentRetentionUsesSettings 手动触发接口按「当前设置」清理。
-// 这是用户改完上限后点「立即清理」走的路：必须真的把超限的旧日志删掉。
-func TestApplyCurrentRetentionUsesSettings(t *testing.T) {
-	dir := t.TempDir()
-	// 只开一次连接：db.Open 会建好 loadout 的全部表（servercore 装配时同样只用一份连接）。
-	loadoutDB, err := db.Open(dir + "/loadout.db")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer loadoutDB.Close()
-	if _, err := loadoutDB.Exec(`INSERT INTO settings(id, request_log_max_age_days, request_log_max_size_mb) VALUES(1, 0, 1) ON CONFLICT(id) DO UPDATE SET request_log_max_size_mb = 1`); err != nil {
-		t.Fatal(err)
-	}
-
-	path := dir + "/request-log.db"
-	reqDB, err := openRequestLogDB(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer reqDB.Close()
-	svc := NewService(nil, slog.New(slog.DiscardHandler), reqDB, nil)
-	svc.SetDBPath(path)
-	repo, err := db.NewRepository(loadoutDB)
-	if err != nil {
-		t.Fatal(err)
-	}
-	svc.SetRepository(repo)
-
-	base := time.Now().UTC()
-	for i := 0; i < 400; i++ {
-		seedLogRow(t, reqDB, fmt.Sprintf("m%03d", i), base.Add(time.Duration(i)*time.Second).Format(time.RFC3339Nano), 16*1024)
-	}
-	before := svc.diskSize()
-
-	stats := svc.ApplyCurrentRetention(context.Background())
-
-	if stats.Size >= before {
-		t.Fatalf("size after manual apply = %d, want < %d", stats.Size, before)
-	}
-	if stats.Count >= 400 {
-		t.Fatalf("count after manual apply = %d, want < 400", stats.Count)
-	}
-	// 回带的统计必须与设置一致，前端直接拿它刷新卡片。
-	if stats.MaxSizeMB != 1 {
-		t.Fatalf("stats.max_size_mb = %d, want 1", stats.MaxSizeMB)
-	}
-}
-
-// TestTrimBySizeDoesNotOverDelete 回归用户实际场景：日志库「内容多但文件不算大」时
-// 不得过度删除。
-//
-// 历史 bug：旧实现拿「文件大小」当删除进度。SQLite 删行不会让文件变小，于是每次
-// 检查都显示「还超限」，一路删到 100 条保留下限——实测 301 行只有 19MB、上限
-// 20MB 的场景被删到只剩 100 行，用户丢掉了本可以保留的日志。
-// 正确行为：只删到「真实文件大小落到上限内」为止，剩下的行必须留下。
-//
-// ⚠️ 数据量必须真的超过上限，否则本测试没有意义。这里踩过一次坑：原先写 300 行 × 64KB，
-// 备注按「300 × 64KB ≈ 23MB」推算以为超了 20MB 上限，但实际文件只有 ~19.9MB——本来就
-// 在限内，清理逻辑正确地什么都不删，而后面的 `after < before` 却断定「必须变小」，
-// 于是测试长期失败。真正超限需要 ~340 行以上（实测 340 行 ≈ 22.5MB）。这里用 400 行
-// 留出余量，避免 SQLite 页头/对齐带来的估算偏差又把它压回限内。
-func TestTrimBySizeDoesNotOverDelete(t *testing.T) {
-	path := t.TempDir() + "/request-log.db"
-	reqDB, err := openRequestLogDB(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer reqDB.Close()
-	svc := NewService(nil, slog.New(slog.DiscardHandler), reqDB, nil)
-	svc.SetDBPath(path)
-
-	base := time.Now().UTC()
-	// 400 行 × 64KB ≈ 26.5MB 磁盘占用（实测）。上限设 20MB：只超出一点点，
-	// 压缩 + 删掉少量最旧的行就该达标，绝不能一路删到 100 条下限。
-	const rows = 400
-	for i := 0; i < rows; i++ {
-		seedLogRow(t, reqDB, fmt.Sprintf("s%03d", i), base.Add(time.Duration(i)*time.Second).Format(time.RFC3339Nano), 64*1024)
-	}
-	before := svc.diskSize()
-
-	// 前置条件守卫：本测试的全部意义都建立在「清理前确实超限」上。若数据量涨不上去
-	// （阈值被调小、种子逻辑变化），后面的「必须收缩」会变成假失败，这里直接点破原因。
-	const limitBytes = 20 * 1024 * 1024
-	if before <= limitBytes {
-		t.Fatalf("测试前提不成立：清理前 %d 字节未超过上限 %d，本测试需要「确实超限」的库", before, limitBytes)
-	}
-
-	svc.ApplyRetention(context.Background(), RetentionConfig{MaxSizeMB: 20})
-
-	after := svc.compactedSize(context.Background())
-	if after > limitBytes {
-		t.Fatalf("size after trim = %d, want <= %d", after, limitBytes)
-	}
-	if after >= before {
-		t.Fatalf("size after trim = %d, want < %d (must actually shrink)", after, before)
-	}
-	// 关键断言：不该删到保留下限。数据量只有 20MB 出头，远不到需要砍到 100 行的地步。
-	var remaining int
-	if err := reqDB.QueryRow(`SELECT COUNT(*) FROM request_logs`).Scan(&remaining); err != nil {
-		t.Fatal(err)
-	}
-	t.Logf("before=%d after=%d remaining=%d", before, after, remaining)
-	if remaining < retentionMinKeep {
-		t.Fatalf("remaining = %d, want >= %d (never drain the DB completely)", remaining, retentionMinKeep)
-	}
-	// 400 行里最多只需删掉少数旧行；绝不能删到只剩个位数。
-	// 这里给一个宽松上限：留下的必须占绝大多数。
-	if remaining < 200 {
-		t.Fatalf("remaining = %d, want >= 200 (must not over-delete)", remaining)
-	}
-}
-
-// TestTrimBySizeDeletesOldestFirst 超限时按 FIFO 从最旧的行删起，最新的必须留下。
-func TestTrimBySizeDeletesOldestFirst(t *testing.T) {
-	path := t.TempDir() + "/request-log.db"
-	reqDB, err := openRequestLogDB(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer reqDB.Close()
-	svc := NewService(nil, slog.New(slog.DiscardHandler), reqDB, nil)
-	svc.SetDBPath(path)
-
-	base := time.Now().UTC()
-	// 400 行 × 64KB ≈ 31MB，上限 8MB → 必须删掉大部分旧行。
-	const rows = 400
-	for i := 0; i < rows; i++ {
-		seedLogRow(t, reqDB, fmt.Sprintf("s%03d", i), base.Add(time.Duration(i)*time.Second).Format(time.RFC3339Nano), 64*1024)
-	}
-
-	svc.ApplyRetention(context.Background(), RetentionConfig{MaxSizeMB: 8})
-
-	if after := svc.diskSize(); after > 8*1024*1024 {
-		t.Fatalf("size after trim = %d, want <= %d", after, 8*1024*1024)
-	}
-	var remaining int
-	if err := reqDB.QueryRow(`SELECT COUNT(*) FROM request_logs`).Scan(&remaining); err != nil {
-		t.Fatal(err)
-	}
-	if remaining >= rows {
-		t.Fatalf("remaining = %d, want < %d (must shrink an over-cap DB)", remaining, rows)
-	}
-	if remaining < retentionMinKeep {
-		t.Fatalf("remaining = %d, want >= %d (never drain the DB completely)", remaining, retentionMinKeep)
-	}
-	// 最旧的先走、最新的必留。
-	var oldest, newest int
-	if err := reqDB.QueryRow(`SELECT COUNT(*) FROM request_logs WHERE id = 's000'`).Scan(&oldest); err != nil {
-		t.Fatal(err)
-	}
-	if err := reqDB.QueryRow(`SELECT COUNT(*) FROM request_logs WHERE id = 's399'`).Scan(&newest); err != nil {
-		t.Fatal(err)
-	}
-	if oldest != 0 {
-		t.Fatal("oldest row must be deleted first")
-	}
-	if newest != 1 {
-		t.Fatal("newest row must survive")
-	}
-	// 保留的必须是最新的一段：留下的最旧一行必须比任何被删的行都新。
-	var minKept string
-	if err := reqDB.QueryRow(`SELECT MIN(started_at) FROM request_logs`).Scan(&minKept); err != nil {
-		t.Fatal(err)
-	}
-	var olderLeft int
-	if err := reqDB.QueryRow(`SELECT COUNT(*) FROM request_logs WHERE started_at < ?`, minKept).Scan(&olderLeft); err != nil {
-		t.Fatal(err)
-	}
-	if olderLeft != 0 {
-		t.Fatalf("found %d rows older than the oldest kept row — kept set is not a contiguous newest tail", olderLeft)
-	}
-}
-
-// TestKeepRowsWithinCountsFromNewest 估算「保留最新多少行」必须从最新往旧累加。
-//
-// 回归：早先这条 SQL 写成 SUM(...) OVER (ORDER BY rn DESC)，rn 是最新为 1 的序号，
-// 这样累加是**从最旧往新**，acc 命中的是最旧的几行——算出来的数字含义完全反了，
-// 结果每次清理都严重删不到位（5000 行只删 0 行），只能靠后面反复 VACUUM 兜底，
-// 300MB 的库要跑 9 秒。
-func TestKeepRowsWithinCountsFromNewest(t *testing.T) {
-	reqDB, err := openRequestLogDB(t.TempDir() + "/request-log.db")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer reqDB.Close()
-	svc := NewService(nil, slog.New(slog.DiscardHandler), reqDB, nil)
-
-	base := time.Now().UTC()
-	// 200 行，每行 1KB（bytes 记 1024 + 固定开销）。
-	const rows = 200
-	for i := 0; i < rows; i++ {
-		seedLogRow(t, reqDB, fmt.Sprintf("k%03d", i), base.Add(time.Duration(i)*time.Second).Format(time.RFC3339Nano), 1024)
-	}
-	perRow := rowBytes(strings.Repeat("x", 1024), "")
-	// contentBudget 会先压 95% 再折 ratio，这里反推出「想保留 100 行」对应的 limit：
-	// budget = (limit*0.95 - fixed) / ratio = perRow*100  =>  limit = (perRow*100*ratio + fixed) / 0.95
-	want := float64(perRow * 100)
-	limit := int64((want*sizeRatio + float64(fixedSizeOverhead)) / 0.95)
-	keep := svc.keepRowsWithin(context.Background(), limit)
-
-	if keep < 90 || keep > 110 {
-		t.Fatalf("keep = %d, want around 100 (must count from the newest, not the oldest)", keep)
-	}
-	// 保留的必须是最新的一批：最旧那一行不该被算进 keep 里。
-	var oldestRank int64
-	if err := reqDB.QueryRow(`SELECT rn FROM (SELECT id, ROW_NUMBER() OVER (ORDER BY started_at DESC) AS rn FROM request_logs) WHERE id = 'k000'`).Scan(&oldestRank); err != nil {
-		t.Fatal(err)
-	}
-	if keep >= oldestRank {
-		t.Fatalf("keep = %d reached the oldest row (rn=%d): accumulation direction is wrong", keep, oldestRank)
-	}
-}
-
-// TestTrimBySizeSingleVacuum 回归性能：清理只该 VACUUM 一次（估算准 -> 一次删到位）。
-//
-// 早先每轮 VACUUM 一次，300MB 的库要十几秒、15GB 就是十几分钟。VACUUM 与库大小
-// 成正比，是整个流程唯一的大头，必须只做一次。
-func TestTrimBySizeSingleVacuum(t *testing.T) {
-	path := t.TempDir() + "/request-log.db"
-	reqDB, err := openRequestLogDB(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer reqDB.Close()
-	svc := NewService(nil, slog.New(slog.DiscardHandler), reqDB, nil)
-	svc.SetDBPath(path)
-
-	base := time.Now().UTC()
-	// 600 行 × 16KB ≈ 9.4MB，上限 4MB —— 必须删掉大部分。
-	const rows = 600
-	for i := 0; i < rows; i++ {
-		seedLogRow(t, reqDB, fmt.Sprintf("v%03d", i), base.Add(time.Duration(i)*time.Second).Format(time.RFC3339Nano), 16*1024)
-	}
-
-	svc.ApplyRetention(context.Background(), RetentionConfig{MaxSizeMB: 4})
-
-	after := svc.diskSize()
-	if after > 4*1024*1024 {
-		t.Fatalf("size after trim = %d, want <= %d", after, 4*1024*1024)
-	}
-	var remaining int
-	if err := reqDB.QueryRow(`SELECT COUNT(*) FROM request_logs`).Scan(&remaining); err != nil {
-		t.Fatal(err)
-	}
-	if remaining >= rows {
-		t.Fatalf("remaining = %d, want < %d", remaining, rows)
-	}
-	if remaining < retentionMinKeep {
-		t.Fatalf("remaining = %d, want >= %d", remaining, retentionMinKeep)
-	}
-	// 保留的必须是最新的：最新的留下，最旧的走。
-	var newest, oldest int
-	_ = reqDB.QueryRow(`SELECT COUNT(*) FROM request_logs WHERE id = 'v599'`).Scan(&newest)
-	_ = reqDB.QueryRow(`SELECT COUNT(*) FROM request_logs WHERE id = 'v000'`).Scan(&oldest)
-	if newest != 1 {
-		t.Fatal("newest row must survive")
-	}
-	if oldest != 0 {
-		t.Fatal("oldest row must be deleted first")
-	}
-}
-
-// TestFinishRequestLogRecalculatesBytes 收尾写入响应体后，bytes 必须跟着变大。
-//
-// 这是「写入完成时记录大小」的关键一环：请求落库时只能算到请求体，响应体是
-// 收尾时才有的。如果收尾忘了重算 bytes，这行就永远只报半个大小，容量清理
-// 会少算它占的空间。
-func TestFinishRequestLogRecalculatesBytes(t *testing.T) {
-	reqDB, err := openRequestLogDB(t.TempDir() + "/request-log.db")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer reqDB.Close()
-	svc := NewService(nil, slog.New(slog.DiscardHandler), reqDB, nil)
-
-	reqBody := strings.Repeat("q", 1000)
-	started := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err := reqDB.Exec(`INSERT INTO request_logs(id, request_id, model, channel, stream, started_at, result, request_json, bytes, created_at) VALUES ('b1','b1','m','c',0,?,'running',?,?,?)`,
-		started, reqBody, rowBytes(reqBody, ""), started); err != nil {
-		t.Fatal(err)
-	}
-
-	var before int64
-	if err := reqDB.QueryRow(`SELECT bytes FROM request_logs WHERE id = 'b1'`).Scan(&before); err != nil {
-		t.Fatal(err)
-	}
-	if want := rowBytes(reqBody, ""); before != want {
-		t.Fatalf("bytes before finish = %d, want %d", before, want)
-	}
-
-	respBody := strings.Repeat("r", 5000)
-	svc.finishRequestLog("b1", 200, respBody, "ch", "success")
-
-	var after int64
-	if err := reqDB.QueryRow(`SELECT bytes FROM request_logs WHERE id = 'b1'`).Scan(&after); err != nil {
-		t.Fatal(err)
-	}
-	if want := rowBytes(reqBody, respBody); after != want {
-		t.Fatalf("bytes after finish = %d, want %d", after, want)
-	}
-	if after <= before {
-		t.Fatalf("bytes should grow after writing the response body: %d -> %d", before, after)
-	}
-}
-
-// TestOuterLinkFollowsLatestAttempt 回归：外层表格那条「完整日志」入口必须指向最后一次
-// 渠道尝试的日志，而不是第一次。
-//
-// 原实现加上空值条件后只写首次，failover 后外层按钮仍指着
-// 早已失败的第 1 条（用户看到的「成功」行点进去却是 429 失败的日志）。每次尝试都会写一条
 // 独立日志，最后一条（真正返回给用户的那次）才是这条请求的日志。
 func TestOuterLinkFollowsLatestAttempt(t *testing.T) {
 	loadout, err := db.Open(t.TempDir() + "/loadout.db")

@@ -280,7 +280,11 @@ defineExpose({ refresh: loadSources })
 <template>
   <div class="space-y-6">
     <!-- 独立页面（/translations）时仍显示 PageHeader -->
-    <PageHeader v-if="!embedded" title="翻译" description="配置目标语言/模型/提示词，批量翻译 MCP 工具与技能描述。">
+    <PageHeader
+      v-if="!embedded"
+      title="翻译"
+      description="配置目标语言/模型/提示词，批量翻译 MCP 工具与技能描述。"
+    >
       <template #actions>
         <Button variant="outline" :disabled="sourcesLoading" @click="loadSources">
           <RiLoader4Line v-if="sourcesLoading" class="size-4 animate-spin" />
@@ -398,7 +402,9 @@ defineExpose({ refresh: loadSources })
           :value="group.type"
           class="overflow-hidden rounded-md border"
         >
-          <AccordionTrigger class="flex items-center justify-center border-b bg-muted/40 px-4 py-3 hover:no-underline">
+          <AccordionTrigger
+            class="flex items-center justify-center border-b bg-muted/40 px-4 py-3 hover:no-underline"
+          >
             <RiArrowRightSLine
               class="mr-2 size-4 shrink-0 text-muted-foreground transition-transform duration-200 group-aria-expanded/accordion-trigger:rotate-90"
             />

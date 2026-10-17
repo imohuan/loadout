@@ -28,6 +28,7 @@ import (
 	// vision "loadout/plugins/vision"
 	visionv2 "loadout/plugins/vision_v2"
 	volcfreequota "loadout/plugins/volc-free-quota"
+	workbuddypanel "loadout/plugins/workbuddy-panel"
 )
 
 // All 返回全部业务插件，按装配顺序列出（框架会按 inject/provide 自动拓扑排序）。
@@ -54,5 +55,6 @@ func All() []plugin.Plugin {
 		adminapi.New(),
 		volcfreequota.New(),
 		translate.New(),
+		workbuddypanel.New(),
 	}
 }

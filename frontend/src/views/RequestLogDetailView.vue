@@ -5,7 +5,15 @@ import { useRequestLogs } from '@/composables/useRequestLogs'
 import type { RequestLogDetail } from '@/lib/types'
 import { formatDate, formatDuration } from '@/lib/format'
 import { getLoadoutBase } from '@/lib/base'
-import { RiArrowLeftLine, RiArrowRightUpLine, RiErrorWarningLine, RiArrowRightSLine, RiClipboardLine, RiCheckLine, RiLink } from '@remixicon/vue'
+import {
+  RiArrowLeftLine,
+  RiArrowRightUpLine,
+  RiErrorWarningLine,
+  RiArrowRightSLine,
+  RiClipboardLine,
+  RiCheckLine,
+  RiLink,
+} from '@remixicon/vue'
 import { toast } from 'vue-sonner'
 import AxJsonViewer from '@/components/ui/AxJsonViewer.vue'
 import EmptyState from '@/components/EmptyState.vue'
@@ -42,7 +50,7 @@ const streamView = computed<{
   const truncated = !!(r && typeof r === 'object' && (r as { truncated?: unknown }).truncated)
   const statusCode =
     r && typeof r === 'object' && typeof (r as { status_code?: unknown }).status_code === 'number'
-      ? ((r as { status_code: number }).status_code)
+      ? (r as { status_code: number }).status_code
       : undefined
   const isDone = log.value?.result === 'success' || log.value?.result === 'failed'
   return {
@@ -192,7 +200,11 @@ async function copyLink() {
     </Alert>
 
     <!-- 未找到 -->
-    <EmptyState v-else-if="!log" title="未找到记录" description="该请求未记录完整日志，或已被清理。" />
+    <EmptyState
+      v-else-if="!log"
+      title="未找到记录"
+      description="该请求未记录完整日志，或已被清理。"
+    />
 
     <template v-else>
       <!-- 请求概要 -->
@@ -201,11 +213,23 @@ async function copyLink() {
           <div class="flex items-center justify-between gap-2">
             <CardTitle class="text-base">请求概要</CardTitle>
             <div class="flex items-center gap-2">
-              <Button variant="outline" size="sm" class="gap-1.5" :disabled="!log" @click="copyLink">
+              <Button
+                variant="outline"
+                size="sm"
+                class="gap-1.5"
+                :disabled="!log"
+                @click="copyLink"
+              >
                 <component :is="linkCopied ? RiCheckLine : RiLink" size="14" />
                 {{ linkCopied ? '已复制' : '复制链接' }}
               </Button>
-              <Button variant="outline" size="sm" class="gap-1.5" :disabled="!log" @click="copyAllJson">
+              <Button
+                variant="outline"
+                size="sm"
+                class="gap-1.5"
+                :disabled="!log"
+                @click="copyAllJson"
+              >
                 <component :is="copied ? RiCheckLine : RiClipboardLine" size="14" />
                 {{ copied ? '已复制' : '复制完整 JSON' }}
               </Button>
@@ -218,24 +242,53 @@ async function copyLink() {
               <span class="text-muted-foreground">结果</span>
               <Badge :class="resultTone(log.result)">{{ resultLabel(log.result) }}</Badge>
             </span>
-            <span class="inline-flex items-center gap-1.5"><span class="text-muted-foreground">模型</span><Badge
-                :class="fieldTone('model')" class="font-mono">{{ log.model || '-' }}</Badge></span>
-            <span class="inline-flex items-center gap-1.5"><span class="text-muted-foreground">渠道</span><Badge
-                :class="fieldTone('channel')" class="font-mono">{{ log.channel || '-' }}</Badge></span>
-            <span class="inline-flex items-center gap-1.5"><span class="text-muted-foreground">状态码</span><Badge
-                :class="fieldTone('status')" class="font-mono">{{ log.http_status ?? '-' }}</Badge></span>
-            <span class="inline-flex items-center gap-1.5"><span class="text-muted-foreground">流式</span><Badge
-                :class="fieldTone('stream')">{{ log.stream ? '是' : '否' }}</Badge></span>
-            <span class="inline-flex items-center gap-1.5"><span class="text-muted-foreground">开始</span><Badge
-                :class="fieldTone('started')" class="font-mono">{{ formatDate(log.started_at) }}</Badge></span>
-            <span class="inline-flex items-center gap-1.5"><span class="text-muted-foreground">耗时</span><Badge
-                :class="fieldTone('duration')" class="font-mono">{{ formatDuration(log.duration_ms) }}</Badge></span>
+            <span class="inline-flex items-center gap-1.5"
+              ><span class="text-muted-foreground">模型</span
+              ><Badge :class="fieldTone('model')" class="font-mono">{{
+                log.model || '-'
+              }}</Badge></span
+            >
+            <span class="inline-flex items-center gap-1.5"
+              ><span class="text-muted-foreground">渠道</span
+              ><Badge :class="fieldTone('channel')" class="font-mono">{{
+                log.channel || '-'
+              }}</Badge></span
+            >
+            <span class="inline-flex items-center gap-1.5"
+              ><span class="text-muted-foreground">状态码</span
+              ><Badge :class="fieldTone('status')" class="font-mono">{{
+                log.http_status ?? '-'
+              }}</Badge></span
+            >
+            <span class="inline-flex items-center gap-1.5"
+              ><span class="text-muted-foreground">流式</span
+              ><Badge :class="fieldTone('stream')">{{ log.stream ? '是' : '否' }}</Badge></span
+            >
+            <span class="inline-flex items-center gap-1.5"
+              ><span class="text-muted-foreground">开始</span
+              ><Badge :class="fieldTone('started')" class="font-mono">{{
+                formatDate(log.started_at)
+              }}</Badge></span
+            >
+            <span class="inline-flex items-center gap-1.5"
+              ><span class="text-muted-foreground">耗时</span
+              ><Badge :class="fieldTone('duration')" class="font-mono">{{
+                formatDuration(log.duration_ms)
+              }}</Badge></span
+            >
           </div>
           <Separator />
           <div class="flex flex-wrap items-center justify-between gap-x-6 gap-y-2">
-            <p class="break-all font-mono text-xs text-muted-foreground">UUID：{{ log.id }}　｜　Request ID：{{
-              log.request_id }}</p>
-            <Button v-if="log.request_id" variant="link" size="sm" class="h-auto gap-1 p-0 text-xs" as-child>
+            <p class="break-all font-mono text-xs text-muted-foreground">
+              UUID：{{ log.id }}　｜　Request ID：{{ log.request_id }}
+            </p>
+            <Button
+              v-if="log.request_id"
+              variant="link"
+              size="sm"
+              class="h-auto gap-1 p-0 text-xs"
+              as-child
+            >
               <router-link :to="`/route-logs?request_id=${log.request_id}`">
                 跳转对应转发日志
                 <RiArrowRightUpLine size="14" />
@@ -256,13 +309,16 @@ async function copyLink() {
               <AccordionTrigger>
                 <span class="inline-flex items-center">
                   <RiArrowRightSLine
-                    class="mr-2 size-4 shrink-0 text-muted-foreground transition-transform duration-200 group-aria-expanded/accordion-trigger:rotate-90" />
+                    class="mr-2 size-4 shrink-0 text-muted-foreground transition-transform duration-200 group-aria-expanded/accordion-trigger:rotate-90"
+                  />
                   请求参数
                 </span>
                 <template #icon><span class="hidden" /></template>
               </AccordionTrigger>
               <AccordionContent>
-                <div class="mt-2 max-h-96 overflow-auto rounded border border-border bg-muted/30 p-3">
+                <div
+                  class="mt-2 max-h-96 overflow-auto rounded border border-border bg-muted/30 p-3"
+                >
                   <AxJsonViewer :data="log.request_json" :expand-level="2" wrap-enabled />
                 </div>
               </AccordionContent>
@@ -271,21 +327,28 @@ async function copyLink() {
               <AccordionTrigger>
                 <span class="inline-flex items-center">
                   <RiArrowRightSLine
-                    class="mr-2 size-4 shrink-0 text-muted-foreground transition-transform duration-200 group-aria-expanded/accordion-trigger:rotate-90" />
+                    class="mr-2 size-4 shrink-0 text-muted-foreground transition-transform duration-200 group-aria-expanded/accordion-trigger:rotate-90"
+                  />
                   响应结果
                   <template v-if="!log.response_json">
-                    <span class="ml-2 text-xs font-normal text-muted-foreground">（尚无响应：被拦截或中断）</span>
+                    <span class="ml-2 text-xs font-normal text-muted-foreground"
+                      >（尚无响应：被拦截或中断）</span
+                    >
                   </template>
                 </span>
                 <template #icon><span class="hidden" /></template>
               </AccordionTrigger>
               <AccordionContent>
-                <div v-if="log.response_json"
-                  class="mt-2 max-h-168 overflow-auto rounded border border-border bg-muted/30 p-3">
+                <div
+                  v-if="log.response_json"
+                  class="mt-2 max-h-168 overflow-auto rounded border border-border bg-muted/30 p-3"
+                >
                   <AxJsonViewer :data="log.response_json" :expand-level="2" wrap-enabled />
                 </div>
-                <p v-else
-                  class="mt-2 rounded border border-dashed border-border py-6 text-center text-sm text-muted-foreground">
+                <p
+                  v-else
+                  class="mt-2 rounded border border-dashed border-border py-6 text-center text-sm text-muted-foreground"
+                >
                   尚无响应：请求被拦截或流式中断。
                 </p>
               </AccordionContent>
@@ -294,10 +357,13 @@ async function copyLink() {
               <AccordionTrigger>
                 <span class="inline-flex items-center">
                   <RiArrowRightSLine
-                    class="mr-2 size-4 shrink-0 text-muted-foreground transition-transform duration-200 group-aria-expanded/accordion-trigger:rotate-90" />
+                    class="mr-2 size-4 shrink-0 text-muted-foreground transition-transform duration-200 group-aria-expanded/accordion-trigger:rotate-90"
+                  />
                   响应可视化
                   <template v-if="streamView.truncated">
-                    <span class="ml-2 text-xs font-normal text-amber-600 dark:text-amber-400">（已截断）</span>
+                    <span class="ml-2 text-xs font-normal text-amber-600 dark:text-amber-400"
+                      >（已截断）</span
+                    >
                   </template>
                   <template v-else-if="!streamView.body">
                     <span class="ml-2 text-xs font-normal text-muted-foreground">（无内容）</span>
@@ -306,7 +372,9 @@ async function copyLink() {
                 <template #icon><span class="hidden" /></template>
               </AccordionTrigger>
               <AccordionContent>
-                <div class="mt-2 max-h-168 overflow-auto rounded border border-border bg-muted/30 p-4">
+                <div
+                  class="mt-2 max-h-168 overflow-auto rounded border border-border bg-muted/30 p-4"
+                >
                   <ChatPreviewPanel
                     :request-json="log.request_json"
                     :response-json="log.response_json"

@@ -50,7 +50,9 @@ const copied = ref(false)
       <!-- 卡片壳与 RouteLogErrorCell 同款：label 行 + 复制按钮 + 正文 -->
       <div class="rounded-md border border-border/60 bg-muted/40 px-3 py-2 text-xs">
         <div class="mb-1 flex items-center justify-between gap-2">
-          <span class="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{{ props.label }}</span>
+          <span class="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{{
+            props.label
+          }}</span>
           <button
             type="button"
             class="rounded border border-border/60 px-1.5 py-0.5 text-[10px] text-foreground hover:bg-muted"
@@ -64,8 +66,7 @@ const copied = ref(false)
             'max-h-72 overflow-auto whitespace-pre-wrap break-all leading-snug text-foreground/80',
             props.mono ? 'font-mono text-[11px]' : 'text-xs',
           ]"
-          >{{ content }}</pre
-        >
+          >{{ content }}</pre>
       </div>
     </HoverCardContent>
   </HoverCard>

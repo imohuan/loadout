@@ -11,10 +11,7 @@ import { computed, ref, watch } from 'vue'
 const URL_RE = /https?:\/\/[^\s<>"'`（）()「」【】[\]]+/g
 function linkify(text: string | undefined): string {
   if (!text) return ''
-  const escaped = text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
+  const escaped = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
   return escaped.replace(URL_RE, (url) => {
     const clean = url.replace(/[.,;:!?)]+$/, '')
     return `<a href="${clean}" target="_blank" rel="noopener noreferrer" class="text-accent underline decoration-dotted underline-offset-2 hover:decoration-solid">${clean}</a>`
@@ -71,7 +68,12 @@ const expandedByLevel = computed(() => {
 // 初始化时应用 expandLevel
 if (expandedByLevel.value) {
   isExpanded.value = true
-} else if (props.expandLevel >= 0 && !expandedByLevel.value && !props.isRoot && !props.defaultExpandAll) {
+} else if (
+  props.expandLevel >= 0 &&
+  !expandedByLevel.value &&
+  !props.isRoot &&
+  !props.defaultExpandAll
+) {
   isExpanded.value = false
 }
 
@@ -147,7 +149,10 @@ function handleToggle(e: MouseEvent) {
 const parsedData = computed(() => {
   if (typeof props.data === 'string') {
     const trimmed = props.data.trim()
-    if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
+    if (
+      (trimmed.startsWith('{') && trimmed.endsWith('}')) ||
+      (trimmed.startsWith('[') && trimmed.endsWith(']'))
+    ) {
       try {
         return JSON.parse(trimmed)
       } catch {
@@ -214,19 +219,26 @@ watch(
 </script>
 
 <template>
-  <div class="font-mono text-[12px] leading-[1.7] text-foreground text-left select-text" :class="{
-    'whitespace-pre overflow-x-auto': !props.wrapEnabled && props.isRoot,
-    'whitespace-pre-wrap break-words [overflow-wrap:anywhere]': props.wrapEnabled,
-  }">
+  <div
+    class="font-mono text-[12px] leading-[1.7] text-foreground text-left select-text"
+    :class="{
+      'whitespace-pre overflow-x-auto': !props.wrapEnabled && props.isRoot,
+      'whitespace-pre-wrap break-words [overflow-wrap:anywhere]': props.wrapEnabled,
+    }"
+  >
     <!-- 简单值（非对象/数组） -->
     <div v-if="!isComplex" class="flex items-start gap-[2px] py-[1px]">
       <div class="w-[14px] shrink-0" />
       <div class="flex-1 min-w-0">
         <span v-if="nodeKey !== null" class="text-primary font-medium mr-1">
-          <span class="text-muted-foreground">'</span>{{ nodeKey }}<span class="text-muted-foreground">'</span><span
-            class="text-muted-foreground">:</span>
+          <span class="text-muted-foreground">'</span>{{ nodeKey
+          }}<span class="text-muted-foreground">'</span><span class="text-muted-foreground">:</span>
         </span>
-        <span :class="valueColorClass" class="inline-block align-bottom" v-html="linkify(formatValue(data))" />
+        <span
+          :class="valueColorClass"
+          class="inline-block align-bottom"
+          v-html="linkify(formatValue(data))"
+        />
         <span v-if="!isLast" class="text-muted-foreground shrink-0">,</span>
       </div>
     </div>
@@ -236,19 +248,30 @@ watch(
       <!-- 头部行：箭头 + 键 + 开括号 -->
       <div class="flex items-start gap-[2px] cursor-pointer min-w-0" @click="handleToggle">
         <div
-          class="w-[20px] h-[20px] shrink-0 inline-flex items-center justify-center rounded-[4px] text-muted-foreground "
-          :class="{ invisible: isEmpty }">
-          <svg class="w-[14px] h-[14px] transition-transform duration-150 hover:text-foreground" :class="{ 'rotate-90': isExpanded }"
-            width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-            stroke-linecap="round" stroke-linejoin="round">
+          class="w-[20px] h-[20px] shrink-0 inline-flex items-center justify-center rounded-[4px] text-muted-foreground"
+          :class="{ invisible: isEmpty }"
+        >
+          <svg
+            class="w-[14px] h-[14px] transition-transform duration-150 hover:text-foreground"
+            :class="{ 'rotate-90': isExpanded }"
+            width="12"
+            height="12"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
             <path d="m9 18 6-6-6-6" />
           </svg>
         </div>
 
         <div class="flex-1 min-w-0">
           <span v-if="nodeKey !== null" class="mr-1">
-            <span class="text-muted-foreground">'</span>{{ nodeKey }}<span class="text-muted-foreground">'</span><span
-              class="text-muted-foreground">:</span>
+            <span class="text-muted-foreground">'</span>{{ nodeKey
+            }}<span class="text-muted-foreground">'</span
+            ><span class="text-muted-foreground">:</span>
           </span>
           <span class="text-muted-foreground px-2">{{ openBracket }}</span>
           <template v-if="!isExpanded && !isEmpty">
@@ -266,24 +289,33 @@ watch(
       <div v-show="isExpanded && !isEmpty" class="relative pl-[28px] min-w-0 w-full">
         <div class="absolute left-[14px] top-0 bottom-0 w-px bg-border opacity-60" />
         <div>
-          <AxJsonViewer v-for="(val, key, index) in parsedData as any" :key="key"
-            :node-key="dataType === 'array' ? null : key" :data="val" :is-last="index ===
+          <AxJsonViewer
+            v-for="(val, key, index) in parsedData as any"
+            :key="key"
+            :node-key="dataType === 'array' ? null : key"
+            :data="val"
+            :is-last="
+              index ===
               (dataType === 'array'
                 ? (parsedData as any[]).length
                 : Object.keys(parsedData as object).length) -
-              1
-              " :expand-trigger="expandTrigger" :deep-expand-trigger="childDeepTrigger" :depth="(props.depth ?? 0) + 1"
-            :expand-level="props.expandLevel" :default-expand-all="props.defaultExpandAll" :is-root="false"
-            :wrap-enabled="props.wrapEnabled" />
+                1
+            "
+            :expand-trigger="expandTrigger"
+            :deep-expand-trigger="childDeepTrigger"
+            :depth="(props.depth ?? 0) + 1"
+            :expand-level="props.expandLevel"
+            :default-expand-all="props.defaultExpandAll"
+            :is-root="false"
+            :wrap-enabled="props.wrapEnabled"
+          />
         </div>
       </div>
 
       <!-- 闭合括号 -->
       <div v-show="isExpanded && !isEmpty" class="flex items-start gap-[2px] min-w-0 w-full">
         <div class="w-[14px] shrink-0" />
-        <div class="text-muted-foreground">
-          {{ closeBracket }}<span v-if="!isLast">,</span>
-        </div>
+        <div class="text-muted-foreground">{{ closeBracket }}<span v-if="!isLast">,</span></div>
       </div>
     </div>
   </div>

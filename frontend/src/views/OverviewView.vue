@@ -15,6 +15,7 @@ import StatCard from '@/components/StatCard.vue'
 import LoadingBlock from '@/components/LoadingBlock.vue'
 import McpStatsPanel from '@/components/McpStatsPanel/McpStatsPanel.vue'
 import ModelStatsPanel from '@/components/ModelStatsPanel/ModelStatsPanel.vue'
+import WbPanel from '@/components/workbuddy/WbPanel.vue'
 
 const router = useRouter()
 const overview = ref<Overview>()
@@ -78,6 +79,7 @@ onMounted(async () => {
       </div>
       <McpStatsPanel />
       <ModelStatsPanel />
+      <WbPanel />
       <div class="grid gap-4 lg:grid-cols-2">
         <Card class="rounded-md"
           ><CardHeader

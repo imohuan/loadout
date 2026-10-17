@@ -43,7 +43,14 @@ export const useTranslateStore = defineStore('translate', () => {
   const batchFinished = ref(false)
   const batchResults = ref<Map<string, string>>(new Map())
 
-  function setConfig(cfg: Partial<{ targetLang: string; model: string; prompt: string; displayMode: TranslateDisplayMode }>) {
+  function setConfig(
+    cfg: Partial<{
+      targetLang: string
+      model: string
+      prompt: string
+      displayMode: TranslateDisplayMode
+    }>,
+  ) {
     if (cfg.targetLang !== undefined) targetLang.value = cfg.targetLang
     if (cfg.model !== undefined) model.value = cfg.model
     if (cfg.prompt !== undefined) prompt.value = cfg.prompt
@@ -90,7 +97,10 @@ export const useTranslateStore = defineStore('translate', () => {
   }
 
   /** 翻译一段文本（单条，会真实调用模型）。textKey 用于记录结果供组件读取。 */
-  async function translateOne(source: string, opts: Partial<TranslateRequest> & { textKey?: string } = {}): Promise<string> {
+  async function translateOne(
+    source: string,
+    opts: Partial<TranslateRequest> & { textKey?: string } = {},
+  ): Promise<string> {
     const lang = opts.target_lang ?? targetLang.value
     const cached = readCached(source, lang, opts.textKey)
     if (cached !== null) return cached
@@ -111,7 +121,11 @@ export const useTranslateStore = defineStore('translate', () => {
   }
 
   /** 只读查询已翻译结果（不触发翻译）。textKey 记录结果供组件读取。 */
-  async function lookupText(source: string, lang = targetLang.value, textKey?: string): Promise<string | null> {
+  async function lookupText(
+    source: string,
+    lang = targetLang.value,
+    textKey?: string,
+  ): Promise<string | null> {
     if (!source) return null
     const cached = readCached(source, lang, textKey)
     if (cached !== null) return cached

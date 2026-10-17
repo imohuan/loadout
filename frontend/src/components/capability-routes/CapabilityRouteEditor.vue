@@ -436,7 +436,10 @@ function submit() {
         fail('「单个 Key 并发上限」需为正整数（留空 = 不限并发）')
         return
       }
-      if (!parsePositiveInt(form.rateLimit.maxRequests) && !parsePositiveInt(form.rateLimit.maxConcurrency)) {
+      if (
+        !parsePositiveInt(form.rateLimit.maxRequests) &&
+        !parsePositiveInt(form.rateLimit.maxConcurrency)
+      ) {
         fail('请至少填写一项限制：窗口内最大请求数 或 并发上限')
         return
       }
@@ -581,8 +584,8 @@ function submit() {
           />
           <p class="text-xs text-muted-foreground">
             <b>留空 = 全部模型</b>（等价 <code class="font-mono">*</code>）；也支持
-            <code class="font-mono">*</code> 通配与前缀匹配。候选随目标渠道过滤（通用/空 = 全部渠道模型）。
-            未命中默认原生透传。
+            <code class="font-mono">*</code> 通配与前缀匹配。候选随目标渠道过滤（通用/空 =
+            全部渠道模型）。 未命中默认原生透传。
           </p>
         </div>
         <div class="grid gap-4 sm:grid-cols-2">
@@ -807,7 +810,11 @@ function submit() {
             </div>
             <div class="space-y-1">
               <Label class="text-xs text-muted-foreground">单个 Key 并发上限（留空 = 不限）</Label>
-              <Input v-model="form.rateLimit.maxConcurrency" inputmode="numeric" placeholder="不限" />
+              <Input
+                v-model="form.rateLimit.maxConcurrency"
+                inputmode="numeric"
+                placeholder="不限"
+              />
             </div>
             <div class="space-y-1">
               <Label class="text-xs text-muted-foreground">所有账号都用满时</Label>

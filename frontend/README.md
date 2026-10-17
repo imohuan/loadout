@@ -164,7 +164,8 @@ import { RiHeartFill, RiCloseLine } from '@remixicon/vue'
       <AccordionTrigger>
         <span class="inline-flex items-center">
           <RiArrowRightSLine
-            class="mr-2 size-4 shrink-0 text-muted-foreground transition-transform duration-200 group-aria-expanded/accordion-trigger:rotate-90" />
+            class="mr-2 size-4 shrink-0 text-muted-foreground transition-transform duration-200 group-aria-expanded/accordion-trigger:rotate-90"
+          />
           请求参数
         </span>
         <template #icon><span class="hidden" /></template>
@@ -177,7 +178,8 @@ import { RiHeartFill, RiCloseLine } from '@remixicon/vue'
       <AccordionTrigger>
         <span class="inline-flex items-center">
           <RiArrowRightSLine
-            class="mr-2 size-4 shrink-0 text-muted-foreground transition-transform duration-200 group-aria-expanded/accordion-trigger:rotate-90" />
+            class="mr-2 size-4 shrink-0 text-muted-foreground transition-transform duration-200 group-aria-expanded/accordion-trigger:rotate-90"
+          />
           响应结果
         </span>
         <template #icon><span class="hidden" /></template>

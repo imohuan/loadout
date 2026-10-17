@@ -137,211 +137,216 @@ function channelScopeLabel(channels: Channel[], ids?: string[], baseURLs?: strin
       <CardContent class="p-0">
         <div v-if="routes.length" class="overflow-x-auto">
           <AxTable>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>目标模型</TableHead>
-                <TableHead>渠道</TableHead>
-                <TableHead>能力</TableHead>
-                <TableHead>路由方式</TableHead>
-                <TableHead>代理配置</TableHead>
-                <TableHead class="text-right">操作</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              <TableRow
-                v-for="(route, index) in routes"
-                :key="
-                  (route.models || []).join(',') +
-                  ':' +
-                  (route.channel_ids || []).join(',') +
-                  ':' +
-                  (route.channel_base_urls || []).join(',') +
-                  ':' +
-                  route.capability
-                "
-              >
-                <TableCell class="max-w-md text-sm text-muted-foreground">
-                  <Tooltip>
-                    <TooltipTrigger as-child>
-                      <div
-                        class="whitespace-pre-wrap break-words [display:-webkit-box] [-webkit-line-clamp:2] [-webkit-box-orient:vertical] overflow-hidden"
-                      >
-                        {{ (route.models || []).join(', ') || '-' }}
-                      </div>
-                    </TooltipTrigger>
-                    <TooltipContent>{{ (route.models || []).join(', ') || '-' }}</TooltipContent>
-                  </Tooltip>
-                </TableCell>
-                <TableCell class="max-w-xs text-sm text-muted-foreground">
-                  <Tooltip>
-                    <TooltipTrigger as-child>
-                      <div
-                        class="whitespace-pre-wrap break-words [display:-webkit-box] [-webkit-line-clamp:2] [-webkit-box-orient:vertical] overflow-hidden"
-                      >
-                        {{
-                          channelScopeLabel(channels, route.channel_ids, route.channel_base_urls)
-                        }}
-                      </div>
-                    </TooltipTrigger>
-                    <TooltipContent>{{
-                      channelScopeLabel(channels, route.channel_ids, route.channel_base_urls)
-                    }}</TooltipContent>
-                  </Tooltip>
-                </TableCell>
-                <TableCell>
-                  <Badge variant="outline">{{ route.capability }}</Badge>
-                </TableCell>
-                <TableCell>
-                  <Badge :variant="routeVariant[route.route] || 'outline'">{{
-                    routeLabel[route.route] || route.route
-                  }}</Badge>
-                </TableCell>
-                <TableCell class="min-w-0 max-w-md text-sm text-muted-foreground">
-                  <Tooltip>
-                    <TooltipTrigger as-child>
-                      <div
-                        class="min-w-0 whitespace-pre-wrap break-words [display:-webkit-box] [-webkit-line-clamp:2] [-webkit-box-orient:vertical] overflow-hidden"
-                      >
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>目标模型</TableHead>
+                  <TableHead>渠道</TableHead>
+                  <TableHead>能力</TableHead>
+                  <TableHead>路由方式</TableHead>
+                  <TableHead>代理配置</TableHead>
+                  <TableHead class="text-right">操作</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                <TableRow
+                  v-for="(route, index) in routes"
+                  :key="
+                    (route.models || []).join(',') +
+                    ':' +
+                    (route.channel_ids || []).join(',') +
+                    ':' +
+                    (route.channel_base_urls || []).join(',') +
+                    ':' +
+                    route.capability
+                  "
+                >
+                  <TableCell class="max-w-md text-sm text-muted-foreground">
+                    <Tooltip>
+                      <TooltipTrigger as-child>
+                        <div
+                          class="whitespace-pre-wrap break-words [display:-webkit-box] [-webkit-line-clamp:2] [-webkit-box-orient:vertical] overflow-hidden"
+                        >
+                          {{ (route.models || []).join(', ') || '-' }}
+                        </div>
+                      </TooltipTrigger>
+                      <TooltipContent>{{ (route.models || []).join(', ') || '-' }}</TooltipContent>
+                    </Tooltip>
+                  </TableCell>
+                  <TableCell class="max-w-xs text-sm text-muted-foreground">
+                    <Tooltip>
+                      <TooltipTrigger as-child>
+                        <div
+                          class="whitespace-pre-wrap break-words [display:-webkit-box] [-webkit-line-clamp:2] [-webkit-box-orient:vertical] overflow-hidden"
+                        >
+                          {{
+                            channelScopeLabel(channels, route.channel_ids, route.channel_base_urls)
+                          }}
+                        </div>
+                      </TooltipTrigger>
+                      <TooltipContent>{{
+                        channelScopeLabel(channels, route.channel_ids, route.channel_base_urls)
+                      }}</TooltipContent>
+                    </Tooltip>
+                  </TableCell>
+                  <TableCell>
+                    <Badge variant="outline">{{ route.capability }}</Badge>
+                  </TableCell>
+                  <TableCell>
+                    <Badge :variant="routeVariant[route.route] || 'outline'">{{
+                      routeLabel[route.route] || route.route
+                    }}</Badge>
+                  </TableCell>
+                  <TableCell class="min-w-0 max-w-md text-sm text-muted-foreground">
+                    <Tooltip>
+                      <TooltipTrigger as-child>
+                        <div
+                          class="min-w-0 whitespace-pre-wrap break-words [display:-webkit-box] [-webkit-line-clamp:2] [-webkit-box-orient:vertical] overflow-hidden"
+                        >
+                          <template v-if="route.capability === 'sensitive_filter'">
+                            {{ proxyReplacementsLabel(route) || '—' }}
+                          </template>
+                          <template v-else-if="route.capability === 'field_filter'">
+                            {{ fieldRulesLabel(route) || '—' }}
+                          </template>
+                          <template v-else-if="route.capability === 'request_log'">
+                            记录完整请求/响应
+                          </template>
+                          <template v-else-if="route.capability === 'force_stream'">
+                            强制流式，整包非流式返回
+                          </template>
+                          <template v-else-if="route.capability === 'message_inject'">
+                            {{ messageInjectLabel(route) || '—' }}
+                          </template>
+                          <template v-else-if="route.capability === 'key_rate_limit'">
+                            {{ rateLimitLabel(route) || '—' }}
+                          </template>
+                          <template v-else>
+                            <template v-for="(o, i) in viaOptions(route)" :key="i">
+                              <ModelChannelRef
+                                :model="o.via_model"
+                                :target="o"
+                                :channels="channels"
+                              />
+                              <template v-if="i < viaOptions(route).length - 1"
+                                ><span class="mx-1">→</span></template
+                              >
+                            </template>
+                            <span v-if="!viaOptions(route).length">—</span>
+                          </template>
+                        </div>
+                      </TooltipTrigger>
+                      <TooltipContent side="top" align="start">
                         <template v-if="route.capability === 'sensitive_filter'">
-                          {{ proxyReplacementsLabel(route) || '—' }}
+                          <span class="whitespace-pre-wrap">{{
+                            proxyReplacementsLabel(route) || '—'
+                          }}</span>
                         </template>
                         <template v-else-if="route.capability === 'field_filter'">
-                          {{ fieldRulesLabel(route) || '—' }}
-                        </template>
-                        <template v-else-if="route.capability === 'request_log'">
-                          记录完整请求/响应
-                        </template>
-                        <template v-else-if="route.capability === 'force_stream'">
-                          强制流式，整包非流式返回
+                          <span class="whitespace-pre-wrap">{{
+                            fieldRulesLabel(route) || '—'
+                          }}</span>
                         </template>
                         <template v-else-if="route.capability === 'message_inject'">
-                          {{ messageInjectLabel(route) || '—' }}
+                          <span class="whitespace-pre-wrap">{{
+                            messageInjectLabel(route) || '—'
+                          }}</span>
                         </template>
                         <template v-else-if="route.capability === 'key_rate_limit'">
-                          {{ rateLimitLabel(route) || '—' }}
+                          <span class="whitespace-pre-wrap"
+                            >窗口内次数用满、或在途并发占满的渠道 Key
+                            会被暂时跳过，请求自动落到同平台的另一个账号</span
+                          >
+                        </template>
+                        <template v-else-if="route.capability === 'force_stream'">
+                          <span class="whitespace-pre-wrap"
+                            >非流式客户端请求在此转流式请求上游，缓冲完整段后整包按非流式返回</span
+                          >
                         </template>
                         <template v-else>
-                          <template v-for="(o, i) in viaOptions(route)" :key="i">
-                            <ModelChannelRef
-                              :model="o.via_model"
-                              :target="o"
-                              :channels="channels"
-                            />
-                            <template v-if="i < viaOptions(route).length - 1"
-                              ><span class="mx-1">→</span></template
+                          <div class="flex flex-col items-start gap-1">
+                            <div
+                              v-for="(o, i) in viaOptions(route)"
+                              :key="i"
+                              class="flex items-center gap-1.5"
                             >
-                          </template>
-                          <span v-if="!viaOptions(route).length">—</span>
-                        </template>
-                      </div>
-                    </TooltipTrigger>
-                    <TooltipContent side="top" align="start">
-                      <template v-if="route.capability === 'sensitive_filter'">
-                        <span class="whitespace-pre-wrap">{{
-                          proxyReplacementsLabel(route) || '—'
-                        }}</span>
-                      </template>
-                      <template v-else-if="route.capability === 'field_filter'">
-                        <span class="whitespace-pre-wrap">{{ fieldRulesLabel(route) || '—' }}</span>
-                      </template>
-                      <template v-else-if="route.capability === 'message_inject'">
-                        <span class="whitespace-pre-wrap">{{ messageInjectLabel(route) || '—' }}</span>
-                      </template>
-                      <template v-else-if="route.capability === 'key_rate_limit'">
-                        <span class="whitespace-pre-wrap"
-                          >窗口内次数用满、或在途并发占满的渠道 Key 会被暂时跳过，请求自动落到同平台的另一个账号</span
-                        >
-                      </template>
-                      <template v-else-if="route.capability === 'force_stream'">
-                        <span class="whitespace-pre-wrap"
-                          >非流式客户端请求在此转流式请求上游，缓冲完整段后整包按非流式返回</span
-                        >
-                      </template>
-                      <template v-else>
-                        <div class="flex flex-col items-start gap-1">
-                          <div
-                            v-for="(o, i) in viaOptions(route)"
-                            :key="i"
-                            class="flex items-center gap-1.5"
-                          >
-                            <ModelChannelRef
-                              :model="o.via_model"
-                              :target="o"
-                              :channels="channels"
-                            />
-                            <template v-if="i < viaOptions(route).length - 1"
-                              ><span class="text-muted-foreground">→</span></template
-                            >
+                              <ModelChannelRef
+                                :model="o.via_model"
+                                :target="o"
+                                :channels="channels"
+                              />
+                              <template v-if="i < viaOptions(route).length - 1"
+                                ><span class="text-muted-foreground">→</span></template
+                              >
+                            </div>
+                            <span v-if="!viaOptions(route).length">—</span>
                           </div>
-                          <span v-if="!viaOptions(route).length">—</span>
-                        </div>
-                      </template>
-                    </TooltipContent>
-                  </Tooltip>
-                </TableCell>
-                <TableCell>
-                  <div class="flex justify-end gap-1">
-                    <Tooltip>
-                      <TooltipTrigger as-child
-                        ><Button
-                          variant="ghost"
-                          size="icon"
-                          aria-label="上移"
-                          :disabled="index === 0 || busy(route, 'move')"
-                          @click="emit('move', index, -1)"
-                        >
-                          <RiArrowUpLine size="16" /> </Button
-                      ></TooltipTrigger>
-                      <TooltipContent>上移</TooltipContent>
+                        </template>
+                      </TooltipContent>
                     </Tooltip>
-                    <Tooltip>
-                      <TooltipTrigger as-child
-                        ><Button
-                          variant="ghost"
-                          size="icon"
-                          aria-label="下移"
-                          :disabled="index === routes.length - 1 || busy(route, 'move')"
-                          @click="emit('move', index, 1)"
-                        >
-                          <RiArrowDownLine size="16" /> </Button
-                      ></TooltipTrigger>
-                      <TooltipContent>下移</TooltipContent>
-                    </Tooltip>
-                    <Tooltip>
-                      <TooltipTrigger as-child
-                        ><Button
-                          variant="ghost"
-                          size="icon"
-                          aria-label="编辑"
-                          @click="emit('edit', route)"
-                        >
-                          <RiEditLine size="16" /> </Button
-                      ></TooltipTrigger>
-                      <TooltipContent>编辑</TooltipContent>
-                    </Tooltip>
-                    <Tooltip>
-                      <TooltipTrigger as-child
-                        ><Button
-                          variant="ghost"
-                          size="icon"
-                          aria-label="删除"
-                          :disabled="busy(route, 'remove')"
-                          @click="emit('remove', route)"
-                        >
-                          <RiLoader4Line
-                            v-if="busy(route, 'remove')"
-                            class="animate-spin"
-                            size="16"
-                          /><RiDeleteBinLine v-else size="16" /> </Button
-                      ></TooltipTrigger>
-                      <TooltipContent>删除</TooltipContent>
-                    </Tooltip>
-                  </div>
-                </TableCell>
-              </TableRow>
-            </TableBody>
-          </Table>
+                  </TableCell>
+                  <TableCell>
+                    <div class="flex justify-end gap-1">
+                      <Tooltip>
+                        <TooltipTrigger as-child
+                          ><Button
+                            variant="ghost"
+                            size="icon"
+                            aria-label="上移"
+                            :disabled="index === 0 || busy(route, 'move')"
+                            @click="emit('move', index, -1)"
+                          >
+                            <RiArrowUpLine size="16" /> </Button
+                        ></TooltipTrigger>
+                        <TooltipContent>上移</TooltipContent>
+                      </Tooltip>
+                      <Tooltip>
+                        <TooltipTrigger as-child
+                          ><Button
+                            variant="ghost"
+                            size="icon"
+                            aria-label="下移"
+                            :disabled="index === routes.length - 1 || busy(route, 'move')"
+                            @click="emit('move', index, 1)"
+                          >
+                            <RiArrowDownLine size="16" /> </Button
+                        ></TooltipTrigger>
+                        <TooltipContent>下移</TooltipContent>
+                      </Tooltip>
+                      <Tooltip>
+                        <TooltipTrigger as-child
+                          ><Button
+                            variant="ghost"
+                            size="icon"
+                            aria-label="编辑"
+                            @click="emit('edit', route)"
+                          >
+                            <RiEditLine size="16" /> </Button
+                        ></TooltipTrigger>
+                        <TooltipContent>编辑</TooltipContent>
+                      </Tooltip>
+                      <Tooltip>
+                        <TooltipTrigger as-child
+                          ><Button
+                            variant="ghost"
+                            size="icon"
+                            aria-label="删除"
+                            :disabled="busy(route, 'remove')"
+                            @click="emit('remove', route)"
+                          >
+                            <RiLoader4Line
+                              v-if="busy(route, 'remove')"
+                              class="animate-spin"
+                              size="16"
+                            /><RiDeleteBinLine v-else size="16" /> </Button
+                        ></TooltipTrigger>
+                        <TooltipContent>删除</TooltipContent>
+                      </Tooltip>
+                    </div>
+                  </TableCell>
+                </TableRow>
+              </TableBody>
+            </Table>
           </AxTable>
         </div>
         <EmptyState

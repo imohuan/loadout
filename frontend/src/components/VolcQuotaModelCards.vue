@@ -26,9 +26,7 @@ async function loadAggregates() {
     // 同账号多渠道共享同一份快照。
     // 只取当前 channelId 对应的聚合；找不到或为空时直接返回空，
     // 不回退到别的账号（避免错显别的 Key 的额度）。
-    const mine = data.configs.find(
-      (c) => c.config.channel_id === props.channelId,
-    )?.aggregates
+    const mine = data.configs.find((c) => c.config.channel_id === props.channelId)?.aggregates
     aggregates.value = mine || []
   } catch {
     aggregates.value = []
@@ -200,36 +198,59 @@ defineExpose({ refresh })
       <AccordionTrigger>
         <span class="inline-flex items-center">
           <RiArrowRightSLine
-            class="mr-2 size-4 shrink-0 text-muted-foreground transition-transform duration-200 group-aria-expanded/accordion-trigger:rotate-90" />
+            class="mr-2 size-4 shrink-0 text-muted-foreground transition-transform duration-200 group-aria-expanded/accordion-trigger:rotate-90"
+          />
           <span class="text-xs font-medium text-muted-foreground">{{ group.label }}</span>
           <span v-if="group.hint" class="ml-2 text-[10px] font-normal text-muted-foreground/70">{{
             group.hint
-            }}</span>
+          }}</span>
         </span>
         <template #icon><span class="hidden" /></template>
       </AccordionTrigger>
       <AccordionContent>
-        <VueDraggable :model-value="group.draggable ? focusCards : group.items" :disabled="!group.draggable"
-          :animation="150" ghost-class="opacity-0" drag-class="volc-dragging"
-          class="grid grid-cols-1 gap-2 md:grid-cols-2! lg:grid-cols-3! xl:grid-cols-4!" @update:model-value="onFocusReorder">
-          <div v-for="a in group.draggable ? focusCards : group.items" :key="a.model"
-            class="flex flex-col gap-1.5 rounded-md border p-3" :class="[
-              a.__noAggregate ? 'border-dashed border-muted-foreground/40 bg-muted/30 text-muted-foreground' : '',
+        <VueDraggable
+          :model-value="group.draggable ? focusCards : group.items"
+          :disabled="!group.draggable"
+          :animation="150"
+          ghost-class="opacity-0"
+          drag-class="volc-dragging"
+          class="grid grid-cols-1 gap-2 md:grid-cols-2! lg:grid-cols-3! xl:grid-cols-4!"
+          @update:model-value="onFocusReorder"
+        >
+          <div
+            v-for="a in group.draggable ? focusCards : group.items"
+            :key="a.model"
+            class="flex flex-col gap-1.5 rounded-md border p-3"
+            :class="[
+              a.__noAggregate
+                ? 'border-dashed border-muted-foreground/40 bg-muted/30 text-muted-foreground'
+                : '',
               !a.__noAggregate && a.exhausted ? 'border-destructive/40 bg-destructive/5' : '',
               group.draggable ? 'cursor-grab active:cursor-grabbing' : '',
-            ]">
+            ]"
+          >
             <!-- 顶部：左侧模型名，右侧 token 积分（当前剩余/总）；占位无数据 → 显示「暂无额度数据」标记 -->
             <div class="flex items-start justify-between gap-2">
               <div class="flex items-center min-w-0 gap-2">
-                <div class="truncate text-sm font-mono font-bold select-all" :title="a.name || a.model">
+                <div
+                  class="truncate text-sm font-mono font-bold select-all"
+                  :title="a.name || a.model"
+                >
                   {{ a.name || a.model }}
                 </div>
-                <Badge v-if="a.__noAggregate" variant="outline" class="shrink-0 text-[10px] font-normal">
+                <Badge
+                  v-if="a.__noAggregate"
+                  variant="outline"
+                  class="shrink-0 text-[10px] font-normal"
+                >
                   暂无额度数据
                 </Badge>
               </div>
               <div v-if="!a.__noAggregate" class="shrink-0 text-right flex gap-2 items-center">
-                <div class="text-sm font-semibold tabular-nums" :class="a.exhausted ? 'text-destructive' : ''">
+                <div
+                  class="text-sm font-semibold tabular-nums"
+                  :class="a.exhausted ? 'text-destructive' : ''"
+                >
                   {{ a.local_remaining.toLocaleString() }}
                 </div>
                 <div class="text-[10px] text-muted-foreground tabular-nums">
@@ -240,14 +261,17 @@ defineExpose({ refresh })
             </div>
             <!-- 进度条 + 右侧百分比 -->
             <div v-if="!a.__noAggregate" class="flex items-center gap-2">
-              <Progress :model-value="a.percentage" class="h-1.5 flex-1" :class="a.exhausted
-                  ? 'bg-destructive/20'
-                  : a.percentage < 20
-                    ? 'bg-amber-500/20'
-                    : ''
-                " />
-              <span class="w-9 shrink-0 text-right text-xs tabular-nums text-muted-foreground"
-                :class="a.exhausted ? 'text-destructive' : ''">
+              <Progress
+                :model-value="a.percentage"
+                class="h-1.5 flex-1"
+                :class="
+                  a.exhausted ? 'bg-destructive/20' : a.percentage < 20 ? 'bg-amber-500/20' : ''
+                "
+              />
+              <span
+                class="w-9 shrink-0 text-right text-xs tabular-nums text-muted-foreground"
+                :class="a.exhausted ? 'text-destructive' : ''"
+              >
                 {{ a.percentage }}%
               </span>
             </div>
@@ -259,6 +283,9 @@ defineExpose({ refresh })
       </AccordionContent>
     </AccordionItem>
   </Accordion>
-  <EmptyState v-else :title="aggregatesLoaded ? '暂无额度数据' : '加载中…'"
-    description="点击右侧「刷新远程」获取最新额度（账单有延迟，后台每 15 分钟自动刷新）。" />
+  <EmptyState
+    v-else
+    :title="aggregatesLoaded ? '暂无额度数据' : '加载中…'"
+    description="点击右侧「刷新远程」获取最新额度（账单有延迟，后台每 15 分钟自动刷新）。"
+  />
 </template>

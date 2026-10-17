@@ -45,11 +45,38 @@ const selectedName = computed(() => {
 
 // 预览分流用：优先按完整文件名识别（Dockerfile 之类），再回退扩展名。
 const HIGHLIGHT_LANGS: Record<string, string> = {
-  bash: 'bash', c: 'c', cpp: 'cpp', cs: 'csharp', css: 'css', dockerfile: 'dockerfile',
-  go: 'go', html: 'xml', java: 'java', js: 'javascript', json: 'json', jsx: 'javascript',
-  kt: 'kotlin', lua: 'lua', md: 'markdown', markdown: 'markdown', php: 'php', ps1: 'powershell',
-  py: 'python', rb: 'ruby', rs: 'rust', scss: 'scss', sh: 'bash', sql: 'sql', swift: 'swift',
-  toml: 'ini', ts: 'typescript', tsx: 'typescript', vue: 'xml', xml: 'xml', yaml: 'yaml', yml: 'yaml',
+  bash: 'bash',
+  c: 'c',
+  cpp: 'cpp',
+  cs: 'csharp',
+  css: 'css',
+  dockerfile: 'dockerfile',
+  go: 'go',
+  html: 'xml',
+  java: 'java',
+  js: 'javascript',
+  json: 'json',
+  jsx: 'javascript',
+  kt: 'kotlin',
+  lua: 'lua',
+  md: 'markdown',
+  markdown: 'markdown',
+  php: 'php',
+  ps1: 'powershell',
+  py: 'python',
+  rb: 'ruby',
+  rs: 'rust',
+  scss: 'scss',
+  sh: 'bash',
+  sql: 'sql',
+  swift: 'swift',
+  toml: 'ini',
+  ts: 'typescript',
+  tsx: 'typescript',
+  vue: 'xml',
+  xml: 'xml',
+  yaml: 'yaml',
+  yml: 'yaml',
   zsh: 'bash',
 }
 
@@ -180,7 +207,9 @@ function close() {
       class="flex h-[86vh] w-[94vw] max-w-[94vw]! flex-col gap-0 overflow-hidden p-0 sm:max-w-[94vw]!"
       :show-close-button="false"
     >
-      <DialogHeader class="flex shrink-0 flex-row items-center gap-1 border-b border-border px-4 py-2.5">
+      <DialogHeader
+        class="flex shrink-0 flex-row items-center gap-1 border-b border-border px-4 py-2.5"
+      >
         <div class="min-w-0 flex-1">
           <DialogTitle class="truncate text-base">{{ skillName }} · 文件</DialogTitle>
           <DialogDescription class="truncate text-xs text-muted-foreground">
@@ -190,7 +219,13 @@ function close() {
         <Button variant="ghost" size="icon" aria-label="复制技能路径" @click="copyPath">
           <RiClipboardLine class="size-4" />
         </Button>
-        <Button variant="ghost" size="icon" aria-label="重新加载" :disabled="loadingTree" @click="loadTree()">
+        <Button
+          variant="ghost"
+          size="icon"
+          aria-label="重新加载"
+          :disabled="loadingTree"
+          @click="loadTree()"
+        >
           <RiLoader4Line v-if="loadingTree" class="size-4 animate-spin" />
           <RiRefreshLine v-else class="size-4" />
         </Button>
@@ -206,10 +241,15 @@ function close() {
               目录结构（{{ entries.length ? '点击文件预览' : '空' }}）
             </div>
             <div class="min-h-0 flex-1 overflow-auto py-1">
-              <div v-if="loadingTree" class="flex items-center gap-2 px-3 py-2 text-sm text-muted-foreground">
+              <div
+                v-if="loadingTree"
+                class="flex items-center gap-2 px-3 py-2 text-sm text-muted-foreground"
+              >
                 <RiLoader4Line class="size-4 animate-spin" />加载中…
               </div>
-              <p v-else-if="treeError" class="px-3 py-2 text-sm text-destructive">{{ treeError }}</p>
+              <p v-else-if="treeError" class="px-3 py-2 text-sm text-destructive">
+                {{ treeError }}
+              </p>
               <p v-else-if="!entries.length" class="px-3 py-4 text-sm text-muted-foreground">
                 这个技能目录是空的。
               </p>
@@ -234,26 +274,36 @@ function close() {
             <div
               class="flex items-center gap-2 border-b border-border px-3 py-2 text-xs text-muted-foreground"
             >
-              <span class="min-w-0 flex-1 truncate font-mono">{{ selectedPath || '未选择文件' }}</span>
+              <span class="min-w-0 flex-1 truncate font-mono">{{
+                selectedPath || '未选择文件'
+              }}</span>
               <span v-if="file" class="shrink-0 tabular-nums">
                 {{ formatSize(file.size) }}
                 <template v-if="lineCount"> · {{ lineCount }} 行</template>
               </span>
             </div>
 
-            <div v-if="loadingFile" class="flex shrink-0 items-center gap-2 px-5 py-3 text-sm text-muted-foreground">
+            <div
+              v-if="loadingFile"
+              class="flex shrink-0 items-center gap-2 px-5 py-3 text-sm text-muted-foreground"
+            >
               <RiLoader4Line class="size-4 animate-spin" />读取中…
             </div>
             <div v-else-if="!file" class="flex flex-1 items-center justify-center p-4 text-center">
               <p class="text-sm text-muted-foreground">点击左侧文件即可在这里预览内容。</p>
             </div>
             <div v-else-if="file.binary" class="flex flex-1 items-center justify-center p-4">
-              <p class="text-sm text-muted-foreground">二进制文件（{{ formatSize(file.size) }}），不支持预览。</p>
+              <p class="text-sm text-muted-foreground">
+                二进制文件（{{ formatSize(file.size) }}），不支持预览。
+              </p>
             </div>
             <template v-else>
               <!-- Markdown：渲染后的富文本 -->
               <div v-if="isMarkdown" class="min-h-0 flex-1 overflow-auto p-5">
-                <div class="prose-sm max-w-none space-y-3 text-sm [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_h1]:text-xl [&_h1]:font-semibold [&_h2]:text-lg [&_h2]:font-semibold [&_h3]:font-semibold [&_li]:ml-5 [&_li]:list-disc [&_pre]:overflow-x-auto [&_pre]:rounded-md [&_pre]:bg-muted [&_pre]:p-3 [&_table]:border-collapse [&_td]:border [&_td]:border-border [&_td]:px-2 [&_th]:border [&_th]:border-border [&_th]:px-2" v-html="markdownHtml" />
+                <div
+                  class="prose-sm max-w-none space-y-3 text-sm [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_h1]:text-xl [&_h1]:font-semibold [&_h2]:text-lg [&_h2]:font-semibold [&_h3]:font-semibold [&_li]:ml-5 [&_li]:list-disc [&_pre]:overflow-x-auto [&_pre]:rounded-md [&_pre]:bg-muted [&_pre]:p-3 [&_table]:border-collapse [&_td]:border [&_td]:border-border [&_td]:px-2 [&_th]:border [&_th]:border-border [&_th]:px-2"
+                  v-html="markdownHtml"
+                />
               </div>
               <!-- 代码/文本：行号 + 等宽内容，整体横向滚动 -->
               <div v-else class="min-h-0 flex-1 overflow-auto">
@@ -268,11 +318,7 @@ function close() {
                       :style="{ width: `${String(lineCount).length + 2}ch` }"
                       >{{ i + 1 }}</span
                     >
-                    <span
-                      v-if="canHighlight"
-                      class="px-3"
-                      v-html="line || '&nbsp;'"
-                    />
+                    <span v-if="canHighlight" class="px-3" v-html="line || '&nbsp;'" />
                     <span v-else class="px-3">{{ line }}</span>
                   </div>
                 </div>
@@ -291,10 +337,7 @@ function close() {
       <DialogFooter
         class="mx-0! mb-0! shrink-0 rounded-none! border-t border-border bg-transparent! px-4 py-2.5 sm:justify-end"
       >
-        <Button
-          variant="outline"
-          :disabled="!hasSkillMd"
-          @click="openFile('SKILL.md')"
+        <Button variant="outline" :disabled="!hasSkillMd" @click="openFile('SKILL.md')"
           >查看 SKILL.md</Button
         >
         <Button variant="outline" @click="close">关闭</Button>

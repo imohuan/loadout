@@ -53,7 +53,12 @@ const form = reactive<MultimodalConfig>({
   tools: [
     { kind: 'image', enabled: true, model: '', defaults: { detail: 'high' } },
     { kind: 'video', enabled: true, model: '', defaults: { fps: 1 } },
-    { kind: 'audio', enabled: true, model: '', defaults: { task: 'asr', language: '', source_lang: '', target_lang: '' } },
+    {
+      kind: 'audio',
+      enabled: true,
+      model: '',
+      defaults: { task: 'asr', language: '', source_lang: '', target_lang: '' },
+    },
     { kind: 'document', enabled: true, model: '', defaults: {} },
   ],
 })
@@ -92,19 +97,31 @@ async function load() {
     form.tools = KINDS.map((kind) => {
       const fromServer = (cfg.tools || []).find((t) => t.kind === kind)
       if (fromServer) return { ...fromServer, defaults: fromServer.defaults || {} }
-      return { ...(form.tools.find((t) => t.kind === kind) || { kind, enabled: true, model: '', defaults: {} }), defaults: {} }
+      return {
+        ...(form.tools.find((t) => t.kind === kind) || {
+          kind,
+          enabled: true,
+          model: '',
+          defaults: {},
+        }),
+        defaults: {},
+      }
     })
     loaded.value = true
   })
 }
 
 async function save() {
-  await run('save-multimodal', async () => {
-    await request('/api/multimodal/config', 'PUT', {
-      enabled: form.enabled,
-      tools: form.tools,
-    })
-  }, '多模态配置已保存')
+  await run(
+    'save-multimodal',
+    async () => {
+      await request('/api/multimodal/config', 'PUT', {
+        enabled: form.enabled,
+        tools: form.tools,
+      })
+    },
+    '多模态配置已保存',
+  )
 }
 
 onMounted(() => {
@@ -124,7 +141,9 @@ defineExpose({
       <CardHeader>
         <CardTitle class="text-base">多模态 MCP 端点</CardTitle>
         <CardDescription>
-          开启后暴露内置端点 <code class="rounded bg-muted px-1 py-0.5 font-mono text-xs">POST /mcp/multimodal</code>，导出 4 个工具（图片 / 视频 / 音频 / 文档）。
+          开启后暴露内置端点
+          <code class="rounded bg-muted px-1 py-0.5 font-mono text-xs">POST /mcp/multimodal</code
+          >，导出 4 个工具（图片 / 视频 / 音频 / 文档）。
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -136,7 +155,11 @@ defineExpose({
     </Card>
 
     <!-- 4 个工具配置 -->
-    <Card v-for="kind in ['image', 'video', 'audio', 'document'] as ToolKind[]" :key="kind" class="rounded-md">
+    <Card
+      v-for="kind in ['image', 'video', 'audio', 'document'] as ToolKind[]"
+      :key="kind"
+      class="rounded-md"
+    >
       <CardHeader class="flex flex-row items-start justify-between gap-3 space-y-0">
         <div>
           <CardTitle class="text-base">{{ toolMeta[kind].title }}</CardTitle>
@@ -210,15 +233,27 @@ defineExpose({
           </div>
           <div class="space-y-1">
             <Label :for="`tool-language-${kind}`">language</Label>
-            <Input :id="`tool-language-${kind}`" v-model="toolOf('audio')!.defaults.language" placeholder="如 zh" />
+            <Input
+              :id="`tool-language-${kind}`"
+              v-model="toolOf('audio')!.defaults.language"
+              placeholder="如 zh"
+            />
           </div>
           <div class="space-y-1">
             <Label :for="`tool-source-lang-${kind}`">source_lang</Label>
-            <Input :id="`tool-source-lang-${kind}`" v-model="toolOf('audio')!.defaults.source_lang" placeholder="源语言" />
+            <Input
+              :id="`tool-source-lang-${kind}`"
+              v-model="toolOf('audio')!.defaults.source_lang"
+              placeholder="源语言"
+            />
           </div>
           <div class="space-y-1">
             <Label :for="`tool-target-lang-${kind}`">target_lang</Label>
-            <Input :id="`tool-target-lang-${kind}`" v-model="toolOf('audio')!.defaults.target_lang" placeholder="目标语言" />
+            <Input
+              :id="`tool-target-lang-${kind}`"
+              v-model="toolOf('audio')!.defaults.target_lang"
+              placeholder="目标语言"
+            />
           </div>
         </template>
       </CardContent>

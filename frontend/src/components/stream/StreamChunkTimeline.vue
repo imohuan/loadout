@@ -30,13 +30,15 @@ const summary = computed(() => {
   const total = props.chunks.length
   const last = props.chunks[props.chunks.length - 1]
   if (!last) return { line: '0 chunks', sub: '', lastIsDone: false }
-  const sub = last.rawJson === '[DONE]'
-    ? '已收到 [DONE]'
-    : last.parsed
-      ? `末 chunk finish_reason=${last.fields?.finishReason ?? '""'}`
-      : '末 chunk 解析失败'
+  const sub =
+    last.rawJson === '[DONE]'
+      ? '已收到 [DONE]'
+      : last.parsed
+        ? `末 chunk finish_reason=${last.fields?.finishReason ?? '""'}`
+        : '末 chunk 解析失败'
   const abnormal =
-    last.parsed && (last.fields?.finishReason === 'length' || last.fields?.finishReason === 'content_filter')
+    last.parsed &&
+    (last.fields?.finishReason === 'length' || last.fields?.finishReason === 'content_filter')
       ? ' · finish_reason 异常'
       : ''
   return { line: `${total} chunks`, sub: sub + abnormal, lastIsDone: last.rawJson === '[DONE]' }
@@ -111,13 +113,7 @@ function formatLabel(f?: string): string {
                   : 'bg-amber-500/15 text-amber-700 dark:text-amber-300'
             "
           >
-            {{
-              chunk.rawJson === '[DONE]'
-                ? 'DONE'
-                : chunk.parsed
-                  ? 'parsed'
-                  : 'raw'
-            }}
+            {{ chunk.rawJson === '[DONE]' ? 'DONE' : chunk.parsed ? 'parsed' : 'raw' }}
           </span>
           <span
             v-if="chunk.format"
@@ -125,10 +121,16 @@ function formatLabel(f?: string): string {
           >
             {{ formatLabel(chunk.format) }}
           </span>
-          <span v-if="chunk.parsed && chunk.fields?.finishReason" class="shrink-0 rounded-sm bg-violet-500/15 px-1.5 py-0.5 text-[10px] text-violet-700 dark:text-violet-300">
+          <span
+            v-if="chunk.parsed && chunk.fields?.finishReason"
+            class="shrink-0 rounded-sm bg-violet-500/15 px-1.5 py-0.5 text-[10px] text-violet-700 dark:text-violet-300"
+          >
             finish={{ chunk.fields.finishReason }}
           </span>
-          <span v-if="chunk.parsed && chunk.fields?.usage" class="shrink-0 rounded-sm bg-orange-500/15 px-1.5 py-0.5 text-[10px] text-orange-700 dark:text-orange-300">
+          <span
+            v-if="chunk.parsed && chunk.fields?.usage"
+            class="shrink-0 rounded-sm bg-orange-500/15 px-1.5 py-0.5 text-[10px] text-orange-700 dark:text-orange-300"
+          >
             usage
           </span>
           <span
@@ -152,7 +154,11 @@ function formatLabel(f?: string): string {
           >
             拒绝：{{ previewReasoning(chunk.fields.refusalDelta) }}
           </span>
-          <span v-else-if="!chunk.parsed && chunk.rawJson" class="grow truncate text-amber-700 dark:text-amber-300" :title="chunk.rawJson">
+          <span
+            v-else-if="!chunk.parsed && chunk.rawJson"
+            class="grow truncate text-amber-700 dark:text-amber-300"
+            :title="chunk.rawJson"
+          >
             {{ previewDelta(chunk.rawJson, 36) }}
           </span>
           <span v-else class="grow truncate text-muted-foreground">（空）</span>
@@ -160,13 +166,18 @@ function formatLabel(f?: string): string {
             previewDelta(chunk.fields.id, 18)
           }}</span>
         </button>
-        <div v-if="expandedIndex === chunk.index" class="border-t border-border/60 bg-background/60 p-2">
-          <pre class="m-0 max-h-80 overflow-auto whitespace-pre-wrap break-all rounded bg-zinc-950/95 p-2 font-mono text-[11px] leading-relaxed text-zinc-100">{{
-            chunk.rawJsonString ?? chunk.rawJson ?? ''
-          }}</pre>
+        <div
+          v-if="expandedIndex === chunk.index"
+          class="border-t border-border/60 bg-background/60 p-2"
+        >
+          <pre
+            class="m-0 max-h-80 overflow-auto whitespace-pre-wrap break-all rounded bg-zinc-950/95 p-2 font-mono text-[11px] leading-relaxed text-zinc-100"
+            >{{ chunk.rawJsonString ?? chunk.rawJson ?? '' }}</pre>
         </div>
       </div>
-      <div v-if="!chunks.length" class="px-3 py-2 text-center text-xs text-muted-foreground">无 chunk 数据。</div>
+      <div v-if="!chunks.length" class="px-3 py-2 text-center text-xs text-muted-foreground">
+        无 chunk 数据。
+      </div>
     </div>
   </StreamCollapsibleBlock>
 </template>

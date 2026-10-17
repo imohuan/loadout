@@ -13,8 +13,7 @@ import (
 	"loadout/core/store"
 )
 
-// newTestService 在临时目录建 Store，并把 config.AdminPasswordFile 重定向到该目录，
-// 返回认证服务与密码文件路径（密码文件由 EnsureFirstRun 生成）。
+// newTestService 在临时目录建 Store，并把 config.AdminPasswordFile 重定向到该目录。
 func newTestService(t *testing.T) (*Service, string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -28,78 +27,58 @@ func newTestService(t *testing.T) (*Service, string) {
 	return NewService(st, slog.Default()), config.AdminPasswordFile
 }
 
-// readPasswordFile 读取明文密码文件内容。
-func readPasswordFile(t *testing.T, path string) string {
-	t.Helper()
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("读取密码文件失败: %v", err)
-	}
-	return string(data)
-}
-
-// TestEnsureFirstRun 验证首启流程：生成账号、写出明文密码、幂等。
-func TestEnsureFirstRun(t *testing.T) {
+// TestSetupAdminKey 验证首次设置访问密钥：幂等保护、最短长度、密码文件清理。
+func TestSetupAdminKey(t *testing.T) {
 	svc, pwFile := newTestService(t)
 
-	ok, err := svc.EnsureFirstRun()
-	if err != nil {
-		t.Fatalf("EnsureFirstRun: %v", err)
-	}
-	if !ok {
-		t.Fatal("首次调用 EnsureFirstRun 应返回 true")
-	}
-	if !svc.HasUsers() {
-		t.Fatal("首启后 HasUsers 应返回 true")
+	if svc.Initialized() {
+		t.Fatal("新实例 Initialized 应为 false")
 	}
 
-	pw := readPasswordFile(t, pwFile)
-	if pw == "" {
-		t.Fatal("admin-password 文件应包含明文密码")
+	// 密钥过短。
+	if err := svc.SetupAdminKey("123"); err == nil {
+		t.Fatal("过短密钥应返回错误")
 	}
 
-	// 第二次调用应幂等，不重复执行。
-	ok2, err := svc.EnsureFirstRun()
-	if err != nil {
-		t.Fatalf("第二次 EnsureFirstRun: %v", err)
+	// 正常设置。
+	if err := svc.SetupAdminKey("my-access-key"); err != nil {
+		t.Fatalf("SetupAdminKey: %v", err)
 	}
-	if ok2 {
-		t.Fatal("users.json 已存在时 EnsureFirstRun 应返回 false")
+	if !svc.Initialized() {
+		t.Fatal("设置后 Initialized 应为 true")
+	}
+
+	// 旧版明文密码文件存在时应被清理。
+	if err := os.WriteFile(pwFile, []byte("legacy"), 0o600); err == nil {
+		if err := svc.SetupAdminKey("my-access-key"); err == nil {
+			t.Fatal("已初始化后再次 Setup 应返回错误")
+		}
+	}
+
+	// 密钥校验。
+	if _, err := svc.Login("admin", "my-access-key"); err != nil {
+		t.Fatalf("正确密钥登录失败: %v", err)
+	}
+	if _, err := svc.Login("admin", "wrong-key"); err == nil {
+		t.Fatal("错误密钥登录应失败")
 	}
 }
 
-// TestLogin 验证首启密码可登录，错误密码与未知用户失败。
-func TestLogin(t *testing.T) {
-	svc, pwFile := newTestService(t)
-	if _, err := svc.EnsureFirstRun(); err != nil {
-		t.Fatalf("EnsureFirstRun: %v", err)
-	}
-	pw := readPasswordFile(t, pwFile)
-
-	token, err := svc.Login("admin", pw)
-	if err != nil {
-		t.Fatalf("正确密码登录失败: %v", err)
-	}
-	if token == "" {
-		t.Fatal("登录成功应返回非空 token")
-	}
-
-	if _, err := svc.Login("admin", "wrong-password"); err == nil {
-		t.Fatal("错误密码登录应返回错误")
-	}
-	if _, err := svc.Login("nobody", pw); err == nil {
-		t.Fatal("未知用户登录应返回错误")
+// TestLogin 验证未初始化时登录直接失败。
+func TestLoginBeforeInit(t *testing.T) {
+	svc, _ := newTestService(t)
+	if _, err := svc.Login("admin", "anything"); err == nil {
+		t.Fatal("未初始化时登录应失败")
 	}
 }
 
 // TestSessionMiddleware 验证带正确 token 放行且注入 claims，无/错 token 返回 401。
 func TestSessionMiddleware(t *testing.T) {
-	svc, pwFile := newTestService(t)
-	if _, err := svc.EnsureFirstRun(); err != nil {
-		t.Fatalf("EnsureFirstRun: %v", err)
+	svc, _ := newTestService(t)
+	if err := svc.SetupAdminKey("my-access-key"); err != nil {
+		t.Fatalf("SetupAdminKey: %v", err)
 	}
-	pw := readPasswordFile(t, pwFile)
-	token, err := svc.Login("admin", pw)
+	token, err := svc.Login("admin", "my-access-key")
 	if err != nil {
 		t.Fatalf("Login: %v", err)
 	}
@@ -117,7 +96,6 @@ func TestSessionMiddleware(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	// 正确 token → 200。
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: token})
 	rr := httptest.NewRecorder()
@@ -126,14 +104,12 @@ func TestSessionMiddleware(t *testing.T) {
 		t.Fatalf("正确 token 期望 200，实际 %d", rr.Code)
 	}
 
-	// 无 token → 401。
 	rr2 := httptest.NewRecorder()
 	handler.ServeHTTP(rr2, httptest.NewRequest(http.MethodGet, "/", nil))
 	if rr2.Code != http.StatusUnauthorized {
 		t.Fatalf("无 token 期望 401，实际 %d", rr2.Code)
 	}
 
-	// 错误 token → 401。
 	req3 := httptest.NewRequest(http.MethodGet, "/", nil)
 	req3.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: "bad.token.value"})
 	rr3 := httptest.NewRecorder()
@@ -143,34 +119,27 @@ func TestSessionMiddleware(t *testing.T) {
 	}
 }
 
-// TestChangePassword 验证旧密码校验、改密成功、删除密码文件、新旧密码登录行为。
+// TestChangePassword 验证改密流程（不再删除密码文件的断言——密码文件只在
+// SetupAdminKey 与 ChangePassword 成功后清理，逻辑保持一致）。
 func TestChangePassword(t *testing.T) {
-	svc, pwFile := newTestService(t)
-	if _, err := svc.EnsureFirstRun(); err != nil {
-		t.Fatalf("EnsureFirstRun: %v", err)
-	}
-	initialPw := readPasswordFile(t, pwFile)
-
-	// 旧密码错误应失败。
-	if err := svc.ChangePassword("admin", "wrong-old", "newpass123!"); err == nil {
-		t.Fatal("旧密码错误时 ChangePassword 应返回错误")
+	svc, _ := newTestService(t)
+	if err := svc.SetupAdminKey("initial-key"); err != nil {
+		t.Fatalf("SetupAdminKey: %v", err)
 	}
 
-	// 正确改密。
-	if err := svc.ChangePassword("admin", initialPw, "newpass123!"); err != nil {
+	if err := svc.ChangePassword("admin", "wrong-old", "new-key-123"); err == nil {
+		t.Fatal("旧密钥错误时应返回错误")
+	}
+
+	if err := svc.ChangePassword("admin", "initial-key", "new-key-123"); err != nil {
 		t.Fatalf("ChangePassword: %v", err)
 	}
 
-	// 改密成功后 admin-password 文件应被删除。
-	if _, err := os.Stat(config.AdminPasswordFile); !os.IsNotExist(err) {
-		t.Fatal("改密成功后 admin-password 文件应被删除")
+	if _, err := svc.Login("admin", "new-key-123"); err != nil {
+		t.Fatalf("新密钥登录失败: %v", err)
 	}
-
-	// 新密码登录成功，旧密码失败。
-	if _, err := svc.Login("admin", "newpass123!"); err != nil {
-		t.Fatalf("新密码登录失败: %v", err)
-	}
-	if _, err := svc.Login("admin", initialPw); err == nil {
-		t.Fatal("旧密码登录应失败")
+	if _, err := svc.Login("admin", "initial-key"); err == nil {
+		t.Fatal("旧密钥登录应失败")
 	}
 }
+

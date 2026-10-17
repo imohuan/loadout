@@ -10,7 +10,11 @@
         class="w-20 h-16 bg-white border border-gray-200 rounded-lg overflow-hidden shadow-sm flex items-center justify-center cursor-pointer"
         @click="openPreview(idx)"
       >
-        <img :src="toDisplayUrl(img.data || img.path)" class="w-full h-full object-cover opacity-90 hover:opacity-100 transition-opacity" alt="attachment" />
+        <img
+          :src="toDisplayUrl(img.data || img.path)"
+          class="w-full h-full object-cover opacity-90 hover:opacity-100 transition-opacity"
+          alt="attachment"
+        />
       </div>
       <!-- 图片占位符卡片：日志脱敏后只存 [image: ...] 占位文本，无原始图片，按卡片展示 -->
       <div
@@ -19,14 +23,29 @@
         class="inline-flex items-center gap-2 rounded-lg border border-dashed border-zinc-400/50 bg-zinc-500/10 px-3 py-2"
         :title="'原图未保存：日志脱敏后仅保留占位符'"
       >
-        <svg class="w-4 h-4 shrink-0 text-zinc-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+        <svg
+          class="w-4 h-4 shrink-0 text-zinc-500"
+          fill="none"
+          stroke="currentColor"
+          viewBox="0 0 24 24"
+        >
+          <path
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            stroke-width="2"
+            d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"
+          />
         </svg>
-        <span class="font-mono text-[11px] leading-none text-zinc-500 dark:text-zinc-400 whitespace-nowrap">{{ img.placeholder }}</span>
+        <span
+          class="font-mono text-[11px] leading-none text-zinc-500 dark:text-zinc-400 whitespace-nowrap"
+          >{{ img.placeholder }}</span
+        >
       </div>
     </div>
     <!-- 文字气泡 -->
-    <div class="max-w-[75%] bg-[#f4f4f5] rounded-2xl px-4 py-2.5 text-sm text-gray-800 leading-relaxed shadow-sm">
+    <div
+      class="max-w-[75%] bg-[#f4f4f5] rounded-2xl px-4 py-2.5 text-sm text-gray-800 leading-relaxed shadow-sm"
+    >
       <p class="whitespace-pre-wrap break-words">{{ displayContent }}</p>
     </div>
     <div class="flex items-center gap-1 mt-1 text-[11px] text-gray-400">
@@ -36,11 +55,27 @@
         title="复制"
         @click="copyContent"
       >
-        <svg v-if="copied" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+        <svg
+          v-if="copied"
+          class="w-3.5 h-3.5"
+          fill="none"
+          stroke="currentColor"
+          viewBox="0 0 24 24"
+        >
+          <path
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            stroke-width="2"
+            d="M5 13l4 4L19 7"
+          />
         </svg>
         <svg v-else class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+          <path
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            stroke-width="2"
+            d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"
+          />
         </svg>
       </button>
       <!-- <button
@@ -58,8 +93,16 @@
         class="flex items-center gap-1 text-gray-500 hover:text-gray-600 p-0.5 rounded"
         title="已设置目标"
       >
-        <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none"
-          stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          class="w-3.5 h-3.5"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
           <circle cx="12" cy="12" r="10" />
           <circle cx="12" cy="12" r="6" />
           <circle cx="12" cy="12" r="2" />
@@ -106,62 +149,62 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue';
-import type { NormalizedMessage } from '@/lib/chatTypes';
-import AxImageViewer from '../ui/AxImageViewer.vue';
+import { ref, computed } from 'vue'
+import type { NormalizedMessage } from '@/lib/chatTypes'
+import AxImageViewer from '../ui/AxImageViewer.vue'
 
 const props = defineProps<{
-  message: NormalizedMessage;
-}>();
+  message: NormalizedMessage
+}>()
 
 const emit = defineEmits<{
-  update: [payload: { id?: string; text: string; images: string[] }];
-}>();
+  update: [payload: { id?: string; text: string; images: string[] }]
+}>()
 
-const isEditing = ref(false);
-const draftText = ref('');
-const draftImages = ref<string[]>([]);
+const isEditing = ref(false)
+const draftText = ref('')
+const draftImages = ref<string[]>([])
 // editTextarea 仅被 enterEdit 使用，随编辑入口一并禁用（2026-08-23）
 // const editTextarea = ref<HTMLTextAreaElement | null>(null);
-const copied = ref(false);
-let copyTimer: ReturnType<typeof setTimeout> | null = null;
+const copied = ref(false)
+let copyTimer: ReturnType<typeof setTimeout> | null = null
 
-const viewerVisible = ref(false);
-const viewerImages = ref<string[]>([]);
-const viewerIndex = ref(0);
+const viewerVisible = ref(false)
+const viewerImages = ref<string[]>([])
+const viewerIndex = ref(0)
 
-const canSave = computed(
-  () => draftText.value.trim().length > 0 || draftImages.value.length > 0,
-);
+const canSave = computed(() => draftText.value.trim().length > 0 || draftImages.value.length > 0)
 
 const displayContent = computed(() => {
-  let text = props.message.content || '';
+  let text = props.message.content || ''
   if (realImages.value.length) {
-    text = text.replace(/\[Image\s*#?\d+\]/gi, '').trim();
+    text = text.replace(/\[Image\s*#?\d+\]/gi, '').trim()
   }
-  return text;
-});
+  return text
+})
 
 /** 真实图片（http/data/blob 路径）→ 缩略图 + 预览 */
-const realImages = computed(() => (props.message.images || []).filter((img) => !img.placeholder));
+const realImages = computed(() => (props.message.images || []).filter((img) => !img.placeholder))
 
 /** 占位符（后端脱敏的 [image: ...] 文本）→ 占位卡片，无原始图片不可预览 */
-const placeholderImages = computed(() => (props.message.images || []).filter((img) => !!img.placeholder));
+const placeholderImages = computed(() =>
+  (props.message.images || []).filter((img) => !!img.placeholder),
+)
 
 const formattedTime = computed(() => {
-  const ts = props.message.timestamp;
-  if (!ts) return '';
-  const d = new Date(ts);
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
-});
+  const ts = props.message.timestamp
+  if (!ts) return ''
+  const d = new Date(ts)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+})
 
 function toDisplayUrl(imgPath: string): string {
-  if (!imgPath) return '';
+  if (!imgPath) return ''
   if (/^https?:\/\//.test(imgPath) || imgPath.startsWith('data:') || imgPath.startsWith('blob:')) {
-    return imgPath;
+    return imgPath
   }
-  return `/api/image?path=${encodeURIComponent(imgPath)}`;
+  return `/api/image?path=${encodeURIComponent(imgPath)}`
 }
 
 // 编辑入口已随模板按钮一并禁用（2026-08-23），需要恢复编辑功能时取消本注释并取消上方按钮注释
@@ -175,7 +218,7 @@ function toDisplayUrl(imgPath: string): string {
 // }
 
 function cancelEdit() {
-  isEditing.value = false;
+  isEditing.value = false
 }
 
 function saveEdit() {
@@ -183,24 +226,24 @@ function saveEdit() {
     id: props.message.id,
     text: draftText.value,
     images: [...draftImages.value],
-  });
-  isEditing.value = false;
+  })
+  isEditing.value = false
 }
 
 function openPreview(idx: number) {
-  viewerImages.value = realImages.value.map((img) => toDisplayUrl(img.data || img.path));
-  viewerIndex.value = idx;
-  viewerVisible.value = true;
+  viewerImages.value = realImages.value.map((img) => toDisplayUrl(img.data || img.path))
+  viewerIndex.value = idx
+  viewerVisible.value = true
 }
 
 async function copyContent() {
   try {
-    await navigator.clipboard.writeText(displayContent.value);
-    copied.value = true;
-    if (copyTimer) clearTimeout(copyTimer);
+    await navigator.clipboard.writeText(displayContent.value)
+    copied.value = true
+    if (copyTimer) clearTimeout(copyTimer)
     copyTimer = setTimeout(() => {
-      copied.value = false;
-    }, 2000);
+      copied.value = false
+    }, 2000)
   } catch {}
 }
 </script>

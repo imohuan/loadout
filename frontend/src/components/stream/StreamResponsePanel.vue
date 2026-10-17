@@ -71,7 +71,8 @@ function formatUsage(u?: StreamUsage): string {
   if (typeof u.prompt_tokens === 'number') parts.push(`prompt=${u.prompt_tokens}`)
   if (typeof u.completion_tokens === 'number') parts.push(`completion=${u.completion_tokens}`)
   if (typeof u.total_tokens === 'number') parts.push(`total=${u.total_tokens}`)
-  if (u.prompt_tokens_details?.cached_tokens != null) parts.push(`cached=${u.prompt_tokens_details.cached_tokens}`)
+  if (u.prompt_tokens_details?.cached_tokens != null)
+    parts.push(`cached=${u.prompt_tokens_details.cached_tokens}`)
   if (u.completion_tokens_details?.reasoning_tokens != null)
     parts.push(`reasoning_tokens=${u.completion_tokens_details.reasoning_tokens}`)
   return parts.length ? parts.join(' · ') : '—'
@@ -148,7 +149,10 @@ function formatUsage(u?: StreamUsage): string {
         <span v-if="stats.hasContent" class="font-mono">{{ stats.contentChars }} 字</span>
       </div>
       <div class="max-h-168 overflow-auto rounded-md border border-border bg-background/60 p-4">
-        <StreamMarkdownBlock :text="parsed.contentAccum" :streaming="!stats.isDone && !stats.truncated" />
+        <StreamMarkdownBlock
+          :text="parsed.contentAccum"
+          :streaming="!stats.isDone && !stats.truncated"
+        />
       </div>
     </div>
 
@@ -160,9 +164,6 @@ function formatUsage(u?: StreamUsage): string {
     v-else
     class="rounded border border-dashed border-border py-6 text-center text-sm text-muted-foreground"
   >
-    {{
-      emptyText ??
-      '当前日志非流式或 SSE 正文不可解析，未生成流式可视化。'
-    }}
+    {{ emptyText ?? '当前日志非流式或 SSE 正文不可解析，未生成流式可视化。' }}
   </div>
 </template>

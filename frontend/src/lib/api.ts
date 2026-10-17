@@ -45,14 +45,16 @@ export const getMcpStats = (opts: { days?: number; top?: number } = {}) => {
 }
 
 // getMcpInvocations 分页查询工具调用日志（mcp_invocations 明细）。
-export const getMcpInvocations = (opts: {
-  page?: number
-  pageSize?: number
-  kind?: string
-  tool?: string
-  server?: string
-  auth?: string
-} = {}) => {
+export const getMcpInvocations = (
+  opts: {
+    page?: number
+    pageSize?: number
+    kind?: string
+    tool?: string
+    server?: string
+    auth?: string
+  } = {},
+) => {
   const params = new URLSearchParams()
   if (opts.page) params.set('page', String(opts.page))
   if (opts.pageSize) params.set('page_size', String(opts.pageSize))
@@ -114,7 +116,13 @@ export const getTranslateSources = () =>
       name: string
       description: string
       input_schema?: Record<string, unknown>
-      params?: { name: string; title?: string; description?: string; type?: string; required?: boolean }[]
+      params?: {
+        name: string
+        title?: string
+        description?: string
+        type?: string
+        required?: boolean
+      }[]
     }[]
     count: number
   }>('/api/translate/sources')

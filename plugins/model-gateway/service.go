@@ -841,6 +841,7 @@ func parseUsageLine(line string) contracts.TokenUsage {
 			PromptTokens        int `json:"prompt_tokens"`
 			CompletionTokens    int `json:"completion_tokens"`
 			TotalTokens         int `json:"total_tokens"`
+			Credit              float64 `json:"credit"`
 			PromptTokensDetails struct {
 				CachedTokens int `json:"cached_tokens"`
 			} `json:"prompt_tokens_details"`
@@ -857,6 +858,7 @@ func parseUsageLine(line string) contracts.TokenUsage {
 		CompletionTokens: parsed.Usage.CompletionTokens,
 		TotalTokens:      parsed.Usage.TotalTokens,
 		CachedTokens:     parsed.Usage.PromptTokensDetails.CachedTokens,
+		Credit:           parsed.Usage.Credit,
 	}
 }
 
@@ -867,6 +869,7 @@ func extractUsageNonStream(body []byte) contracts.TokenUsage {
 			PromptTokens        int `json:"prompt_tokens"`
 			CompletionTokens    int `json:"completion_tokens"`
 			TotalTokens         int `json:"total_tokens"`
+			Credit              float64 `json:"credit"`
 			PromptTokensDetails struct {
 				CachedTokens int `json:"cached_tokens"`
 			} `json:"prompt_tokens_details"`
@@ -883,6 +886,7 @@ func extractUsageNonStream(body []byte) contracts.TokenUsage {
 		CompletionTokens: parsed.Usage.CompletionTokens,
 		TotalTokens:      parsed.Usage.TotalTokens,
 		CachedTokens:     parsed.Usage.PromptTokensDetails.CachedTokens,
+		Credit:           parsed.Usage.Credit,
 	}
 }
 

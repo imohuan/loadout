@@ -262,27 +262,27 @@ function buildTableCss(w: number[]): string {
     `${scope} { position: relative; overflow: hidden; }`,
     // 覆盖层：只盖表头区间，本身不吃指针事件（手柄单独恢复）。
     `${scope} .axt-overlay { position: absolute; left: 0; z-index: 10; pointer-events: none; }`,
-    // 手柄：比竖线更宽的命中区（10px），拖起来不费劲。
-    `${scope} .axt-handle {`,
-    `  position: absolute; top: 0; height: 100%; width: 10px;`,
+      // 手柄：比竖线更宽的命中区（14px），拖起来不费劲；右对齐表头也能轻松命中。
+      `${scope} .axt-handle {`,
+      `  position: absolute; top: 0; height: 100%; width: 14px;`,
     `  transform: translateX(-50%); cursor: col-resize; user-select: none;`,
     `  pointer-events: auto;`,
     `}`,
-    // 列边界指示线：平时【完全透明】，不打扰阅读；命中区由 .axt-handle 承担（10px），
-    // 所以线即使看不见也照样能拖。只有你要用它的时候它才现身：
-    //   hover  → 淡淡浮现，方便瞄准（移开就消失）
-    //   拖拽中 → 选中色全亮并加粗，明确标出正在调的是哪条边界
-    `${scope} .axt-line {`,
-    `  position: absolute; top: 4px; bottom: 4px; left: 50%; width: 2px;`,
-    `  transform: translateX(-50%); border-radius: 9999px;`,
-    `  background: var(--primary); opacity: 0;`,
-    `  transition: opacity 0.12s, width 0.12s;`,
-    `}`,
-    `${scope} .axt-handle:hover .axt-line { opacity: 0.35; }`,
-    `${scope} .axt-handle.is-dragging .axt-line { opacity: 1; width: 3px; }`,
-    // 键盘可达：聚焦时就让线现身，并给个可见描边。
-    `${scope} .axt-handle:focus-visible .axt-line { opacity: 1; }`,
-    `${scope} .axt-handle:focus-visible { outline: 1px solid var(--primary); outline-offset: -1px; }`,
+			// 列边界指示线本体：绝对定位在边界上，默认透明（零噪音）。
+			`${scope} .axt-line {`,
+			`  position: absolute; top: 4px; bottom: 4px; left: 50%; width: 2px;`,
+			`  transform: translateX(-50%); border-radius: 9999px;`,
+			`  background: var(--primary); opacity: 0;`,
+			`  transition: opacity 0.12s, width 0.12s, background 0.12s;`,
+			`}`,
+			// 方案 B：交互条由 JS（AxTableResizers）按「鼠标最近的边界 ±6px」点亮，
+			// 同一时刻最多一条，主色常亮；拖拽中的那条也走同一规则，全程稳定无闪烁。
+			`${scope} .axt-line.is-active {`,
+			`  opacity: 1 !important; width: 3px !important; background: var(--primary) !important;`,
+			`},`,
+      // 键盘可达：聚焦时让线现身。
+      `${scope} .axt-handle:focus-visible .axt-line { opacity: 1; }`,
+      `${scope} .axt-handle:focus-visible { outline: 1px solid var(--primary); outline-offset: -1px; }`,
   )
   w.forEach((width, i) => {
     const col = `> tr > th:nth-child(${i + 1})`

@@ -29,10 +29,7 @@ export function routeLogValidity(page?: RouteLogPage): Set<string> | undefined {
 }
 
 export function useRouteLogs() {
-  function list(
-    filters: RouteLogFilters,
-    pagination?: { page?: number; pageSize?: number },
-  ) {
+  function list(filters: RouteLogFilters, pagination?: { page?: number; pageSize?: number }) {
     const search = new URLSearchParams()
     if (filters.model) search.set('model', filters.model)
     if (filters.channel_name) search.set('channel_name', filters.channel_name)

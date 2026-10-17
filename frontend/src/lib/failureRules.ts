@@ -1,4 +1,4 @@
-import { request } from "./api"
+import { request } from './api'
 
 // ===== 失败规则引擎 API =====
 
@@ -89,15 +89,15 @@ export interface RuleDecision {
   created_at: string
 }
 
-export const listFailureRules = () => request<FailureRule[]>("/api/failure-rules", "GET")
+export const listFailureRules = () => request<FailureRule[]>('/api/failure-rules', 'GET')
 export const createFailureRule = (body: RuleInput) =>
-  request<FailureRule>("/api/failure-rules", "POST", body)
+  request<FailureRule>('/api/failure-rules', 'POST', body)
 export const updateFailureRule = (id: string, body: RuleInput) =>
-  request<FailureRule>(`/api/failure-rules/${id}`, "PUT", body)
+  request<FailureRule>(`/api/failure-rules/${id}`, 'PUT', body)
 export const deleteFailureRule = (id: string) =>
-  request<{ ok: boolean }>(`/api/failure-rules/${id}`, "DELETE")
+  request<{ ok: boolean }>(`/api/failure-rules/${id}`, 'DELETE')
 export const patchFailureRule = (id: string, body: { enabled?: boolean; confirm?: boolean }) =>
-  request<{ ok: boolean }>(`/api/failure-rules/${id}`, "PATCH", body)
+  request<{ ok: boolean }>(`/api/failure-rules/${id}`, 'PATCH', body)
 export const verifyFailureRule = (rule: Partial<FailureRule>, sample: RuleEvidence) =>
   request<{
     hit: boolean
@@ -106,13 +106,13 @@ export const verifyFailureRule = (rule: Partial<FailureRule>, sample: RuleEviden
     recover_until?: string
     /** 动作参数摘要（「恢复时间 2026-09-23 15:48:27」/「冷却 120 秒」） */
     action_params?: string
-  }>("/api/failure-rules/verify", "POST", { rule, sample })
+  }>('/api/failure-rules/verify', 'POST', { rule, sample })
 export const listRuleDecisions = (limit = 50) =>
-  request<RuleDecision[]>(`/api/rule-decisions?limit=${limit}`, "GET")
+  request<RuleDecision[]>(`/api/rule-decisions?limit=${limit}`, 'GET')
 
 // restoreDefaultFailureRules 把 14 条内置默认规则恢复成出厂状态（用户删掉/改坏后一键还原）。
 export const restoreDefaultFailureRules = () =>
-  request<{ ok: boolean; restored: number }>("/api/failure-rules-defaults/restore", "POST")
+  request<{ ok: boolean; restored: number }>('/api/failure-rules-defaults/restore', 'POST')
 
 export interface ProviderFrameworkInfo {
   frameworks: string[]
@@ -120,4 +120,4 @@ export interface ProviderFrameworkInfo {
 }
 
 export const getProviderFrameworks = () =>
-  request<ProviderFrameworkInfo>("/api/provider-frameworks", "GET")
+  request<ProviderFrameworkInfo>('/api/provider-frameworks', 'GET')

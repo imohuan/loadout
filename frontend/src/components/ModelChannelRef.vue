@@ -24,9 +24,7 @@ const props = withDefaults(
   { decorate: true, atPrefix: true },
 )
 
-const status = computed(() =>
-  modelChannelStatus(props.channels, props.model, props.target),
-)
+const status = computed(() => modelChannelStatus(props.channels, props.model, props.target))
 
 // 各状态对应的 Tailwind 装饰类。
 const STATUS_CLASS: Record<ModelChannelStatus, string> = {
@@ -40,13 +38,9 @@ const STATUS_CLASS: Record<ModelChannelStatus, string> = {
     'italic underline decoration-solid decoration-amber-500 decoration-1 text-amber-600 dark:text-amber-400 underline-offset-2',
 }
 
-const statusClass = computed(() =>
-  props.decorate ? STATUS_CLASS[status.value.status] : '',
-)
+const statusClass = computed(() => (props.decorate ? STATUS_CLASS[status.value.status] : ''))
 
-const isAbnormal = computed(
-  () => props.decorate && status.value.status !== 'ok',
-)
+const isAbnormal = computed(() => props.decorate && status.value.status !== 'ok')
 </script>
 
 <template>

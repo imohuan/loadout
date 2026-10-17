@@ -197,110 +197,114 @@ onMounted(load)
           <div class="mb-2 text-sm text-muted-foreground">暂无工具调用记录</div>
           <p class="text-xs text-muted-foreground/70">触发单 MCP / 分组 / 聚合调用后自动记录</p>
         </div>
-       <AxTable v-else>
-       <Table>
-          <colgroup>
-            <col class="w-8" />
-            <col class="w-[150px]" />
-            <col class="w-[90px]" />
-            <col class="w-[110px]" />
-            <col />
-            <col class="w-[90px]" />
-            <col class="w-[90px]" />
-            <col class="w-[90px]" />
-          </colgroup>
-          <TableHeader>
-            <TableRow>
-              <TableHead></TableHead>
-              <TableHead>时间</TableHead>
-              <TableHead>类型</TableHead>
-              <TableHead>名称</TableHead>
-              <TableHead>工具</TableHead>
-              <TableHead>认证</TableHead>
-              <TableHead>耗时</TableHead>
-              <TableHead>结果</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            <template v-for="row in items" :key="row.id">
-              <TableRow class="cursor-pointer" @click="toggleRow(row.id)">
-                <TableCell class="py-2">
-                  <RiArrowDownSLine
-                    v-if="expanded.has(row.id)"
-                    size="16"
-                    class="text-muted-foreground"
-                  />
-                  <RiArrowRightSLine v-else size="16" class="text-muted-foreground" />
-                </TableCell>
-                <TableCell class="py-2">
-                  <span class="whitespace-nowrap text-xs tabular-nums">{{
-                    fmtTime(row.started_at)
-                  }}</span>
-                </TableCell>
-                <TableCell class="py-2">
-                  <Badge variant="outline" :class="kindClass(row.aggregate_kind)">{{
-                    kindLabel(row.aggregate_kind)
-                  }}</Badge>
-                </TableCell>
-                <TableCell class="py-2">
-                  <span class="text-xs text-muted-foreground">{{
-                    row.aggregate_target || '—'
-                  }}</span>
-                </TableCell>
-                <TableCell class="py-2">
-                  <div class="min-w-0">
-                    <div class="truncate text-sm font-medium">{{ row.tool_name }}</div>
-                    <div v-if="row.server_name" class="truncate text-xs text-muted-foreground">
-                      {{ row.server_name }}
+        <AxTable v-else>
+          <Table>
+            <colgroup>
+              <col class="w-8" />
+              <col class="w-[150px]" />
+              <col class="w-[90px]" />
+              <col class="w-[110px]" />
+              <col />
+              <col class="w-[90px]" />
+              <col class="w-[90px]" />
+              <col class="w-[90px]" />
+            </colgroup>
+            <TableHeader>
+              <TableRow>
+                <TableHead></TableHead>
+                <TableHead>时间</TableHead>
+                <TableHead>类型</TableHead>
+                <TableHead>名称</TableHead>
+                <TableHead>工具</TableHead>
+                <TableHead>认证</TableHead>
+                <TableHead>耗时</TableHead>
+                <TableHead>结果</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              <template v-for="row in items" :key="row.id">
+                <TableRow class="cursor-pointer" @click="toggleRow(row.id)">
+                  <TableCell class="py-2">
+                    <RiArrowDownSLine
+                      v-if="expanded.has(row.id)"
+                      size="16"
+                      class="text-muted-foreground"
+                    />
+                    <RiArrowRightSLine v-else size="16" class="text-muted-foreground" />
+                  </TableCell>
+                  <TableCell class="py-2">
+                    <span class="whitespace-nowrap text-xs tabular-nums">{{
+                      fmtTime(row.started_at)
+                    }}</span>
+                  </TableCell>
+                  <TableCell class="py-2">
+                    <Badge variant="outline" :class="kindClass(row.aggregate_kind)">{{
+                      kindLabel(row.aggregate_kind)
+                    }}</Badge>
+                  </TableCell>
+                  <TableCell class="py-2">
+                    <span class="text-xs text-muted-foreground">{{
+                      row.aggregate_target || '—'
+                    }}</span>
+                  </TableCell>
+                  <TableCell class="py-2">
+                    <div class="min-w-0">
+                      <div class="truncate text-sm font-medium">{{ row.tool_name }}</div>
+                      <div v-if="row.server_name" class="truncate text-xs text-muted-foreground">
+                        {{ row.server_name }}
+                      </div>
                     </div>
-                  </div>
-                </TableCell>
-                <TableCell class="py-2">
-                  <span class="text-xs text-muted-foreground">{{ authLabel(row.auth_kind) }}</span>
-                </TableCell>
-                <TableCell class="py-2 text-right">
-                  <span class="text-xs tabular-nums text-muted-foreground"
-                    >{{ row.duration_ms }} ms</span
-                  >
-                </TableCell>
-                <TableCell class="py-2">
-                  <Badge variant="outline" :class="resultClass(row.result)">{{
-                    resultLabel(row.result)
-                  }}</Badge>
-                </TableCell>
-              </TableRow>
-              <!-- 展开行：输入/输出 JSON -->
-              <TableRow v-if="expanded.has(row.id)" class="bg-muted/30">
-                <TableCell class="py-2" :colspan="8">
-                  <SplitPane :min-left="200" :min-right="200" :initial="0.5">
-                    <template #left>
-                      <div class="flex h-full flex-col pr-1">
-                        <div class="mb-1 text-xs font-medium text-muted-foreground">输入</div>
-                        <pre
-                          class="m-0 max-h-64 flex-1 overflow-auto rounded-md border bg-background p-2 text-xs whitespace-pre-wrap break-all"
-                          >{{ fmtJSON(row.input_json) || '—' }}</pre>
+                  </TableCell>
+                  <TableCell class="py-2">
+                    <span class="text-xs text-muted-foreground">{{
+                      authLabel(row.auth_kind)
+                    }}</span>
+                  </TableCell>
+                  <TableCell class="py-2 text-right">
+                    <span class="text-xs tabular-nums text-muted-foreground"
+                      >{{ row.duration_ms }} ms</span
+                    >
+                  </TableCell>
+                  <TableCell class="py-2">
+                    <Badge variant="outline" :class="resultClass(row.result)">{{
+                      resultLabel(row.result)
+                    }}</Badge>
+                  </TableCell>
+                </TableRow>
+                <!-- 展开行：输入/输出 JSON -->
+                <TableRow v-if="expanded.has(row.id)" class="bg-muted/30">
+                  <TableCell class="py-2" :colspan="8">
+                    <SplitPane :min-left="200" :min-right="200" :initial="0.5">
+                      <template #left>
+                        <div class="flex h-full flex-col pr-1">
+                          <div class="mb-1 text-xs font-medium text-muted-foreground">输入</div>
+                          <pre
+                            class="m-0 max-h-64 flex-1 overflow-auto rounded-md border bg-background p-2 text-xs whitespace-pre-wrap break-all"
+                            >{{ fmtJSON(row.input_json) || '—' }}</pre>
+                        </div>
+                      </template>
+                      <template #right>
+                        <div class="flex h-full flex-col pl-1">
+                          <div class="mb-1 text-xs font-medium text-muted-foreground">输出</div>
+                          <pre
+                            class="m-0 max-h-64 flex-1 overflow-auto rounded-md border bg-background p-2 text-xs whitespace-pre-wrap break-all"
+                            >{{ fmtJSON(row.output_json) || '—' }}</pre>
+                        </div>
+                      </template>
+                    </SplitPane>
+                    <div v-if="row.error_message" class="mt-2">
+                      <div class="mb-1 text-xs font-medium text-red-600 dark:text-red-400">
+                        错误
                       </div>
-                    </template>
-                    <template #right>
-                      <div class="flex h-full flex-col pl-1">
-                        <div class="mb-1 text-xs font-medium text-muted-foreground">输出</div>
-                        <pre
-                          class="m-0 max-h-64 flex-1 overflow-auto rounded-md border bg-background p-2 text-xs whitespace-pre-wrap break-all"
-                          >{{ fmtJSON(row.output_json) || '—' }}</pre>
-                      </div>
-                    </template>
-                  </SplitPane>
-                  <div v-if="row.error_message" class="mt-2">
-                    <div class="mb-1 text-xs font-medium text-red-600 dark:text-red-400">错误</div>
-                    <pre
-                      class="rounded-md border border-red-500/20 bg-red-500/5 p-2 text-xs whitespace-pre-wrap break-all text-red-700 dark:text-red-300"
-                      >{{ row.error_message }}</pre>
-                  </div>
-                </TableCell>
-              </TableRow>
-            </template>
-          </TableBody>
-        </Table>
+                      <pre
+                        class="rounded-md border border-red-500/20 bg-red-500/5 p-2 text-xs whitespace-pre-wrap break-all text-red-700 dark:text-red-300"
+                        >{{ row.error_message }}</pre>
+                    </div>
+                  </TableCell>
+                </TableRow>
+              </template>
+            </TableBody>
+          </Table>
         </AxTable>
       </CardContent>
     </Card>

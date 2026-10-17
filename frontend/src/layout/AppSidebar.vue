@@ -7,9 +7,9 @@ import {
   RiCpuLine,
   RiDashboardLine,
   RiEyeLine,
- RiFileList3Line,
+  RiFileList3Line,
   RiFilterLine,
- RiFlaskLine,
+  RiFlaskLine,
   RiLinkM,
   RiRobot2Line,
   RiSettings3Line,
@@ -32,9 +32,9 @@ const groups = [
   {
     label: '运行状态',
     items: [
-     { to: '/model-status', label: '模型状态', icon: RiShieldCheckLine },
+      { to: '/model-status', label: '模型状态', icon: RiShieldCheckLine },
       { to: '/failure-rules', label: '失败规则', icon: RiFilterLine },
-     { to: '/route-logs', label: '转发日志', icon: RiFileList3Line },
+      { to: '/route-logs', label: '转发日志', icon: RiFileList3Line },
     ],
   },
   {

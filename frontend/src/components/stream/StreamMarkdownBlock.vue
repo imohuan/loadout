@@ -268,7 +268,14 @@ function escapeHtml(s: string): string {
 .markdown-body kbd,
 .markdown-body pre,
 .markdown-body samp {
-  font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, 'Liberation Mono', monospace;
+  font-family:
+    ui-monospace,
+    SFMono-Regular,
+    SF Mono,
+    Menlo,
+    Consolas,
+    'Liberation Mono',
+    monospace;
   font-size: 12px;
 }
 .markdown-body code,

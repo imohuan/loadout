@@ -466,6 +466,9 @@ type importPreview struct {
 }
 
 func (s *Service) handleConfigImportPreview(w http.ResponseWriter, r *http.Request) {
+	// 与 handleConfigImport 一致：限制整个请求体，超过 maxImportZipSize 明确报错
+	// （默认不限制时 Go 会把整个 body 缓存进内存，超大文件会 OOM）。
+	r.Body = http.MaxBytesReader(w, r.Body, maxImportZipSize+(10<<20))
 	files, err := readUploadedZip(w, r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -558,6 +561,9 @@ type importResponse struct {
 }
 
 func (s *Service) handleConfigImport(w http.ResponseWriter, r *http.Request) {
+	// 限制整个请求体，略大于 maxImportZipSize，留出 multipart 头部与 modes 字段余量；
+	// 超限时 MaxBytesReader 会提前断开，避免 Go 把整个 body 缓存进内存。
+	r.Body = http.MaxBytesReader(w, r.Body, maxImportZipSize+(10<<20))
 	files, err := readUploadedZip(w, r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())

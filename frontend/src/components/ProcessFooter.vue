@@ -265,20 +265,38 @@ function openView(p: ProcessInfo) {
           <DialogTitle class="flex items-center gap-2">
             <span class="size-2 rounded-full" :class="statusDot(viewProc.status)" />
             {{ viewProc.name }}
-            <span class="text-xs font-normal text-muted-foreground">{{ statusLabel(viewProc.status) }}</span>
+            <span class="text-xs font-normal text-muted-foreground">{{
+              statusLabel(viewProc.status)
+            }}</span>
           </DialogTitle>
           <DialogDescription class="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
-            <Badge v-if="viewProc.cmd" variant="outline" class="max-w-full truncate font-mono text-[11px]" :title="viewProc.cmd">
+            <Badge
+              v-if="viewProc.cmd"
+              variant="outline"
+              class="max-w-full truncate font-mono text-[11px]"
+              :title="viewProc.cmd"
+            >
               {{ viewProc.cmd }}
             </Badge>
             <Badge variant="secondary" class="tabular-nums">PID {{ viewProc.pid || '—' }}</Badge>
-            <Badge variant="secondary" class="tabular-nums">内存 {{ fmtMem(viewProc.memBytes) }}</Badge>
-            <span v-if="viewProc.startedAt" class="text-muted-foreground">已运行 {{ fmtDuration(viewProc) }}</span>
+            <Badge variant="secondary" class="tabular-nums"
+              >内存 {{ fmtMem(viewProc.memBytes) }}</Badge
+            >
+            <span v-if="viewProc.startedAt" class="text-muted-foreground"
+              >已运行 {{ fmtDuration(viewProc) }}</span
+            >
           </DialogDescription>
         </DialogHeader>
-        <div class="h-[60vh] overflow-y-auto rounded border border-border bg-muted/30 p-3 font-mono text-[11px] leading-relaxed text-muted-foreground">
+        <div
+          class="h-[60vh] overflow-y-auto rounded border border-border bg-muted/30 p-3 font-mono text-[11px] leading-relaxed text-muted-foreground"
+        >
           <template v-if="viewProc && viewProc.log.length">
-            <div v-for="(line, i) in viewProc.log" :key="i" class="whitespace-pre-wrap break-all" v-html="ansiToHtml(line)" />
+            <div
+              v-for="(line, i) in viewProc.log"
+              :key="i"
+              class="whitespace-pre-wrap break-all"
+              v-html="ansiToHtml(line)"
+            />
           </template>
           <p v-else class="text-muted-foreground">暂无日志输出。</p>
         </div>

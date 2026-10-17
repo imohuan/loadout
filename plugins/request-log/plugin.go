@@ -59,6 +59,12 @@ func (p *requestLogPlugin) Apply(ctx plugin.Context) error {
 
 	svc := NewService(st, lg, reqDB, database)
 	svc.SetDBPath(reqPath)
+	// 块存储：正文（请求消息/响应体）写文件按 SHA-256 去重，request-log.db 只留
+	// 元数据。目录与 request-log.db 同级；初始化失败自动回退旧表存储。
+	blobDir := filepath.Join(filepath.Dir(reqPath), "request-logs")
+	if err := svc.SetBlobDir(blobDir); err != nil {
+		lg.Warn("request-log: 块存储初始化失败，正文回退表存储", "dir", blobDir, "err", err)
+	}
 	if repo, err := db.NewRepository(database); err == nil {
 		svc.SetRepository(repo)
 	}

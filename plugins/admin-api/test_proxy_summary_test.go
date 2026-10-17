@@ -14,7 +14,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -46,13 +45,11 @@ func newRouteLogTestServer(t *testing.T) (*httptest.Server, *sql.DB, string) {
 	t.Cleanup(func() { config.AdminPasswordFile = old })
 
 	authSvc := adminauth.NewService(st, slog.Default())
-	if _, err := authSvc.EnsureFirstRun(); err != nil {
-		t.Fatalf("EnsureFirstRun: %v", err)
+	if err := authSvc.SetupAdminKey("test-access-key"); err != nil {
+		t.Fatalf("SetupAdminKey: %v", err)
 	}
-	pw, err := os.ReadFile(config.AdminPasswordFile)
-	if err != nil {
-		t.Fatalf("读取初始密码: %v", err)
-	}
+	pw := "test-access-key"
+	_ = pw
 
 	keys := gatewaykeys.NewManager(st)
 	skillSvc := skills.NewService(st, slog.Default(), t.TempDir(), t.TempDir())

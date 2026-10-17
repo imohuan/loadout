@@ -45,12 +45,12 @@ const router = createRouter({
           component: AggregatesView,
           meta: { title: '聚合模型' },
         },
-       {
-         path: 'model-status',
-         name: 'model-status',
-         component: ModelStatusView,
-         meta: { title: '模型状态' },
-       },
+        {
+          path: 'model-status',
+          name: 'model-status',
+          component: ModelStatusView,
+          meta: { title: '模型状态' },
+        },
         {
           path: 'failure-rules',
           name: 'failure-rules',

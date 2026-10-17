@@ -12,9 +12,9 @@ import { ShadcnVue } from 'shadcn-vue-cdn'
 
 // 全局快捷键：Ctrl+Shift+Alt+D 触发 debugger
 window.addEventListener('keydown', (e) => {
-    if (e.ctrlKey && e.shiftKey && e.altKey && e.key.toLowerCase() === 'd') {
-        debugger
-    }
+  if (e.ctrlKey && e.shiftKey && e.altKey && e.key.toLowerCase() === 'd') {
+    debugger
+  }
 })
 
 createApp(App).use(createPinia()).use(router).use(ShadcnVue).mount('#app')

@@ -797,11 +797,7 @@ async function sendParallel() {
     } catch (error) {
       const aborted = error instanceof DOMException && error.name === 'AbortError'
       row.result = 'failed'
-      row.error = aborted
-        ? '已手动停止'
-        : error instanceof Error
-          ? error.message
-          : '请求失败'
+      row.error = aborted ? '已手动停止' : error instanceof Error ? error.message : '请求失败'
       if (summaryHolder.value?.request_id) entry.request_id = summaryHolder.value.request_id
       row.requestId = entry.request_id
       entry.result = 'failed'
@@ -1072,8 +1068,9 @@ onBeforeUnmount(() => {
               </div>
             </div>
             <p class="text-xs text-muted-foreground">
-              并发数量：同时发出 {{ concurrency }} 条相同请求（上限 {{ MAX_CONCURRENCY }}）；选「Loadout
-              自带」时才会经过本网关的能力路由，用它观察限流换 Key / 429。
+              并发数量：同时发出 {{ concurrency }} 条相同请求（上限
+              {{ MAX_CONCURRENCY }}）；选「Loadout 自带」时才会经过本网关的能力路由，用它观察限流换
+              Key / 429。
             </p>
             <div class="space-y-2">
               <Label for="test-base-url">Base URL</Label
@@ -1335,7 +1332,9 @@ onBeforeUnmount(() => {
                     :disabled="streaming || (!config.model.trim() && !config.channelId)"
                     @click="send"
                   >
-                    <RiPlayLine size="16" />{{ concurrency > 1 ? `并发发送 ${concurrency}` : '发送' }}
+                    <RiPlayLine size="16" />{{
+                      concurrency > 1 ? `并发发送 ${concurrency}` : '发送'
+                    }}
                   </Button>
                   <Button
                     type="button"
@@ -1413,8 +1412,7 @@ onBeforeUnmount(() => {
                 <pre
                   v-else-if="row.text"
                   class="max-h-48 overflow-y-auto whitespace-pre-wrap break-words font-sans text-xs text-foreground"
-                  >{{ row.text }}</pre
-                >
+                  >{{ row.text }}</pre>
                 <p v-else class="text-xs text-muted-foreground">等待响应…</p>
               </div>
             </div>

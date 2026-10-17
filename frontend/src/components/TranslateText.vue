@@ -73,9 +73,17 @@ const showOriginal = computed(() => {
         (attrs.class as string) || '',
       ]"
     >
-      <span v-if="showOriginal" class="min-w-0 break-words text-muted-foreground">{{ source }}</span>
-      <span v-if="showOriginal && showTranslated && translated" class="text-muted-foreground/50 mx-1">/</span>
-      <span v-if="showTranslated && translated" class="min-w-0 break-words font-medium">{{ translated }}</span>
+      <span v-if="showOriginal" class="min-w-0 break-words text-muted-foreground">{{
+        source
+      }}</span>
+      <span
+        v-if="showOriginal && showTranslated && translated"
+        class="text-muted-foreground/50 mx-1"
+        >/</span
+      >
+      <span v-if="showTranslated && translated" class="min-w-0 break-words font-medium">{{
+        translated
+      }}</span>
     </span>
   </slot>
 </template>

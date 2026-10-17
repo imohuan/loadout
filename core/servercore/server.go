@@ -93,12 +93,8 @@ func assemble(lg *slog.Logger, st *store.Store) (*plugin.Assembly, http.Handler,
 	apiSvc.SetPluginCount(len(plugins.All()))
 	apiSvc.SetChecksProvider(func() []plugin.PluginCheck { return asm.ChecksByPlugin() })
 
-	// 首启流程：users.json 不存在时生成随机密码。
-	if _, err := auth.EnsureFirstRun(); err != nil {
-		asm.Unload()
-		_ = database.Close()
-		return nil, nil, err
-	}
+	// 初始访问密钥由用户在首次打开管理台时自行设置（前端调 /api/setup-status
+	// 与 /api/setup-key），服务端不再自动生成随机密码。
 
 	mux := http.NewServeMux()
 

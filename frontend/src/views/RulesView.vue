@@ -133,7 +133,10 @@ const RECOVER_TONES: Record<string, string> = {
   fixed: 'bg-blue-500/15 text-blue-700 dark:text-blue-300 border-blue-500/20',
 }
 function recoverTone(recover?: string) {
-  return RECOVER_TONES[recover || ''] || 'bg-slate-500/15 text-slate-700 dark:text-slate-300 border-slate-500/20'
+  return (
+    RECOVER_TONES[recover || ''] ||
+    'bg-slate-500/15 text-slate-700 dark:text-slate-300 border-slate-500/20'
+  )
 }
 
 // 状态码配色：2xx=emerald 成功 / 4xx=amber 客户端 / 5xx=red 服务端
@@ -144,7 +147,9 @@ function statusTone(code?: number) {
   return 'text-red-600 dark:text-red-400'
 }
 
-const VERDICT_LABELS: Record<string, string> = Object.fromEntries(VERDICTS.map((v) => [v.value, v.label]))
+const VERDICT_LABELS: Record<string, string> = Object.fromEntries(
+  VERDICTS.map((v) => [v.value, v.label]),
+)
 
 const tab = ref<'rules' | 'logs' | 'samples'>('rules')
 const rules = ref<FailureRule[]>([])
@@ -168,7 +173,8 @@ const filtered = computed(() => {
   const q = search.value.trim().toLowerCase()
   return rules.value.filter((r) => {
     if (q) {
-      const hay = `${r.name} ${r.model} ${r.provider_base_url} ${(r.provider_base_urls || []).join(' ')} ${r.provider_framework} ${r.id}`.toLowerCase()
+      const hay =
+        `${r.name} ${r.model} ${r.provider_base_url} ${(r.provider_base_urls || []).join(' ')} ${r.provider_framework} ${r.id}`.toLowerCase()
       if (!hay.includes(q)) return false
     }
     if (filterSource.value !== '__all__' && sourceOf(r) !== filterSource.value) return false
@@ -280,7 +286,8 @@ const dailyResetHourProxy = computed({
   get: () => form.value.action.daily_reset_hour,
   set: (v: number | string | undefined) => {
     const n = typeof v === 'number' ? v : Number(v)
-    form.value.action.daily_reset_hour = v === '' || v === undefined || Number.isNaN(n) ? undefined : n
+    form.value.action.daily_reset_hour =
+      v === '' || v === undefined || Number.isNaN(n) ? undefined : n
   },
 })
 
@@ -328,7 +335,13 @@ function switchTab(t: 'rules' | 'logs' | 'samples') {
 //      → 对不一致的样本点「AI 生成规则」→ 产出草稿待人工确认。
 const samples = ref<RuleSample[]>([])
 const replayMap = ref<Record<string, SampleReplayResult>>({})
-const replaySummary = ref<{ matched: number; unmatched: number; draftMatched: number; confirmedOk: number; confirmedTotal: number } | null>(null)
+const replaySummary = ref<{
+  matched: number
+  unmatched: number
+  draftMatched: number
+  confirmedOk: number
+  confirmedTotal: number
+} | null>(null)
 const samplesLoading = ref(false)
 const replaying = ref(false)
 const importing = ref(false)
@@ -423,17 +436,20 @@ function replayOf(id: string): SampleReplayResult | null {
 function sampleResultTone(id: string): string {
   const r = replayOf(id)
   if (!r) return 'bg-slate-500/15 text-slate-700 dark:text-slate-300 border-slate-500/20'
-  if (r.expected && !r.expected_ok) return 'bg-red-500/15 text-red-700 dark:text-red-300 border-red-500/20'
+  if (r.expected && !r.expected_ok)
+    return 'bg-red-500/15 text-red-700 dark:text-red-300 border-red-500/20'
   // 命中草稿：琥珀（区别于正式规则的绿），呼应「临时生效需确认」的提醒。
   if (r.is_draft) return 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/25'
-  if (!r.matched_rule_id) return 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/20'
+  if (!r.matched_rule_id)
+    return 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/20'
   return 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/20'
 }
 
 function sampleResultLabel(id: string): string {
   const r = replayOf(id)
   if (!r) return '未回放'
-  if (r.expected && !r.expected_ok) return `不一致（预期 ${VERDICT_LABELS[r.expected] ?? r.expected}）`
+  if (r.expected && !r.expected_ok)
+    return `不一致（预期 ${VERDICT_LABELS[r.expected] ?? r.expected}）`
   if (r.is_draft) return `草稿命中 · ${VERDICT_LABELS[r.verdict] ?? r.verdict}`
   if (!r.matched_rule_id) return '未命中规则'
   return `已匹配 · ${VERDICT_LABELS[r.verdict] ?? r.verdict}`
@@ -443,7 +459,8 @@ const filteredSamples = computed(() => {
   const q = samplesSearch.value.trim().toLowerCase()
   return samples.value.filter((s) => {
     if (q) {
-      const hay = `${s.model} ${s.status_code} ${s.body_code} ${s.message} ${s.provider_base_url}`.toLowerCase()
+      const hay =
+        `${s.model} ${s.status_code} ${s.body_code} ${s.message} ${s.provider_base_url}`.toLowerCase()
       if (!hay.includes(q)) return false
     }
     if (samplesFilter.value === 'all') return true
@@ -456,7 +473,10 @@ const filteredSamples = computed(() => {
 })
 
 async function removeSample(s: RuleSample) {
-  const ok = await confirmDialog({ title: '删除这条样本？', description: '仅从样本库移除，不影响规则与运行状态。' })
+  const ok = await confirmDialog({
+    title: '删除这条样本？',
+    description: '仅从样本库移除，不影响规则与运行状态。',
+  })
   if (!ok) return
   try {
     await deleteRuleSample(s.id)
@@ -546,8 +566,10 @@ function canAuthor(s: RuleSample): boolean {
 function authorTone(sampleId: string): string {
   const status = authorSessions.value[sampleId]?.status
   if (status === 'running') return 'bg-sky-500/15 text-sky-700 dark:text-sky-300 border-sky-500/25'
-  if (status === 'done') return 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/25'
-  if (status === 'exhausted') return 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/25'
+  if (status === 'done')
+    return 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/25'
+  if (status === 'exhausted')
+    return 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/25'
   if (status === 'failed') return 'bg-red-500/15 text-red-700 dark:text-red-300 border-red-500/25'
   return 'bg-slate-500/15 text-slate-700 dark:text-slate-300 border-slate-500/20'
 }
@@ -578,9 +600,12 @@ function streamKindLabel(sampleId: string): string {
 // streamKindTone 思考=灰紫（旁白感）、文本=天蓝（正式输出）、工具=琥珀（外部调用）。
 function streamKindTone(sampleId: string): string {
   const kind = authorSessions.value[sampleId]?.stream_kind
-  if (kind === 'reasoning') return 'shrink-0 rounded bg-violet-500/15 px-1 text-violet-600 dark:text-violet-300'
-  if (kind === 'content') return 'shrink-0 rounded bg-sky-500/15 px-1 text-sky-600 dark:text-sky-300'
-  if (kind === 'tool') return 'shrink-0 rounded bg-amber-500/15 px-1 text-amber-600 dark:text-amber-300'
+  if (kind === 'reasoning')
+    return 'shrink-0 rounded bg-violet-500/15 px-1 text-violet-600 dark:text-violet-300'
+  if (kind === 'content')
+    return 'shrink-0 rounded bg-sky-500/15 px-1 text-sky-600 dark:text-sky-300'
+  if (kind === 'tool')
+    return 'shrink-0 rounded bg-amber-500/15 px-1 text-amber-600 dark:text-amber-300'
   return ''
 }
 
@@ -727,7 +752,11 @@ const verifySample = ref<RuleEvidence>({ status_code: 429, message: '' })
 const verifyHit = ref<boolean | null>(null)
 // 校验明细：命中后的动作参数（恢复时间/冷却秒数）——用户要求能看到
 // 「提取的时间用到了动作中」，光一个 ✓/✗ 不够。
-const verifyDetail = ref<{ verdict?: string; recover_until?: string; action_params?: string } | null>(null)
+const verifyDetail = ref<{
+  verdict?: string
+  recover_until?: string
+  action_params?: string
+} | null>(null)
 const verifying = ref(false)
 async function runVerify() {
   verifyHit.value = null
@@ -736,7 +765,11 @@ async function runVerify() {
   try {
     const res = await verifyFailureRule(form.value as Partial<FailureRule>, verifySample.value)
     verifyHit.value = res.hit
-    verifyDetail.value = { verdict: res.verdict, recover_until: res.recover_until, action_params: res.action_params }
+    verifyDetail.value = {
+      verdict: res.verdict,
+      recover_until: res.recover_until,
+      action_params: res.action_params,
+    }
   } catch (e) {
     toast.error(String(e))
   } finally {
@@ -801,9 +834,8 @@ async function loadChannels() {
   }
 }
 
-const channels = ref<
-  Array<{ base_url?: string; name?: string; channel_name?: string; models?: string[] }>
->()
+const channels =
+  ref<Array<{ base_url?: string; name?: string; channel_name?: string; models?: string[] }>>()
 const allModels = computed(() => {
   const set = new Set<string>()
   for (const c of channels.value ?? []) for (const m of c.models || []) set.add(m)
@@ -866,7 +898,10 @@ async function openRuleFromName(ruleId?: string) {
 
 <template>
   <div class="mx-auto flex h-full w-full max-w-7xl flex-col gap-4 overflow-y-auto p-4">
-    <PageHeader title="失败规则" description="请求失败后的路由裁决规则；未命中规则时由 AI 兜底判定并生成草稿">
+    <PageHeader
+      title="失败规则"
+      description="请求失败后的路由裁决规则；未命中规则时由 AI 兜底判定并生成草稿"
+    >
       <template #actions>
         <Button variant="outline" size="sm" @click="load">
           <RiRefreshLine size="15" class="mr-1" /> 刷新
@@ -880,7 +915,11 @@ async function openRuleFromName(ruleId?: string) {
       </template>
     </PageHeader>
 
-    <Tabs v-model="tab" class="space-y-3" @update:model-value="(v: unknown) => switchTab(v as 'rules' | 'logs')">
+    <Tabs
+      v-model="tab"
+      class="space-y-3"
+      @update:model-value="(v: unknown) => switchTab(v as 'rules' | 'logs')"
+    >
       <TabsList class="h-auto w-fit">
         <TabsTrigger value="rules">规则列表</TabsTrigger>
         <TabsTrigger value="logs">路由判定日志</TabsTrigger>
@@ -916,7 +955,9 @@ async function openRuleFromName(ruleId?: string) {
               <SelectContent position="popper" side="bottom" align="start" :side-offset="2">
                 <SelectGroup>
                   <SelectItem value="__all__">全部动作</SelectItem>
-                  <SelectItem v-for="v in VERDICTS" :key="v.value" :value="v.value">{{ v.label }}</SelectItem>
+                  <SelectItem v-for="v in VERDICTS" :key="v.value" :value="v.value">{{
+                    v.label
+                  }}</SelectItem>
                 </SelectGroup>
               </SelectContent>
             </Select>
@@ -937,107 +978,143 @@ async function openRuleFromName(ruleId?: string) {
           <Button variant="outline" class="mb-0.5" @click="clearFilters">
             <RiFilter3Line size="15" class="mr-1" /> 重置
           </Button>
-          <span class="text-muted-foreground mb-1.5 ml-auto text-xs">{{ filtered.length }} / {{ rules.length }} 条</span>
+          <span class="text-muted-foreground mb-1.5 ml-auto text-xs"
+            >{{ filtered.length }} / {{ rules.length }} 条</span
+          >
         </div>
 
         <LoadingBlock v-if="loading" />
-        <EmptyState v-else-if="!filtered.length" title="暂无规则" description="没有匹配当前筛选条件的规则" />
+        <EmptyState
+          v-else-if="!filtered.length"
+          title="暂无规则"
+          description="没有匹配当前筛选条件的规则"
+        />
 
         <div v-else class="overflow-x-auto rounded-lg border">
           <AxTable>
-          <Table class="min-w-[1080px]">
-            <TableHeader>
-              <TableRow>
-                <TableHead class="w-[220px]">名称</TableHead>
-                <TableHead class="w-[180px]">作用域</TableHead>
-                <TableHead>匹配条件</TableHead>
-                <TableHead class="w-[84px]">判定</TableHead>
-                <TableHead class="w-[88px]">恢复</TableHead>
-                <TableHead class="w-[96px]">来源</TableHead>
-                <TableHead class="w-[64px]">优先</TableHead>
-                <TableHead class="w-[64px]">命中</TableHead>
-                <TableHead class="w-[40px]">开</TableHead>
-                <TableHead class="w-[110px] text-right">操作</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              <TableRow v-for="rule in filtered" :key="rule.id" :class="{ 'opacity-50': !rule.enabled }">
-                <TableCell>
-                  <div class="font-medium">{{ rule.name }}</div>
-                  <div class="text-muted-foreground font-mono text-[10px]">{{ rule.id }}</div>
-                </TableCell>
-                <TableCell>
-                  <div class="text-xs">{{ scopeText(rule) }}</div>
-                  <Badge
-                    v-if="rule.scope_mode"
-                    variant="outline"
-                    class="mt-0.5 border text-[10px]"
-                    :class="rule.scope_mode === 'framework'
-                      ? 'bg-violet-500/15 text-violet-700 dark:text-violet-300 border-violet-500/20'
-                      : 'bg-blue-500/15 text-blue-700 dark:text-blue-300 border-blue-500/20'"
-                  >
-                    {{ rule.scope_mode === 'framework' ? '按框架' : '多平台' }}
-                  </Badge>
-                </TableCell>
-                <TableCell>
-                  <div class="max-w-[300px] truncate font-mono text-[11px]" :title="matchSummary(rule)">
-                    {{ matchSummary(rule) }}
-                  </div>
-                </TableCell>
-                <TableCell>
-                  <Badge variant="outline" class="border text-[11px]" :class="verdictTone(rule.action.verdict)">
-                    {{ VERDICT_LABELS[rule.action.verdict] || rule.action.verdict }}
-                  </Badge>
-                </TableCell>
-                <TableCell>
-                  <Badge variant="outline" class="border text-[11px]" :class="recoverTone(rule.action.recover)">
-                    {{ recoverText(rule) }}
-                  </Badge>
-                </TableCell>
-                <TableCell>
-                  <Badge variant="outline" class="border text-[11px]" :class="sourceBadge(rule).class">
-                    {{ sourceBadge(rule).text }}
-                  </Badge>
-                </TableCell>
-                <TableCell class="font-mono text-xs">{{ rule.priority }}</TableCell>
-                <TableCell class="text-xs">
-                  <span v-if="rule.hit_count" class="font-medium text-emerald-600 dark:text-emerald-400">
-                    {{ rule.hit_count }}
-                  </span>
-                  <span v-else class="text-muted-foreground">—</span>
-                </TableCell>
-                <TableCell>
-                  <Switch :model-value="rule.enabled" @update:model-value="toggle(rule)" />
-                </TableCell>
-                <TableCell class="text-right">
-                  <div class="flex items-center justify-end gap-0.5">
-                    <Button
-                      v-if="rule.source === 'ai' && !rule.confirmed"
-                      variant="ghost"
-                      size="icon"
-                      class="size-7"
-                      title="确认 AI 草稿"
-                      @click="confirmDraft(rule)"
+            <Table class="min-w-[1080px]">
+              <TableHeader>
+                <TableRow>
+                  <TableHead class="w-[220px]">名称</TableHead>
+                  <TableHead class="w-[180px]">作用域</TableHead>
+                  <TableHead>匹配条件</TableHead>
+                  <TableHead class="w-[84px]">判定</TableHead>
+                  <TableHead class="w-[88px]">恢复</TableHead>
+                  <TableHead class="w-[96px]">来源</TableHead>
+                  <TableHead class="w-[64px]">优先</TableHead>
+                  <TableHead class="w-[64px]">命中</TableHead>
+                  <TableHead class="w-[40px]">开</TableHead>
+                  <TableHead class="w-[110px] text-right">操作</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                <TableRow
+                  v-for="rule in filtered"
+                  :key="rule.id"
+                  :class="{ 'opacity-50': !rule.enabled }"
+                >
+                  <TableCell>
+                    <div class="font-medium">{{ rule.name }}</div>
+                    <div class="text-muted-foreground font-mono text-[10px]">{{ rule.id }}</div>
+                  </TableCell>
+                  <TableCell>
+                    <div class="text-xs">{{ scopeText(rule) }}</div>
+                    <Badge
+                      v-if="rule.scope_mode"
+                      variant="outline"
+                      class="mt-0.5 border text-[10px]"
+                      :class="
+                        rule.scope_mode === 'framework'
+                          ? 'bg-violet-500/15 text-violet-700 dark:text-violet-300 border-violet-500/20'
+                          : 'bg-blue-500/15 text-blue-700 dark:text-blue-300 border-blue-500/20'
+                      "
                     >
-                      <RiCheckLine size="15" class="text-green-600" />
-                    </Button>
-                    <Button variant="ghost" size="icon" class="size-7" title="编辑" @click="openEdit(rule)">
-                      <RiEditLine size="15" />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      class="size-7 text-red-500 hover:text-red-600"
-                      title="删除"
-                      @click="remove(rule)"
+                      {{ rule.scope_mode === 'framework' ? '按框架' : '多平台' }}
+                    </Badge>
+                  </TableCell>
+                  <TableCell>
+                    <div
+                      class="max-w-[300px] truncate font-mono text-[11px]"
+                      :title="matchSummary(rule)"
                     >
-                      <RiDeleteBinLine size="15" />
-                    </Button>
-                  </div>
-                </TableCell>
-              </TableRow>
-            </TableBody>
-          </Table>
+                      {{ matchSummary(rule) }}
+                    </div>
+                  </TableCell>
+                  <TableCell>
+                    <Badge
+                      variant="outline"
+                      class="border text-[11px]"
+                      :class="verdictTone(rule.action.verdict)"
+                    >
+                      {{ VERDICT_LABELS[rule.action.verdict] || rule.action.verdict }}
+                    </Badge>
+                  </TableCell>
+                  <TableCell>
+                    <Badge
+                      variant="outline"
+                      class="border text-[11px]"
+                      :class="recoverTone(rule.action.recover)"
+                    >
+                      {{ recoverText(rule) }}
+                    </Badge>
+                  </TableCell>
+                  <TableCell>
+                    <Badge
+                      variant="outline"
+                      class="border text-[11px]"
+                      :class="sourceBadge(rule).class"
+                    >
+                      {{ sourceBadge(rule).text }}
+                    </Badge>
+                  </TableCell>
+                  <TableCell class="font-mono text-xs">{{ rule.priority }}</TableCell>
+                  <TableCell class="text-xs">
+                    <span
+                      v-if="rule.hit_count"
+                      class="font-medium text-emerald-600 dark:text-emerald-400"
+                    >
+                      {{ rule.hit_count }}
+                    </span>
+                    <span v-else class="text-muted-foreground">—</span>
+                  </TableCell>
+                  <TableCell>
+                    <Switch :model-value="rule.enabled" @update:model-value="toggle(rule)" />
+                  </TableCell>
+                  <TableCell class="text-right">
+                    <div class="flex items-center justify-end gap-0.5">
+                      <Button
+                        v-if="rule.source === 'ai' && !rule.confirmed"
+                        variant="ghost"
+                        size="icon"
+                        class="size-7"
+                        title="确认 AI 草稿"
+                        @click="confirmDraft(rule)"
+                      >
+                        <RiCheckLine size="15" class="text-green-600" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        class="size-7"
+                        title="编辑"
+                        @click="openEdit(rule)"
+                      >
+                        <RiEditLine size="15" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        class="size-7 text-red-500 hover:text-red-600"
+                        title="删除"
+                        @click="remove(rule)"
+                      >
+                        <RiDeleteBinLine size="15" />
+                      </Button>
+                    </div>
+                  </TableCell>
+                </TableRow>
+              </TableBody>
+            </Table>
           </AxTable>
         </div>
       </TabsContent>
@@ -1056,76 +1133,106 @@ async function openRuleFromName(ruleId?: string) {
               <SelectContent position="popper" side="bottom" align="start" :side-offset="2">
                 <SelectGroup>
                   <SelectItem value="__all__">全部平台</SelectItem>
-                  <SelectItem v-for="p in logPlatforms" :key="p.base_url" :value="p.base_url">{{ p.name }}</SelectItem>
+                  <SelectItem v-for="p in logPlatforms" :key="p.base_url" :value="p.base_url">{{
+                    p.name
+                  }}</SelectItem>
                 </SelectGroup>
               </SelectContent>
             </Select>
           </div>
-          <span class="text-muted-foreground mb-1.5 ml-auto text-xs">{{ filteredLogs.length }} / {{ decisions.length }} 条</span>
+          <span class="text-muted-foreground mb-1.5 ml-auto text-xs"
+            >{{ filteredLogs.length }} / {{ decisions.length }} 条</span
+          >
         </div>
 
         <LoadingBlock v-if="loading" />
-        <EmptyState v-else-if="!filteredLogs.length" title="暂无判定记录" description="请求失败后的规则/AI 裁决会记录在这里" />
+        <EmptyState
+          v-else-if="!filteredLogs.length"
+          title="暂无判定记录"
+          description="请求失败后的规则/AI 裁决会记录在这里"
+        />
 
         <template v-else>
           <!-- 判定日志表：列宽由内容自己决定，只给「错误摘要」一个最大宽度（超出换行，
                不再被裁掉）。表头列边界可拖拽调宽，双击恢复自动宽度。 -->
           <AxTable class="rounded-lg border">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead class="min-w-[130px]">时间</TableHead>
-                <TableHead>平台</TableHead>
-                <TableHead>Key</TableHead>
-                <TableHead>模型</TableHead>
-                <TableHead>状态码</TableHead>
-                <TableHead class="max-w-[320px]">错误摘要</TableHead>
-                <TableHead>路由依据</TableHead>
-                <TableHead>判定</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              <TableRow v-for="d in filteredLogs" :key="d.id">
-                <TableCell class="text-muted-foreground font-mono text-[11px] whitespace-nowrap">{{ formatDateTimeCN(d.created_at) }}</TableCell>
-                <TableCell>
-                  <Badge variant="outline" class="border text-[11px]" :class="platformTone(d.provider_base_url)" :title="d.provider_base_url">
-                    {{ platformLabel(d.provider_base_url) }}
-                  </Badge>
-                </TableCell>
-                <TableCell class="font-mono text-xs" :title="d.channel_id">
-                  {{ d.channel_name || d.channel_id || '—' }}
-                </TableCell>
-                <TableCell class="font-mono text-xs">{{ d.model || '—' }}</TableCell>
-                <TableCell class="font-mono text-xs font-medium" :class="statusTone(d.status_code)">
-                  {{ d.status_code || '—' }}
-                </TableCell>
-                <TableCell>
-                  <HoverTextCard :text="d.error_excerpt" label="错误详情" :mono="true">
-                    <div class="cursor-default truncate text-xs">{{ d.error_excerpt || '—' }}</div>
-                  </HoverTextCard>
-                </TableCell>
-                <TableCell>
-                  <!-- 命中规则可点击 → 打开对应规则的编辑弹窗；hover 下划线提示 -->
-                  <Badge
-                    v-if="d.matched_rule_id"
-                    variant="outline"
-                    class="cursor-pointer whitespace-normal text-[11px] hover:underline"
-                    title="点击查看 / 编辑该规则"
-                    @click.stop="openRuleFromName(d.matched_rule_id)"
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead class="min-w-[130px]">时间</TableHead>
+                  <TableHead>平台</TableHead>
+                  <TableHead>Key</TableHead>
+                  <TableHead>模型</TableHead>
+                  <TableHead>状态码</TableHead>
+                  <TableHead class="max-w-[320px]">错误摘要</TableHead>
+                  <TableHead>路由依据</TableHead>
+                  <TableHead>判定</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                <TableRow v-for="d in filteredLogs" :key="d.id">
+                  <TableCell
+                    class="text-muted-foreground font-mono text-[11px] whitespace-nowrap"
+                    >{{ formatDateTimeCN(d.created_at) }}</TableCell
                   >
-                    {{ d.matched_rule_name || d.matched_rule_id }}
-                  </Badge>
-                  <Badge v-else-if="d.ai_model" variant="outline" class="border border-violet-500/20 bg-violet-500/15 text-[11px] text-violet-700 dark:text-violet-300">AI 判定</Badge>
-                  <span v-else class="text-muted-foreground text-[11px]">默认</span>
-                </TableCell>
-                <TableCell>
-                  <Badge variant="outline" class="border text-[11px] whitespace-normal" :class="verdictTone(d.verdict)">
-                    {{ VERDICT_LABELS[d.verdict] || d.verdict }}
-                  </Badge>
-                </TableCell>
-              </TableRow>
-            </TableBody>
-          </Table>
+                  <TableCell>
+                    <Badge
+                      variant="outline"
+                      class="border text-[11px]"
+                      :class="platformTone(d.provider_base_url)"
+                      :title="d.provider_base_url"
+                    >
+                      {{ platformLabel(d.provider_base_url) }}
+                    </Badge>
+                  </TableCell>
+                  <TableCell class="font-mono text-xs" :title="d.channel_id">
+                    {{ d.channel_name || d.channel_id || '—' }}
+                  </TableCell>
+                  <TableCell class="font-mono text-xs">{{ d.model || '—' }}</TableCell>
+                  <TableCell
+                    class="font-mono text-xs font-medium"
+                    :class="statusTone(d.status_code)"
+                  >
+                    {{ d.status_code || '—' }}
+                  </TableCell>
+                  <TableCell>
+                    <HoverTextCard :text="d.error_excerpt" label="错误详情" :mono="true">
+                      <div class="cursor-default truncate text-xs">
+                        {{ d.error_excerpt || '—' }}
+                      </div>
+                    </HoverTextCard>
+                  </TableCell>
+                  <TableCell>
+                    <!-- 命中规则可点击 → 打开对应规则的编辑弹窗；hover 下划线提示 -->
+                    <Badge
+                      v-if="d.matched_rule_id"
+                      variant="outline"
+                      class="cursor-pointer whitespace-normal text-[11px] hover:underline"
+                      title="点击查看 / 编辑该规则"
+                      @click.stop="openRuleFromName(d.matched_rule_id)"
+                    >
+                      {{ d.matched_rule_name || d.matched_rule_id }}
+                    </Badge>
+                    <Badge
+                      v-else-if="d.ai_model"
+                      variant="outline"
+                      class="border border-violet-500/20 bg-violet-500/15 text-[11px] text-violet-700 dark:text-violet-300"
+                      >AI 判定</Badge
+                    >
+                    <span v-else class="text-muted-foreground text-[11px]">默认</span>
+                  </TableCell>
+                  <TableCell>
+                    <Badge
+                      variant="outline"
+                      class="border text-[11px] whitespace-normal"
+                      :class="verdictTone(d.verdict)"
+                    >
+                      {{ VERDICT_LABELS[d.verdict] || d.verdict }}
+                    </Badge>
+                  </TableCell>
+                </TableRow>
+              </TableBody>
+            </Table>
           </AxTable>
         </template>
       </TabsContent>
@@ -1171,7 +1278,10 @@ async function openRuleFromName(ruleId?: string) {
             <template v-if="replaySummary">
               · 命中 {{ replaySummary.matched }} · 未命中 {{ replaySummary.unmatched }}
               <template v-if="replaySummary.draftMatched">
-                · <span class="text-amber-600 dark:text-amber-300">草稿命中 {{ replaySummary.draftMatched }}</span>
+                ·
+                <span class="text-amber-600 dark:text-amber-300"
+                  >草稿命中 {{ replaySummary.draftMatched }}</span
+                >
               </template>
               <template v-if="replaySummary.confirmedTotal">
                 · 预期一致 {{ replaySummary.confirmedOk }}/{{ replaySummary.confirmedTotal }}
@@ -1208,14 +1318,20 @@ async function openRuleFromName(ruleId?: string) {
               <TableBody>
                 <TableRow v-for="s in filteredSamples" :key="s.id">
                   <TableCell>
-                    <Badge variant="outline" class="text-[11px]">{{ s.source === 'builtin' ? '自带' : '真实' }}</Badge>
+                    <Badge variant="outline" class="text-[11px]">{{
+                      s.source === 'builtin' ? '自带' : '真实'
+                    }}</Badge>
                   </TableCell>
-                  <TableCell class="font-mono text-xs" :class="statusTone(s.status_code)">{{ s.status_code || '—' }}</TableCell>
+                  <TableCell class="font-mono text-xs" :class="statusTone(s.status_code)">{{
+                    s.status_code || '—'
+                  }}</TableCell>
                   <TableCell class="font-mono text-xs">{{ s.body_code || '—' }}</TableCell>
                   <TableCell class="font-mono text-xs">{{ s.model || '—' }}</TableCell>
                   <TableCell class="max-w-[360px]">
                     <HoverTextCard :text="s.message" label="错误详情" :mono="true">
-                      <div class="truncate text-xs text-muted-foreground">{{ s.message || '—' }}</div>
+                      <div class="truncate text-xs text-muted-foreground">
+                        {{ s.message || '—' }}
+                      </div>
                     </HoverTextCard>
                   </TableCell>
                   <TableCell class="text-xs">
@@ -1238,7 +1354,10 @@ async function openRuleFromName(ruleId?: string) {
                                   class="shrink-0 cursor-help text-amber-600 dark:text-amber-300"
                                 />
                               </TooltipTrigger>
-                              <TooltipContent side="top" class="max-w-[260px] whitespace-normal break-words">
+                              <TooltipContent
+                                side="top"
+                                class="max-w-[260px] whitespace-normal break-words"
+                              >
                                 AI 草稿 · 仅回测临时生效，正式环境需确认
                               </TooltipContent>
                             </Tooltip>
@@ -1263,22 +1382,33 @@ async function openRuleFromName(ruleId?: string) {
                     </template>
                     <span v-else class="text-muted-foreground">—</span>
                   </TableCell>
-	                  <TableCell>
-	                    <Badge variant="outline" class="border text-[11px] whitespace-normal" :class="sampleResultTone(s.id)">
-	                      {{ sampleResultLabel(s.id) }}
-	                    </Badge>
-	                    <!-- 动作参数：命中后会发生什么（恢复时间/冷却秒数）。
+                  <TableCell>
+                    <Badge
+                      variant="outline"
+                      class="border text-[11px] whitespace-normal"
+                      :class="sampleResultTone(s.id)"
+                    >
+                      {{ sampleResultLabel(s.id) }}
+                    </Badge>
+                    <!-- 动作参数：命中后会发生什么（恢复时间/冷却秒数）。
 	                         用户要求能看到「提取的时间用到了动作中」。 -->
-	                    <p
-	                      v-if="replayOf(s.id)?.action_params"
-	                      class="mt-0.5 truncate text-[10px] text-amber-600 dark:text-amber-300/90"
-	                      :title="replayOf(s.id)?.recover_until ? '预计恢复：' + replayOf(s.id)?.recover_until : replayOf(s.id)?.action_params"
-	                    >
-	                      {{ replayOf(s.id)?.action_params }}
-	                    </p>
-	                    <p v-if="replayOf(s.id)?.reason" class="text-muted-foreground mt-0.5 truncate text-[10px]">
-	                      {{ replayOf(s.id)?.reason }}
-	                    </p>
+                    <p
+                      v-if="replayOf(s.id)?.action_params"
+                      class="mt-0.5 truncate text-[10px] text-amber-600 dark:text-amber-300/90"
+                      :title="
+                        replayOf(s.id)?.recover_until
+                          ? '预计恢复：' + replayOf(s.id)?.recover_until
+                          : replayOf(s.id)?.action_params
+                      "
+                    >
+                      {{ replayOf(s.id)?.action_params }}
+                    </p>
+                    <p
+                      v-if="replayOf(s.id)?.reason"
+                      class="text-muted-foreground mt-0.5 truncate text-[10px]"
+                    >
+                      {{ replayOf(s.id)?.reason }}
+                    </p>
                   </TableCell>
                   <TableCell>
                     <div class="flex items-center justify-end gap-1">
@@ -1288,14 +1418,25 @@ async function openRuleFromName(ruleId?: string) {
                            「最后一轮为什么没通过」，让用户知道 AI 卡在哪。 -->
                       <!-- shrink-0：进度块整体不允许被 flex 压缩，空间不够时宁可让
                            外层表格滚动，也不能把「生成中」胶囊和「思考」标签挤变形。 -->
-                      <div v-if="authorSessions[s.id]" class="flex max-w-full shrink-0 flex-col items-start gap-0.5">
-                        <Badge variant="outline" class="shrink-0 whitespace-nowrap border text-[11px]" :class="authorTone(s.id)">
+                      <div
+                        v-if="authorSessions[s.id]"
+                        class="flex max-w-full shrink-0 flex-col items-start gap-0.5"
+                      >
+                        <Badge
+                          variant="outline"
+                          class="shrink-0 whitespace-nowrap border text-[11px]"
+                          :class="authorTone(s.id)"
+                        >
                           <RiLoader4Line
                             v-if="authorSessions[s.id]?.status === 'running'"
                             class="animate-spin mr-1"
                             size="12"
                           />
-                          <RiCheckLine v-else-if="authorSessions[s.id]?.status === 'done'" class="mr-1" size="12" />
+                          <RiCheckLine
+                            v-else-if="authorSessions[s.id]?.status === 'done'"
+                            class="mr-1"
+                            size="12"
+                          />
                           <RiRefreshLine v-else class="mr-1" size="12" />
                           {{ authorText(s.id) }}
                         </Badge>
@@ -1312,14 +1453,16 @@ async function openRuleFromName(ruleId?: string) {
                             {{ streamKindLabel(s.id) }}
                           </span>
                           <span class="min-w-0 flex-1 truncate font-mono text-muted-foreground"
-                            >{{ authorSessions[s.id]?.stream_tail || '…' }}<span class="animate-pulse">▍</span></span
+                            >{{ authorSessions[s.id]?.stream_tail || '…'
+                            }}<span class="animate-pulse">▍</span></span
                           >
                         </span>
                         <span
                           v-else-if="authorDetail(s.id)"
                           class="max-w-[168px] truncate text-left text-[10px] text-muted-foreground"
                           :title="authorDetail(s.id)"
-                        >{{ authorDetail(s.id) }}</span>
+                          >{{ authorDetail(s.id) }}</span
+                        >
                       </div>
                       <!-- AI 生成规则：没有结果时是带文字的按钮，跑过之后再点就是「重新生成」 -->
                       <Button
@@ -1334,7 +1477,13 @@ async function openRuleFromName(ruleId?: string) {
                         <RiSparklingLine size="14" :class="authorSessions[s.id] ? '' : 'mr-1'" />
                         <template v-if="!authorSessions[s.id]">AI 生成规则</template>
                       </Button>
-                      <Button variant="ghost" size="icon" class="size-7" title="删除样本" @click="removeSample(s)">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        class="size-7"
+                        title="删除样本"
+                        @click="removeSample(s)"
+                      >
                         <RiDeleteBinLine size="14" />
                       </Button>
                     </div>
@@ -1347,13 +1496,14 @@ async function openRuleFromName(ruleId?: string) {
       </TabsContent>
     </Tabs>
 
-
     <!-- ===== 编辑弹窗（shadcn Dialog）===== -->
     <Dialog v-model:open="showEditor">
       <!-- 三段式布局：标题与底部按钮固定，只有中间表单区滚动。
            之前 overflow-y-auto 直接挂在 DialogContent 上，整块（含标题/按钮）一起滚，
            长表单（模板字段 + 样本校验）滚到下面时看不到「保存」。 -->
-      <DialogContent class="max-h-[92vh] w-[calc(100vw-2rem)] sm:max-w-2xl! flex flex-col overflow-hidden">
+      <DialogContent
+        class="max-h-[92vh] w-[calc(100vw-2rem)] sm:max-w-2xl! flex flex-col overflow-hidden"
+      >
         <DialogHeader>
           <DialogTitle>{{ editing ? '编辑规则' : '新建规则' }}</DialogTitle>
           <DialogDescription>规则按优先级从小到大匹配，首个命中生效</DialogDescription>
@@ -1361,235 +1511,310 @@ async function openRuleFromName(ruleId?: string) {
 
         <!-- 中间滚动区：min-h-0 是 flex 子项能滚动的必要条件（默认 min-height:auto 会撑开）。 -->
         <div class="-mx-1 min-h-0 flex-1 space-y-3 overflow-y-auto px-1">
-        <!-- 小窗口（<640px）全部单列排布，避免字段被挤扁；sm 起才两列。 -->
-        <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <div class="col-span-2 space-y-1">
-            <Label>规则名</Label>
-            <Input v-model="form.name" placeholder="如：额度用尽（次日恢复）" />
-          </div>
-          <div class="space-y-1">
-            <Label>优先级（小者先）</Label>
-            <Input v-model.number="form.priority" type="number" />
-          </div>
-          <div class="space-y-1">
-            <Label>模型（空 = 全部）</Label>
-            <TargetModelPicker
-              v-model="form.model"
-              :models="allModels"
-              :multiple="false"
-              allow-custom
-            />
-          </div>
-          <!-- 作用范围只有「全部平台 / 指定平台 / 按框架」三种。
+          <!-- 小窗口（<640px）全部单列排布，避免字段被挤扁；sm 起才两列。 -->
+          <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div class="col-span-2 space-y-1">
+              <Label>规则名</Label>
+              <Input v-model="form.name" placeholder="如：额度用尽（次日恢复）" />
+            </div>
+            <div class="space-y-1">
+              <Label>优先级（小者先）</Label>
+              <Input v-model.number="form.priority" type="number" />
+            </div>
+            <div class="space-y-1">
+              <Label>模型（空 = 全部）</Label>
+              <TargetModelPicker
+                v-model="form.model"
+                :models="allModels"
+                :multiple="false"
+                allow-custom
+              />
+            </div>
+            <!-- 作用范围只有「全部平台 / 指定平台 / 按框架」三种。
                旧的「单平台（兼容）」下拉已下线——要锁单个平台，用「指定平台」填一个即可
                （后端仍保留对历史 provider_base_url 数据的读取兼容，只是不再暴露这个输入口）。 -->
-          <div class="col-span-2 space-y-1">
-            <Label>作用范围</Label>
-            <Select v-model="scopeModeProxy">
-              <SelectTrigger class="w-full"><SelectValue placeholder="选择作用范围" /></SelectTrigger>
-              <SelectContent position="popper" side="bottom" align="start" :side-offset="2">
-                <SelectGroup>
-                  <SelectItem v-for="m in SCOPE_MODES" :key="m.value" :value="m.value">{{ m.label }}</SelectItem>
-                </SelectGroup>
-              </SelectContent>
-            </Select>
-          </div>
-          <div v-if="form.scope_mode === 'framework'" class="col-span-2 space-y-1">
-            <Label>框架（同框架平台共用此规则）</Label>
-            <Select v-model="form.provider_framework">
-              <SelectTrigger class="w-full"><SelectValue placeholder="选择框架" /></SelectTrigger>
-              <SelectContent position="popper" side="bottom" align="start" :side-offset="2">
-                <SelectGroup>
-                  <SelectItem v-for="f in frameworkOptions" :key="f" :value="f">{{ f }}</SelectItem>
-                </SelectGroup>
-              </SelectContent>
-            </Select>
-            <p class="text-muted-foreground text-xs">渠道编辑里标注了该框架的所有平台都会命中。</p>
-          </div>
-          <div v-if="form.scope_mode === 'urls'" class="col-span-2 space-y-1">
-            <Label>平台地址（每行一个或逗号分隔）</Label>
-            <Textarea v-model="scopeUrlsText" :rows="3" placeholder="https://api.a.com/v1, https://b.newapi.top/v1" />
-            <div class="flex flex-wrap gap-1">
-              <Badge
-                v-for="pt in platforms"
-                :key="pt.base_url"
-                variant="outline"
-                class="cursor-pointer select-none"
-                @click="scopeUrlsText += (scopeUrlsText ? ', ' : '') + pt.base_url"
-              >{{ pt.name || pt.base_url }}</Badge>
+            <div class="col-span-2 space-y-1">
+              <Label>作用范围</Label>
+              <Select v-model="scopeModeProxy">
+                <SelectTrigger class="w-full"
+                  ><SelectValue placeholder="选择作用范围"
+                /></SelectTrigger>
+                <SelectContent position="popper" side="bottom" align="start" :side-offset="2">
+                  <SelectGroup>
+                    <SelectItem v-for="m in SCOPE_MODES" :key="m.value" :value="m.value">{{
+                      m.label
+                    }}</SelectItem>
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+            </div>
+            <div v-if="form.scope_mode === 'framework'" class="col-span-2 space-y-1">
+              <Label>框架（同框架平台共用此规则）</Label>
+              <Select v-model="form.provider_framework">
+                <SelectTrigger class="w-full"><SelectValue placeholder="选择框架" /></SelectTrigger>
+                <SelectContent position="popper" side="bottom" align="start" :side-offset="2">
+                  <SelectGroup>
+                    <SelectItem v-for="f in frameworkOptions" :key="f" :value="f">{{
+                      f
+                    }}</SelectItem>
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+              <p class="text-muted-foreground text-xs">
+                渠道编辑里标注了该框架的所有平台都会命中。
+              </p>
+            </div>
+            <div v-if="form.scope_mode === 'urls'" class="col-span-2 space-y-1">
+              <Label>平台地址（每行一个或逗号分隔）</Label>
+              <Textarea
+                v-model="scopeUrlsText"
+                :rows="3"
+                placeholder="https://api.a.com/v1, https://b.newapi.top/v1"
+              />
+              <div class="flex flex-wrap gap-1">
+                <Badge
+                  v-for="pt in platforms"
+                  :key="pt.base_url"
+                  variant="outline"
+                  class="cursor-pointer select-none"
+                  @click="scopeUrlsText += (scopeUrlsText ? ', ' : '') + pt.base_url"
+                  >{{ pt.name || pt.base_url }}</Badge
+                >
+              </div>
             </div>
           </div>
-        </div>
 
-        <!-- 匹配条件 -->
-        <div v-for="kind in (['any', 'all'] as const)" :key="kind" class="space-y-2">
-          <div class="flex items-center gap-2">
-            <span class="text-sm font-medium">{{ kind === 'any' ? '任一命中（any）' : '全部命中（all）' }}</span>
-            <Button variant="outline" size="sm" @click="addCondition(kind)">
-              <RiAddLine size="12" class="mr-1" /> 加条件
-            </Button>
+          <!-- 匹配条件 -->
+          <div v-for="kind in ['any', 'all'] as const" :key="kind" class="space-y-2">
+            <div class="flex items-center gap-2">
+              <span class="text-sm font-medium">{{
+                kind === 'any' ? '任一命中（any）' : '全部命中（all）'
+              }}</span>
+              <Button variant="outline" size="sm" @click="addCondition(kind)">
+                <RiAddLine size="12" class="mr-1" /> 加条件
+              </Button>
+            </div>
+            <!-- 条件行：小窗口换行堆叠，sm 起一行放下 -->
+            <div
+              v-for="(cond, i) in form.match[kind]"
+              :key="i"
+              class="flex flex-wrap items-center gap-2"
+            >
+              <Select
+                :model-value="cond.field"
+                @update:model-value="
+                  (v: string) => {
+                    cond.field = v
+                    onFieldChange(cond)
+                  }
+                "
+              >
+                <SelectTrigger class="w-28 sm:w-32"
+                  ><SelectValue placeholder="字段"
+                /></SelectTrigger>
+                <SelectContent position="popper" side="bottom" align="start" :side-offset="2">
+                  <SelectGroup>
+                    <SelectItem v-for="f in FIELDS" :key="f.value" :value="f.value">{{
+                      f.label
+                    }}</SelectItem>
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+              <Select v-model="cond.op">
+                <SelectTrigger class="w-24 sm:w-28"
+                  ><SelectValue placeholder="操作"
+                /></SelectTrigger>
+                <SelectContent position="popper" side="bottom" align="start" :side-offset="2">
+                  <SelectItem v-for="o in opsFor(cond.field)" :key="o.value" :value="o.value">{{
+                    o.label
+                  }}</SelectItem>
+                </SelectContent>
+              </Select>
+              <Input
+                v-model="cond.value"
+                class="min-w-[120px] flex-1"
+                :placeholder="cond.op === 'regex' ? '正则，如 额度.*用尽' : '匹配值'"
+              />
+              <Button
+                variant="ghost"
+                size="icon"
+                class="text-red-500 hover:text-red-600"
+                @click="removeCondition(kind, i)"
+              >
+                <RiDeleteBinLine size="15" />
+              </Button>
+            </div>
           </div>
-          <!-- 条件行：小窗口换行堆叠，sm 起一行放下 -->
-          <div v-for="(cond, i) in form.match[kind]" :key="i" class="flex flex-wrap items-center gap-2">
-            <Select :model-value="cond.field" @update:model-value="(v: string) => { cond.field = v; onFieldChange(cond) }">
-              <SelectTrigger class="w-28 sm:w-32"><SelectValue placeholder="字段" /></SelectTrigger>
-              <SelectContent position="popper" side="bottom" align="start" :side-offset="2">
-                <SelectGroup>
-                  <SelectItem v-for="f in FIELDS" :key="f.value" :value="f.value">{{ f.label }}</SelectItem>
-                </SelectGroup>
-              </SelectContent>
-            </Select>
-            <Select v-model="cond.op">
-              <SelectTrigger class="w-24 sm:w-28"><SelectValue placeholder="操作" /></SelectTrigger>
-              <SelectContent position="popper" side="bottom" align="start" :side-offset="2">
-                <SelectItem v-for="o in opsFor(cond.field)" :key="o.value" :value="o.value">{{ o.label }}</SelectItem>
-              </SelectContent>
-            </Select>
-            <Input
-              v-model="cond.value"
-              class="min-w-[120px] flex-1"
-              :placeholder="cond.op === 'regex' ? '正则，如 额度.*用尽' : '匹配值'"
-            />
-            <Button variant="ghost" size="icon" class="text-red-500 hover:text-red-600" @click="removeCondition(kind, i)">
-              <RiDeleteBinLine size="15" />
-            </Button>
-          </div>
-        </div>
 
-        <!-- 动作：小窗口单列，sm 起三列 -->
-        <div class="grid grid-cols-1 gap-3 sm:grid-cols-3">
-          <div class="space-y-1">
-            <Label>动作</Label>
-            <Select v-model="form.action.verdict">
-              <SelectTrigger class="w-full"><SelectValue placeholder="选择动作" /></SelectTrigger>
-              <SelectContent position="popper" side="bottom" align="start" :side-offset="2">
-                <SelectItem v-for="v in VERDICTS" :key="v.value" :value="v.value">{{ v.label }}</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-          <div class="space-y-1">
-            <Label>恢复策略</Label>
-            <Select v-model="recoverProxy">
-              <SelectTrigger class="w-full"><SelectValue placeholder="选择恢复策略" /></SelectTrigger>
-              <SelectContent position="popper" side="bottom" align="start" :side-offset="2">
-                <SelectItem v-for="r in RECOVERS" :key="r.value" :value="r.value">{{ r.label }}</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-          <!-- 冷却秒数只对「定时恢复」有意义：每日恢复用下面的恢复点，永久禁用不需要 -->
-          <div v-if="form.action.recover === 'fixed'" class="space-y-1">
-            <Label>冷却秒数</Label>
-            <Input v-model.number="form.action.cooldown_seconds" type="number" :disabled="!!form.action.cooldown_seconds_template" />
-          </div>
-          <!-- 捕获模板（通用）：正则条件里的捕获组 (…) 命中后可用 $1/$2… 引用。
+          <!-- 动作：小窗口单列，sm 起三列 -->
+          <div class="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <div class="space-y-1">
+              <Label>动作</Label>
+              <Select v-model="form.action.verdict">
+                <SelectTrigger class="w-full"><SelectValue placeholder="选择动作" /></SelectTrigger>
+                <SelectContent position="popper" side="bottom" align="start" :side-offset="2">
+                  <SelectItem v-for="v in VERDICTS" :key="v.value" :value="v.value">{{
+                    v.label
+                  }}</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div class="space-y-1">
+              <Label>恢复策略</Label>
+              <Select v-model="recoverProxy">
+                <SelectTrigger class="w-full"
+                  ><SelectValue placeholder="选择恢复策略"
+                /></SelectTrigger>
+                <SelectContent position="popper" side="bottom" align="start" :side-offset="2">
+                  <SelectItem v-for="r in RECOVERS" :key="r.value" :value="r.value">{{
+                    r.label
+                  }}</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <!-- 冷却秒数只对「定时恢复」有意义：每日恢复用下面的恢复点，永久禁用不需要 -->
+            <div v-if="form.action.recover === 'fixed'" class="space-y-1">
+              <Label>冷却秒数</Label>
+              <Input
+                v-model.number="form.action.cooldown_seconds"
+                type="number"
+                :disabled="!!form.action.cooldown_seconds_template"
+              />
+            </div>
+            <!-- 捕获模板（通用）：正则条件里的捕获组 (…) 命中后可用 $1/$2… 引用。
                cooldown_seconds_template 填数字模板（如 $1）→ 冷却秒数取捕获值；
                recover_at_template 填时间模板（如 $1）→ 冷却到捕获的时刻。
                提取失败时回退上面的静态冷却秒数。 -->
-          <template v-if="form.action.recover === 'fixed'">
-            <!-- TooltipProvider 必须就近包：Dialog 内容会被 teleport 到 body，
+            <template v-if="form.action.recover === 'fixed'">
+              <!-- TooltipProvider 必须就近包：Dialog 内容会被 teleport 到 body，
                  外层 DashboardLayout 的 provider 覆盖不到它。 -->
-            <TooltipProvider :delay-duration="100">
-            <div class="space-y-1">
-              <div class="flex items-center gap-1">
-                <Label>冷却秒数模板</Label>
-                <!-- 说明收进可 hover 的小图标：长文案不再占版面 -->
-                <Tooltip>
-                  <TooltipTrigger as-child>
-                    <button
-                      type="button"
-                      class="text-muted-foreground hover:text-foreground"
-                      aria-label="冷却秒数模板说明"
-                    >
-                      <RiInformationLine size="13" />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent side="top" class="max-w-xs whitespace-normal break-words text-left">
-                    正则条件里用捕获组 (…) 抓值，这里用 $1/$2 引用（$0 = 整个匹配）。
-                    例如正则抓到 300，填 $1 → 冷却 300 秒。留空则用左边的固定冷却秒数。
-                  </TooltipContent>
-                </Tooltip>
-              </div>
+              <TooltipProvider :delay-duration="100">
+                <div class="space-y-1">
+                  <div class="flex items-center gap-1">
+                    <Label>冷却秒数模板</Label>
+                    <!-- 说明收进可 hover 的小图标：长文案不再占版面 -->
+                    <Tooltip>
+                      <TooltipTrigger as-child>
+                        <button
+                          type="button"
+                          class="text-muted-foreground hover:text-foreground"
+                          aria-label="冷却秒数模板说明"
+                        >
+                          <RiInformationLine size="13" />
+                        </button>
+                      </TooltipTrigger>
+                      <TooltipContent
+                        side="top"
+                        class="max-w-xs whitespace-normal break-words text-left"
+                      >
+                        正则条件里用捕获组 (…) 抓值，这里用 $1/$2 引用（$0 = 整个匹配）。
+                        例如正则抓到 300，填 $1 → 冷却 300 秒。留空则用左边的固定冷却秒数。
+                      </TooltipContent>
+                    </Tooltip>
+                  </div>
+                  <Input
+                    v-model="cooldownTemplateText"
+                    placeholder="如 $1（引用正则捕获组）；留空用上面的固定秒数"
+                  />
+                </div>
+                <div class="space-y-1">
+                  <div class="flex items-center gap-1">
+                    <Label>恢复时刻模板</Label>
+                    <Tooltip>
+                      <TooltipTrigger as-child>
+                        <button
+                          type="button"
+                          class="text-muted-foreground hover:text-foreground"
+                          aria-label="恢复时刻模板说明"
+                        >
+                          <RiInformationLine size="13" />
+                        </button>
+                      </TooltipTrigger>
+                      <TooltipContent
+                        side="top"
+                        class="max-w-xs whitespace-normal break-words text-left"
+                      >
+                        引用正则捕获的时间文本（如 $1 = 2026-09-23
+                        15:48:27），系统会解析成恢复时刻。
+                        填了它时优先生效，覆盖上面的冷却秒数；留空则按固定秒数算。
+                      </TooltipContent>
+                    </Tooltip>
+                  </div>
+                  <Input
+                    v-model="recoverAtTemplateText"
+                    placeholder="如 $1（正则捕获的「2026-09-23 15:48:27」→ 冷却到该时刻）"
+                  />
+                </div>
+              </TooltipProvider>
+            </template>
+            <div v-if="form.action.recover === 'daily'" class="space-y-1">
+              <Label>每日恢复点（小时）</Label>
               <Input
-                v-model="cooldownTemplateText"
-                placeholder="如 $1（引用正则捕获组）；留空用上面的固定秒数"
+                v-model="dailyResetHourProxy"
+                type="number"
+                :min="0"
+                :max="23"
+                placeholder="0-23，留空为 12"
               />
             </div>
-            <div class="space-y-1">
-              <div class="flex items-center gap-1">
-                <Label>恢复时刻模板</Label>
-                <Tooltip>
-                  <TooltipTrigger as-child>
-                    <button
-                      type="button"
-                      class="text-muted-foreground hover:text-foreground"
-                      aria-label="恢复时刻模板说明"
-                    >
-                      <RiInformationLine size="13" />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent side="top" class="max-w-xs whitespace-normal break-words text-left">
-                    引用正则捕获的时间文本（如 $1 = 2026-09-23 15:48:27），系统会解析成恢复时刻。
-                    填了它时优先生效，覆盖上面的冷却秒数；留空则按固定秒数算。
-                  </TooltipContent>
-                </Tooltip>
-              </div>
-              <Input
-                v-model="recoverAtTemplateText"
-                placeholder="如 $1（正则捕获的「2026-09-23 15:48:27」→ 冷却到该时刻）"
-              />
-            </div>
-            </TooltipProvider>
-          </template>
-          <div v-if="form.action.recover === 'daily'" class="space-y-1">
-            <Label>每日恢复点（小时）</Label>
-            <Input v-model="dailyResetHourProxy" type="number" :min="0" :max="23" placeholder="0-23，留空为 12" />
           </div>
-        </div>
 
-        <!-- 样本校验 -->
-        <div class="rounded-lg border p-3">
-          <div class="mb-2 flex items-center gap-1.5 text-sm font-medium">
-            <RiFlaskLine size="14" /> 样本校验（dry-run）
-          </div>
-          <!-- 两行布局：第一行错误码 + 测试按钮（按钮固定右侧），
+          <!-- 样本校验 -->
+          <div class="rounded-lg border p-3">
+            <div class="mb-2 flex items-center gap-1.5 text-sm font-medium">
+              <RiFlaskLine size="14" /> 样本校验（dry-run）
+            </div>
+            <!-- 两行布局：第一行错误码 + 测试按钮（按钮固定右侧），
                第二行多行文本框（错误文案常是 JSON/多行，单行输入框没法看）。
                文本框默认 3 行、支持纵向拖拽 resize。 -->
-          <div class="space-y-2">
-            <div class="flex items-center gap-2">
-              <Input v-model.number="verifySample.status_code" type="number" class="w-20 sm:w-24" placeholder="状态码" />
-              <Input v-model="verifySample.body_code" class="w-24 sm:w-28" placeholder="业务码" />
-              <Button variant="secondary" :disabled="verifying" class="ml-auto shrink-0" @click="runVerify">
-                <RiLoader4Line v-if="verifying" class="animate-spin mr-1" size="15" />
-                <RiFlaskLine v-else size="15" class="mr-1" />
-                测试
-              </Button>
+            <div class="space-y-2">
+              <div class="flex items-center gap-2">
+                <Input
+                  v-model.number="verifySample.status_code"
+                  type="number"
+                  class="w-20 sm:w-24"
+                  placeholder="状态码"
+                />
+                <Input v-model="verifySample.body_code" class="w-24 sm:w-28" placeholder="业务码" />
+                <Button
+                  variant="secondary"
+                  :disabled="verifying"
+                  class="ml-auto shrink-0"
+                  @click="runVerify"
+                >
+                  <RiLoader4Line v-if="verifying" class="animate-spin mr-1" size="15" />
+                  <RiFlaskLine v-else size="15" class="mr-1" />
+                  测试
+                </Button>
+              </div>
+              <Textarea
+                v-model="verifySample.message"
+                :rows="3"
+                class="min-h-[72px] resize-y font-mono text-xs"
+                placeholder="错误文案（支持多行 / 直接粘贴上游 JSON）"
+              />
             </div>
-            <Textarea
-              v-model="verifySample.message"
-              :rows="3"
-              class="min-h-[72px] resize-y font-mono text-xs"
-              placeholder="错误文案（支持多行 / 直接粘贴上游 JSON）"
-            />
-          </div>
-          <div v-if="verifyHit !== null" class="mt-2 space-y-1">
-            <p class="text-sm" :class="verifyHit ? 'text-green-600' : 'text-red-500'">
-              {{ verifyHit ? '✓ 命中该规则' : '✗ 未命中' }}
-            </p>
-            <!-- 命中后的动作参数：恢复时间（含文案提取出的时刻）/ 冷却秒数。
+            <div v-if="verifyHit !== null" class="mt-2 space-y-1">
+              <p class="text-sm" :class="verifyHit ? 'text-green-600' : 'text-red-500'">
+                {{ verifyHit ? '✓ 命中该规则' : '✗ 未命中' }}
+              </p>
+              <!-- 命中后的动作参数：恢复时间（含文案提取出的时刻）/ 冷却秒数。
                  用户要求：能看到提取的时间确实用到了动作里。 -->
-            <div
-              v-if="verifyHit && verifyDetail"
-              class="flex flex-wrap items-center gap-x-3 gap-y-0.5 rounded border border-border/60 bg-muted/40 px-2 py-1 text-[11px]"
-            >
-              <span class="text-muted-foreground"
-                >动作：<span class="text-foreground">{{ VERDICT_LABELS[verifyDetail.verdict ?? ''] ?? verifyDetail.verdict }}</span></span
+              <div
+                v-if="verifyHit && verifyDetail"
+                class="flex flex-wrap items-center gap-x-3 gap-y-0.5 rounded border border-border/60 bg-muted/40 px-2 py-1 text-[11px]"
               >
-              <span v-if="verifyDetail.action_params" class="text-amber-600 dark:text-amber-300">
-                {{ verifyDetail.action_params }}
-              </span>
+                <span class="text-muted-foreground"
+                  >动作：<span class="text-foreground">{{
+                    VERDICT_LABELS[verifyDetail.verdict ?? ''] ?? verifyDetail.verdict
+                  }}</span></span
+                >
+                <span v-if="verifyDetail.action_params" class="text-amber-600 dark:text-amber-300">
+                  {{ verifyDetail.action_params }}
+                </span>
+              </div>
             </div>
           </div>
-        </div>
         </div>
 
         <DialogFooter>

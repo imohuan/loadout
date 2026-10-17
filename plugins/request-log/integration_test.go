@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -49,6 +50,9 @@ func TestIntegrationCrossPluginLink(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc := NewService(st, slog.New(slog.DiscardHandler), reqDB, loadout)
+	if err := svc.SetBlobDir(filepath.Join(t.TempDir(), "request-logs")); err != nil {
+		t.Fatal(err)
+	}
 
 	ctx := context.Background()
 	// 1) route-log.Start 写 running 占位
@@ -188,6 +192,9 @@ func TestIntegrationSubRequestFailureRecorded(t *testing.T) {
 	}
 	defer reqDB.Close()
 	svc := NewService(st, slog.New(slog.DiscardHandler), reqDB, nil)
+	if err := svc.SetBlobDir(filepath.Join(t.TempDir(), "request-logs")); err != nil {
+		t.Fatal(err)
+	}
 	svc.SetRepository(nil)
 	svc.subscribe(ctxBus)
 

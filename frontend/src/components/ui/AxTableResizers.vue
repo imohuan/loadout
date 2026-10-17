@@ -15,7 +15,7 @@
  */
 import { ref } from 'vue'
 
-defineProps<{
+const props = defineProps<{
   /** 每条列边界的水平位置（px，相对表格内容坐标系）。 */
   dividers: number[]
   /** 覆盖层高度 = 表头高度。 */
@@ -36,6 +36,39 @@ const emit = defineEmits<{
 
 /** hover 状态留在本组件内部：它是纯视觉反馈，不该影响外层。 */
 const hovered = ref<number | null>(null)
+
+/**
+ * 方案 B：跟随鼠标的交互条。
+ * 鼠标在表头内任意位置移动时，指示条始终出现在「离鼠标最近的那条列边界」上
+ * （不限制距离），鼠标左右移动时它在边界间跳转；一次只显示一条。
+ * 拖拽中的那条强制常亮。
+ */
+const nearest = ref<number | null>(null)
+
+function onMove(e: PointerEvent) {
+  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+  const x = e.clientX - rect.left
+  let best = -1
+  let bestDist = Infinity
+  for (let i = 0; i < props.dividers.length; i++) {
+    const d = Math.abs(props.dividers[i] - x)
+    if (d < bestDist) {
+      bestDist = d
+      best = i
+    }
+  }
+  nearest.value = best
+}
+
+function onLeave() {
+  nearest.value = null
+  hovered.value = null
+}
+
+/** 某条边界当前是否应显示（被鼠标选中 或 正在拖拽）。 */
+function isActive(i: number) {
+  return nearest.value === i || props.draggingIndex === i
+}
 </script>
 
 <template>
@@ -47,6 +80,8 @@ const hovered = ref<number | null>(null)
       transform: `translateX(${-scrollLeft}px)`,
     }"
     data-ax-overlay
+    @pointermove="onMove"
+    @pointerleave="onLeave"
   >
     <div
       v-for="(x, i) in dividers"
@@ -61,11 +96,10 @@ const hovered = ref<number | null>(null)
       @pointerdown="(e) => emit('dragStart', i, e)"
       @dblclick="emit('reset', i)"
       @keydown="(e) => emit('dragKey', i, e)"
-      @mouseenter="hovered = i"
-      @mouseleave="hovered = null"
     >
-      <!-- 列边界指示线：平时透明，hover 淡淡浮现，拖拽时高亮成主色。 -->
-      <span class="axt-line" />
+      <!-- 交互条：仅当鼠标靠近该边界（±6px）或正在拖拽时显示。 -->
+      <span class="axt-line" :class="{ 'is-active': isActive(i) }" />
     </div>
   </div>
 </template>
+

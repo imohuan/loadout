@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { RiLogoutBoxRLine } from '@remixicon/vue'
 import { useAuthStore } from '@/stores/auth'
+import ThemeToggle from '@/components/ThemeToggle.vue'
 import AppSidebar from './AppSidebar.vue'
 
 const route = useRoute()
@@ -44,16 +45,19 @@ async function logout() {
             ></Breadcrumb
           >
         </div>
-        <TooltipProvider>
-          <Tooltip>
-            <TooltipTrigger as-child>
-              <Button variant="ghost" size="icon" aria-label="登出" @click="logout"
-                ><RiLogoutBoxRLine size="18"
-              /></Button>
-            </TooltipTrigger>
-            <TooltipContent>登出</TooltipContent>
-          </Tooltip>
-        </TooltipProvider>
+        <div class="flex shrink-0 items-center gap-1">
+          <ThemeToggle />
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger as-child>
+                <Button variant="ghost" size="icon" aria-label="登出" @click="logout"
+                  ><RiLogoutBoxRLine size="18"
+                /></Button>
+              </TooltipTrigger>
+              <TooltipContent>登出</TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        </div>
       </header>
       <main
         class="mx-auto flex min-h-0 w-full max-w-screen-2xl flex-1 flex-col overflow-y-auto p-4 sm:p-6"

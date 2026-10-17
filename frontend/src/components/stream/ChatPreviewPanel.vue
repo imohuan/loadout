@@ -129,7 +129,7 @@ const requestMessages = computed<NormalizedMessage[]>(() => {
             id: `req-tool-${tcId || i}-${out.length}`,
             toolId: tcId || undefined,
             toolName: typeof fn?.name === 'string' ? fn.name : 'unknown',
-            toolInput: argsParsed !== undefined ? argsParsed : (argsRaw || null),
+            toolInput: argsParsed !== undefined ? argsParsed : argsRaw || null,
             toolResult: null,
             status: 'done',
           }
@@ -157,14 +157,12 @@ const requestMessages = computed<NormalizedMessage[]>(() => {
           role: 'assistant',
           id: `req-tool-orphan-${i}-${tcId}`,
           toolId: tcId || undefined,
-          toolName:
-            typeof m.name === 'string'
-              ? m.name
-              : tcId
-                ? `orphan:${tcId}`
-                : 'unknown_tool',
+          toolName: typeof m.name === 'string' ? m.name : tcId ? `orphan:${tcId}` : 'unknown_tool',
           toolInput: null,
-          toolResult: { content: contentStr, isError: typeof m.status === 'string' && m.status === 'error' },
+          toolResult: {
+            content: contentStr,
+            isError: typeof m.status === 'string' && m.status === 'error',
+          },
           status: 'done',
         })
       }
@@ -239,7 +237,12 @@ const responseMessages = computed<NormalizedMessage[]>(() => {
   const p = parsed.value
   const out: NormalizedMessage[] = []
   if (p.reasoningAccum) {
-    out.push({ kind: 'thinking', role: 'assistant', content: p.reasoningAccum, id: 'resp-thinking' })
+    out.push({
+      kind: 'thinking',
+      role: 'assistant',
+      content: p.reasoningAccum,
+      id: 'resp-thinking',
+    })
   }
   if (p.contentAccum) {
     out.push({
@@ -291,17 +294,29 @@ const stats = computed(() => {
 // 也进面板展示统计行与时间轴）；两者皆无才走 v-else 空态。
 const showPanel = computed(() => {
   const p = parsed.value
-  const hasResponse = p.chunks.length > 0 || !!p.contentAccum || !!p.reasoningAccum || p.toolCalls.length > 0
+  const hasResponse =
+    p.chunks.length > 0 || !!p.contentAccum || !!p.reasoningAccum || p.toolCalls.length > 0
   return requestMessages.value.length > 0 || hasResponse
 })
 
-function formatUsage(u: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number; prompt_tokens_details?: { cached_tokens?: number }; completion_tokens_details?: { reasoning_tokens?: number } } | undefined): string {
+function formatUsage(
+  u:
+    | {
+        prompt_tokens?: number
+        completion_tokens?: number
+        total_tokens?: number
+        prompt_tokens_details?: { cached_tokens?: number }
+        completion_tokens_details?: { reasoning_tokens?: number }
+      }
+    | undefined,
+): string {
   if (!u) return '—'
   const parts: string[] = []
   if (typeof u.prompt_tokens === 'number') parts.push(`prompt=${u.prompt_tokens}`)
   if (typeof u.completion_tokens === 'number') parts.push(`completion=${u.completion_tokens}`)
   if (typeof u.total_tokens === 'number') parts.push(`total=${u.total_tokens}`)
-  if (u.prompt_tokens_details?.cached_tokens != null) parts.push(`cached=${u.prompt_tokens_details.cached_tokens}`)
+  if (u.prompt_tokens_details?.cached_tokens != null)
+    parts.push(`cached=${u.prompt_tokens_details.cached_tokens}`)
   if (u.completion_tokens_details?.reasoning_tokens != null)
     parts.push(`reasoning_tokens=${u.completion_tokens_details.reasoning_tokens}`)
   return parts.length ? parts.join(' · ') : '—'
@@ -352,9 +367,10 @@ function formatUsage(u: { prompt_tokens?: number; completion_tokens?: number; to
       </span>
       <span class="inline-flex items-center gap-1.5">
         <span class="text-muted-foreground">协议</span>
-        <span class="rounded-sm bg-zinc-500/15 px-1.5 py-0.5 font-mono text-[10px] text-zinc-600 dark:text-zinc-300">{{
-          stats.format
-        }}</span>
+        <span
+          class="rounded-sm bg-zinc-500/15 px-1.5 py-0.5 font-mono text-[10px] text-zinc-600 dark:text-zinc-300"
+          >{{ stats.format }}</span
+        >
       </span>
       <span class="inline-flex items-center gap-1.5">
         <span class="text-muted-foreground">状态码</span>
@@ -368,13 +384,20 @@ function formatUsage(u: { prompt_tokens?: number; completion_tokens?: number; to
 
     <!-- 请求区：请求 messages -->
     <div class="overflow-hidden">
-      <ChatView dense :messages="requestMessages" :empty-text="emptyText ?? '请求中没有可渲染的 messages 内容。'" />
+      <ChatView
+        dense
+        :messages="requestMessages"
+        :empty-text="emptyText ?? '请求中没有可渲染的 messages 内容。'"
+      />
     </div>
 
     <!-- 响应区：响应结果，独立背景 + 顶部响应标识 -->
     <div v-if="responseMessages.length" class="overflow-hidden rounded-md bg-muted/40">
       <div class="flex items-center gap-2 border-b border-border/60 px-6 py-1.5 text-xs">
-        <span class="rounded-sm bg-emerald-500/15 px-1.5 py-0.5 font-medium text-emerald-700 dark:text-emerald-300">响应</span>
+        <span
+          class="rounded-sm bg-emerald-500/15 px-1.5 py-0.5 font-medium text-emerald-700 dark:text-emerald-300"
+          >响应</span
+        >
         <span class="text-muted-foreground">模型回复</span>
       </div>
       <ChatView dense :messages="responseMessages" />
@@ -393,9 +416,6 @@ function formatUsage(u: { prompt_tokens?: number; completion_tokens?: number; to
     v-else
     class="rounded border border-dashed border-border py-6 text-center text-sm text-muted-foreground"
   >
-    {{
-      emptyText ??
-      '当前日志缺少可渲染的请求消息与响应内容，未生成对话预览。'
-    }}
+    {{ emptyText ?? '当前日志缺少可渲染的请求消息与响应内容，未生成对话预览。' }}
   </div>
 </template>

@@ -100,9 +100,7 @@ function refreshCards(channelIds?: string[]) {
   const targets = channelIds
     ? channelIds.map((id) => cardRefs.get(id)).filter(Boolean)
     : [...cardRefs.values()]
-  return Promise.all(
-    (targets as { refresh: () => Promise<void> }[]).map((c) => c.refresh()),
-  )
+  return Promise.all((targets as { refresh: () => Promise<void> }[]).map((c) => c.refresh()))
 }
 
 // ===== 展示辅助 =====
@@ -365,8 +363,8 @@ async function submit() {
     const existed = configs.value.some((item) => item.config.channel_id === form.channel_id)
     const payload = existed
       ? configs.value.map((item) =>
-        item.config.channel_id === form.channel_id ? draft : item.config,
-      )
+          item.config.channel_id === form.channel_id ? draft : item.config,
+        )
       : [...configs.value.map((item) => item.config), draft]
     await quota.save(payload)
     dialogOpen.value = false
@@ -410,19 +408,23 @@ defineExpose({
       <CardTitle class="text-base">火山引擎免费额度</CardTitle>
       <CardDescription>
         为方舟渠道 Key 配置 AK/SK（火山引擎控制台访问授权），自动查询免费模型额度；每次请求按
-        total_tokens 本地扣减余额（不依赖账单接口，账单 429
-        也能拦截）；额度耗尽后自动禁用该模型（每 15 分钟检测恢复，错误信息「模型免费额度用完」）。
+        total_tokens 本地扣减余额（不依赖账单接口，账单 429 也能拦截）；额度耗尽后自动禁用该模型（每
+        15 分钟检测恢复，错误信息「模型免费额度用完」）。
       </CardDescription>
     </CardHeader>
     <CardContent class="space-y-3">
       <div class="flex flex-wrap items-center justify-between gap-2">
         <div class="text-xs text-muted-foreground">
-          共 {{ configs.length }} 个 Key 配置<span v-if="loaded">，额度每日自动恢复（8~11:30 不等）</span>
+          共 {{ configs.length }} 个 Key 配置<span v-if="loaded"
+            >，额度每日自动恢复（8~11:30 不等）</span
+          >
         </div>
         <div class="flex items-center gap-2">
-          <Tabs :model-value="pkgView"
+          <Tabs
+            :model-value="pkgView"
             class="[&_[data-slot=tabs-list]]:h-8 [&_[data-slot=tabs-trigger]]:px-3 [&_[data-slot=tabs-trigger]]:text-xs"
-            @update:model-value="setPkgView">
+            @update:model-value="setPkgView"
+          >
             <TabsList>
               <TabsTrigger value="card">卡片</TabsTrigger>
               <TabsTrigger value="table">表格</TabsTrigger>
@@ -445,16 +447,19 @@ defineExpose({
         </div>
       </div>
 
-
-
       <!-- 表格视图：每个 Key 的折叠明细 -->
       <div v-if="configs.length" class="divide-y rounded-md border">
         <div v-for="item in configs" :key="item.config.channel_id">
           <!-- 折叠行 -->
           <div class="flex items-center gap-1 px-2 py-2">
-            <Button variant="ghost" size="icon" class="size-8 shrink-0"
+            <Button
+              variant="ghost"
+              size="icon"
+              class="size-8 shrink-0"
               :aria-label="isExpanded(item.config.channel_id) ? '收起' : '展开'"
-              :aria-expanded="isExpanded(item.config.channel_id)" @click="toggle(item.config.channel_id)">
+              :aria-expanded="isExpanded(item.config.channel_id)"
+              @click="toggle(item.config.channel_id)"
+            >
               <RiArrowDownSLine v-if="isExpanded(item.config.channel_id)" size="16" />
               <RiArrowRightSLine v-else size="16" />
             </Button>
@@ -463,7 +468,8 @@ defineExpose({
               <div class="truncate font-mono text-xs text-muted-foreground">
                 {{ item.config.base_url
                 }}<span v-if="item.config.access_key">
-                  · AK {{ item.config.access_key.slice(0, 8) }}…</span>
+                  · AK {{ item.config.access_key.slice(0, 8) }}…</span
+                >
               </div>
             </div>
             <div class="flex shrink-0 items-center gap-2">
@@ -475,15 +481,32 @@ defineExpose({
                 {{ statusBadge(item.config).label }}
               </Badge>
               <div class="flex items-center gap-0.5">
-                <Button variant="ghost" size="icon" class="size-8" aria-label="刷新此 Key 额度" :disabled="refreshingRemote"
-                  @click="refreshOne(item.config.channel_id)">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  class="size-8"
+                  aria-label="刷新此 Key 额度"
+                  :disabled="refreshingRemote"
+                  @click="refreshOne(item.config.channel_id)"
+                >
                   <RiRefreshLine size="16" />
                 </Button>
-                <Button variant="ghost" size="icon" class="size-8" aria-label="编辑配置" @click="openEdit(item)">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  class="size-8"
+                  aria-label="编辑配置"
+                  @click="openEdit(item)"
+                >
                   <RiEditLine size="16" />
                 </Button>
-                <Button variant="ghost" size="icon" class="size-8" aria-label="删除配置"
-                  @click="remove(item.config.channel_id)">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  class="size-8"
+                  aria-label="删除配置"
+                  @click="remove(item.config.channel_id)"
+                >
                   <RiDeleteBinLine size="16" />
                 </Button>
               </div>
@@ -491,7 +514,10 @@ defineExpose({
           </div>
 
           <!-- 展开行：资源包逐条明细（v14，同 main.go 输出粒度） -->
-          <div v-if="isExpanded(item.config.channel_id)" class="space-y-3 border-t bg-muted/30 px-4 py-4">
+          <div
+            v-if="isExpanded(item.config.channel_id)"
+            class="space-y-3 border-t bg-muted/30 px-4 py-4"
+          >
             <!-- 卡片：该 Key 模型聚合（关注/其他分组） -->
             <!-- 卡片（常驻，切换 tab 不重复请求） -->
             <div v-show="pkgView === 'card'">
@@ -502,86 +528,127 @@ defineExpose({
             </div>
             <!-- 表格（常驻） -->
             <div v-show="pkgView === 'table'">
-              <div v-if="item.packages?.length" class="overflow-hidden rounded-md border bg-background/60">
-              <div class="flex items-center justify-between gap-2 border-b bg-muted/50 px-3 py-1.5">
-                <span class="text-xs font-medium text-muted-foreground">
-                  资源包（{{ filteredPackages(item).length }} / {{ item.packages.length }}）
-                </span>
-                <Input :model-value="getPkgFilter(item.config.channel_id)" placeholder="过滤：模型名 / code / 关键字…"
-                  class="h-7 w-56 text-xs"
-                  @update:model-value="(v: string) => setPkgFilter(item.config.channel_id, v)" />
-              </div>
-             <AxTable>
-             <Table>
-                <TableHeader>
-                  <TableRow class="bg-muted/30 hover:bg-muted/30">
-                    <TableHead>资源包</TableHead>
-                    <TableHead class="text-right">总额</TableHead>
-                    <TableHead class="w-[30%]">剩余（本地）</TableHead>
-                    <TableHead class="text-right">已用</TableHead>
-                    <TableHead>状态</TableHead>
-                    <TableHead>到期</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  <TableRow v-for="p in filteredPackages(item)" :key="p.instance_no" class="hover:bg-muted/30">
-                    <TableCell class="py-1.5 align-top">
-                      <div class="truncate font-medium" :title="pkgName(p)">{{ pkgName(p) }}</div>
-                      <div class="truncate font-mono text-[10px] text-muted-foreground" :title="p.configuration_code">
-                        {{ p.configuration_code || p.product || '' }}
-                      </div>
-                    </TableCell>
-                    <TableCell class="py-1.5 text-right tabular-nums">{{
-                      formatAmount(p.total_amount)
-                      }}</TableCell>
-                    <TableCell class="py-1.5">
-                      <div class="flex items-center gap-2">
-                        <Progress :model-value="pkgProgress(p)" :class="p.local_remaining <= 0 && p.initial_total > 0
-                            ? 'bg-destructive/20'
-                            : p.total_amount > 0 && p.available_amount / p.total_amount < 0.2
-                              ? 'bg-amber-500/20'
-                              : ''
-                          " class="h-1.5 flex-1" />
-                        <!-- 本地余额精确显示（千分位），否则 formatAmount(1999811)="2M" 看不到扣减差异 -->
-                        <span class="w-32 shrink-0 text-right tabular-nums" :class="p.local_remaining <= 0 && p.initial_total > 0 ? 'text-destructive' : ''
-                          " :title="`本地剩余 ${p.local_remaining} / 初始 ${p.initial_total}`">
-                          {{ p.local_remaining.toLocaleString()
-                          }}<span v-if="p.initial_total > 0" class="text-muted-foreground">/{{
-                            p.initial_total.toLocaleString() }}</span>
-                        </span>
-                      </div>
-                    </TableCell>
-                    <!-- 已用：本地口径（initial_total - local_remaining），不是 billing used_amount
+              <div
+                v-if="item.packages?.length"
+                class="overflow-hidden rounded-md border bg-background/60"
+              >
+                <div
+                  class="flex items-center justify-between gap-2 border-b bg-muted/50 px-3 py-1.5"
+                >
+                  <span class="text-xs font-medium text-muted-foreground">
+                    资源包（{{ filteredPackages(item).length }} / {{ item.packages.length }}）
+                  </span>
+                  <Input
+                    :model-value="getPkgFilter(item.config.channel_id)"
+                    placeholder="过滤：模型名 / code / 关键字…"
+                    class="h-7 w-56 text-xs"
+                    @update:model-value="(v: string) => setPkgFilter(item.config.channel_id, v)"
+                  />
+                </div>
+                <AxTable>
+                  <Table>
+                    <TableHeader>
+                      <TableRow class="bg-muted/30 hover:bg-muted/30">
+                        <TableHead>资源包</TableHead>
+                        <TableHead class="text-right">总额</TableHead>
+                        <TableHead class="w-[30%]">剩余（本地）</TableHead>
+                        <TableHead class="text-right">已用</TableHead>
+                        <TableHead>状态</TableHead>
+                        <TableHead>到期</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      <TableRow
+                        v-for="p in filteredPackages(item)"
+                        :key="p.instance_no"
+                        class="hover:bg-muted/30"
+                      >
+                        <TableCell class="py-1.5 align-top">
+                          <div class="truncate font-medium" :title="pkgName(p)">
+                            {{ pkgName(p) }}
+                          </div>
+                          <div
+                            class="truncate font-mono text-[10px] text-muted-foreground"
+                            :title="p.configuration_code"
+                          >
+                            {{ p.configuration_code || p.product || '' }}
+                          </div>
+                        </TableCell>
+                        <TableCell class="py-1.5 text-right tabular-nums">{{
+                          formatAmount(p.total_amount)
+                        }}</TableCell>
+                        <TableCell class="py-1.5">
+                          <div class="flex items-center gap-2">
+                            <Progress
+                              :model-value="pkgProgress(p)"
+                              :class="
+                                p.local_remaining <= 0 && p.initial_total > 0
+                                  ? 'bg-destructive/20'
+                                  : p.total_amount > 0 && p.available_amount / p.total_amount < 0.2
+                                    ? 'bg-amber-500/20'
+                                    : ''
+                              "
+                              class="h-1.5 flex-1"
+                            />
+                            <!-- 本地余额精确显示（千分位），否则 formatAmount(1999811)="2M" 看不到扣减差异 -->
+                            <span
+                              class="w-32 shrink-0 text-right tabular-nums"
+                              :class="
+                                p.local_remaining <= 0 && p.initial_total > 0
+                                  ? 'text-destructive'
+                                  : ''
+                              "
+                              :title="`本地剩余 ${p.local_remaining} / 初始 ${p.initial_total}`"
+                            >
+                              {{ p.local_remaining.toLocaleString()
+                              }}<span v-if="p.initial_total > 0" class="text-muted-foreground"
+                                >/{{ p.initial_total.toLocaleString() }}</span
+                              >
+                            </span>
+                          </div>
+                        </TableCell>
+                        <!-- 已用：本地口径（initial_total - local_remaining），不是 billing used_amount
                          （billing 是 total-available，本地扣的不会算进去）。 -->
-                    <TableCell class="py-1.5 text-right tabular-nums text-muted-foreground">
-                      {{
-                        (p.initial_total > 0
-                          ? p.initial_total - p.local_remaining
-                          : p.used_amount
-                        ).toLocaleString()
-                      }}
-                    </TableCell>
-                    <TableCell class="py-1.5">
-                      <Badge :variant="pkgBadge(p).variant">{{ pkgBadge(p).label }}</Badge>
-                    </TableCell>
-                    <TableCell class="py-1.5 text-muted-foreground">{{ pkgExpiry(p) }}</TableCell>
-                  </TableRow>
-                </TableBody>
-              </Table>
-              </AxTable>
-              <div v-if="filteredPackages(item).length === 0"
-                class="px-3 py-4 text-center text-xs text-muted-foreground">
-                没有匹配「{{ getPkgFilter(item.config.channel_id) }}」的资源包
+                        <TableCell class="py-1.5 text-right tabular-nums text-muted-foreground">
+                          {{
+                            (p.initial_total > 0
+                              ? p.initial_total - p.local_remaining
+                              : p.used_amount
+                            ).toLocaleString()
+                          }}
+                        </TableCell>
+                        <TableCell class="py-1.5">
+                          <Badge :variant="pkgBadge(p).variant">{{ pkgBadge(p).label }}</Badge>
+                        </TableCell>
+                        <TableCell class="py-1.5 text-muted-foreground">{{
+                          pkgExpiry(p)
+                        }}</TableCell>
+                      </TableRow>
+                    </TableBody>
+                  </Table>
+                </AxTable>
+                <div
+                  v-if="filteredPackages(item).length === 0"
+                  class="px-3 py-4 text-center text-xs text-muted-foreground"
+                >
+                  没有匹配「{{ getPkgFilter(item.config.channel_id) }}」的资源包
+                </div>
               </div>
-              </div>
-              <EmptyState v-else title="暂无额度数据"
-              description="点击右侧刷新按钮获取最新额度（账单有延迟，后台每 15 分钟自动刷新）。" />
+              <EmptyState
+                v-else
+                title="暂无额度数据"
+                description="点击右侧刷新按钮获取最新额度（账单有延迟，后台每 15 分钟自动刷新）。"
+              />
+            </div>
           </div>
         </div>
       </div>
-      </div>
 
-      <EmptyState v-else title="还没有配置" description="添加一个方舟渠道 Key 的 AK/SK，即可查看各免费模型的剩余额度。" />
+      <EmptyState
+        v-else
+        title="还没有配置"
+        description="添加一个方舟渠道 Key 的 AK/SK，即可查看各免费模型的剩余额度。"
+      />
     </CardContent>
   </Card>
 
@@ -617,8 +684,13 @@ defineExpose({
         </div>
         <div class="space-y-1">
           <Label for="vq-secret-key">Secret Key（SK）</Label>
-          <Input id="vq-secret-key" v-model="form.secret_key" type="password"
-            :placeholder="editing ? '留空保持不变' : 'SK 仅保存时传输，界面不回显'" :required="!editing" />
+          <Input
+            id="vq-secret-key"
+            v-model="form.secret_key"
+            type="password"
+            :placeholder="editing ? '留空保持不变' : 'SK 仅保存时传输，界面不回显'"
+            :required="!editing"
+          />
         </div>
         <div class="flex items-center gap-2">
           <Switch id="vq-enabled" v-model="form.enabled" />
@@ -627,7 +699,9 @@ defineExpose({
         <div class="flex items-center gap-2">
           <Switch id="vq-force-block" v-model="form.force_block" />
           <Label for="vq-force-block">强制关停（忽略手动恢复）</Label>
-          <span class="text-xs text-muted-foreground">开启后，即使模型状态被手动恢复，请求时仍按额度表拦截</span>
+          <span class="text-xs text-muted-foreground"
+            >开启后，即使模型状态被手动恢复，请求时仍按额度表拦截</span
+          >
         </div>
         <DialogFooter>
           <Button type="submit" :disabled="saving">
@@ -679,7 +753,11 @@ defineExpose({
         </div>
       </div>
       <DialogFooter>
-        <Button type="button" :disabled="remoteChecking || refreshingRemote" @click="confirmRemoteRefresh">
+        <Button
+          type="button"
+          :disabled="remoteChecking || refreshingRemote"
+          @click="confirmRemoteRefresh"
+        >
           <RiLoader4Line v-if="refreshingRemote" class="animate-spin" size="16" />
           确认刷新
         </Button>
@@ -708,7 +786,9 @@ defineExpose({
   width: 240px !important;
   /* 拖拽增强 */
   transform: rotate(2deg) scale(1.03) !important;
-  box-shadow: 0 20px 25px -5px rgb(0 0 0 / 0.18), 0 8px 10px -6px rgb(0 0 0 / 0.1) !important;
+  box-shadow:
+    0 20px 25px -5px rgb(0 0 0 / 0.18),
+    0 8px 10px -6px rgb(0 0 0 / 0.1) !important;
   cursor: grabbing !important;
   opacity: 1 !important;
   z-index: 9999 !important;

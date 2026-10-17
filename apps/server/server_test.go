@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -49,12 +48,15 @@ func newTestEnv(t *testing.T) (*httptest.Server, string) {
 	ts := httptest.NewServer(handler)
 	t.Cleanup(ts.Close)
 
-	// 首启密码写入 config.AdminPasswordFile（assemble 里 EnsureFirstRun 完成）。
-	pwd, err := os.ReadFile(config.AdminPasswordFile)
-	if err != nil {
-		t.Fatalf("读取首启密码失败: %v", err)
+	// 未初始化 → 通过 setup-key 设置固定测试密钥，后续登录用它。
+	const testKey = "test-access-key"
+	setupResp, err := http.Post(ts.URL+"/api/setup-key", "application/json",
+		strings.NewReader(`{"key":"`+testKey+`"}`))
+	if err != nil || setupResp.StatusCode != 200 {
+		t.Fatalf("setup-key 失败: %v", err)
 	}
-	return ts, strings.TrimSpace(string(pwd))
+	setupResp.Body.Close()
+	return ts, testKey
 }
 
 // TestStaticIndex 验证管理后台静态资源返回 HTML。

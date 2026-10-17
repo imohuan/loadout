@@ -40,8 +40,8 @@ func newTransferService(t *testing.T) (*Service, *store.Store, string) {
 	t.Cleanup(func() { config.AdminPasswordFile = old })
 
 	authSvc := adminauth.NewService(st, slog.Default())
-	if _, err := authSvc.EnsureFirstRun(); err != nil {
-		t.Fatalf("EnsureFirstRun: %v", err)
+	if err := authSvc.SetupAdminKey("test-access-key"); err != nil {
+		t.Fatalf("SetupAdminKey: %v", err)
 	}
 	keys := gatewaykeys.NewManager(st)
 	repoDir := t.TempDir()

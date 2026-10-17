@@ -121,7 +121,9 @@ export function mergeAggregates(list: VolcQuotaAggregate[]): VolcQuotaAggregate 
     ),
     total_amount: list.reduce((s, a) => s + a.total_amount, 0),
     percentage:
-      initialTotal > 0 ? Math.max(0, Math.min(100, Math.round((localRemaining / initialTotal) * 100))) : 0,
+      initialTotal > 0
+        ? Math.max(0, Math.min(100, Math.round((localRemaining / initialTotal) * 100)))
+        : 0,
     exhausted: initialTotal > 0 && localRemaining <= 0,
   }
 }

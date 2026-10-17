@@ -26,8 +26,28 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
-  async function login(username: string, password: string) {
-    await request('/api/login', 'POST', { username, password })
+  /** 是否已设置访问密钥（false = 首次使用，需初始化）。 */
+  const initialized = ref(true)
+
+  async function fetchSetupStatus() {
+    try {
+      const data = await api<{ initialized: boolean }>('/api/setup-status')
+      initialized.value = data.initialized
+    } catch {
+      initialized.value = true
+    }
+    return initialized.value
+  }
+
+  /** 首次初始化访问密钥；成功后即已登录。 */
+  async function setupKey(key: string) {
+    await request('/api/setup-key', 'POST', { key })
+    initialized.value = true
+    await check()
+  }
+
+  async function login(key: string) {
+    await request('/api/login', 'POST', { password: key })
     await check()
   }
 
@@ -43,5 +63,17 @@ export const useAuthStore = defineStore('auth', () => {
     authenticated.value = false
   }
 
-  return { checked, authenticated, overview, displayName, check, login, ssoLogin, logout }
+  return {
+    checked,
+    authenticated,
+    overview,
+    displayName,
+    initialized,
+    check,
+    fetchSetupStatus,
+    setupKey,
+    login,
+    ssoLogin,
+    logout,
+  }
 })

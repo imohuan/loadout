@@ -35,23 +35,26 @@ function abnormalTargetCount(): number {
 </script>
 
 <template>
- <TooltipProvider
-  ><Card class="rounded-md"
-    ><CardHeader class="flex flex-row items-center justify-between gap-3 space-y-0"
-         ><div
-           ><CardTitle class="text-base">聚合模型列表</CardTitle
-           ><CardDescription
-             >聚合模型只使用指定渠道，不会跨到同名模型的其他渠道。</CardDescription
-           ></div
-         ><Button
-           v-if="abnormalTargetCount() > 0"
-           variant="outline"
-           size="sm"
-           class="shrink-0"
-           :disabled="isPending?.('prune-abnormal')"
-           @click="emit('pruneAbnormal', abnormalTargetCount())"
-           ><RiLoader4Line v-if="isPending?.('prune-abnormal')" class="animate-spin" size="14" /><RiDeleteBinLine v-else size="14" />清除异常模型（{{ abnormalTargetCount() }}）</Button
-         ></CardHeader
+  <TooltipProvider
+    ><Card class="rounded-md"
+      ><CardHeader class="flex flex-row items-center justify-between gap-3 space-y-0"
+        ><div>
+          <CardTitle class="text-base">聚合模型列表</CardTitle
+          ><CardDescription>聚合模型只使用指定渠道，不会跨到同名模型的其他渠道。</CardDescription>
+        </div>
+        <Button
+          v-if="abnormalTargetCount() > 0"
+          variant="outline"
+          size="sm"
+          class="shrink-0"
+          :disabled="isPending?.('prune-abnormal')"
+          @click="emit('pruneAbnormal', abnormalTargetCount())"
+          ><RiLoader4Line
+            v-if="isPending?.('prune-abnormal')"
+            class="animate-spin"
+            size="14"
+          /><RiDeleteBinLine v-else size="14" />清除异常模型（{{ abnormalTargetCount() }}）</Button
+        ></CardHeader
       ><CardContent class="p-0"
         ><div v-if="aggregates.length" class="overflow-x-auto">
           <Table
@@ -70,7 +73,11 @@ function abnormalTargetCount(): number {
                       :key="`${target.model}-${target.channel_base_url || target.channel_ids?.join(',') || target.channel_id}`"
                     >
                       <span class="mr-2 tabular-nums">{{ index + 1 }}.</span
-                      ><ModelChannelRef :model="target.model" :target="target" :channels="channels" />
+                      ><ModelChannelRef
+                        :model="target.model"
+                        :target="target"
+                        :channels="channels"
+                      />
                     </li></ol></TableCell
                 ><TableCell
                   ><div class="flex justify-end gap-1">

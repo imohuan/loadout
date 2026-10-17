@@ -17,54 +17,54 @@ export type MessageKind =
   | 'stream'
   | 'item_start'
   | 'turn_complete'
-  | 'thread_status';
+  | 'thread_status'
 
 export interface CommandAction {
-  type: 'read' | 'listFiles' | 'search' | 'unknown';
-  command: string;
-  name?: string;
-  path?: string;
-  query?: string;
+  type: 'read' | 'listFiles' | 'search' | 'unknown'
+  command: string
+  name?: string
+  path?: string
+  query?: string
 }
 
 export interface ToolCall {
-  id: string;
-  toolName: string;
-  toolInput: any;
-  toolResult: { content: string; isError: boolean } | null;
-  commandActions?: CommandAction[];
-  status: 'running' | 'done';
+  id: string
+  toolName: string
+  toolInput: any
+  toolResult: { content: string; isError: boolean } | null
+  commandActions?: CommandAction[]
+  status: 'running' | 'done'
 }
 
 export interface PlanStep {
-  step: string;
-  status: string;
+  step: string
+  status: string
 }
 
 export interface NormalizedMessage {
-  kind: MessageKind;
-  id?: string;
-  sessionId?: string;
-  timestamp?: string;
-  provider?: string;
-  seq?: number;
+  kind: MessageKind
+  id?: string
+  sessionId?: string
+  timestamp?: string
+  provider?: string
+  seq?: number
 
-  role?: 'user' | 'assistant' | 'system';
-  content?: string;
-  images?: { path: string; data?: string; placeholder?: string }[];
+  role?: 'user' | 'assistant' | 'system'
+  content?: string
+  images?: { path: string; data?: string; placeholder?: string }[]
 
-  itemId?: string;
-  itemType?: string;
+  itemId?: string
+  itemType?: string
 
-  toolName?: string;
-  toolId?: string;
-  toolInput?: unknown;
-  toolResult?: { content: string; isError: boolean } | null;
-  commandActions?: CommandAction[];
-  status?: string;
+  toolName?: string
+  toolId?: string
+  toolInput?: unknown
+  toolResult?: { content: string; isError: boolean } | null
+  commandActions?: CommandAction[]
+  status?: string
 
-  turnId?: string;
-  isGoal?: boolean;
+  turnId?: string
+  isGoal?: boolean
 
-  goal?: { objective: string; status: string } | null;
+  goal?: { objective: string; status: string } | null
 }

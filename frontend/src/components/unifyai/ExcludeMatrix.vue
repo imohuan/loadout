@@ -132,150 +132,200 @@ const stats = computed(() => {
 <template>
   <TooltipProvider>
     <div class="space-y-3">
-    <div class="flex flex-wrap items-center justify-between gap-2">
-      <p class="flex items-center gap-1.5 text-sm text-muted-foreground">
-        <RiInformationLine size="15" />
-        左键：✓ 开启 ↔ ✕ 删除（force-mcp 下未配置的将从目标平台删除）；右键：✕ 关闭（配置保留但禁用）。改动后点「开始同步」批量落地。
-      </p>
-      <div class="flex items-center gap-2">
-        <span class="text-sm text-muted-foreground tabular-nums">
-          开 {{ stats.on }} · 关 {{ stats.off }} · 未配置 {{ stats.unset }}
-        </span>
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <p class="flex items-center gap-1.5 text-sm text-muted-foreground">
+          <RiInformationLine size="15" />
+          左键：✓ 开启 ↔ ✕ 删除（force-mcp 下未配置的将从目标平台删除）；右键：✕
+          关闭（配置保留但禁用）。改动后点「开始同步」批量落地。
+        </p>
+        <div class="flex items-center gap-2">
+          <span class="text-sm text-muted-foreground tabular-nums">
+            开 {{ stats.on }} · 关 {{ stats.off }} · 未配置 {{ stats.unset }}
+          </span>
+        </div>
       </div>
-    </div>
-    <div class="overflow-x-auto rounded-md border">
-     <AxTable>
-     <Table>
-        <TableHeader>
-          <TableRow>
-            <TableHead class="w-44">MCP 服务器</TableHead>
-            <TableHead v-for="platform in columns" :key="platform.id" class="text-center">
-              {{ platform.name }}
-            </TableHead>
-            <TableHead class="w-56 text-right">操作</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          <TableRow v-for="server in servers" :key="server.name"
-            :class="isDisabled(server.name) ? 'opacity-50' : ''">
-            <TableCell>
-              <div class="flex min-w-0 items-center gap-2">
-                <Badge v-if="isDisabled(server.name)" variant="outline" class="shrink-0 font-normal">
-                  已禁用</Badge>
-                <span class="truncate font-mono text-xs" :class="isDisabled(server.name)
-                  ? 'text-muted-foreground'
-                  : ''">{{ server.name }}</span>
-                <Badge variant="outline" class="shrink-0 px-1.5 font-normal text-[10px]">
-                  {{ server.type === 'remote' ? 'remote' : 'local' }}
-                </Badge>
-              </div>
-            </TableCell>
-            <TableCell v-if="columns.length === 0" class="py-8 text-center">
-              <span class="text-xs text-muted-foreground">暂无平台数据，待后端 --list-platforms 返回后渲染列</span>
-            </TableCell>
-            <TableCell v-for="platform in columns" :key="platform.id" class="text-center">
-              <Tooltip v-if="!platformLocked(platform.id)">
-                <TooltipTrigger as-child>
-                  <button
-                    type="button"
-                    class="inline-grid size-7 place-items-center rounded-md border text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-60"
-                    :class="
-                      isDisabled(server.name)
-                        ? 'cursor-not-allowed border-border/50 bg-muted/30 text-muted-foreground/40'
-                        : cellState(server.name, platform.id) === true
-                          ? 'border-emerald-600/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
-                          : cellState(server.name, platform.id) === false
-                            ? 'border-border bg-muted/40 text-muted-foreground/60'
-                            : 'border-dashed border-red-400/40 bg-red-500/5 text-red-500/70 hover:border-primary/50 hover:text-primary'
-                    "
-                    :disabled="isDisabled(server.name)"
-                    :aria-label="`${server.name} 在 ${platform.name}：${cellState(server.name, platform.id) === undefined ? '未配置（force-mcp 下将被删除），左键开启' : cellState(server.name, platform.id) === true ? '开启，左键删除，右键关闭' : '关闭，左键开启，右键切回开启'}`"
-                    :aria-pressed="!isDisabled(server.name) && cellState(server.name, platform.id) === true"
-                    @click="toggleCell(server.name, platform.id)"
-                    @contextmenu.prevent="onCellContextMenu(server.name, platform.id)"
-                  >
-                    <span v-if="cellState(server.name, platform.id) === true">✓</span>
-                    <span v-else-if="cellState(server.name, platform.id) === false">✕</span>
-                    <span v-else class="opacity-70">✕</span>
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent>
-                  {{ server.name }} @ {{ platform.name }}：左键 = 开启/删除，右键 = 关闭
-                </TooltipContent>
-              </Tooltip>
-              <span
-                v-else
-                class="inline-block size-7 rounded-md border border-dashed border-border/60 text-[10px] leading-7 text-muted-foreground/40"
-                aria-hidden="true"
+      <div class="overflow-x-auto rounded-md border">
+        <AxTable>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead class="w-44">MCP 服务器</TableHead>
+                <TableHead v-for="platform in columns" :key="platform.id" class="text-center">
+                  {{ platform.name }}
+                </TableHead>
+                <TableHead class="w-56 text-right">操作</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              <TableRow
+                v-for="server in servers"
+                :key="server.name"
+                :class="isDisabled(server.name) ? 'opacity-50' : ''"
               >
-                —
-              </span>
-            </TableCell>
-            <TableCell class="text-right">
-              <div class="flex justify-end gap-1">
-                <Tooltip>
-                  <TooltipTrigger as-child>
-                    <Button variant="ghost" size="icon" class="size-8" :disabled="isDisabled(server.name)"
-                      :aria-label="`${server.name} 全部开启`" @click="setRow(server.name, true)">
-                      <RiCheckDoubleLine size="14" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>全部开启</TooltipContent>
-                </Tooltip>
-                <Tooltip>
-                  <TooltipTrigger as-child>
-                    <Button variant="ghost" size="icon" class="size-8 text-muted-foreground hover:text-destructive"
-                      :disabled="isDisabled(server.name)" :aria-label="`${server.name} 全部删除`"
-                      @click="setRowRemove(server.name)">
-                      <RiDeleteBin2Line size="14" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>全部删除（从所有平台移除）</TooltipContent>
-                </Tooltip>
-                <Tooltip>
-                  <TooltipTrigger as-child>
-                    <Button variant="ghost" size="icon" class="size-8"
-                      :aria-label="isDisabled(server.name) ? `启用 ${server.name}` : `禁用 ${server.name}`"
-                      @click="toggleServerDisabled(server.name)">
-                      <RiToggleFill v-if="isDisabled(server.name)" class="size-5 text-emerald-600" />
-                      <RiToggleLine v-else class="size-5 text-muted-foreground" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>{{ isDisabled(server.name) ? '启用' : '禁用' }}</TooltipContent>
-                </Tooltip>
-                <Tooltip>
-                  <TooltipTrigger as-child>
-                    <Button variant="ghost" size="icon" class="size-8 text-muted-foreground hover:text-foreground"
-                      :aria-label="`编辑 ${server.name}`" @click="emit('edit', server)">
-                      <RiEditLine size="14" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>编辑</TooltipContent>
-                </Tooltip>
-                <Tooltip>
-                  <TooltipTrigger as-child>
-                    <Button variant="ghost" size="icon"
-                      class="size-8 text-muted-foreground hover:text-destructive"
-                      :aria-label="`删除 ${server.name}`" @click="emit('remove', server.name)">
-                      <RiDeleteBinLine size="14" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>删除（从 mcp.json 移除）</TooltipContent>
-                </Tooltip>
-              </div>
-            </TableCell>
-          </TableRow>
-        </TableBody>
-      </Table>
-      </AxTable>
-      <div v-if="!servers.length"
-        class="flex min-h-32 flex-col items-center justify-center gap-1 border-t p-6 text-center">
-        <p class="text-sm text-muted-foreground">暂无 MCP 配置，先运行「导入各平台配置到源」。</p>
+                <TableCell>
+                  <div class="flex min-w-0 items-center gap-2">
+                    <Badge
+                      v-if="isDisabled(server.name)"
+                      variant="outline"
+                      class="shrink-0 font-normal"
+                    >
+                      已禁用</Badge
+                    >
+                    <span
+                      class="truncate font-mono text-xs"
+                      :class="isDisabled(server.name) ? 'text-muted-foreground' : ''"
+                      >{{ server.name }}</span
+                    >
+                    <Badge variant="outline" class="shrink-0 px-1.5 font-normal text-[10px]">
+                      {{ server.type === 'remote' ? 'remote' : 'local' }}
+                    </Badge>
+                  </div>
+                </TableCell>
+                <TableCell v-if="columns.length === 0" class="py-8 text-center">
+                  <span class="text-xs text-muted-foreground"
+                    >暂无平台数据，待后端 --list-platforms 返回后渲染列</span
+                  >
+                </TableCell>
+                <TableCell v-for="platform in columns" :key="platform.id" class="text-center">
+                  <Tooltip v-if="!platformLocked(platform.id)">
+                    <TooltipTrigger as-child>
+                      <button
+                        type="button"
+                        class="inline-grid size-7 place-items-center rounded-md border text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-60"
+                        :class="
+                          isDisabled(server.name)
+                            ? 'cursor-not-allowed border-border/50 bg-muted/30 text-muted-foreground/40'
+                            : cellState(server.name, platform.id) === true
+                              ? 'border-emerald-600/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
+                              : cellState(server.name, platform.id) === false
+                                ? 'border-border bg-muted/40 text-muted-foreground/60'
+                                : 'border-dashed border-red-400/40 bg-red-500/5 text-red-500/70 hover:border-primary/50 hover:text-primary'
+                        "
+                        :disabled="isDisabled(server.name)"
+                        :aria-label="`${server.name} 在 ${platform.name}：${cellState(server.name, platform.id) === undefined ? '未配置（force-mcp 下将被删除），左键开启' : cellState(server.name, platform.id) === true ? '开启，左键删除，右键关闭' : '关闭，左键开启，右键切回开启'}`"
+                        :aria-pressed="
+                          !isDisabled(server.name) && cellState(server.name, platform.id) === true
+                        "
+                        @click="toggleCell(server.name, platform.id)"
+                        @contextmenu.prevent="onCellContextMenu(server.name, platform.id)"
+                      >
+                        <span v-if="cellState(server.name, platform.id) === true">✓</span>
+                        <span v-else-if="cellState(server.name, platform.id) === false">✕</span>
+                        <span v-else class="opacity-70">✕</span>
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      {{ server.name }} @ {{ platform.name }}：左键 = 开启/删除，右键 = 关闭
+                    </TooltipContent>
+                  </Tooltip>
+                  <span
+                    v-else
+                    class="inline-block size-7 rounded-md border border-dashed border-border/60 text-[10px] leading-7 text-muted-foreground/40"
+                    aria-hidden="true"
+                  >
+                    —
+                  </span>
+                </TableCell>
+                <TableCell class="text-right">
+                  <div class="flex justify-end gap-1">
+                    <Tooltip>
+                      <TooltipTrigger as-child>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          class="size-8"
+                          :disabled="isDisabled(server.name)"
+                          :aria-label="`${server.name} 全部开启`"
+                          @click="setRow(server.name, true)"
+                        >
+                          <RiCheckDoubleLine size="14" />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>全部开启</TooltipContent>
+                    </Tooltip>
+                    <Tooltip>
+                      <TooltipTrigger as-child>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          class="size-8 text-muted-foreground hover:text-destructive"
+                          :disabled="isDisabled(server.name)"
+                          :aria-label="`${server.name} 全部删除`"
+                          @click="setRowRemove(server.name)"
+                        >
+                          <RiDeleteBin2Line size="14" />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>全部删除（从所有平台移除）</TooltipContent>
+                    </Tooltip>
+                    <Tooltip>
+                      <TooltipTrigger as-child>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          class="size-8"
+                          :aria-label="
+                            isDisabled(server.name) ? `启用 ${server.name}` : `禁用 ${server.name}`
+                          "
+                          @click="toggleServerDisabled(server.name)"
+                        >
+                          <RiToggleFill
+                            v-if="isDisabled(server.name)"
+                            class="size-5 text-emerald-600"
+                          />
+                          <RiToggleLine v-else class="size-5 text-muted-foreground" />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>{{
+                        isDisabled(server.name) ? '启用' : '禁用'
+                      }}</TooltipContent>
+                    </Tooltip>
+                    <Tooltip>
+                      <TooltipTrigger as-child>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          class="size-8 text-muted-foreground hover:text-foreground"
+                          :aria-label="`编辑 ${server.name}`"
+                          @click="emit('edit', server)"
+                        >
+                          <RiEditLine size="14" />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>编辑</TooltipContent>
+                    </Tooltip>
+                    <Tooltip>
+                      <TooltipTrigger as-child>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          class="size-8 text-muted-foreground hover:text-destructive"
+                          :aria-label="`删除 ${server.name}`"
+                          @click="emit('remove', server.name)"
+                        >
+                          <RiDeleteBinLine size="14" />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>删除（从 mcp.json 移除）</TooltipContent>
+                    </Tooltip>
+                  </div>
+                </TableCell>
+              </TableRow>
+            </TableBody>
+          </Table>
+        </AxTable>
+        <div
+          v-if="!servers.length"
+          class="flex min-h-32 flex-col items-center justify-center gap-1 border-t p-6 text-center"
+        >
+          <p class="text-sm text-muted-foreground">暂无 MCP 配置，先运行「导入各平台配置到源」。</p>
+        </div>
       </div>
-    </div>
-    <div class="flex items-center justify-end gap-3">
-      <p class="text-xs text-muted-foreground">矩阵改动后到「③ 执行」点「开始同步」落地到各平台。</p>
-    </div>
+      <div class="flex items-center justify-end gap-3">
+        <p class="text-xs text-muted-foreground">
+          矩阵改动后到「③ 执行」点「开始同步」落地到各平台。
+        </p>
+      </div>
     </div>
   </TooltipProvider>
 </template>

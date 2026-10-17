@@ -175,7 +175,12 @@ const groupedSkills = computed<SkillGroup[]>(() => {
     const key = isEmpty ? UNSPECIFIED_SOURCE : raw
     const display = isEmpty ? '未指定来源' : raw
     if (!map.has(key)) {
-      map.set(key, { key, displaySource: display, firstDescription: s.description || '', skills: [] })
+      map.set(key, {
+        key,
+        displaySource: display,
+        firstDescription: s.description || '',
+        skills: [],
+      })
     }
     map.get(key)!.skills.push(s)
   }
@@ -491,9 +496,10 @@ async function restoreAllBackups() {
           <RiRefreshLine :class="anyRefreshing ? 'size-4 animate-spin' : 'size-4'" />刷新
         </Button>
         <Button variant="outline" :disabled="syncing" @click="syncSkills">
-          <RiLoaderLine v-if="syncing" class="size-4 animate-spin" /><RiUploadLine v-else class="size-4" />{{
-            syncing ? '同步中…' : '主动同步'
-          }}
+          <RiLoaderLine v-if="syncing" class="size-4 animate-spin" /><RiUploadLine
+            v-else
+            class="size-4"
+          />{{ syncing ? '同步中…' : '主动同步' }}
         </Button>
         <Button variant="outline" :disabled="skillUpdateRunning" @click="checkUpdates">
           <RiLoaderLine :class="skillUpdateRunning ? 'size-4 animate-spin' : 'size-4'" />{{
@@ -542,333 +548,338 @@ async function restoreAllBackups() {
               <div v-if="skills?.length" class="overflow-x-auto">
                 <AxTable>
                   <Table>
-                  <TableHeader v-if="!groupBySource">
-                    <TableRow>
-                      <TableHead class="w-48">名称</TableHead>
-                      <TableHead class="min-w-72">描述</TableHead>
-                      <TableHead class="w-48">
-                        <div class="flex items-center gap-1">
-                          <span>来源</span>
-                          <Tooltip>
-                            <TooltipTrigger as-child>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                class="size-6"
-                                aria-label="按来源聚合"
-                                @click="toggleGroupBySource"
-                              >
-                                <RiGroup2Line class="size-3.5" />
-                              </Button>
-                            </TooltipTrigger>
-                            <TooltipContent>按来源聚合</TooltipContent>
-                          </Tooltip>
-                        </div>
-                      </TableHead>
-                      <TableHead class="w-28">版本</TableHead>
-                      <TableHead class="w-42">更新时间</TableHead>
-                      <TableHead class="w-12 text-right">操作</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableHeader v-else>
-                    <TableRow>
-                      <TableHead class="w-12"></TableHead>
-                      <TableHead class="w-32">
-                        <div class="flex items-center gap-1">
-                          <span>来源</span>
-                          <Tooltip>
-                            <TooltipTrigger as-child>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                class="size-6"
-                                aria-label="取消按来源聚合"
-                                @click="toggleGroupBySource"
-                              >
-                                <RiListUnordered class="size-3.5" />
-                              </Button>
-                            </TooltipTrigger>
-                            <TooltipContent>取消按来源聚合</TooltipContent>
-                          </Tooltip>
-                        </div>
-                      </TableHead>
-                      <TableHead class="min-w-72">描述</TableHead>
-                      <TableHead class="w-24">技能数</TableHead>
-                      <TableHead class="w-12 text-right">操作</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody v-if="!groupBySource">
-                    <TableRow v-for="skill in skills" :key="skill.name">
-                      <TableCell class="w-48 font-medium truncate">
-                        <button
-                          type="button"
-                          class="max-w-full truncate rounded-sm text-left underline-offset-2 hover:text-primary hover:underline"
-                          :title="'查看 ' + skill.name + ' 的文件'"
-                          @click="openPreview(skill)"
+                    <TableHeader v-if="!groupBySource">
+                      <TableRow>
+                        <TableHead class="w-48">名称</TableHead>
+                        <TableHead class="min-w-72">描述</TableHead>
+                        <TableHead class="w-48">
+                          <div class="flex items-center gap-1">
+                            <span>来源</span>
+                            <Tooltip>
+                              <TooltipTrigger as-child>
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  class="size-6"
+                                  aria-label="按来源聚合"
+                                  @click="toggleGroupBySource"
+                                >
+                                  <RiGroup2Line class="size-3.5" />
+                                </Button>
+                              </TooltipTrigger>
+                              <TooltipContent>按来源聚合</TooltipContent>
+                            </Tooltip>
+                          </div>
+                        </TableHead>
+                        <TableHead class="w-28">版本</TableHead>
+                        <TableHead class="w-42">更新时间</TableHead>
+                        <TableHead class="w-12 text-right">操作</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableHeader v-else>
+                      <TableRow>
+                        <TableHead class="w-12"></TableHead>
+                        <TableHead class="w-32">
+                          <div class="flex items-center gap-1">
+                            <span>来源</span>
+                            <Tooltip>
+                              <TooltipTrigger as-child>
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  class="size-6"
+                                  aria-label="取消按来源聚合"
+                                  @click="toggleGroupBySource"
+                                >
+                                  <RiListUnordered class="size-3.5" />
+                                </Button>
+                              </TooltipTrigger>
+                              <TooltipContent>取消按来源聚合</TooltipContent>
+                            </Tooltip>
+                          </div>
+                        </TableHead>
+                        <TableHead class="min-w-72">描述</TableHead>
+                        <TableHead class="w-24">技能数</TableHead>
+                        <TableHead class="w-12 text-right">操作</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody v-if="!groupBySource">
+                      <TableRow v-for="skill in skills" :key="skill.name">
+                        <TableCell class="w-48 font-medium truncate">
+                          <button
+                            type="button"
+                            class="max-w-full truncate rounded-sm text-left underline-offset-2 hover:text-primary hover:underline"
+                            :title="'查看 ' + skill.name + ' 的文件'"
+                            @click="openPreview(skill)"
+                          >
+                            {{ skill.name }}
+                          </button>
+                        </TableCell>
+                        <TableCell
+                          class="min-w-72"
+                          :class="wrapDescription ? 'break-words whitespace-normal' : 'truncate'"
                         >
-                          {{ skill.name }}
-                        </button>
-                      </TableCell>
-                      <TableCell class="min-w-72" :class="wrapDescription ? 'break-words whitespace-normal' : 'truncate'">
-                        <TranslateText
-                          v-if="skill.description"
-                          :source="skill.description"
-                          source-type="skill"
-                          :source-id="skill.name"
-                          class="line-clamp-2 text-sm text-muted-foreground" :single-line="!wrapDescription"
-                        />
-                        <span v-else class="text-sm text-muted-foreground">—</span>
-                      </TableCell>
-                      <TableCell class="w-48 font-mono text-xs truncate">{{ skill.source || '-' }}</TableCell>
-                      <TableCell class="w-28">{{ skill.version || '-' }}</TableCell>
-                      <TableCell class="w-32">
-                        <div class="inline-flex items-center gap-1 whitespace-nowrap overflow-hidden">
-                          <span
-                            :class="
-                              skill.updated_at
-                                ? isRecent(skill.updated_at)
-                                  ? 'text-green-600'
+                          <TranslateText
+                            v-if="skill.description"
+                            :source="skill.description"
+                            source-type="skill"
+                            :source-id="skill.name"
+                            class="line-clamp-2 text-sm text-muted-foreground"
+                            :single-line="!wrapDescription"
+                          />
+                          <span v-else class="text-sm text-muted-foreground">—</span>
+                        </TableCell>
+                        <TableCell class="w-48 font-mono text-xs truncate">{{
+                          skill.source || '-'
+                        }}</TableCell>
+                        <TableCell class="w-28">{{ skill.version || '-' }}</TableCell>
+                        <TableCell class="w-32">
+                          <div
+                            class="inline-flex items-center gap-1 whitespace-nowrap overflow-hidden"
+                          >
+                            <span
+                              :class="
+                                skill.updated_at
+                                  ? isRecent(skill.updated_at)
+                                    ? 'text-green-600'
+                                    : 'text-muted-foreground'
                                   : 'text-muted-foreground'
-                                : 'text-muted-foreground'
-                            "
-                          >
-                            {{ timeAgo(skill.updated_at) }}
-                          </span>
-                          <Badge v-if="isRecent(skill.updated_at)" variant="default"
-                            >近期</Badge
-                          >
-                        </div>
-                      </TableCell>
-                      <TableCell class="w-12 text-right">
-                        <div class="flex justify-end">
-                          <Tooltip>
-                            <TooltipTrigger as-child
-                              ><Button
-                                variant="ghost"
-                                size="icon"
-                                aria-label="复制技能路径"
-                                @click="copySkillPath(skill.name, skill.path)"
-                              >
-                                <RiClipboardLine class="size-4" /> </Button
-                            ></TooltipTrigger>
-                            <TooltipContent>复制技能路径</TooltipContent>
-                          </Tooltip>
-                          <Tooltip>
-                            <TooltipTrigger as-child
-                              ><Button
-                                variant="ghost"
-                                size="icon"
-                                class="text-destructive hover:text-destructive"
-                                aria-label="删除技能"
-                                :disabled="
-                                  isPending(`skill:${skill.name}:unregister`) ||
-                                  isPending(`skill:${skill.name}:remove`)
-                                "
-                                @click="openDeleteDialog(skill.name)"
-                              >
-                                <RiLoader4Line
-                                  v-if="
+                              "
+                            >
+                              {{ timeAgo(skill.updated_at) }}
+                            </span>
+                            <Badge v-if="isRecent(skill.updated_at)" variant="default">近期</Badge>
+                          </div>
+                        </TableCell>
+                        <TableCell class="w-12 text-right">
+                          <div class="flex justify-end">
+                            <Tooltip>
+                              <TooltipTrigger as-child
+                                ><Button
+                                  variant="ghost"
+                                  size="icon"
+                                  aria-label="复制技能路径"
+                                  @click="copySkillPath(skill.name, skill.path)"
+                                >
+                                  <RiClipboardLine class="size-4" /> </Button
+                              ></TooltipTrigger>
+                              <TooltipContent>复制技能路径</TooltipContent>
+                            </Tooltip>
+                            <Tooltip>
+                              <TooltipTrigger as-child
+                                ><Button
+                                  variant="ghost"
+                                  size="icon"
+                                  class="text-destructive hover:text-destructive"
+                                  aria-label="删除技能"
+                                  :disabled="
                                     isPending(`skill:${skill.name}:unregister`) ||
                                     isPending(`skill:${skill.name}:remove`)
                                   "
-                                  class="animate-spin"
-                                  size="16"
-                                /><RiDeleteBinLine v-else class="size-4" /> </Button
-                            ></TooltipTrigger>
-                            <TooltipContent>删除技能</TooltipContent>
-                          </Tooltip>
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  </TableBody>
-                  <TableBody v-else>
-                    <template v-for="group in groupedSkills" :key="group.key">
-                      <TableRow>
-                        <TableCell class="w-12 px-0">
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            class="size-8"
-                            :aria-label="
-                              isSourceExpanded(group.key) ? '收起技能列表' : '展开技能列表'
-                            "
-                            :aria-expanded="isSourceExpanded(group.key)"
-                            @click="toggleSourceGroup(group.key)"
-                          >
-                            <RiArrowDownSLine
-                              v-if="isSourceExpanded(group.key)"
-                              size="16"
-                            />
-                            <RiArrowRightSLine v-else class="size-4" />
-                          </Button>
-                        </TableCell>
-                        <TableCell class="w-32">
-                          <div class="min-w-0">
-                            <div class="truncate font-mono text-sm">
-                              {{ group.displaySource }}
-                            </div>
-                            <div class="text-xs text-muted-foreground">
-                              {{ group.skills.length }} 个技能
-                            </div>
+                                  @click="openDeleteDialog(skill.name)"
+                                >
+                                  <RiLoader4Line
+                                    v-if="
+                                      isPending(`skill:${skill.name}:unregister`) ||
+                                      isPending(`skill:${skill.name}:remove`)
+                                    "
+                                    class="animate-spin"
+                                    size="16"
+                                  /><RiDeleteBinLine v-else class="size-4" /> </Button
+                              ></TooltipTrigger>
+                              <TooltipContent>删除技能</TooltipContent>
+                            </Tooltip>
                           </div>
                         </TableCell>
-                        <TableCell class="min-w-72">
-                          <div class="min-w-0">
-                          <Tooltip
-                            v-if="group.firstDescription"
-                            :delay-duration="150"
-                          >
-                            <TooltipTrigger as-child>
-                              <p class="truncate text-sm text-muted-foreground">
-                                <TranslateText
-                                  :source="group.firstDescription"
-                                  source-type="skill"
-                                  :source-id="group.skills[0]?.name || ''"
-                                  single-line
-                                />
-                              </p>
-                            </TooltipTrigger>
-                            <TooltipContent
-                              side="bottom"
-                              align="start"
-                              class="max-w-md whitespace-normal break-words "
-                            >
-                              <TranslateText
-                                :source="group.firstDescription"
-                                source-type="skill"
-                                :source-id="group.skills[0]?.name || ''"
-                                />
-                            </TooltipContent>
-                          </Tooltip>
-                          <span v-else class="text-sm text-muted-foreground">—</span>
-                          </div>
-                        </TableCell>
-                        <TableCell class="w-24">
-                          <Badge variant="secondary">{{ group.skills.length }} 个</Badge>
-                        </TableCell>
-                        <TableCell class="w-12 text-right text-sm text-muted-foreground">—</TableCell>
                       </TableRow>
-                      <TableRow
-                        v-if="isSourceExpanded(group.key)"
-                        class="bg-muted/30 hover:bg-muted/30"
-                      >
-                        <TableCell :colspan="5" class="whitespace-normal p-0 w-full overflow-hidden">
-                          <Table class="table-fixed w-full min-w-[48rem]">
-                            <TableBody>
-                              <TableRow
-                                v-for="skill in group.skills"
-                                :key="skill.name"
-                                class="hover:bg-transparent"
-                              >
-                                <TableCell class="w-48 font-medium truncate">
-                                  <button
-                                    type="button"
-                                    class="max-w-full truncate rounded-sm text-left underline-offset-2 hover:text-primary hover:underline"
-                                    :title="'查看 ' + skill.name + ' 的文件'"
-                                    @click="openPreview(skill)"
-                                  >
-                                    {{ skill.name }}
-                                  </button>
-                                </TableCell>
-                                <TableCell class="min-w-72">
-                                  <div class="min-w-0">
-                                  <Tooltip v-if="skill.description" :delay-duration="150">
-                                    <TooltipTrigger as-child>
-                                      <p class="truncate text-sm text-muted-foreground">
-                                        <TranslateText
-                                          :source="skill.description"
-                                          source-type="skill"
-                                          :source-id="skill.name"
-                                          single-line
-                                        />
-                                      </p>
-                                    </TooltipTrigger>
-                                    <TooltipContent
-                                      side="bottom"
-                                      align="start"
-                                      class="max-w-md whitespace-normal break-words"
+                    </TableBody>
+                    <TableBody v-else>
+                      <template v-for="group in groupedSkills" :key="group.key">
+                        <TableRow>
+                          <TableCell class="w-12 px-0">
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              class="size-8"
+                              :aria-label="
+                                isSourceExpanded(group.key) ? '收起技能列表' : '展开技能列表'
+                              "
+                              :aria-expanded="isSourceExpanded(group.key)"
+                              @click="toggleSourceGroup(group.key)"
+                            >
+                              <RiArrowDownSLine v-if="isSourceExpanded(group.key)" size="16" />
+                              <RiArrowRightSLine v-else class="size-4" />
+                            </Button>
+                          </TableCell>
+                          <TableCell class="w-32">
+                            <div class="min-w-0">
+                              <div class="truncate font-mono text-sm">
+                                {{ group.displaySource }}
+                              </div>
+                              <div class="text-xs text-muted-foreground">
+                                {{ group.skills.length }} 个技能
+                              </div>
+                            </div>
+                          </TableCell>
+                          <TableCell class="min-w-72">
+                            <div class="min-w-0">
+                              <Tooltip v-if="group.firstDescription" :delay-duration="150">
+                                <TooltipTrigger as-child>
+                                  <p class="truncate text-sm text-muted-foreground">
+                                    <TranslateText
+                                      :source="group.firstDescription"
+                                      source-type="skill"
+                                      :source-id="group.skills[0]?.name || ''"
+                                      single-line
+                                    />
+                                  </p>
+                                </TooltipTrigger>
+                                <TooltipContent
+                                  side="bottom"
+                                  align="start"
+                                  class="max-w-md whitespace-normal break-words"
+                                >
+                                  <TranslateText
+                                    :source="group.firstDescription"
+                                    source-type="skill"
+                                    :source-id="group.skills[0]?.name || ''"
+                                  />
+                                </TooltipContent>
+                              </Tooltip>
+                              <span v-else class="text-sm text-muted-foreground">—</span>
+                            </div>
+                          </TableCell>
+                          <TableCell class="w-24">
+                            <Badge variant="secondary">{{ group.skills.length }} 个</Badge>
+                          </TableCell>
+                          <TableCell class="w-12 text-right text-sm text-muted-foreground"
+                            >—</TableCell
+                          >
+                        </TableRow>
+                        <TableRow
+                          v-if="isSourceExpanded(group.key)"
+                          class="bg-muted/30 hover:bg-muted/30"
+                        >
+                          <TableCell
+                            :colspan="5"
+                            class="whitespace-normal p-0 w-full overflow-hidden"
+                          >
+                            <Table class="table-fixed w-full min-w-[48rem]">
+                              <TableBody>
+                                <TableRow
+                                  v-for="skill in group.skills"
+                                  :key="skill.name"
+                                  class="hover:bg-transparent"
+                                >
+                                  <TableCell class="w-48 font-medium truncate">
+                                    <button
+                                      type="button"
+                                      class="max-w-full truncate rounded-sm text-left underline-offset-2 hover:text-primary hover:underline"
+                                      :title="'查看 ' + skill.name + ' 的文件'"
+                                      @click="openPreview(skill)"
                                     >
-                                      <TranslateText
-                                        :source="skill.description"
-                                        source-type="skill"
-                                        :source-id="skill.name"
-                                        />
-                                    </TooltipContent>
-                                  </Tooltip>
-                                  <span v-else class="text-sm text-muted-foreground">—</span>
-                                  </div>
-                                </TableCell>
-                                <TableCell class="w-32">{{ skill.version || '-' }}</TableCell>
-                                <TableCell class="w-32">
-                                  <div class="inline-flex items-center gap-1 whitespace-nowrap overflow-hidden">
-                                    <span
-                                      :class="
-                                        skill.updated_at
-                                          ? isRecent(skill.updated_at)
-                                            ? 'text-green-600'
+                                      {{ skill.name }}
+                                    </button>
+                                  </TableCell>
+                                  <TableCell class="min-w-72">
+                                    <div class="min-w-0">
+                                      <Tooltip v-if="skill.description" :delay-duration="150">
+                                        <TooltipTrigger as-child>
+                                          <p class="truncate text-sm text-muted-foreground">
+                                            <TranslateText
+                                              :source="skill.description"
+                                              source-type="skill"
+                                              :source-id="skill.name"
+                                              single-line
+                                            />
+                                          </p>
+                                        </TooltipTrigger>
+                                        <TooltipContent
+                                          side="bottom"
+                                          align="start"
+                                          class="max-w-md whitespace-normal break-words"
+                                        >
+                                          <TranslateText
+                                            :source="skill.description"
+                                            source-type="skill"
+                                            :source-id="skill.name"
+                                          />
+                                        </TooltipContent>
+                                      </Tooltip>
+                                      <span v-else class="text-sm text-muted-foreground">—</span>
+                                    </div>
+                                  </TableCell>
+                                  <TableCell class="w-32">{{ skill.version || '-' }}</TableCell>
+                                  <TableCell class="w-32">
+                                    <div
+                                      class="inline-flex items-center gap-1 whitespace-nowrap overflow-hidden"
+                                    >
+                                      <span
+                                        :class="
+                                          skill.updated_at
+                                            ? isRecent(skill.updated_at)
+                                              ? 'text-green-600'
+                                              : 'text-muted-foreground'
                                             : 'text-muted-foreground'
-                                          : 'text-muted-foreground'
-                                      "
-                                    >
-                                      {{ timeAgo(skill.updated_at) }}
-                                    </span>
-                                    <Badge
-                                      v-if="isRecent(skill.updated_at)"
-                                      variant="default"
-                                      >近期</Badge
-                                    >
-                                  </div>
-                                </TableCell>
-                                <TableCell class="w-12 text-right">
-                                  <div class="flex justify-end">
-                                    <Tooltip>
-                                      <TooltipTrigger as-child
-                                        ><Button
-                                          variant="ghost"
-                                          size="icon"
-                                          aria-label="复制技能路径"
-                                          @click="copySkillPath(skill.name, skill.path)"
-                                        >
-                                          <RiClipboardLine class="size-4" /> </Button
-                                      ></TooltipTrigger>
-                                      <TooltipContent>复制技能路径</TooltipContent>
-                                    </Tooltip>
-                                    <Tooltip>
-                                      <TooltipTrigger as-child
-                                        ><Button
-                                          variant="ghost"
-                                          size="icon"
-                                          class="text-destructive hover:text-destructive"
-                                          aria-label="删除技能"
-                                          :disabled="
-                                            isPending(`skill:${skill.name}:unregister`) ||
-                                            isPending(`skill:${skill.name}:remove`)
-                                          "
-                                          @click="openDeleteDialog(skill.name)"
-                                        >
-                                          <RiLoader4Line
-                                            v-if="
+                                        "
+                                      >
+                                        {{ timeAgo(skill.updated_at) }}
+                                      </span>
+                                      <Badge v-if="isRecent(skill.updated_at)" variant="default"
+                                        >近期</Badge
+                                      >
+                                    </div>
+                                  </TableCell>
+                                  <TableCell class="w-12 text-right">
+                                    <div class="flex justify-end">
+                                      <Tooltip>
+                                        <TooltipTrigger as-child
+                                          ><Button
+                                            variant="ghost"
+                                            size="icon"
+                                            aria-label="复制技能路径"
+                                            @click="copySkillPath(skill.name, skill.path)"
+                                          >
+                                            <RiClipboardLine class="size-4" /> </Button
+                                        ></TooltipTrigger>
+                                        <TooltipContent>复制技能路径</TooltipContent>
+                                      </Tooltip>
+                                      <Tooltip>
+                                        <TooltipTrigger as-child
+                                          ><Button
+                                            variant="ghost"
+                                            size="icon"
+                                            class="text-destructive hover:text-destructive"
+                                            aria-label="删除技能"
+                                            :disabled="
                                               isPending(`skill:${skill.name}:unregister`) ||
                                               isPending(`skill:${skill.name}:remove`)
                                             "
-                                            class="animate-spin"
-                                            size="16"
-                                          /><RiDeleteBinLine v-else class="size-4" /> </Button
-                                      ></TooltipTrigger>
-                                      <TooltipContent>删除技能</TooltipContent>
-                                    </Tooltip>
-                                  </div>
-                                </TableCell>
-                              </TableRow>
-                            </TableBody>
-                          </Table>
-                        </TableCell>
-                      </TableRow>
-                    </template>
-                  </TableBody>
-               </Table>
+                                            @click="openDeleteDialog(skill.name)"
+                                          >
+                                            <RiLoader4Line
+                                              v-if="
+                                                isPending(`skill:${skill.name}:unregister`) ||
+                                                isPending(`skill:${skill.name}:remove`)
+                                              "
+                                              class="animate-spin"
+                                              size="16"
+                                            /><RiDeleteBinLine v-else class="size-4" /> </Button
+                                        ></TooltipTrigger>
+                                        <TooltipContent>删除技能</TooltipContent>
+                                      </Tooltip>
+                                    </div>
+                                  </TableCell>
+                                </TableRow>
+                              </TableBody>
+                            </Table>
+                          </TableCell>
+                        </TableRow>
+                      </template>
+                    </TableBody>
+                  </Table>
                 </AxTable>
-             </div>
+              </div>
               <EmptyState v-else title="还没有技能" description="通过来源安装技能。" />
             </CardContent>
           </Card>
@@ -882,86 +893,86 @@ async function restoreAllBackups() {
               <div v-if="presets?.length" class="overflow-x-auto">
                 <AxTable>
                   <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead class="w-32">名称</TableHead>
-                      <TableHead class="w-40">目标</TableHead>
-                      <TableHead>技能</TableHead>
-                      <TableHead class="w-48 text-right">操作</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    <TableRow v-for="preset in presets" :key="preset.name">
-                      <TableCell class="w-32 truncate font-medium">{{ preset.name }}</TableCell>
-                      <TableCell class="w-40">
-                        <Badge variant="outline">{{ presetTargetsLabel(preset) }}</Badge>
-                      </TableCell>
-                      <TableCell class="w-fit text-sm text-muted-foreground">
-                        <div class="flex items-start gap-2">
-                          <span
-                            class="min-w-0 flex-1 whitespace-pre-wrap break-words [display:-webkit-box] [-webkit-line-clamp:2] [-webkit-box-orient:vertical] overflow-hidden"
-                          >
-                            {{ preset.skills.join(', ') || '-' }}
-                          </span>
-                          <Tooltip v-if="preset.skills.length">
-                            <TooltipTrigger as-child>
-                              <span class="shrink-0 text-xs tabular-nums text-muted-foreground">
-                                ({{ preset.skills.length }} 个)
-                              </span>
-                            </TooltipTrigger>
-                            <TooltipContent>共 {{ preset.skills.length }} 个技能</TooltipContent>
-                          </Tooltip>
-                        </div>
-                      </TableCell>
-                      <TableCell class="w-48 text-right">
-                        <div class="flex justify-end gap-2">
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            :disabled="isPending(`preset:${preset.name}:apply`)"
-                            @click="applyPreset(preset.name)"
-                            ><RiLoader4Line
-                              v-if="isPending(`preset:${preset.name}:apply`)"
-                              class="animate-spin"
-                              size="16"
-                            />切换</Button
-                          >
-                          <Tooltip>
-                            <TooltipTrigger as-child
-                              ><Button
-                                variant="ghost"
-                                size="icon"
-                                aria-label="编辑预设"
-                                @click="openEditPreset(preset)"
-                              >
-                                <RiEditLine class="size-4" /> </Button
-                            ></TooltipTrigger>
-                            <TooltipContent>编辑预设</TooltipContent>
-                          </Tooltip>
-                          <Tooltip>
-                            <TooltipTrigger as-child
-                              ><Button
-                                variant="ghost"
-                                size="icon"
-                                aria-label="删除预设"
-                                :disabled="isPending(`preset:${preset.name}:remove`)"
-                                @click="removePreset(preset.name)"
-                              >
-                                <RiLoader4Line
-                                  v-if="isPending(`preset:${preset.name}:remove`)"
-                                  class="animate-spin"
-                                  size="16"
-                                /><RiDeleteBinLine v-else class="size-4" /> </Button
-                            ></TooltipTrigger>
-                            <TooltipContent>删除预设</TooltipContent>
-                          </Tooltip>
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  </TableBody>
-               </Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead class="w-32">名称</TableHead>
+                        <TableHead class="w-40">目标</TableHead>
+                        <TableHead>技能</TableHead>
+                        <TableHead class="w-48 text-right">操作</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      <TableRow v-for="preset in presets" :key="preset.name">
+                        <TableCell class="w-32 truncate font-medium">{{ preset.name }}</TableCell>
+                        <TableCell class="w-40">
+                          <Badge variant="outline">{{ presetTargetsLabel(preset) }}</Badge>
+                        </TableCell>
+                        <TableCell class="w-fit text-sm text-muted-foreground">
+                          <div class="flex items-start gap-2">
+                            <span
+                              class="min-w-0 flex-1 whitespace-pre-wrap break-words [display:-webkit-box] [-webkit-line-clamp:2] [-webkit-box-orient:vertical] overflow-hidden"
+                            >
+                              {{ preset.skills.join(', ') || '-' }}
+                            </span>
+                            <Tooltip v-if="preset.skills.length">
+                              <TooltipTrigger as-child>
+                                <span class="shrink-0 text-xs tabular-nums text-muted-foreground">
+                                  ({{ preset.skills.length }} 个)
+                                </span>
+                              </TooltipTrigger>
+                              <TooltipContent>共 {{ preset.skills.length }} 个技能</TooltipContent>
+                            </Tooltip>
+                          </div>
+                        </TableCell>
+                        <TableCell class="w-48 text-right">
+                          <div class="flex justify-end gap-2">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              :disabled="isPending(`preset:${preset.name}:apply`)"
+                              @click="applyPreset(preset.name)"
+                              ><RiLoader4Line
+                                v-if="isPending(`preset:${preset.name}:apply`)"
+                                class="animate-spin"
+                                size="16"
+                              />切换</Button
+                            >
+                            <Tooltip>
+                              <TooltipTrigger as-child
+                                ><Button
+                                  variant="ghost"
+                                  size="icon"
+                                  aria-label="编辑预设"
+                                  @click="openEditPreset(preset)"
+                                >
+                                  <RiEditLine class="size-4" /> </Button
+                              ></TooltipTrigger>
+                              <TooltipContent>编辑预设</TooltipContent>
+                            </Tooltip>
+                            <Tooltip>
+                              <TooltipTrigger as-child
+                                ><Button
+                                  variant="ghost"
+                                  size="icon"
+                                  aria-label="删除预设"
+                                  :disabled="isPending(`preset:${preset.name}:remove`)"
+                                  @click="removePreset(preset.name)"
+                                >
+                                  <RiLoader4Line
+                                    v-if="isPending(`preset:${preset.name}:remove`)"
+                                    class="animate-spin"
+                                    size="16"
+                                  /><RiDeleteBinLine v-else class="size-4" /> </Button
+                              ></TooltipTrigger>
+                              <TooltipContent>删除预设</TooltipContent>
+                            </Tooltip>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    </TableBody>
+                  </Table>
                 </AxTable>
-             </div>
+              </div>
               <EmptyState
                 v-else
                 title="还没有预设"
@@ -995,46 +1006,48 @@ async function restoreAllBackups() {
               <div v-if="skillStatus?.length" class="overflow-x-auto">
                 <AxTable>
                   <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead class="w-64">平台</TableHead>
-                      <TableHead class="w-24">技能数</TableHead>
-                      <TableHead class="w-24">备份</TableHead>
-                      <TableHead class="w-24 text-right">操作</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    <TableRow v-for="st in skillStatus" :key="st.name || 'generic'">
-                      <TableCell class="w-64">
-                        <div class="truncate font-medium">{{ platformName(st.name) }}</div>
-                        <div class="truncate font-mono text-xs text-muted-foreground">{{ st.dir }}</div>
-                      </TableCell>
-                      <TableCell class="w-24">{{ st.count }}</TableCell>
-                      <TableCell class="w-24">
-                        <Badge :variant="st.has_backup ? 'default' : 'outline'">{{
-                          st.has_backup ? '有备份' : '无'
-                        }}</Badge>
-                      </TableCell>
-                      <TableCell class="w-24 text-right">
-                        <Button
-                          variant="destructive"
-                          size="sm"
-                          :disabled="isPending(`platform:${st.name || 'generic'}:restore`)"
-                          v-if="st.has_backup"
-                          @click="restoreBackup(st)"
-                          ><RiLoader4Line
-                            v-if="isPending(`platform:${st.name || 'generic'}:restore`)"
-                            class="animate-spin"
-                            size="16"
-                          />恢复</Button
-                        >
-                        <span v-else class="text-sm text-muted-foreground">—</span>
-                      </TableCell>
-                    </TableRow>
-                  </TableBody>
-               </Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead class="w-64">平台</TableHead>
+                        <TableHead class="w-24">技能数</TableHead>
+                        <TableHead class="w-24">备份</TableHead>
+                        <TableHead class="w-24 text-right">操作</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      <TableRow v-for="st in skillStatus" :key="st.name || 'generic'">
+                        <TableCell class="w-64">
+                          <div class="truncate font-medium">{{ platformName(st.name) }}</div>
+                          <div class="truncate font-mono text-xs text-muted-foreground">
+                            {{ st.dir }}
+                          </div>
+                        </TableCell>
+                        <TableCell class="w-24">{{ st.count }}</TableCell>
+                        <TableCell class="w-24">
+                          <Badge :variant="st.has_backup ? 'default' : 'outline'">{{
+                            st.has_backup ? '有备份' : '无'
+                          }}</Badge>
+                        </TableCell>
+                        <TableCell class="w-24 text-right">
+                          <Button
+                            variant="destructive"
+                            size="sm"
+                            :disabled="isPending(`platform:${st.name || 'generic'}:restore`)"
+                            v-if="st.has_backup"
+                            @click="restoreBackup(st)"
+                            ><RiLoader4Line
+                              v-if="isPending(`platform:${st.name || 'generic'}:restore`)"
+                              class="animate-spin"
+                              size="16"
+                            />恢复</Button
+                          >
+                          <span v-else class="text-sm text-muted-foreground">—</span>
+                        </TableCell>
+                      </TableRow>
+                    </TableBody>
+                  </Table>
                 </AxTable>
-             </div>
+              </div>
               <EmptyState
                 v-else
                 title="暂无平台信息"
@@ -1173,7 +1186,7 @@ async function restoreAllBackups() {
                         :source="skill.description"
                         source-type="skill"
                         :source-id="skill.name"
-                        />
+                      />
                     </TooltipContent>
                   </Tooltip>
                   <Button
@@ -1248,13 +1261,13 @@ async function restoreAllBackups() {
                       <TooltipContent
                         side="bottom"
                         align="start"
-                        class="max-w-md whitespace-normal break-words "
+                        class="max-w-md whitespace-normal break-words"
                       >
                         <TranslateText
                           :source="skill.description"
                           source-type="skill"
                           :source-id="skill.name"
-                          />
+                        />
                       </TooltipContent>
                     </Tooltip>
                   </span>
@@ -1326,9 +1339,19 @@ async function restoreAllBackups() {
           <Switch v-model="deleteLocal" />
         </div>
         <DialogFooter>
-          <Button variant="destructive" :disabled="isPending(`skill:${deleteTarget}:unregister`) || isPending(`skill:${deleteTarget}:remove`)" @click="confirmDeleteSkill">
+          <Button
+            variant="destructive"
+            :disabled="
+              isPending(`skill:${deleteTarget}:unregister`) ||
+              isPending(`skill:${deleteTarget}:remove`)
+            "
+            @click="confirmDeleteSkill"
+          >
             <RiLoader4Line
-              v-if="isPending(`skill:${deleteTarget}:unregister`) || isPending(`skill:${deleteTarget}:remove`)"
+              v-if="
+                isPending(`skill:${deleteTarget}:unregister`) ||
+                isPending(`skill:${deleteTarget}:remove`)
+              "
               class="size-4 animate-spin"
             />删除
           </Button>

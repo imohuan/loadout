@@ -191,6 +191,9 @@ type TokenUsage struct {
 	CompletionTokens int `json:"completion_tokens"`
 	CachedTokens     int `json:"cached_tokens"`
 	TotalTokens      int `json:"total_tokens"`
+	// Credit 是部分上游（如 CodeBuddy/WorkBuddy）在 usage 里附带的积分消耗，
+	// 非标准 OpenAI 字段；有则带上，插件可零成本读取而不必自行解析响应体。
+	Credit float64 `json:"credit,omitempty"`
 }
 
 type RouteFinish struct {

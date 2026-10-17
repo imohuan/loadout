@@ -344,7 +344,7 @@ export function useMcpManagement() {
     )
   }
   async function copy(path: string) {
-    await navigator.clipboard.writeText(await getLoadoutBase() + path)
+    await navigator.clipboard.writeText((await getLoadoutBase()) + path)
   }
   onMounted(refresh)
   return {

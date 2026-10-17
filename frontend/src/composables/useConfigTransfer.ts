@@ -1,4 +1,5 @@
 import { emitter } from '@/lib/emitter'
+import { getSseToken, isDesktopShell, getLoadoutBase } from '@/lib/base'
 
 // 配置导入导出（设置页「导出配置 / 导入配置」）。
 // 后端：POST /api/config/export | /api/config/import/preview | /api/config/import
@@ -62,6 +63,20 @@ export interface ImportResult {
   results: ImportSectionResult[]
 }
 
+/**
+ * 桌面壳内上传大文件走 Wails 反向代理时，WebView2 会把请求体截断（仅剩 multipart 头），
+ * 后端收到空文件报「无法解析 zip」。修复方式：桌面壳内直连本机 3000 端口（绕过代理），
+ * 用 SSE 短期 token 认证（SSE 已有该机制，Desktop 下 Cookie 无法跨 host 传递）。
+ * 云端/浏览器环境保持同源上传不变。
+ */
+async function uploadUrl(path: string): Promise<string> {
+  if (!isDesktopShell) return path
+  const base = await getLoadoutBase()
+  const token = await getSseToken()
+  const sep = path.includes('?') ? '&' : '?'
+  return token ? `${base}${path}${sep}sse_token=${encodeURIComponent(token)}` : `${base}${path}`
+}
+
 /** 下载导出 zip：后端返回二进制流，浏览器触发下载。 */
 export async function exportConfig(sections: TransferSectionKey[]): Promise<void> {
   const response = await fetch('/api/config/export', {
@@ -99,7 +114,7 @@ export async function exportConfig(sections: TransferSectionKey[]): Promise<void
 export async function previewImport(file: File): Promise<ImportPreview> {
   const body = new FormData()
   body.set('file', file)
-  const response = await fetch('/api/config/import/preview', {
+  const response = await fetch(await uploadUrl('/api/config/import/preview'), {
     method: 'POST',
     credentials: 'same-origin',
     body,
@@ -120,7 +135,7 @@ export async function importConfig(
   const body = new FormData()
   body.set('file', file)
   body.set('modes', JSON.stringify(modes))
-  const response = await fetch('/api/config/import', {
+  const response = await fetch(await uploadUrl('/api/config/import'), {
     method: 'POST',
     credentials: 'same-origin',
     body,

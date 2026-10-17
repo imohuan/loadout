@@ -1,10 +1,5 @@
 <script setup lang="ts">
-import {
-  RiAddLine,
-  RiArrowDownLine,
-  RiArrowUpLine,
-  RiDeleteBinLine,
-} from '@remixicon/vue'
+import { RiAddLine, RiArrowDownLine, RiArrowUpLine, RiDeleteBinLine } from '@remixicon/vue'
 import { toast } from 'vue-sonner'
 import type { MessageInjection } from '@/lib/types'
 
@@ -136,11 +131,7 @@ defineExpose({ exportToClipboard, importFromClipboard })
 
 <template>
   <div class="space-y-2">
-    <div
-      v-for="(item, index) in model"
-      :key="index"
-      class="rounded-md border border-border p-2"
-    >
+    <div v-for="(item, index) in model" :key="index" class="rounded-md border border-border p-2">
       <div class="flex items-center gap-1.5">
         <Select v-model="item.role" class="w-[110px] shrink-0">
           <SelectTrigger class="h-7 w-[110px] shrink-0 text-xs">
@@ -167,52 +158,52 @@ defineExpose({ exportToClipboard, importFromClipboard })
           </SelectContent>
         </Select>
         <div class="flex flex-1 items-center justify-end gap-0.5">
-        <TooltipProvider v-if="showMove">
-          <Tooltip>
-            <TooltipTrigger as-child>
-              <Button
-                variant="ghost"
-                size="icon"
-                type="button"
-                :disabled="index === 0"
-                aria-label="上移"
-                @click="moveItem(index, -1)"
-                ><RiArrowUpLine size="16" /></Button
-            ></TooltipTrigger>
-            <TooltipContent>上移</TooltipContent>
-          </Tooltip>
-        </TooltipProvider>
-        <TooltipProvider v-if="showMove">
-          <Tooltip>
-            <TooltipTrigger as-child>
-              <Button
-                variant="ghost"
-                size="icon"
-                type="button"
-                :disabled="index === model.length - 1"
-                aria-label="下移"
-                @click="moveItem(index, 1)"
-                ><RiArrowDownLine size="16" /></Button
-            ></TooltipTrigger>
-            <TooltipContent>下移</TooltipContent>
-          </Tooltip>
-        </TooltipProvider>
-        <TooltipProvider v-if="showRemove">
-          <Tooltip>
-            <TooltipTrigger as-child>
-              <Button
-                variant="ghost"
-                size="icon"
-                type="button"
-                :disabled="model.length === 1"
-                aria-label="移除"
-                @click="removeItem(index)"
-                ><RiDeleteBinLine size="16" /></Button
-            ></TooltipTrigger>
-            <TooltipContent>移除</TooltipContent>
-          </Tooltip>
-        </TooltipProvider>
-      </div>
+          <TooltipProvider v-if="showMove">
+            <Tooltip>
+              <TooltipTrigger as-child>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  type="button"
+                  :disabled="index === 0"
+                  aria-label="上移"
+                  @click="moveItem(index, -1)"
+                  ><RiArrowUpLine size="16" /></Button
+              ></TooltipTrigger>
+              <TooltipContent>上移</TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+          <TooltipProvider v-if="showMove">
+            <Tooltip>
+              <TooltipTrigger as-child>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  type="button"
+                  :disabled="index === model.length - 1"
+                  aria-label="下移"
+                  @click="moveItem(index, 1)"
+                  ><RiArrowDownLine size="16" /></Button
+              ></TooltipTrigger>
+              <TooltipContent>下移</TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+          <TooltipProvider v-if="showRemove">
+            <Tooltip>
+              <TooltipTrigger as-child>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  type="button"
+                  :disabled="model.length === 1"
+                  aria-label="移除"
+                  @click="removeItem(index)"
+                  ><RiDeleteBinLine size="16" /></Button
+              ></TooltipTrigger>
+              <TooltipContent>移除</TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        </div>
       </div>
       <Textarea
         v-model="item.content"
@@ -224,8 +215,8 @@ defineExpose({ exportToClipboard, importFromClipboard })
       ><RiAddLine size="16" />{{ addLabel }}</Button
     >
     <p class="text-xs text-muted-foreground">
-      每条注入 = 角色 + 文本 + 位置，按从上到下的顺序依次应用。「原始第一条」指进入本能力前
-      messages 的第一条（新注入的项不会覆盖它）。
+      每条注入 = 角色 + 文本 + 位置，按从上到下的顺序依次应用。「原始第一条」指进入本能力前 messages
+      的第一条（新注入的项不会覆盖它）。
     </p>
     <p class="text-xs text-muted-foreground">
       <span class="font-medium">位置说明：</span>新增为第一条/最后一条会在 messages

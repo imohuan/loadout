@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strconv"
 	"testing"
@@ -35,13 +34,11 @@ func newDBTestServer(t *testing.T) (*httptest.Server, *store.Store, string) {
 	t.Cleanup(func() { config.AdminPasswordFile = old })
 
 	authSvc := adminauth.NewService(st, slog.Default())
-	if _, err := authSvc.EnsureFirstRun(); err != nil {
-		t.Fatalf("EnsureFirstRun: %v", err)
+	if err := authSvc.SetupAdminKey("test-access-key"); err != nil {
+		t.Fatalf("SetupAdminKey: %v", err)
 	}
-	pw, err := os.ReadFile(config.AdminPasswordFile)
-	if err != nil {
-		t.Fatalf("读取初始密码: %v", err)
-	}
+	pw := "test-access-key"
+	_ = pw
 
 	database, err := db.OpenForStore(st)
 	if err != nil {

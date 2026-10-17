@@ -18,11 +18,7 @@ const text = computed(() => formatChannelRef(props.channels, props.target))
 </script>
 
 <template>
-  <span
-    v-if="text"
-    class="inline"
-    :class="inheritColor ? '' : 'text-muted-foreground'"
-  >
+  <span v-if="text" class="inline" :class="inheritColor ? '' : 'text-muted-foreground'">
     <span v-if="atPrefix">@</span><span>{{ text }}</span>
   </span>
 </template>

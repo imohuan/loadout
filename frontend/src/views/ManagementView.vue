@@ -56,9 +56,9 @@ const settingsForm = reactive({
   active_preset: '',
   default_model: '',
   use_global_cmd: false,
- request_log_max_age_days: 0,
- request_log_max_size_mb: 0,
-  rule_ai_model: "",
+  request_log_max_age_days: 0,
+  request_log_max_size_mb: 0,
+  rule_ai_model: '',
 })
 watch(
   settingsData,
@@ -191,11 +191,20 @@ async function changePassword() {
       await api.changePassword({ ...passwordForm })
       Object.assign(passwordForm, { old: '', new: '' })
     },
-    '密码已修改',
+    '访问密钥已修改',
   )
 }
 // ===== 依赖更新检查（unifyai / skills 全局包）=====
-const depsItems = ref<Array<{ name: string; installed: boolean; current: string; latest: string; needUpdate: boolean; error?: string }>>([])
+const depsItems = ref<
+  Array<{
+    name: string
+    installed: boolean
+    current: string
+    latest: string
+    needUpdate: boolean
+    error?: string
+  }>
+>([])
 const depsChecking = ref(false)
 // 正在安装/更新的库名（立即置位显示按钮加载，任务结束由 useTask 收尾清空）。
 const depsBusy = ref<string | null>(null)
@@ -273,16 +282,13 @@ async function installDep(name: string) {
 // 全局指令开关自动保存：仅在设置数据真正加载完成（后端值已回填到 settingsForm）后，
 // 才开始监听 use_global_cmd，从根上避免「进入设置页 → 异步回填 use_global_cmd」误触发保存。
 let stopGlobalCmdWatch: (() => void) | null = null
-watch(
-  settingsData,
-  (value) => {
-    if (!value || stopGlobalCmdWatch) return
-    stopGlobalCmdWatch = watch(
-      () => settingsForm.use_global_cmd,
-      () => saveSettings(),
-    )
-  },
-)
+watch(settingsData, (value) => {
+  if (!value || stopGlobalCmdWatch) return
+  stopGlobalCmdWatch = watch(
+    () => settingsForm.use_global_cmd,
+    () => saveSettings(),
+  )
+})
 onMounted(() => {
   refreshDeps()
   void loadAiModelOptions()
@@ -367,7 +373,7 @@ onMounted(() => {
             @clean="cleanRequestLogsNow"
           />
           <div class="grid gap-4 lg:grid-cols-2">
-            <Card class="rounded-md hidden" >
+            <Card class="rounded-md hidden">
               <CardHeader>
                 <CardTitle class="text-base">运行时设置</CardTitle>
               </CardHeader>
@@ -412,12 +418,7 @@ onMounted(() => {
                       >使用全局指令（关闭则用 npx）</Label
                     >
                   </div>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    :disabled="depsChecking"
-                    @click="checkDeps"
-                  >
+                  <Button variant="outline" size="sm" :disabled="depsChecking" @click="checkDeps">
                     <RiLoader4Line v-if="depsChecking" class="animate-spin" size="14" />
                     <RiRefreshLine v-else size="14" />
                     {{ depsChecking ? '检查中…' : '刷新状态' }}
@@ -449,9 +450,7 @@ onMounted(() => {
                       <span v-else-if="dep.needUpdate" class="text-xs text-amber-600"
                         >{{ dep.current }} → {{ dep.latest }}</span
                       >
-                      <span v-else class="text-xs text-emerald-600"
-                        >已是最新 {{ dep.latest }}</span
-                      >
+                      <span v-else class="text-xs text-emerald-600">已是最新 {{ dep.latest }}</span>
                     </div>
                     <Button
                       v-if="!dep.installed || dep.needUpdate"
@@ -460,11 +459,7 @@ onMounted(() => {
                       class="shrink-0"
                       @click="installDep(dep.name)"
                     >
-                      <RiLoader4Line
-                        v-if="depsBusy === dep.name"
-                        class="animate-spin"
-                        size="14"
-                      />
+                      <RiLoader4Line v-if="depsBusy === dep.name" class="animate-spin" size="14" />
                       <template v-else>{{ dep.installed ? '更新' : '安装' }}</template>
                       <span v-if="depsBusy === dep.name" class="ml-1">{{
                         dep.installed ? '更新中…' : '安装中…'
@@ -476,16 +471,16 @@ onMounted(() => {
             </Card>
             <Card class="rounded-md">
               <CardHeader>
-                <CardTitle class="text-base">修改密码</CardTitle>
+                <CardTitle class="text-base">修改访问密钥</CardTitle>
               </CardHeader>
               <CardContent>
                 <form class="space-y-3" @submit.prevent="changePassword">
                   <div class="space-y-1">
-                    <Label for="old-password">旧密码</Label
+                    <Label for="old-password">当前密钥</Label
                     ><Input id="old-password" v-model="passwordForm.old" type="password" required />
                   </div>
                   <div class="space-y-1">
-                    <Label for="new-password">新密码</Label
+                    <Label for="new-password">新密钥</Label
                     ><Input id="new-password" v-model="passwordForm.new" type="password" required />
                   </div>
                   <Button type="submit" :disabled="isPending('change-password')">
@@ -493,7 +488,7 @@ onMounted(() => {
                       v-if="isPending('change-password')"
                       class="animate-spin"
                       size="16"
-                    />修改密码
+                    />修改密钥
                   </Button>
                 </form>
               </CardContent>
@@ -509,44 +504,44 @@ onMounted(() => {
               <CardContent class="p-0">
                 <div v-if="keys?.sk_keys?.length" class="overflow-x-auto">
                   <AxTable>
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>名称</TableHead>
-                        <TableHead>前缀</TableHead>
-                        <TableHead>模型</TableHead>
-                        <TableHead class="text-right">操作</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      <TableRow v-for="key in keys?.sk_keys || []" :key="key.id">
-                        <TableCell>{{ key.name }}</TableCell>
-                        <TableCell class="font-mono text-xs">{{ key.prefix }}</TableCell>
-                        <TableCell class="text-sm text-muted-foreground">{{
-                          key.models?.join(', ') || '*'
-                        }}</TableCell>
-                        <TableCell class="text-right">
-                          <Tooltip>
-                            <TooltipTrigger as-child
-                              ><Button
-                                variant="ghost"
-                                size="icon"
-                                aria-label="删除密钥"
-                                :disabled="isPending(`key:${key.id}:remove`)"
-                                @click="removeSkKey(key.id)"
-                              >
-                                <RiLoader4Line
-                                  v-if="isPending(`key:${key.id}:remove`)"
-                                  class="animate-spin"
-                                  size="16"
-                                /><RiDeleteBinLine v-else size="16" /> </Button
-                            ></TooltipTrigger>
-                            <TooltipContent>删除密钥</TooltipContent>
-                          </Tooltip>
-                        </TableCell>
-                      </TableRow>
-                    </TableBody>
-                  </Table>
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>名称</TableHead>
+                          <TableHead>前缀</TableHead>
+                          <TableHead>模型</TableHead>
+                          <TableHead class="text-right">操作</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        <TableRow v-for="key in keys?.sk_keys || []" :key="key.id">
+                          <TableCell>{{ key.name }}</TableCell>
+                          <TableCell class="font-mono text-xs">{{ key.prefix }}</TableCell>
+                          <TableCell class="text-sm text-muted-foreground">{{
+                            key.models?.join(', ') || '*'
+                          }}</TableCell>
+                          <TableCell class="text-right">
+                            <Tooltip>
+                              <TooltipTrigger as-child
+                                ><Button
+                                  variant="ghost"
+                                  size="icon"
+                                  aria-label="删除密钥"
+                                  :disabled="isPending(`key:${key.id}:remove`)"
+                                  @click="removeSkKey(key.id)"
+                                >
+                                  <RiLoader4Line
+                                    v-if="isPending(`key:${key.id}:remove`)"
+                                    class="animate-spin"
+                                    size="16"
+                                  /><RiDeleteBinLine v-else size="16" /> </Button
+                              ></TooltipTrigger>
+                              <TooltipContent>删除密钥</TooltipContent>
+                            </Tooltip>
+                          </TableCell>
+                        </TableRow>
+                      </TableBody>
+                    </Table>
                   </AxTable>
                 </div>
                 <EmptyState
@@ -572,34 +567,34 @@ onMounted(() => {
             <CardContent class="p-0">
               <div v-if="plugins?.plugins?.length" class="overflow-x-auto">
                 <AxTable>
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>插件</TableHead>
-                      <TableHead>检查项</TableHead>
-                      <TableHead>结果</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody
-                    ><template v-for="plugin in plugins?.plugins || []" :key="plugin.plugin">
-                      <TableRow v-for="check in plugin.checks" :key="check.name">
-                        <TableCell class="font-medium">{{ plugin.plugin }}</TableCell>
-                        <TableCell>{{ check.name }}</TableCell>
-                        <TableCell>
-                          <div v-if="check.issues.length" class="space-y-1">
-                            <Badge
-                              v-for="issue in check.issues"
-                              :key="issue.message"
-                              :variant="issue.level === 'error' ? 'destructive' : 'secondary'"
-                              >{{ issue.level }}: {{ issue.message }}</Badge
-                            >
-                          </div>
-                          <Badge v-else>通过</Badge>
-                        </TableCell>
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>插件</TableHead>
+                        <TableHead>检查项</TableHead>
+                        <TableHead>结果</TableHead>
                       </TableRow>
-                    </template></TableBody
-                  >
-                </Table>
+                    </TableHeader>
+                    <TableBody
+                      ><template v-for="plugin in plugins?.plugins || []" :key="plugin.plugin">
+                        <TableRow v-for="check in plugin.checks" :key="check.name">
+                          <TableCell class="font-medium">{{ plugin.plugin }}</TableCell>
+                          <TableCell>{{ check.name }}</TableCell>
+                          <TableCell>
+                            <div v-if="check.issues.length" class="space-y-1">
+                              <Badge
+                                v-for="issue in check.issues"
+                                :key="issue.message"
+                                :variant="issue.level === 'error' ? 'destructive' : 'secondary'"
+                                >{{ issue.level }}: {{ issue.message }}</Badge
+                              >
+                            </div>
+                            <Badge v-else>通过</Badge>
+                          </TableCell>
+                        </TableRow>
+                      </template></TableBody
+                    >
+                  </Table>
                 </AxTable>
               </div>
               <EmptyState
