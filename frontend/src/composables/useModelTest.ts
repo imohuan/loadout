@@ -46,6 +46,8 @@ export interface TestChatOptions {
   onDelta: (text: string) => void
   onSummary?: (summary: RouteLog) => void
   signal?: AbortSignal
+  /** 响应头到达即回调后端 request_id：手动停止时前端据此能查到真实日志收尾。 */
+  onRequestId?: (requestId: string) => void
 }
 
 // extractTestDelta 按后缀模式从单个 SSE 块提取增量文本：
@@ -149,7 +151,7 @@ export function useModelTest() {
     messages: TestMessage[],
     options: TestChatOptions,
   ): Promise<TestChatResult> => {
-    const { onDelta, onSummary, signal } = options
+    const { onDelta, onSummary, onRequestId, signal } = options
     // stream 由调用方（buildTarget）决定，默认流式；非流式时后端整包返回 JSON。
     const stream = target.stream !== false
     const response = await fetch('/api/test/chat', {
@@ -160,6 +162,7 @@ export function useModelTest() {
       signal,
     })
     const requestId = response.headers.get('X-Request-Id') || ''
+    if (requestId) onRequestId?.(requestId)
     // 响应头摘要（非流式/错误路径）：在状态判断前解析，throw 前也能拿到。
     const headerLog = response.headers.get('X-Test-Log')
     let summary: RouteLog | null = headerLog ? decodeTestLogSummary(headerLog) : null

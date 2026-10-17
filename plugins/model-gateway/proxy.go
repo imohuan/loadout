@@ -581,6 +581,9 @@ func (s *Service) proxyForward(w http.ResponseWriter, r *http.Request, pipe *Pro
 	// 触发聚合切换烧光所有候选 Key，最后连 DB 查询都因 ctx 取消而报错。
 	if cerr := r.Context().Err(); cerr != nil {
 		s.lg.Info("客户端已断开，跳过转发", "request_id", pipe.RequestID, "model", model, "err", cerr.Error())
+			// 收尾请求日志：proxyBeginLog 已写入 running 占位，早退不写 Finish 会让
+			// 这条记录永久卡「进行中」（前端终止后拉详情只会看到 running）。
+			s.proxyFinishLog(r, pipe, model, "", "", "stream_interrupted", 0, time.Since(started), cerr, pipe.Request.Stream, contracts.TokenUsage{}, "")
 		return nil
 	}
 	candidates, resolveErr := s.resolveProxyChannels(r.Context(), model, pipe)
@@ -694,6 +697,7 @@ func (s *Service) proxyForward(w http.ResponseWriter, r *http.Request, pipe *Pro
 		// 每次尝试前再查一次：上一渠道的缓冲读流/透传期间客户端可能刚断开。
 		if cerr := r.Context().Err(); cerr != nil {
 			s.lg.Info("客户端已断开，终止 failover", "request_id", pipe.RequestID, "model", model, "err", cerr.Error())
+				s.proxyFinishLog(r, pipe, model, "", "", "stream_interrupted", 0, time.Since(started), cerr, pipe.Request.Stream, contracts.TokenUsage{}, "")
 			return nil
 		}
 		res := &attemptResult{}

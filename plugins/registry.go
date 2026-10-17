@@ -20,6 +20,7 @@ import (
 	modelhealth "loadout/plugins/model-health"
 	multimodalmcp "loadout/plugins/multimodal-mcp"
 	requestlog "loadout/plugins/request-log"
+	requestcapture "loadout/plugins/request-capture"
 	routelog "loadout/plugins/route-log"
 	sensitivefilter "loadout/plugins/sensitive-filter"
 	skills "loadout/plugins/skills"
@@ -43,6 +44,7 @@ func All() []plugin.Plugin {
 		messageinject.New(),
 		routelog.New(),
 		requestlog.New(),
+		requestcapture.New(),
 		aggregate.New(),
 		keyratelimit.New(),
 		// 原 vision 插件已停用，由 visionv2 取代

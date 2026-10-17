@@ -474,7 +474,8 @@ async function send() {
 
   // 本次请求的配置快照：写入日志 meta，供「加载」按钮一键回填表单。
   const entry: RouteLog = {
-    request_id: `${Date.now()}`,
+    // 占位 id 带 test- 前缀：onRequestId 回调靠它判断「还没拿到后端真实 id」。
+    request_id: `test-${Date.now()}`,
     meta: {
       suffix_mode: suffixMode.value,
       stream: streamEnabled.value,
@@ -519,6 +520,13 @@ async function send() {
       },
       onSummary: (summary) => {
         summaryHolder.value = summary
+      },
+      // 后端 request_id 在响应头到达时立刻写回本地占位：手动停止时 fetch 会抛
+      // AbortError，走不到 entry.request_id = result.request_id 那行，没有这步
+      // syncTestLog 就只能拿本地占位 id 查详情，永远查不到真实收尾记录。
+      onRequestId: (id) => {
+        if (!entry.request_id.startsWith("test-")) return
+        entry.request_id = id
       },
       signal: controller.signal,
     })
@@ -602,8 +610,7 @@ async function syncTestLog(entry: RouteLog, summary: RouteLog | null) {
     else logs.value.unshift(merged)
     saveTestRouteLog(merged)
   }
-  try {
-    const detail = await routeLogs.detail(effectiveId)
+  const applyDetail = (detail: RouteLog) => {
     let index = logs.value.findIndex((log) => log.request_id === effectiveId)
     if (index < 0) index = logs.value.findIndex((log) => log === entry)
     if (index >= 0) {
@@ -633,6 +640,23 @@ async function syncTestLog(entry: RouteLog, summary: RouteLog | null) {
       }
       logs.value.unshift(withSnapshot)
       saveTestRouteLog(withSnapshot)
+    }
+  }
+  try {
+    const detail = await routeLogs.detail(effectiveId)
+    // 后端还标 running：手动终止时网关收尾与 SelfHeal 可能还没完成，
+    // 直接覆盖会把「已手动停止」打回「进行中」。延迟后带 repair=1 重查一次，
+    // 后端收尾完成后再用真实终态覆盖；仍 running 就保留本地状态。
+    if (detail.result === 'running') {
+      await new Promise((resolve) => setTimeout(resolve, 3000))
+      try {
+        const repaired = await routeLogs.detail(effectiveId, { repair: true })
+        if (repaired.result !== 'running') applyDetail(repaired)
+      } catch {
+        // 重查失败（记录被清理等）：保留本地状态，不打回 running。
+      }
+    } else {
+      applyDetail(detail)
     }
   } catch {
     // 后端无该记录（第三方上游不写日志 / 日志被清理）：保留摘要 / 本地 entry。
@@ -746,7 +770,8 @@ async function sendParallel() {
     const startedAt = new Date()
     const summaryHolder: { value: RouteLog | null } = { value: null }
     const entry: RouteLog = {
-      request_id: `parallel-${startedAt.getTime()}-${row.index}`,
+      // 同单发：test- 前缀占位，onRequestId 拿到后端真实 id 后原位替换。
+      request_id: `test-parallel-${startedAt.getTime()}-${row.index}`,
       meta: {
         suffix_mode: suffixMode.value,
         stream: streamEnabled.value,
@@ -787,6 +812,10 @@ async function sendParallel() {
         },
         onSummary: (summary) => {
           summaryHolder.value = summary
+        },
+        onRequestId: (id) => {
+          if (!entry.request_id.startsWith("test-")) return
+          entry.request_id = id
         },
         signal: controller.signal,
       })
@@ -933,8 +962,11 @@ async function deleteTemplateItem(id: string) {
   }
 }
 
+// 离开页面不中断在途请求：切页/切路由只是「人走开」，不是「我不要这次结果」。
+// 之前这里 abort 请求，后台代理随之断开 → 网关把这次转发收尾成失败，页面日志
+// 也被标成「已手动停止」——明明模型还在正常吐字。在途请求继续跑，回来时结果
+// 已由 syncTestLog 写回日志面板与 localStorage；附件清理保留（blob URL 及时释放）。
 onBeforeUnmount(() => {
-  abortController.value?.abort()
   clearAttachments()
 })
 </script>
