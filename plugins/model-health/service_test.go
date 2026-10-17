@@ -499,6 +499,39 @@ func TestRecoverModelsBatch(t *testing.T) {
 }
 
 func TestDeleteModelsBatch(t *testing.T) {
+	// List 的 Key 顺序必须是 channels.position（与「渠道与模型」页一致），
+	// 不能是随机 hex id 的字典序。回归：此前 ORDER BY c.id 让两个页面顺序对不上。
+	t.Run("ListKeepsChannelPositionOrder", func(t *testing.T) {
+		database := healthDB(t)
+		service := NewService(database, nil)
+		for _, c := range []struct {
+			id   string
+			pos  int
+			name string
+		}{
+			{id: "zzz", pos: 0, name: "first"},
+			{id: "aaa", pos: 1, name: "second"},
+		} {
+			if _, err := database.Exec(`INSERT INTO channels(id, name, base_url, manual_enabled, sync_billing, position, created_at, updated_at) VALUES (?, ?, 'http://x', 1, 0, ?, 'now', 'now')`, c.id, c.name, c.pos); err != nil {
+				t.Fatal(err)
+			}
+		}
+		items, err := service.List(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(items) != 3 {
+			t.Fatalf("渠道数 = %d, 期望 3", len(items))
+		}
+		// healthDB 预置的 'c' 未显式设 position（默认 0），与其他 position=0 并列按 id 排。
+		want := []string{"c", "zzz", "aaa"}
+		for i, id := range want {
+			if items[i].ID != id {
+				t.Fatalf("第 %d 个渠道 = %q, 期望 %q", i, items[i].ID, id)
+			}
+		}
+	})
+
 	database := healthDB(t)
 	service := NewService(database, nil)
 	ctx := context.Background()
