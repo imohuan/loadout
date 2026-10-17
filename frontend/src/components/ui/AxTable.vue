@@ -269,22 +269,10 @@ function buildTableCss(w: number[]): string {
     `  transform: translateX(-50%); cursor: col-resize; user-select: none;`,
     `  pointer-events: auto;`,
     `}`,
-            // 列高亮色块：绝对定位铺满表头高度，悬停列淡显主色底；拖拽时随边界实时变宽变窄。
-            `${scope} .axt-band {`,
-            `  position: absolute; top: 0; bottom: 0; pointer-events: none;`,
-            `  background: var(--primary); opacity: 0;`,
-            `  transition: opacity 0.12s;`,
-            `}`,
-            `${scope} .axt-band.is-dragging {`,
-            `  opacity: 0.18;`,
-            `}`,
-			`${scope} .axt-band.is-on {`,
-            `  opacity: 0.08;`,
-            `}`,
-            // 手柄光标：默认继承（正常文本光标），贴边 ±5px 时切 col-resize。
-			`${scope} .axt-overlay { cursor: col-resize; }`,
+            // 手柄光标：表头区域内为 col-resize（ AxTable 根上已设置），
             // 键盘可达：聚焦时显示边界线。
             `${scope} .axt-handle:focus-visible .axt-line { opacity: 1; }`,
+            `${scope} .axt-handle:focus-visible { outline: 1px solid var(--primary); outline-offset: -1px; }`,
             `${scope} .axt-handle:focus-visible { outline: 1px solid var(--primary); outline-offset: -1px; }`,
       `${scope} .axt-handle:focus-visible { outline: 1px solid var(--primary); outline-offset: -1px; }`,
   )
