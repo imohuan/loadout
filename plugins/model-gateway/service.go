@@ -850,7 +850,7 @@ func parseUsageLine(line string) contracts.TokenUsage {
 	if err := json.Unmarshal([]byte(data), &parsed); err != nil {
 		return contracts.TokenUsage{}
 	}
-	if parsed.Usage.PromptTokens == 0 && parsed.Usage.CompletionTokens == 0 {
+	if parsed.Usage.PromptTokens == 0 && parsed.Usage.CompletionTokens == 0 && parsed.Usage.Credit == 0 {
 		return contracts.TokenUsage{}
 	}
 	return contracts.TokenUsage{
@@ -878,7 +878,7 @@ func extractUsageNonStream(body []byte) contracts.TokenUsage {
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		return contracts.TokenUsage{}
 	}
-	if parsed.Usage.PromptTokens == 0 && parsed.Usage.CompletionTokens == 0 {
+	if parsed.Usage.PromptTokens == 0 && parsed.Usage.CompletionTokens == 0 && parsed.Usage.Credit == 0 {
 		return contracts.TokenUsage{}
 	}
 	return contracts.TokenUsage{

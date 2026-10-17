@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // WorkBuddy 积分与用量监控面板（概览页最底部一块）。
 // 数据：积分余额来自后端缓存（手动刷新才拉上游），消耗来自本地 wb_panel_usage 聚合。
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { toast } from 'vue-sonner'
 import {
   RiArrowDownSLine,
@@ -369,6 +369,13 @@ async function refresh() {
 }
 
 onMounted(load)
+
+onBeforeUnmount(() => {
+  if (autoTimer) {
+    clearInterval(autoTimer)
+    autoTimer = null
+  }
+})
 
 onMounted(async () => {
   try {

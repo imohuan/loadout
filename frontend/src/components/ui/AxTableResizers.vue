@@ -10,8 +10,14 @@
  *
  *   把手柄拆成独立子组件后，高频状态只驱动这几个手柄重渲染，表格本体一次都不动。
  *
- * 样式（.axt-overlay）由 AxTable 注入的样式表提供，选择器以 AxTable 根 id
- * 作用域限定，本组件渲染在其内部，因此照常生效。
+ * 交互（本版简化后的最终形态）：
+ *   - 表头内任意位置按下 = 开始拖该列右边界（覆盖层 pointer-events:none，
+ *     pointerdown 在父容器上监听）；
+ *   - 手柄元素只承担「拖拽中竖线」与「双击恢复 / 键盘调宽」两个辅助职责，
+ *     平时透明不参与视觉。
+ *
+ * 样式（.axt-overlay / .axt-handle / .axt-line）由 AxTable 注入的样式表提供，
+ * 选择器以 AxTable 根 id 作用域限定，本组件渲染在其内部，因此照常生效。
  */
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 
@@ -53,7 +59,7 @@ function onDown(e: PointerEvent) {
 }
 
 // 覆盖层 pointer-events:none，收不到指针事件；改在父容器（AxTable 根）上监听，
-// 表头上的指针事件都会冒泡到这里。
+// 表头上的指针事件都会冒泡到这里。手柄自身的 dblclick/keydown 仍走各自监听。
 let container: HTMLElement | null = null
 function onRootDown(e: PointerEvent) {
   onDown(e)
@@ -78,6 +84,23 @@ onBeforeUnmount(() => {
       transform: `translateX(${-scrollLeft}px)`,
     }"
     data-ax-overlay
-  />
+  >
+    <!-- 手柄：平时透明的拖拽中竖线 + 双击恢复 / 键盘调宽的交互点。 -->
+    <div
+      v-for="(x, i) in dividers"
+      :key="i"
+      class="axt-handle"
+      :class="{ 'is-dragging': draggingIndex === i }"
+      role="separator"
+      aria-orientation="vertical"
+      :aria-label="`调整第 ${i + 1} 列宽度，双击恢复自动宽度`"
+      :tabindex="0"
+      :style="{ left: `${x}px` }"
+      @dblclick="emit('reset', i)"
+      @keydown="(e) => emit('dragKey', i, e)"
+    >
+      <span class="axt-line" />
+    </div>
+  </div>
 </template>
 

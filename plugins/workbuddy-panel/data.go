@@ -93,6 +93,8 @@ type UsageLog struct {
 	CachedTokens     int `json:"cached_tokens"`
 	CreatedAt  string  `json:"created_at"`
 	Source     string  `json:"source"`
+	// time 非序列化字段：排序用的真实时间。
+	time time.Time `json:"-"`
 }
 
 // UsageDay 每日消耗（本地聚合）。
@@ -398,7 +400,10 @@ func (s *Service) refreshOne(ctx context.Context, ch wbChannel, mdlJSON []byte) 
 				start = time.Now().AddDate(0, 0, -30) // 远程基线丢失，重拉 30 天
 			}
 		}
+		fetchStartedAt := time.Now().UTC()
 		records, uerr2 := s.client.fetchUsage(ctx, ch.BaseURL, ch.APIKey, start, time.Now())
+		// 分割线候选 = 拉取发起时刻：拉取期间完成的请求会留在本地表（> 分割线），
+		// 不会因「≤ 新分割线」被过滤掉，消除刷新与请求并发时的丢失窗口。
 		if uerr2 != nil {
 			s.lg.Warn("workbuddy-panel: 拉取历史消耗失败", "channel", ch.Name, "err", uerr2)
 		}
@@ -407,7 +412,7 @@ func (s *Service) refreshOne(ctx context.Context, ch wbChannel, mdlJSON []byte) 
 		// 用旧分割线重拉（重叠去重），避免失败窗口内的远程记录永久丢失。
 		newSync := ch.UsageSyncedAt
 		if uerr2 == nil {
-			newSync = time.Now().UTC().Format(time.RFC3339Nano)
+			newSync = fetchStartedAt.Format(time.RFC3339Nano)
 		}
 		now := time.Now().UTC().Format(time.RFC3339Nano)
 		lastErr := ""
@@ -539,6 +544,7 @@ func (s *Service) usageLogs(ctx context.Context, labels map[string]string) []Usa
 				Model: model, Credit: credit,
 				PromptTokens: prompt, CompletionTokens: completion, CachedTokens: cached,
 				CreatedAt: t.Local().Format("01-02 15:04:05"),
+				time: t,
 				Source: map[bool]string{true: "remote", false: "local"}[isRemote],
 			})
 		}
@@ -546,7 +552,8 @@ func (s *Service) usageLogs(ctx context.Context, labels map[string]string) []Usa
 	appendFrom("wb_panel_usage_remote", true)
 	appendFrom("wb_panel_usage", false)
 	// 时间倒序 + 截断，本地拦截的请求 id 也展示。
-	sort.Slice(logs, func(a, b int) bool { return logs[a].CreatedAt > logs[b].CreatedAt })
+	// 按真实时间倒序（显示字符串 "01-02 15:04:05" 跨年会乱序）。
+	sort.Slice(logs, func(i, j int) bool { return logs[i].time.After(logs[j].time) })
 	if len(logs) > 500 {
 		logs = logs[:500]
 	}

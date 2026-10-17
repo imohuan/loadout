@@ -90,10 +90,12 @@ func (s *Service) saveUsageRecords(channelID string, records []usageRecord) int 
 			s.lg.Warn("workbuddy-panel: 流水时间解析失败，跳过", "channel", channelID, "request_id", r.RequestID, "request_time", r.RequestTime)
 			continue
 		}
-		_, err = s.db.Exec(`INSERT OR IGNORE INTO wb_panel_usage_remote(request_id, channel_id, model, credit, created_at) VALUES (?, ?, ?, ?, ?)`,
+		res, err := s.db.Exec(`INSERT OR IGNORE INTO wb_panel_usage_remote(request_id, channel_id, model, credit, created_at) VALUES (?, ?, ?, ?, ?)`,
 			r.RequestID, channelID, r.Model, r.Credit, t.UTC().Format(time.RFC3339Nano))
 		if err == nil {
-			inserted++
+			if n, rerr := res.RowsAffected(); rerr == nil && n > 0 {
+				inserted++
+			}
 		}
 	}
 	return inserted
