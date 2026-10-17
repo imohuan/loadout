@@ -3,6 +3,7 @@ import { RiDeleteBinLine, RiEditLine, RiFileCopyLine, RiLoader4Line } from '@rem
 import type { Aggregate, Channel } from '@/lib/types'
 import ModelChannelRef from '@/components/ModelChannelRef.vue'
 import EmptyState from '@/components/EmptyState.vue'
+import AxTable from '@/components/ui/AxTable.vue'
 import { modelChannelStatus } from '@/composables/useChannelRef'
 
 const props = defineProps<{
@@ -57,6 +58,7 @@ function abnormalTargetCount(): number {
         ></CardHeader
       ><CardContent class="p-0"
         ><div v-if="aggregates.length" class="overflow-x-auto">
+          <AxTable>
           <Table
             ><TableHeader
               ><TableRow
@@ -119,7 +121,7 @@ function abnormalTargetCount(): number {
                 ></TableRow
               ></TableBody
             ></Table
-          >
+          ></AxTable>
         </div>
         <EmptyState
           v-else
