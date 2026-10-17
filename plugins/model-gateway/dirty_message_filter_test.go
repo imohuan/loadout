@@ -90,3 +90,32 @@ func TestStripBrokenAssistantKeepsNormalContent(t *testing.T) {
 		t.Fatal("正常 assistant 消息不应剥除")
 	}
 }
+
+// 空工具名是上游 400 的直接原因（code 11133）：即使 content 非空也必须清掉这条
+// tool_call，不能因为 content 有内容就整条放行。引用它的 tool 结果一并剥除，
+// assistant 的正文保留。
+func TestStripBrokenAssistantEmptyNameKeepsContent(t *testing.T) {
+	body := []byte(`{"messages":[
+		{"role":"user","content":"hi"},
+		{"role":"assistant","content":"我先查一下","tool_calls":[{"id":"bad","type":"function","function":{"name":"","arguments":"{}"}}]},
+		{"role":"tool","tool_call_id":"bad","content":"结果"},
+		{"role":"assistant","content":"完成"}
+	]}`)
+	got, changed := stripBrokenAssistantMessages(body)
+	if !changed {
+		t.Fatal("空工具名应被清理")
+	}
+	msgs := mustParseMessages(t, got)
+	if len(msgs) != 3 {
+		t.Fatalf("应剩 3 条消息，实际 %d: %v", len(msgs), msgs)
+	}
+	if c, _ := msgs[1]["content"].(string); c != "我先查一下" {
+		t.Fatalf("assistant 正文应保留，实际 %v", msgs[1]["content"])
+	}
+	if _, ok := msgs[1]["tool_calls"]; ok {
+		t.Fatalf("空工具名的 tool_calls 应被移除: %v", msgs[1])
+	}
+	if id, _ := msgs[2]["tool_call_id"].(string); id == "bad" {
+		t.Fatal("引用被清 tool_call 的结果应一并剥除")
+	}
+}

@@ -3,6 +3,7 @@ package modelgateway
 import (
 	"bytes"
 	"encoding/json"
+	"strings"
 )
 
 // repairToolCallSequence 修复 OpenAI chat/completions 请求里 messages 的工具调用序列，
@@ -14,11 +15,12 @@ import (
 // 对这种不匹配直接返回 400 `tool_call_sequence_broken`（"tool calls and tool results do not match"），
 // 整个请求作废。本函数在转发到上游之前自动补全，让请求能通过上游校验。
 //
-// 修复策略（仅补全缺失、不删除任何已有消息，避免丢上下文）：
+// 修复策略（补全缺失、清理无法归属的结果，避免丢上下文）：
 //   - assistant 声明了 tool_calls 但后续没有对应的 role=tool 结果 → 在下一段 assistant 正文前
 //     补一条占位 tool 结果（content 为空）。
 //   - role=tool 结果缺少前置 assistant 的 tool_calls 声明（孤立结果）→ 在其前补一条合成
-//     assistant 消息声明该 tool_call（arguments 为空对象），让结果有出处。
+//     assistant 消息声明该 tool_call，名字沿用最近一次已声明的工具名；一条都借不到时
+//     直接剥掉这条孤立结果。绝不能写 name:""——上游会把空工具名当参数非法直接 400。
 //   - 序列以未消化的 tool_calls 结尾 → 在末尾补占位 tool 结果。
 //
 // 返回 (修复后 body, 是否发生修改)。正常序列或非 chat/completions 形态原样返回，零改动。
@@ -71,6 +73,8 @@ func repairToolCallSequenceMessages(messages []json.RawMessage) ([]json.RawMessa
 	out := make([]json.RawMessage, 0, len(messages)+4)
 	// pending：最近一条带 tool_calls 的 assistant 消息声明的、尚未被 tool 结果消化的 id 列表。
 	var pending []string
+	// lastName：最近一次能确认的工具名，用于给孤立结果补声明时避免写空名。
+	lastName := ""
 
 	for _, raw := range messages {
 		role, toolCalls, toolCallID := peekToolMessage(raw)
@@ -96,6 +100,9 @@ func repairToolCallSequenceMessages(messages []json.RawMessage) ([]json.RawMessa
 				}
 			}
 			if len(toolCalls) > 0 {
+				if names := toolNamesOf(raw); len(names) > 0 {
+					lastName = names[len(names)-1]
+				}
 				// 新的工具调用声明：若上一组 pending 还没被消化完就被新声明打断，
 				// 说明上一组工具结果缺失 → 先补占位结果再进入本轮。
 				for _, id := range pending {
@@ -117,11 +124,15 @@ func repairToolCallSequenceMessages(messages []json.RawMessage) ([]json.RawMessa
 		case "tool":
 			if len(pending) == 0 {
 				// 孤立 tool 结果：前一条 assistant 没有声明该 tool_call。
-				// 有 id 时补一条合成 assistant 声明让结果有出处；连 id 都没有的
-				// 结果无法归属，透传（不新增损坏数据）。
-				if toolCallID != "" {
-					out = append(out, buildAssistantDeclMessage(toolCallID))
+				// 有 id 且有可借用的工具名时补一条合成 assistant 声明让结果有出处；
+				// 连工具名都借不到时结果无法归属，直接剥掉（合成空名的声明会被
+				// 上游当参数非法拒绝，code 11133）。
+				if toolCallID != "" && lastName != "" {
+					out = append(out, buildAssistantDeclMessage(toolCallID, lastName))
 					changed = true
+				} else {
+					changed = true
+					continue
 				}
 			} else {
 				pending = removeID(pending, toolCallID)
@@ -181,18 +192,40 @@ func buildToolResultMessage(toolCallID string) json.RawMessage {
 }
 
 // buildAssistantDeclMessage 构造一条合成 assistant 消息，声明一个空参数的 tool_call，
-// 用于给孤立的 role=tool 结果补上出处。
-func buildAssistantDeclMessage(toolCallID string) json.RawMessage {
+// 用于给孤立的 role=tool 结果补上出处。name 必须是真实工具名：上游对空 name 返回
+// 400 code 11133（"the request parameters were rejected by the model provider"）。
+func buildAssistantDeclMessage(toolCallID, name string) json.RawMessage {
 	b, _ := json.Marshal(map[string]any{
 		"role":    "assistant",
 		"content": "",
 		"tool_calls": []map[string]any{{
 			"id":       toolCallID,
 			"type":     "function",
-			"function": map[string]any{"name": "", "arguments": "{}"},
+			"function": map[string]any{"name": name, "arguments": "{}"},
 		}},
 	})
 	return b
+}
+
+// toolNamesOf 提取一条 assistant 消息里所有非空 tool_call 的 function.name，保持原顺序。
+func toolNamesOf(raw json.RawMessage) []string {
+	var m struct {
+		ToolCalls []struct {
+			Function struct {
+				Name string `json:"name"`
+			} `json:"function"`
+		} `json:"tool_calls"`
+	}
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil
+	}
+	out := make([]string, 0, len(m.ToolCalls))
+	for _, tc := range m.ToolCalls {
+		if name := strings.TrimSpace(tc.Function.Name); name != "" {
+			out = append(out, name)
+		}
+	}
+	return out
 }
 
 // mergeAssistantMessages 将两条相邻的 assistant 消息合并为一条：content 拼接、tool_calls 合并。

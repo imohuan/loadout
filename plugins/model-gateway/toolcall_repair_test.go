@@ -1,6 +1,7 @@
 package modelgateway
 
 import (
+	"bytes"
 	"encoding/json"
 	"testing"
 )
@@ -109,6 +110,8 @@ func TestRepairToolCallSequence_OrphanResult(t *testing.T) {
 	// role=tool 结果缺少前置 assistant 声明（孤立结果）。
 	body := []byte(`{"model":"m","messages":[
 		{"role":"user","content":"hi"},
+		{"role":"assistant","content":"","tool_calls":[{"id":"c0","type":"function","function":{"name":"read_file","arguments":"{}"}}]},
+		{"role":"tool","tool_call_id":"c0","content":"r0"},
 		{"role":"tool","tool_call_id":"c1","content":"r1"},
 		{"role":"assistant","content":"done"}
 	]}`)
@@ -116,7 +119,7 @@ func TestRepairToolCallSequence_OrphanResult(t *testing.T) {
 	if !changed {
 		t.Fatalf("expected change")
 	}
-	want := []string{"user", "assistant", "tool", "assistant"}
+	want := []string{"user", "assistant", "tool", "assistant", "tool", "assistant"}
 	got := rolesOf(out)
 	if len(got) != len(want) {
 		t.Fatalf("roles = %v, want %v (out=%s)", got, want, out)
@@ -151,15 +154,20 @@ func TestRepairToolCallSequence_TrailingDecl(t *testing.T) {
 }
 
 func TestRepairToolCallSequence_OrphanResultNoID(t *testing.T) {
-	// 孤立结果连 id 都没有：无法归属，透传不新增数据，但仍按普通消息保留。
+	// 孤立结果连 id 都没有：无法归属，也没有工具名可借，直接剥除。
 	body := []byte(`{"model":"m","messages":[
 		{"role":"user","content":"hi"},
 		{"role":"tool","content":"r1"},
 		{"role":"assistant","content":"done"}
 	]}`)
 	out, changed := repairToolCallSequence(body)
-	if changed {
-		t.Fatalf("expected no structural change for id-less orphan, changed=true out=%s", out)
+	if !changed {
+		t.Fatalf("expected id-less orphan to be dropped")
+	}
+	want := []string{"user", "assistant"}
+	got := rolesOf(out)
+	if len(got) != len(want) {
+		t.Fatalf("roles = %v, want %v (out=%s)", got, want, out)
 	}
 }
 
@@ -295,6 +303,59 @@ func TestRepairToolCallSequence_MissingResultThenUser(t *testing.T) {
 	for i := range want {
 		if got[i] != want[i] {
 			t.Fatalf("roles[%d] = %q, want %q (out=%s)", i, got[i], want[i], out)
+		}
+	}
+}
+
+// 为孤立结果合成声明时不能写空工具名：上游（step-5-preview 等）对空 name 直接
+// 返回 400（code 11133），等于修复本身制造了新的拒绝。真实工具名未知时把该结果
+// 归到上一次已声明的工具名下；连上一次声明都没有就剥掉这条结果。
+func TestRepairToolCallSequence_SyntheticDeclNeverEmptyName(t *testing.T) {
+	body := []byte(`{"model":"m","messages":[
+		{"role":"user","content":"hi"},
+		{"role":"assistant","content":"","tool_calls":[{"id":"c1","type":"function","function":{"name":"read_file","arguments":"{}"}}]},
+		{"role":"tool","tool_call_id":"c1","content":"r1"},
+		{"role":"tool","tool_call_id":"c2","content":"r2"}
+	]}`)
+	out, changed := repairToolCallSequence(body)
+	if !changed {
+		t.Fatalf("expected change")
+	}
+	if bytes.Contains(out, []byte(`"name":""`)) {
+		t.Fatalf("合成声明不应包含空工具名: %s", out)
+	}
+	want := []string{"user", "assistant", "tool", "assistant", "tool"}
+	got := rolesOf(out)
+	if len(got) != len(want) {
+		t.Fatalf("roles = %v, want %v (out=%s)", got, want, out)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("roles[%d] = %q, want %q (out=%s)", i, got[i], want[i], out)
+		}
+	}
+}
+
+// 没有任何可借鉴的工具名（无 id 或之前的声明没有名字）时，孤立结果视为无法归属，
+// 直接剥除而不是造空名声明。
+func TestRepairToolCallSequence_OrphanWithoutKnownNameDropped(t *testing.T) {
+	for _, body := range []string{
+		`{"model":"m","messages":[{"role":"user","content":"hi"},{"role":"tool","tool_call_id":"c1","content":"r1"}]}`,
+		`{"model":"m","messages":[{"role":"user","content":"hi"},{"role":"assistant","content":"","tool_calls":[{"id":"c9","type":"function","function":{"name":"","arguments":"{}"}}]},{"role":"tool","tool_call_id":"c1","content":"r1"}]}`,
+	} {
+		// 与 proxy.go 的真实顺序一致：先剥残缺声明，再补全序列。
+		stripped, _ := stripBrokenAssistantMessages([]byte(body))
+		out, changed := repairToolCallSequence(stripped)
+		if !changed {
+			t.Fatalf("expected change: %s", body)
+		}
+		if bytes.Contains(out, []byte(`"name":""`)) {
+			t.Fatalf("不应写出空工具名: %s", out)
+		}
+		for _, m := range mustParseMessages(t, out) {
+			if r, _ := m["role"].(string); r == "tool" {
+				t.Fatalf("无法归属的孤立结果应被剥除: %s", out)
+			}
 		}
 	}
 }
