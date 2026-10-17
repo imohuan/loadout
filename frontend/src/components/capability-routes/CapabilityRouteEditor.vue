@@ -16,6 +16,7 @@ import {
 } from '@/composables/useChannelRef'
 import { normalizeBaseURL } from '@/composables/useChannels'
 import type {
+  Aggregate,
   CapabilityRoute,
   Channel,
   FieldRules,
@@ -27,6 +28,8 @@ import type {
 const props = defineProps<{
   route?: CapabilityRoute
   channels: Channel[]
+  /** 聚合（虚拟）模型：它们不在任何渠道的真实模型清单里，需要单独并入候选。 */
+  aggregates?: Aggregate[]
   pending?: boolean
 }>()
 const emit = defineEmits<{ save: [value: CapabilityRoute]; cancel: [] }>()
@@ -313,14 +316,47 @@ function removeChannelGroup(seg: ChannelGroupSegment) {
 // 目标模型候选：按所选渠道过滤（空 = 全渠道模型并集）。
 const candidateModels = computed(() => {
   const ids = selectedKeyIds.value
-  if (!ids.length) return allModels.value
   const set = new Set<string>()
-  for (const id of ids) {
-    const ch = props.channels.find((c) => c.id === id)
-    for (const model of ch?.models || []) set.add(model)
+  if (!ids.length) {
+    for (const model of allModels.value) set.add(model)
+  } else {
+    for (const id of ids) {
+      const ch = props.channels.find((c) => c.id === id)
+      for (const model of ch?.models || []) set.add(model)
+    }
+  }
+  // 虚拟（聚合）模型：按聚合目标实际绑定的渠道过滤；通用/空 = 全部展示。
+  // 不并入 allModels，保持「渠道真实模型」这个变量的原语义，避免其他用途误用。
+  for (const agg of props.aggregates || []) {
+    if (agg.enabled === false || !agg.name) continue
+    if (virtualModelMatchesChannels(agg, ids, channelSel.channel_base_urls || [])) {
+      set.add(agg.name)
+    }
   }
   return [...set].sort()
 })
+
+// virtualModelMatchesChannels 判断虚拟模型是否可能落在已选渠道上：
+// 任一聚合目标命中已选 Key / 渠道组即算命中；目标完全未限定渠道时视为通用。
+function virtualModelMatchesChannels(
+  agg: Aggregate,
+  ids: string[],
+  baseURLs: string[],
+): boolean {
+  if (!ids.length && !baseURLs.length) return true
+  const selectedBaseURLs = new Set(baseURLs.map((bu) => normalizeBaseURL(bu)))
+  for (const target of agg.targets || []) {
+    const targetIDs = target.channel_ids || []
+    if (target.channel_id && ids.includes(target.channel_id)) return true
+    if (targetIDs.some((id) => ids.includes(id))) return true
+    if (target.channel_base_url && selectedBaseURLs.has(normalizeBaseURL(target.channel_base_url))) {
+      return true
+    }
+    // 目标没写任何渠道 = 自动路由，可能落到已选渠道上。
+    if (!target.channel_id && !targetIDs.length && !target.channel_base_url) return true
+  }
+  return false
+}
 
 // ===== 能力与路由方式选项 =====
 const capabilityOptions = [
@@ -606,7 +642,7 @@ function submit() {
           <p class="text-xs text-muted-foreground">
             <b>留空 = 全部模型</b>（等价 <code class="font-mono">*</code>）；也支持
             <code class="font-mono">*</code> 通配与前缀匹配。候选随目标渠道过滤（通用/空 =
-            全部渠道模型）。 未命中默认原生透传。
+            全部渠道模型）；聚合（虚拟）模型也会一并列出。 未命中默认原生透传。
           </p>
         </div>
         <div class="grid gap-4 sm:grid-cols-2">

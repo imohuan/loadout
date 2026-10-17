@@ -3,6 +3,7 @@ import { ref } from 'vue'
 import { RiAddLine, RiRefreshLine } from '@remixicon/vue'
 import { toast } from 'vue-sonner'
 import { useCapabilityRoutes } from '@/composables/useCapabilityRoutes'
+import { useAggregates } from '@/composables/useAggregates'
 import { useChannels } from '@/composables/useChannels'
 import { useListLoader } from '@/composables/useListLoader'
 import { useAsyncTask } from '@/composables/useAsyncTask'
@@ -21,6 +22,7 @@ import CapabilityRouteTable from '@/components/capability-routes/CapabilityRoute
 
 const routeService = useCapabilityRoutes()
 const channelService = useChannels()
+const aggregateService = useAggregates()
 const {
   data: routes,
   loading: routesLoading,
@@ -33,14 +35,22 @@ const {
   refreshing: channelsRefreshing,
   refresh: refreshChannels,
 } = useListLoader(channelService.list)
+// 虚拟（聚合）模型：能力路由的「目标模型」候选需要并入它们，
+// 因为它们不在任何渠道的真实模型清单里（后端 SelectCapabilityRoutesEx 已支持按虚拟名匹配）。
+const {
+  data: aggregates,
+  loading: aggregateLoading,
+  refreshing: aggregatesRefreshing,
+  refresh: refreshAggregates,
+} = useListLoader(aggregateService.list)
 const { run, isPending } = useAsyncTask()
 const { confirmDialog } = useConfirm()
 const editing = ref<CapabilityRoute>()
 const editorOpen = ref(false)
-const loading = () => routesLoading.value || channelLoading.value
-const refreshing = () => routesRefreshing.value || channelsRefreshing.value
+const loading = () => routesLoading.value || channelLoading.value || aggregateLoading.value
+const refreshing = () => routesRefreshing.value || channelsRefreshing.value || aggregatesRefreshing.value
 async function refresh() {
-  await Promise.all([refreshRoutes(), refreshChannels()])
+  await Promise.all([refreshRoutes(), refreshChannels(), refreshAggregates()])
 }
 
 // 路由唯一键：capability + models + channel_ids + channel_base_urls 精确匹配（数组顺序敏感）。
@@ -149,6 +159,7 @@ async function reorderRoutes(next: CapabilityRoute[]) {
       v-model:open="editorOpen"
       :route="editing"
       :channels="channels || []"
+      :aggregates="aggregates || []"
       :pending="isPending('save')"
       @save="save"
       @cancel="editorOpen = false"
