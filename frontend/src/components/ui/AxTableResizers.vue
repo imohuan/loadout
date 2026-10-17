@@ -10,10 +10,10 @@
  *
  *   把手柄拆成独立子组件后，高频状态只驱动这几个手柄重渲染，表格本体一次都不动。
  *
- * 样式（.axt-overlay / .axt-handle / .axt-band / .axt-line）由 AxTable 注入的
- * 样式表提供，选择器以 AxTable 根 id 作用域限定，本组件渲染在其内部，因此照常生效。
+ * 样式（.axt-overlay / .axt-band）由 AxTable 注入的样式表提供，
+ * 选择器以 AxTable 根 id 作用域限定，本组件渲染在其内部，因此照常生效。
  */
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 const props = defineProps<{
   /** 每条列边界的水平位置（px，相对表格内容坐标系）。 */
@@ -36,17 +36,15 @@ const emit = defineEmits<{
 
 /**
  * 列高亮（方案 C）：
- *   鼠标在表头内移动时，高亮「鼠标所在的那一列」——一个从左边到该列右边界的
- *   矩形色块（即该列自己的宽度）。拖拽边界时色块宽度实时变化，所见即所得。
- *   不再用指示竖线：竖线在左右对齐混排的表头里没有稳定的视觉锚点。
+ *   鼠标在表内移动时，高亮「鼠标所在的那一列」——表头上的一个矩形色块
+ *   （即该列自己的宽度）。在表头色块内任意位置按下即可开始拖拽该列右边界，
+ *   拖拽时色块宽度实时变化，所见即所得。
  */
 const hoverCol = ref<number | null>(null)
-/** 光标是否贴近边界（±5px）：贴边才显示 col-resize 并允许拖拽。 */
-const nearEdge = ref(false)
-/** 鼠标是否在表头区内（真实或合成事件都会触发）。 */
+/** 鼠标是否在表头色块区内（列内行 hover 也会让表头列保持高亮）。 */
 const inHeader = ref(false)
-/** 光标最近的一条边界序号（-1 = 没有贴边）。 */
-const nearestDivider = ref(-1)
+/** 本组件的覆盖层 / 其父容器（AxTable 根）。 */
+const overlayEl = ref<HTMLElement | null>(null)
 /** 色块显示的列：优先鼠标悬停列；拖拽中没有 hover，就用被拖边界右侧的列。 */
 const bandCol = computed<number | null>(() => {
   if (hoverCol.value !== null) return Math.min(hoverCol.value, props.dividers.length - 1)
@@ -56,30 +54,59 @@ const bandCol = computed<number | null>(() => {
   return null
 })
 
-/** 指针所在位置 → 列序号 + 是否贴近右边界。dividers[i] 是第 i+1 列的右边界。 */
-function onMove(e: PointerEvent) {
-  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
-  const x = e.clientX - rect.left
-  // 列序号：x 落在 (dividers[i-1], dividers[i]] 之间就是第 i 列。
+/** 指针 x（相对覆盖层）→ 列序号。dividers[i] 是第 i+1 列的右边界。 */
+function colAt(x: number) {
   let col = 0
   while (col < props.dividers.length && x > props.dividers[col]) col++
-  if (col >= props.dividers.length) col = props.dividers.length - 1
-  hoverCol.value = col
-  inHeader.value = true
-  // 光标位置相对最近边界（左边界或右边界）的距离。
-  const leftEdge = col === 0 ? 0 : props.dividers[col - 1]
-  const dRight = Math.abs(props.dividers[col] - x)
-  const dLeft = Math.abs(x - leftEdge)
-  nearEdge.value = Math.min(dRight, dLeft) <= 5
-  nearestDivider.value = dRight <= dLeft ? col : col - 1
+  return Math.min(col, props.dividers.length - 1)
+}
+
+function onMove(e: PointerEvent) {
+  const overlay = overlayEl.value
+  if (!overlay) return
+  const rect = overlay.getBoundingClientRect()
+  hoverCol.value = colAt(e.clientX - rect.left)
+  // 鼠标纵向是否落在表头色块区内（overlay 覆盖的就是表头条带）。
+  inHeader.value = e.clientY >= rect.top && e.clientY <= rect.bottom
 }
 
 function onLeave() {
   inHeader.value = false
   hoverCol.value = null
-  nearEdge.value = false
-  nearestDivider.value = -1
 }
+
+/** 表头色块内任意位置按下 = 开始拖该列右边界（仅限表头区内）。 */
+function onDown(e: PointerEvent) {
+  const overlay = overlayEl.value
+  if (!overlay) return
+  const rect = overlay.getBoundingClientRect()
+  if (e.clientY < rect.top || e.clientY > rect.bottom) return
+  const col = colAt(e.clientX - rect.left)
+  if (props.dividers.length === 0) return
+  emit('dragStart', col, e)
+}
+
+// 覆盖层 pointer-events:none，收不到指针事件；改在父容器（组件根）上监听，
+// 表头/行上的指针事件都会冒泡到这里。坐标始终相对覆盖层计算。
+let container: HTMLElement | null = null
+function onRootMove(e: PointerEvent) {
+  onMove(e)
+}
+function onRootDown(e: PointerEvent) {
+  onDown(e)
+}
+
+onMounted(() => {
+  container = overlayEl.value?.parentElement ?? null
+  container?.addEventListener('pointermove', onRootMove)
+  container?.addEventListener('pointerdown', onRootDown)
+  container?.addEventListener('pointerleave', onLeave)
+})
+onBeforeUnmount(() => {
+  container?.removeEventListener('pointermove', onRootMove)
+  container?.removeEventListener('pointerdown', onRootDown)
+  container?.removeEventListener('pointerleave', onLeave)
+})
 
 /** 第 col 列高亮矩形的 left/width：左边界 = 前一条 divider（或 0），右边界 = 本列 divider。 */
 function bandLeft(col: number) {
@@ -92,39 +119,21 @@ function bandWidth(col: number) {
 
 <template>
   <div
-		class="axt-overlay"
-		:class="{ 'is-near-cursor': nearEdge }"
+    ref="overlayEl"
+    class="axt-overlay"
     :style="{
       top: `${overlayTop}px`,
       height: `${headerHeight}px`,
       transform: `translateX(${-scrollLeft}px)`,
     }"
     data-ax-overlay
-      @pointerenter="inHeader = true"
-    @pointermove="onMove"
-    @pointerleave="onLeave"
   >
-    <!-- 列高亮色块：悬停列的表头底色；拖拽时跟随边界实时变宽/变窄。 -->
-		<div
-			v-if="bandCol !== null"
-			class="axt-band"
-			:class="{ 'is-dragging': draggingIndex === bandCol || draggingIndex === bandCol + 1, 'is-on': inHeader }"
-			:style="{ left: `${bandLeft(bandCol)}px`, width: `${bandWidth(bandCol)}px` }"
-		/>
-    <!-- 边界手柄：贴边 ±5px 显示 col-resize；拖拽/双击逻辑与之前一致。 -->
+    <!-- 列高亮色块：表头底色；拖拽时跟随边界实时变宽/变窄。 -->
     <div
-      v-for="(x, i) in dividers"
-      :key="i"
-      class="axt-handle"
-			:class="{ 'is-near': nearEdge && i === nearestDivider }"
-      role="separator"
-      aria-orientation="vertical"
-      :aria-label="`调整第 ${i + 1} 列宽度，双击恢复自动宽度`"
-      :tabindex="0"
-      :style="{ left: `${x}px` }"
-			@pointerdown="(e) => nearEdge && i === nearestDivider && emit('dragStart', i, e)"
-      @dblclick="emit('reset', i)"
-      @keydown="(e) => emit('dragKey', i, e)"
+      v-if="bandCol !== null && inHeader"
+      class="axt-band is-on"
+      :class="{ 'is-dragging': draggingIndex === bandCol || draggingIndex === bandCol + 1 }"
+      :style="{ left: `${bandLeft(bandCol)}px`, width: `${bandWidth(bandCol)}px` }"
     />
   </div>
 </template>

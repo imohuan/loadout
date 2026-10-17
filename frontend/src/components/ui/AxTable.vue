@@ -262,6 +262,7 @@ function buildTableCss(w: number[]): string {
     `${scope} { position: relative; overflow: hidden; }`,
     // 覆盖层：只盖表头区间，本身不吃指针事件（手柄单独恢复）。
     `${scope} .axt-overlay { position: absolute; left: 0; z-index: 10; pointer-events: none; }`,
+			`${scope} .axt-overlay { cursor: col-resize; }`,
       // 手柄：比竖线更宽的命中区（14px），拖起来不费劲；右对齐表头也能轻松命中。
       `${scope} .axt-handle {`,
       `  position: absolute; top: 0; height: 100%; width: 14px;`,
@@ -281,9 +282,7 @@ function buildTableCss(w: number[]): string {
             `  opacity: 0.08;`,
             `}`,
             // 手柄光标：默认继承（正常文本光标），贴边 ±5px 时切 col-resize。
-            `${scope} .axt-handle { cursor: default; }`,
-            `${scope} .axt-handle.is-near { cursor: col-resize; }`,
-			`${scope} .axt-overlay.is-near-cursor { cursor: col-resize; }`,
+			`${scope} .axt-overlay { cursor: col-resize; }`,
             // 键盘可达：聚焦时显示边界线。
             `${scope} .axt-handle:focus-visible .axt-line { opacity: 1; }`,
             `${scope} .axt-handle:focus-visible { outline: 1px solid var(--primary); outline-offset: -1px; }`,
