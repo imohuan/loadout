@@ -5,8 +5,9 @@
 // 曾尝试用 shadcn Popover 的 Trigger 模式，但它的 click 会与 DismissableLayer 的
 // outside 判定相互干扰（关闭态下点不开），故沿用模型状态页验证过的手写定位方案：
 // 菜单挂在触发条容器内、top = 触发条底边 + 6px、宽 20rem 不跟随触发条等宽。
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RiArrowDownSLine } from '@remixicon/vue'
+import { VueDraggable } from 'vue-draggable-plus'
 import type { Channel } from '@/lib/types'
 import { channelEnabled, channelModelLabel, type ChannelPlatform } from '@/lib/channels'
 
@@ -19,11 +20,52 @@ const props = defineProps<{
 const emit = defineEmits<{
   selectPlatform: [baseUrl: string]
   selectKey: [key: Channel]
+  reorder: [baseUrl: string, keys: Channel[]]
 }>()
 
 const activePlatform = computed(
   () => props.platforms.find((p) => p.baseUrl === props.activeBaseUrl) || props.platforms[0],
 )
+
+// 组内拖拽排序（vue-draggable-plus）：只渲染当前平台这一组 Key，拖拽列表用本地
+// 副本承载内部移动，松手后把新顺序回传给页面。
+// 跨组拖拽有两道闸：1) 这里只存在当前组的一个列表，且不声明 Sortable group
+// （未声明 group 的列表不接收也不外送元素），切换平台时靠 key 重建实例；
+// 2) 页面侧再校验 id 集合与 base_url 必须都属于当前组。
+// 上移/下移按钮仍保留在右栏（ChannelKeyDetail），拖拽只是额外能力。
+//
+// 整卡可拖（没有独立手柄）：不设 handle、不设 delay，按下即可拖。
+// 不要加 delay——delay 期间一旦鼠标移动就会被判成"移动过"而取消拖拽，
+// 实际手感变成"必须先停住等一下才能拖"，非常难用。
+//
+// forceFallback 是必须的：Chrome 默认走原生 HTML5 拖拽，而原生拖拽只能从行内的
+// 文本节点起拖 —— 点在行的空白处（如右侧状态徽标左边）就拖不起来，用户实际
+// 会遇到"只有文字那一小块能拖"。强制走 Sortable 自己的指针实现后，整行任意位置
+// 都能作为拖拽起点。
+const dragKeys = ref<Channel[]>([])
+watch(
+  () => activePlatform.value?.keys,
+  (keys) => {
+    const next = keys || []
+    // 拖拽中途父级刷新时，避免把列表重置回旧顺序（列表长度/id 集合没变就不动）。
+    const sameSet =
+      next.length === dragKeys.value.length && next.every((k, i) => k.id === dragKeys.value[i]?.id)
+    if (sameSet) {
+      // 同一批 Key 只是内容变了（启用状态、模型数等）：保留拖拽后的顺序，换成新对象。
+      const byId = new Map(next.map((k) => [k.id, k]))
+      dragKeys.value = dragKeys.value.map((k) => byId.get(k.id) || k)
+      return
+    }
+    dragKeys.value = [...next]
+  },
+  { immediate: true },
+)
+function onReorder(keys: Channel[]) {
+  dragKeys.value = keys
+  const baseUrl = activePlatform.value?.baseUrl
+  if (!baseUrl) return
+  emit('reorder', baseUrl, keys)
+}
 
 /** 菜单显隐（单一事实源）。 */
 const open = ref(false)
@@ -115,44 +157,56 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <!-- Key 列表：一行一个 Key，选中项高亮（选中配色与「模型状态」页左栏保持一致）。 -->
+    <!--
+      Key 列表：一行一个 Key，选中项高亮（选中配色与「模型状态」页左栏保持一致）。
+      整张卡片任意位置可拖拽排序；没有移动的单击仍是选中。
+    -->
     <div class="max-h-72 min-h-0 flex-1 overflow-auto p-1.5 md:max-h-none!">
-      <button
-        v-for="key in activePlatform?.keys || []"
-        :key="key.id"
-        type="button"
-        class="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left transition-colors"
-        :class="key.id === activeKeyId ? 'bg-muted' : 'hover:bg-muted/60'"
-        @click="emit('selectKey', key)"
+      <VueDraggable
+        v-if="dragKeys.length"
+        :key="activePlatform?.baseUrl"
+        v-model="dragKeys"
+        tag="div"
+        :force-fallback="true"
+        :animation="150"
+        ghost-class="opacity-40"
+        @update:model-value="onReorder"
       >
-        <span class="min-w-0 flex-1" :title="key.name">
-          <span
-            class="block truncate text-sm"
-            :class="
-              key.id === activeKeyId
-                ? 'font-semibold text-foreground'
-                : 'font-medium text-foreground'
-            "
-            >{{ key.name }}</span
-          >
-          <span class="mt-0.5 block truncate text-[11px] text-muted-foreground">{{
-            channelModelLabel(key)
-          }}</span>
-        </span>
-        <span
-          class="shrink-0 rounded px-1 py-0.5 text-[10px] font-medium"
-          :class="
-            channelEnabled(key)
-              ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
-              : 'bg-slate-500/15 text-slate-700 dark:text-slate-300'
-          "
+        <button
+          v-for="key in dragKeys"
+          :key="key.id"
+          type="button"
+          class="flex w-full cursor-grab touch-none items-center gap-2 rounded-md px-2 py-2 text-left transition-colors active:cursor-grabbing"
+          :class="key.id === activeKeyId ? 'bg-muted' : 'hover:bg-muted/60'"
+          @click="emit('selectKey', key)"
         >
-          {{ channelEnabled(key) ? '启用' : '禁用' }}
-        </span>
-      </button>
-      <p v-if="!activePlatform?.keys.length" class="px-2 py-3 text-sm text-muted-foreground">
-        该平台暂无 Key
-      </p>
+          <span class="min-w-0 flex-1" :title="key.name">
+            <span
+              class="block truncate text-sm"
+              :class="
+                key.id === activeKeyId
+                  ? 'font-semibold text-foreground'
+                  : 'font-medium text-foreground'
+              "
+              >{{ key.name }}</span
+            >
+            <span class="mt-0.5 block truncate text-[11px] text-muted-foreground">{{
+              channelModelLabel(key)
+            }}</span>
+          </span>
+          <span
+            class="shrink-0 rounded px-1 py-0.5 text-[10px] font-medium"
+            :class="
+              channelEnabled(key)
+                ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
+                : 'bg-slate-500/15 text-slate-700 dark:text-slate-300'
+            "
+          >
+            {{ channelEnabled(key) ? '启用' : '禁用' }}
+          </span>
+        </button>
+      </VueDraggable>
+      <p v-if="!dragKeys.length" class="px-2 py-3 text-sm text-muted-foreground">该平台暂无 Key</p>
     </div>
   </div>
 </template>

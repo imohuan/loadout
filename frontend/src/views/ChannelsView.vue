@@ -278,6 +278,37 @@ async function moveKey(channel: Channel, direction: 'up' | 'down') {
     await refresh()
   })
 }
+// 组内拖拽排序（vue-draggable-plus）：只接受「同一 base_url 组内」的新顺序，
+// 把该组新顺序拼回全量渠道列表，再按全量 id 提交（position 是全局顺序）。
+// 两道闸：id 集合必须与当前组完全一致、每个 Key 的 base_url 必须指向本组；
+// 任何一条不满足就忽略这次拖拽，绝不改变 base_url 分组。
+async function reorderKeys(baseUrl: string, keys: Channel[]) {
+  const target = normalizeBaseURL(baseUrl)
+  const current = groupKeys(target)
+  /** 拖拽被忽略或写库失败时，把左栏拉回服务端顺序，避免界面停在一个没保存的顺序上。 */
+  function reset() {
+    keys.splice(0, keys.length, ...current)
+  }
+  if (isPending(groupKey(target, 'reorder-keys'))) return reset()
+  if (keys.length !== current.length) return reset()
+  const known = new Set(current.map((k) => k.id))
+  if (keys.some((k) => !known.has(k.id) || normalizeBaseURL(k.base_url) !== target)) return reset()
+  if (new Set(keys.map((k) => k.id)).size !== keys.length) return reset()
+  // 顺序没变就不写库。
+  if (keys.every((k, i) => k.id === current[i].id)) return
+  const ids = platforms.value.flatMap((group) =>
+    (group.baseUrl === target ? keys : group.keys).map((key) => key.id),
+  )
+  try {
+    await run(groupKey(target, 'reorder-keys'), async () => {
+      await service.reorder(ids)
+      await refresh()
+    })
+  } catch {
+    // useAsyncTask 已提示错误；这里只负责把界面顺序复原。
+    reset()
+  }
+}
 
 /** 总览页脚：模型总数与探测失败的 Key 数（让人一眼看出有没有漏配）。 */
 const totals = computed(() => {
@@ -335,7 +366,11 @@ const totals = computed(() => {
             </span>
           </p>
         </div>
-        <ChannelPlatformGrid :platforms="platforms" @select="openPlatform" @reorder="reorderGroups" />
+        <ChannelPlatformGrid
+          :platforms="platforms"
+          @select="openPlatform"
+          @reorder="reorderGroups"
+        />
         <EmptyState
           v-if="!platforms.length"
           title="还没有配置渠道"
@@ -370,6 +405,7 @@ const totals = computed(() => {
             :active-key-id="activeKey?.id"
             @select-platform="selectPlatform"
             @select-key="selectKey"
+            @reorder="reorderKeys"
           />
           <ChannelKeyDetail
             v-if="activePlatform"
