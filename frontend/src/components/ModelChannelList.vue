@@ -7,7 +7,9 @@ import {
   RiArrowUpLine,
   RiCheckLine,
   RiDeleteBinLine,
+  RiDraggable,
 } from '@remixicon/vue'
+import { VueDraggable } from 'vue-draggable-plus'
 import type { Channel, ModelChannelItem } from '@/lib/types'
 import { normalizeBaseURL } from '@/composables/useChannels'
 import { formatChannelRef } from '@/composables/useChannelRef'
@@ -30,6 +32,9 @@ const props = withDefaults(
     showRemove?: boolean
     showAdd?: boolean
     showIndex?: boolean
+    // 是否启用拖拽排序（默认关闭，其他复用页面行为不变）。
+    // 开启后每行左侧出现拖拽手柄，仅手柄可拖；上移/下移按钮保留作兜底。
+    draggable?: boolean
     addLabel?: string
   }>(),
   {
@@ -42,11 +47,30 @@ const props = withDefaults(
     showRemove: true,
     showAdd: true,
     showIndex: false,
+    draggable: false,
     addLabel: '添加候选',
   },
 )
 
 const model = defineModel<ModelChannelItem[]>({ required: true })
+
+// 行 key：不能用 index。拖拽时 Sortable 直接移动真实 DOM，Vue 若按 index 复用节点，
+// 虚拟 DOM 与真实 DOM 的顺序会对不上（新增/删除后出现行错位）。
+// 按 item 对象生成稳定 key，拖拽只是换位置，节点身份不变。
+//
+// 前缀用模块级随机串：热更新/重新挂载会让计数器从 1 重来，若与上一次挂载残留的
+// key 撞号，Vue 会把旧节点当成同一行复用到新数组上（表现为内容串行）。
+const rowKeyPrefix = `model-channel-row-${Math.random().toString(36).slice(2)}-`
+let rowKeySeq = 0
+const rowKeys = new WeakMap<ModelChannelItem, string>()
+function rowKey(item: ModelChannelItem): string {
+  let key = rowKeys.get(item)
+  if (!key) {
+    key = `${rowKeyPrefix}${++rowKeySeq}`
+    rowKeys.set(item, key)
+  }
+  return key
+}
 
 // 全部可用模型：所有渠道模型目录去重排序（未指定渠道时的候选）。
 const allModels = computed(() => {
@@ -172,156 +196,176 @@ function modelCandidates(index: number): string[] {
 
 <template>
   <div class="space-y-2">
-    <div v-for="(item, index) in model" :key="index" class="flex items-center gap-2">
-      <span
-        v-if="showIndex"
-        class="flex h-9 w-8 shrink-0 items-center justify-center text-sm tabular-nums text-muted-foreground"
-        >{{ index + 1 }}</span
-      >
-      <!-- 渠道选择：Popover + 渠道分组 tag 网格（多选） -->
-      <Popover v-model:open="channelOpen[index]">
-        <PopoverTrigger as-child>
-          <Button
-            type="button"
-            variant="outline"
-            class="w-56 shrink-0 justify-start font-normal"
-            :class="
-              item.channel_id || item.channel_ids?.length || item.channel_base_url
-                ? ''
-                : 'text-muted-foreground'
-            "
-          >
-            <span class="truncate">{{ channelTriggerLabel(index) }}</span>
-            <RiArrowDownSLine class="ml-auto size-4 shrink-0 opacity-50" />
-          </Button>
-        </PopoverTrigger>
-        <PopoverContent
-          class="w-[var(--reka-popper-anchor-width)] p-3 max-h-80 overflow-y-auto"
-          align="start"
-          :side-offset="2"
+    <!-- 拖拽排序：只有显式 draggable 的页面才启用 Sortable，默认不改变其他页面的行为。
+         只有左侧把手匹配 handle；渠道/模型下拉、输入框、删除按钮都在把手之外。 -->
+    <VueDraggable
+      v-model="model"
+      tag="div"
+      :disabled="!draggable"
+      handle=".model-channel-drag-handle"
+      :animation="150"
+      ghost-class="opacity-40"
+      class="space-y-2"
+    >
+      <div v-for="(item, index) in model" :key="rowKey(item)" class="flex items-center gap-2">
+        <span
+          v-if="draggable"
+          class="model-channel-drag-handle flex h-9 w-5 shrink-0 cursor-grab touch-none items-center justify-center text-muted-foreground/60 hover:text-foreground active:cursor-grabbing"
+          aria-label="拖拽排序"
+          title="拖拽排序"
         >
-          <ChannelGroupPicker
-            :model-value="item"
-            @update:model-value="Object.assign(item, $event)"
-            :channels="channels"
-            :allow-auto="allowAutoChannel"
-            :multi-select="multiSelect"
-            layout="vertical"
-          />
-        </PopoverContent>
-      </Popover>
-      <!-- 模型选择 -->
-      <Popover v-model:open="modelOpen[index]">
-        <PopoverTrigger as-child>
-          <Button
-            type="button"
-            variant="outline"
-            class="flex-1 justify-start font-normal"
-            :class="item.model ? '' : 'text-muted-foreground'"
-            :disabled="
-              requireChannelForModel &&
-              !item.channel_id &&
-              !item.channel_ids?.length &&
-              !item.channel_base_url
-            "
+          <RiDraggable size="16" />
+        </span>
+        <span
+          v-if="showIndex"
+          class="flex h-9 w-8 shrink-0 items-center justify-center text-sm tabular-nums text-muted-foreground"
+          >{{ index + 1 }}</span
+        >
+        <!-- 渠道选择：Popover + 渠道分组 tag 网格（多选） -->
+        <Popover v-model:open="channelOpen[index]">
+          <PopoverTrigger as-child>
+            <Button
+              type="button"
+              variant="outline"
+              class="w-56 shrink-0 justify-start font-normal"
+              :class="
+                item.channel_id || item.channel_ids?.length || item.channel_base_url
+                  ? ''
+                  : 'text-muted-foreground'
+              "
+            >
+              <span class="truncate">{{ channelTriggerLabel(index) }}</span>
+              <RiArrowDownSLine class="ml-auto size-4 shrink-0 opacity-50" />
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent
+            class="w-[var(--reka-popper-anchor-width)] p-3 max-h-80 overflow-y-auto"
+            align="start"
+            :side-offset="2"
           >
-            <span class="truncate">{{ item.model || placeholder }}</span>
-            <RiArrowDownSLine class="ml-auto size-4 shrink-0 opacity-50" />
-          </Button>
-        </PopoverTrigger>
-        <PopoverContent class="w-80 p-0" align="start">
-          <Command>
-            <CommandInput
-              v-model="modelSearch[index]"
-              placeholder="搜索模型…"
-              @keydown.enter.prevent="onModelSearchEnter(index, item)"
+            <ChannelGroupPicker
+              :model-value="item"
+              @update:model-value="Object.assign(item, $event)"
+              :channels="channels"
+              :allow-auto="allowAutoChannel"
+              :multi-select="multiSelect"
+              layout="vertical"
             />
-            <CommandList>
-              <CommandEmpty>
-                <div
-                  v-if="allowCustomModel"
-                  class="flex items-center justify-between gap-2 px-2 py-1.5"
-                >
-                  <span class="min-w-0 truncate text-xs text-muted-foreground"
+          </PopoverContent>
+        </Popover>
+        <!-- 模型选择 -->
+        <Popover v-model:open="modelOpen[index]">
+          <PopoverTrigger as-child>
+            <Button
+              type="button"
+              variant="outline"
+              class="flex-1 justify-start font-normal"
+              :class="item.model ? '' : 'text-muted-foreground'"
+              :disabled="
+                requireChannelForModel &&
+                !item.channel_id &&
+                !item.channel_ids?.length &&
+                !item.channel_base_url
+              "
+            >
+              <span class="truncate">{{ item.model || placeholder }}</span>
+              <RiArrowDownSLine class="ml-auto size-4 shrink-0 opacity-50" />
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent class="w-80 p-0" align="start">
+            <Command>
+              <CommandInput
+                v-model="modelSearch[index]"
+                placeholder="搜索模型…"
+                @keydown.enter.prevent="onModelSearchEnter(index, item)"
+              />
+              <CommandList>
+                <CommandEmpty>
+                  <div
+                    v-if="allowCustomModel"
+                    class="flex items-center justify-between gap-2 px-2 py-1.5"
+                  >
+                    <span class="min-w-0 truncate text-xs text-muted-foreground"
+                      >未找到「{{ modelSearch[index] }}」</span
+                    >
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      :disabled="!modelSearch[index].trim()"
+                      @click="addCustomModel(index, item)"
+                      >自定义添加</Button
+                    >
+                  </div>
+                  <span v-else class="block px-2 py-1.5 text-xs text-muted-foreground"
                     >未找到「{{ modelSearch[index] }}」</span
                   >
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    :disabled="!modelSearch[index].trim()"
-                    @click="addCustomModel(index, item)"
-                    >自定义添加</Button
+                </CommandEmpty>
+                <CommandGroup>
+                  <CommandItem
+                    v-for="m in modelCandidates(index)"
+                    :key="m"
+                    :value="m"
+                    @select="selectModel(index, item, m)"
                   >
-                </div>
-                <span v-else class="block px-2 py-1.5 text-xs text-muted-foreground"
-                  >未找到「{{ modelSearch[index] }}」</span
-                >
-              </CommandEmpty>
-              <CommandGroup>
-                <CommandItem
-                  v-for="m in modelCandidates(index)"
-                  :key="m"
-                  :value="m"
-                  @select="selectModel(index, item, m)"
-                >
-                  <RiCheckLine
-                    :class="item.model === m ? 'opacity-100' : 'opacity-0'"
-                    class="mr-2 size-4"
-                  />
-                  <span class="truncate">{{ m }}</span>
-                </CommandItem>
-              </CommandGroup>
-            </CommandList>
-          </Command>
-        </PopoverContent>
-      </Popover>
-      <TooltipProvider v-if="showMove">
-        <Tooltip>
-          <TooltipTrigger as-child>
-            <Button
-              variant="ghost"
-              size="icon"
-              type="button"
-              :disabled="index === 0"
-              aria-label="上移"
-              @click="moveItem(index, -1)"
-              ><RiArrowUpLine size="16" /></Button
-          ></TooltipTrigger>
-          <TooltipContent>上移</TooltipContent>
-        </Tooltip>
-      </TooltipProvider>
-      <TooltipProvider v-if="showMove">
-        <Tooltip>
-          <TooltipTrigger as-child>
-            <Button
-              variant="ghost"
-              size="icon"
-              type="button"
-              :disabled="index === model.length - 1"
-              aria-label="下移"
-              @click="moveItem(index, 1)"
-              ><RiArrowDownLine size="16" /></Button
-          ></TooltipTrigger>
-          <TooltipContent>下移</TooltipContent>
-        </Tooltip>
-      </TooltipProvider>
-      <TooltipProvider v-if="showRemove">
-        <Tooltip>
-          <TooltipTrigger as-child>
-            <Button
-              variant="ghost"
-              size="icon"
-              type="button"
-              :disabled="model.length === 1"
-              aria-label="移除"
-              @click="removeItem(index)"
-              ><RiDeleteBinLine size="16" /></Button
-          ></TooltipTrigger>
-          <TooltipContent>移除</TooltipContent>
-        </Tooltip>
-      </TooltipProvider>
-    </div>
+                    <RiCheckLine
+                      :class="item.model === m ? 'opacity-100' : 'opacity-0'"
+                      class="mr-2 size-4"
+                    />
+                    <span class="truncate">{{ m }}</span>
+                  </CommandItem>
+                </CommandGroup>
+              </CommandList>
+            </Command>
+          </PopoverContent>
+        </Popover>
+        <TooltipProvider v-if="showMove">
+          <Tooltip>
+            <TooltipTrigger as-child>
+              <Button
+                variant="ghost"
+                size="icon"
+                type="button"
+                :disabled="index === 0"
+                aria-label="上移"
+                @click="moveItem(index, -1)"
+                ><RiArrowUpLine size="16" /></Button
+            ></TooltipTrigger>
+            <TooltipContent>上移</TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+        <TooltipProvider v-if="showMove">
+          <Tooltip>
+            <TooltipTrigger as-child>
+              <Button
+                variant="ghost"
+                size="icon"
+                type="button"
+                :disabled="index === model.length - 1"
+                aria-label="下移"
+                @click="moveItem(index, 1)"
+                ><RiArrowDownLine size="16" /></Button
+            ></TooltipTrigger>
+            <TooltipContent>下移</TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+        <TooltipProvider v-if="showRemove">
+          <Tooltip>
+            <TooltipTrigger as-child>
+              <Button
+                variant="ghost"
+                size="icon"
+                type="button"
+                :disabled="model.length === 1"
+                aria-label="移除"
+                @click="removeItem(index)"
+                ><RiDeleteBinLine size="16" /></Button
+            ></TooltipTrigger>
+            <TooltipContent>移除</TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+      </div>
+    </VueDraggable>
     <Button v-if="showAdd" type="button" variant="outline" size="sm" @click="addItem"
       ><RiAddLine size="16" />{{ addLabel }}</Button
     >

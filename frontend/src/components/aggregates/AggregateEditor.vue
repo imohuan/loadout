@@ -67,7 +67,9 @@ function hasConfig(config?: AggregateConfig): boolean {
         <DialogTitle>
           {{ aggregate ? (duplicate ? '复制聚合模型' : '编辑聚合模型') : '添加聚合模型' }}
         </DialogTitle>
-        <DialogDescription>按从上到下的顺序依次尝试固定的模型和渠道组合。</DialogDescription>
+        <DialogDescription>
+          按从上到下的顺序依次尝试固定的模型和渠道组合，拖动左侧手柄可调整顺序。
+        </DialogDescription>
       </DialogHeader>
       <form class="space-y-4" @submit.prevent="submit">
         <div class="max-w-xl space-y-2">
@@ -89,8 +91,9 @@ function hasConfig(config?: AggregateConfig): boolean {
             :allow-custom-model="false"
             :require-channel-for-model="true"
             :clear-model-on-channel-change="true"
-            :show-move="true"
+            :show-move="false"
             :show-index="true"
+            :draggable="true"
             add-label="添加目标"
           />
         </div>
