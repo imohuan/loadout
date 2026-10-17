@@ -35,6 +35,10 @@ type Service struct {
 	routing  *db.Repository
 	health   contracts.ModelHealth
 	routeLog contracts.RouteLog
+
+	// testHookBeforeProxy 仅测试用：在 HandleProxy 入口前改写 pipe（注入
+	// MetadataForceStream 等标记，免去装配完整插件链）。生产恒为 nil。
+	testHookBeforeProxy func(pipe *ProxyPipeline)
 }
 
 // NewService 创建模型转发服务。

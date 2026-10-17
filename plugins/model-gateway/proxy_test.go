@@ -551,7 +551,41 @@ func TestHandleProxyAllFailed(t *testing.T) {
 	}
 }
 
-// TestSplitV2Model 前缀拆分：最长 ChannelName 前缀匹配。
+// TestHandleProxyClientCancelStopsFailover 回归：客户端终止（context 取消）后
+// 网关必须立即停止 failover，不再切换渠道——终止是正常收尾，不是渠道故障。
+// 场景：渠道 A 的上游在客户端断开后读流报 context canceled（force-stream 缓冲
+// 或流式透传都会出现），若把它当渠道失败继续切换，会烧光所有候选 Key 并产生
+// 一串 context canceled 的失败日志。
+func TestHandleProxyClientCancelStopsFailover(t *testing.T) {
+	svc, _ := newTestService(t)
+	bad, getRecords := newEchoServer(t, "", 0, []string{"data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n"})
+	defer bad.Close()
+	if err := svc.st.Write(types.FileChannels, []types.Channel{
+		{ID: "ch1", Name: "渠道1", BaseURL: bad.URL, Enabled: true},
+		{ID: "ch2", Name: "渠道2", BaseURL: bad.URL, Enabled: true},
+	}); err != nil {
+		t.Fatalf("写渠道表失败: %v", err)
+	}
+
+	// 模拟客户端终止：请求发出前 context 已取消（客户端断开等价语义）。
+	// 非流式 + force-stream 标记复现线上路径：上游转流式缓冲，客户端取消导致
+	// readBufferedSSE 报 context canceled，旧实现会当渠道失败继续切渠道。
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"m","messages":[],"stream":false}`))
+	ctx, cancel := context.WithCancel(req.Context())
+	cancel()
+	req = req.WithContext(ctx)
+	rr := httptest.NewRecorder()
+	svc.testHookBeforeProxy = func(pipe *ProxyPipeline) {
+		pipe.Metadata[MetadataForceStream] = true
+	}
+	defer func() { svc.testHookBeforeProxy = nil }()
+	svc.HandleProxy(rr, req)
+
+	if records := getRecords(); len(records) > 1 {
+		t.Fatalf("客户端取消后不应继续切换渠道，实际上游收到 %d 次请求", len(records))
+	}
+}
+
 func TestSplitV2Model(t *testing.T) {
 	isChannel := func(s string) bool {
 		switch s {

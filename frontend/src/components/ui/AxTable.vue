@@ -263,25 +263,14 @@ function buildTableCss(w: number[]): string {
     // 覆盖层：只盖表头区间，本身不吃指针事件（手柄单独恢复）。
     `${scope} .axt-overlay { position: absolute; left: 0; z-index: 10; pointer-events: none; }`,
 			`${scope} .axt-overlay { cursor: col-resize; }`,
-      // 手柄：承担「拖拽中竖线」与「双击恢复/键盘调宽」，平时完全透明。
+      // 手柄：承担「双击恢复/键盘调宽」，平时完全透明。
       `${scope} .axt-handle {`,
         `  position: absolute; top: 0; height: 100%; width: 14px;`,
         `  transform: translateX(-50%); outline: none; user-select: none;`,
         `  pointer-events: auto;`,
       `}`,
       // 列边界指示线本体：默认透明；仅拖拽中 / 键盘聚焦时现身。
-      `${scope} .axt-line {`,
-        `  position: absolute; top: 4px; bottom: 4px; left: 50%; width: 3px;`,
-        `  transform: translateX(-50%); border-radius: 9999px;`,
-        `  background: var(--primary); opacity: 0;`,
-        `  transition: opacity 0.12s;`,
-      `}`,
-      `${scope} .axt-handle.is-dragging .axt-line { opacity: 1; }`,
       // 键盘可达：聚焦时显示边界线。
-      `${scope} .axt-handle:focus-visible .axt-line { opacity: 1; }`,
-      `${scope} .axt-handle:focus-visible { outline: 1px solid var(--primary); outline-offset: -1px; }`,
-            `${scope} .axt-handle:focus-visible { outline: 1px solid var(--primary); outline-offset: -1px; }`,
-            `${scope} .axt-handle:focus-visible { outline: 1px solid var(--primary); outline-offset: -1px; }`,
       `${scope} .axt-handle:focus-visible { outline: 1px solid var(--primary); outline-offset: -1px; }`,
   )
   w.forEach((width, i) => {

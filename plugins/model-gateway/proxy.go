@@ -125,6 +125,9 @@ func (s *Service) proxyHandle(w http.ResponseWriter, r *http.Request, version st
 
 	// 输入 hook：插件可改 Body/Path/Query/Header/Model。
 	out, err := s.ctx.Waterfall(ProxyBeforeUpstream, pipe)
+	if s.testHookBeforeProxy != nil {
+		s.testHookBeforeProxy(pipe)
+	}
 	if err != nil {
 		s.proxyRejectedLog(r, pipe, err)
 		writeGatewayError(w, err)
@@ -573,6 +576,13 @@ func (s *Service) proxyAttempt(w http.ResponseWriter, r *http.Request, pipe *Pro
 // 全部失败时把最后一个渠道的 状态码+错误体 原样透传（透明代理语义），并返回 nil；
 // 只有内部构造错误（无法发起任何请求）才返回 error。
 func (s *Service) proxyForward(w http.ResponseWriter, r *http.Request, pipe *ProxyPipeline, model string, started time.Time) error {
+	// 客户端已断开（UI 终止 / 连接中断）：终止是正常收尾，不是渠道故障。
+	// 不再解析候选、不再 failover——否则取消信号会让每次尝试都报 context canceled,
+	// 触发聚合切换烧光所有候选 Key，最后连 DB 查询都因 ctx 取消而报错。
+	if cerr := r.Context().Err(); cerr != nil {
+		s.lg.Info("客户端已断开，跳过转发", "request_id", pipe.RequestID, "model", model, "err", cerr.Error())
+		return nil
+	}
 	candidates, resolveErr := s.resolveProxyChannels(r.Context(), model, pipe)
 	if resolveErr != nil {
 		// 候选解析本身失败（DB 查询出错等内部错误）：必须把真实原因透出——
@@ -681,6 +691,11 @@ func (s *Service) proxyForward(w http.ResponseWriter, r *http.Request, pipe *Pro
 	var lastHeader http.Header
 
 	for _, ch := range candidates {
+		// 每次尝试前再查一次：上一渠道的缓冲读流/透传期间客户端可能刚断开。
+		if cerr := r.Context().Err(); cerr != nil {
+			s.lg.Info("客户端已断开，终止 failover", "request_id", pipe.RequestID, "model", model, "err", cerr.Error())
+			return nil
+		}
 		res := &attemptResult{}
 		var handled bool
 		pipe, handled = s.proxyAttempt(w, r, pipe, ch, model, started, res)

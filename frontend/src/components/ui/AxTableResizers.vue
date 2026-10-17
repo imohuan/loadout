@@ -16,7 +16,7 @@
  *   - 手柄元素只承担「拖拽中竖线」与「双击恢复 / 键盘调宽」两个辅助职责，
  *     平时透明不参与视觉。
  *
- * 样式（.axt-overlay / .axt-handle / .axt-line）由 AxTable 注入的样式表提供，
+ * 样式（.axt-overlay / .axt-handle）由 AxTable 注入的样式表提供，
  * 选择器以 AxTable 根 id 作用域限定，本组件渲染在其内部，因此照常生效。
  */
 import { onBeforeUnmount, onMounted, ref } from 'vue'
@@ -99,7 +99,6 @@ onBeforeUnmount(() => {
       @dblclick="emit('reset', i)"
       @keydown="(e) => emit('dragKey', i, e)"
     >
-      <span class="axt-line" />
     </div>
   </div>
 </template>
