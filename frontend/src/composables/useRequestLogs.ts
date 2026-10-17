@@ -40,5 +40,15 @@ export function useRequestLogs() {
    * 否则用户改了设置会以为没生效。返回清理后的最新统计。
    */
   const applyRetention = () => request<RequestLogStats>('/api/request-logs/retention/apply', 'POST')
-  return { list, detail, stats, clear, applyRetention }
+  /**
+   * replayScript：把该条日志的请求体生成一个可运行的 Node.js 复现脚本，
+   * 返回脚本绝对路径（后端落盘到 <数据目录>/replay-scripts/<id>.mjs）。
+   * 详情页「填入测试」按钮用它——不改造模型测试页，直接给用户一个脚本自己跑。
+   */
+  const replayScript = (id: string) =>
+    request<{ ok: boolean; path: string; bytes: number }>(
+      `/api/request-logs/${encodeURIComponent(id)}/replay-script`,
+      'POST',
+    )
+  return { list, detail, stats, clear, applyRetention, replayScript }
 }

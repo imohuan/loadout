@@ -65,6 +65,7 @@ const CAP_SENSITIVE = 'sensitive_filter'
 const CAP_FIELD_FILTER = 'field_filter'
 const CAP_MESSAGE_INJECT = 'message_inject'
 const CAP_REQUEST_LOG = 'request_log'
+const CAP_REQUEST_CAPTURE = 'request_capture'
 const CAP_FORCE_STREAM = 'force_stream'
 const CAP_KEY_RATE_LIMIT = 'key_rate_limit'
 
@@ -111,6 +112,7 @@ const form = reactive<{
   injections: MessageInjection[]
   fieldRulesText: Record<FieldRulesKey, string>
   rateLimit: RateLimitForm
+  requestLogKeepBase64: boolean
 }>({
   models: [],
   capability: CAP_VISION,
@@ -120,6 +122,7 @@ const form = reactive<{
   injections: [{ role: 'system', content: '', position: 'prepend' }],
   fieldRulesText: emptyFieldRulesText(),
   rateLimit: emptyRateLimitForm(),
+  requestLogKeepBase64: false,
 })
 
 // 目标渠道选择态（由 ChannelGroupPicker 直接 v-model；空 = 全渠道生效）。
@@ -186,6 +189,7 @@ watch(
             : '',
         onExhausted: route?.rate_limit?.on_exhausted || 'reject',
       },
+      requestLogKeepBase64: !!route?.request_log_keep_base64,
     })
     // 老数据 `*`（通用全匹配）归一化为空 = 全渠道生效，语义一致。
     // channel_base_urls 在 CapabilityRoute 里持久化（渠道级原意图）；新版本才写入，老数据为空是预期。
@@ -217,6 +221,8 @@ function onCapabilityChange(value: string) {
   } else {
     form.viaOptions = [{ model: '', channel_id: '', channel_ids: [] }]
   }
+  // 保留 base64 只属于 request_log：切到别的能力就复位，避免残留配置写进无关路由。
+  if (value !== CAP_REQUEST_LOG) form.requestLogKeepBase64 = false
 }
 
 // 把 field_rules 原始文本解析为数组（按行 split/trim，忽略空行）。
@@ -323,6 +329,7 @@ const capabilityOptions = [
   { value: CAP_FIELD_FILTER, label: 'field_filter（字段过滤）' },
   { value: CAP_MESSAGE_INJECT, label: 'message_inject（消息注入）' },
   { value: CAP_REQUEST_LOG, label: 'request_log（完整请求日志）' },
+  { value: CAP_REQUEST_CAPTURE, label: 'request_capture（请求抓包捕获）' },
   { value: CAP_FORCE_STREAM, label: 'force_stream（强制流式·非流式客户端兼容）' },
   { value: CAP_KEY_RATE_LIMIT, label: 'key_rate_limit（Key 限流·账号轮换）' },
 ]
@@ -360,6 +367,13 @@ const routeHint = computed(() => {
       proxy:
         '记录该模型/渠道下每次请求的完整输入输出（独立库 request-log.db，脱敏后落库）；转发日志页可从该行跳转查看详情。',
       native: '不记录完整请求日志（请求体/响应体均不落库）。',
+    }[form.route]
+  }
+  if (form.capability === CAP_REQUEST_CAPTURE) {
+    return {
+      proxy:
+        '在请求进入中转的最前端把完整原始报文（含 Authorization 与图片 base64）打包落盘；「请求抓包捕获」页可查看、下载并生成 Node 复现脚本。',
+      native: '不抓包：原始报文不落盘（适合通配规则下的精确豁免）。',
     }[form.route]
   }
   if (form.capability === CAP_FORCE_STREAM) {
@@ -420,6 +434,8 @@ function submit() {
       }
     } else if (form.capability === CAP_REQUEST_LOG) {
       // request_log 无额外配置（脱敏开关在独立 config 表），直接放行
+    } else if (form.capability === CAP_REQUEST_CAPTURE) {
+      // request_capture 无额外配置（纯 on/off 能力），直接放行
     } else if (form.capability === CAP_FORCE_STREAM) {
       // force_stream 无额外配置（纯 on/off 能力），直接放行
     } else if (form.capability === CAP_KEY_RATE_LIMIT) {
@@ -513,6 +529,11 @@ function submit() {
     field_rules,
     injections,
     rate_limit,
+    // 只有 request_log 才有意义：其他能力保存时省略（omitempty 不落库）。
+    request_log_keep_base64:
+      form.capability === CAP_REQUEST_LOG && form.route !== 'native'
+        ? form.requestLogKeepBase64
+        : undefined,
   })
 }
 </script>
@@ -834,6 +855,23 @@ function submit() {
             <b>并发</b>=同一时刻这个 Key 上最多有几个请求在跑。超额都会自动落到同平台的另一个账号，
             计数只存在内存里、重启后清零。当前设置 = {{ rateLimitSummary }}。
           </p>
+        </div>
+        <div
+          v-else-if="form.capability === CAP_REQUEST_LOG && form.route !== 'native'"
+          class="space-y-2"
+        >
+          <div class="flex items-center justify-between gap-3">
+            <div class="space-y-1">
+              <Label>保留原始 base64（图片不再打码）</Label>
+              <p class="text-xs text-muted-foreground">
+                开启后日志里的图片 data URI 原文照存，方便重放调试；代价是日志体积明显变大。
+                关闭时按图片占位符
+                <code class="font-mono">[image: mime, NB]</code>
+                记录。无论开关如何，<b>sk- 密钥始终打码</b>。
+              </p>
+            </div>
+            <Switch v-model="form.requestLogKeepBase64" />
+          </div>
         </div>
         <div v-else-if="form.capability === CAP_VISION && form.route === 'proxy'" class="space-y-2">
           <Label>视觉候选（从上到下依次请求，失败换下一个）</Label>

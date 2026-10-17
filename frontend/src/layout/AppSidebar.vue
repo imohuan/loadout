@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import { useRoute } from 'vue-router'
 import ProcessFooter from '@/components/ProcessFooter.vue'
+import { isDesktopShell } from '@/lib/base'
 import {
   RiApps2Line,
   RiCpuLine,
@@ -12,6 +13,7 @@ import {
   RiFlaskLine,
   RiLinkM,
   RiRobot2Line,
+  RiScanLine,
   RiSettings3Line,
   RiShieldCheckLine,
   RiSwapLine,
@@ -35,6 +37,7 @@ const groups = [
       { to: '/model-status', label: '模型状态', icon: RiShieldCheckLine },
       { to: '/failure-rules', label: '失败规则', icon: RiFilterLine },
       { to: '/route-logs', label: '转发日志', icon: RiFileList3Line },
+      { to: '/request-captures', label: '请求抓包捕获', icon: RiScanLine },
     ],
   },
   {
@@ -54,7 +57,8 @@ function isActive(to: string) {
 
 <template>
   <Sidebar collapsible="icon">
-    <SidebarHeader>
+    <!-- 桌面版（exe）已有系统标题栏，品牌区重复，隐藏以节省导航空间；浏览器版保留。 -->
+    <SidebarHeader v-if="!isDesktopShell">
       <RouterLink
         to="/"
         class="flex h-10 items-center gap-2 px-2 text-foreground transition-[padding,gap] group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:gap-0 group-data-[collapsible=icon]:px-0"

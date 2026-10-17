@@ -6,6 +6,19 @@
  * 字符串值中的 http/https URL 自动转为可点击链接（v-html，先转义防 XSS）。
  */
 import { computed, ref, watch } from 'vue'
+import DataUriValue from './DataUriValue.vue'
+
+/** 长 base64 data URI 的判定阈值：超过它就折叠成摘要，hover 预览。 */
+const DATA_URI_COLLAPSE_THRESHOLD = 512
+
+/** 该字符串是否是长 data URI（需要交给 DataUriValue 做缩略展示）。 */
+const isLongDataUri = computed(() => {
+  const val = parsedData.value
+  if (typeof val !== 'string') return false
+  if (!val.startsWith('data:')) return false
+  const comma = val.indexOf(',')
+  return comma > 0 && val.length - comma - 1 >= DATA_URI_COLLAPSE_THRESHOLD
+})
 
 /** URL 链接化：先 HTML 转义防 XSS，再正则替换为可点击 <a>。 */
 const URL_RE = /https?:\/\/[^\s<>"'`（）()「」【】[\]]+/g
@@ -235,6 +248,12 @@ watch(
           }}<span class="text-muted-foreground">'</span><span class="text-muted-foreground">:</span>
         </span>
         <span
+          v-if="isLongDataUri"
+          :class="valueColorClass"
+          class="inline-block align-bottom"
+        >"<DataUriValue :value="String(parsedData)" />"</span>
+        <span
+          v-else
           :class="valueColorClass"
           class="inline-block align-bottom"
           v-html="linkify(formatValue(data))"

@@ -9,6 +9,7 @@ const ModelStatusView = () => import('@/views/ModelStatusView.vue')
 const RulesView = () => import('@/views/RulesView.vue')
 const RouteLogsView = () => import('@/views/RouteLogsView.vue')
 const RequestLogDetailView = () => import('@/views/RequestLogDetailView.vue')
+const RequestCapturesView = () => import('@/views/RequestCapturesView.vue')
 const McpView = () => import('@/views/McpView.vue')
 const CapabilityRoutesView = () => import('@/views/CapabilityRoutesView.vue')
 const ManagementView = () => import('@/views/ManagementView.vue')
@@ -68,6 +69,12 @@ const router = createRouter({
           name: 'request-log-detail',
           component: RequestLogDetailView,
           meta: { title: '完整请求日志' },
+        },
+        {
+          path: 'request-captures',
+          name: 'request-captures',
+          component: RequestCapturesView,
+          meta: { title: '请求抓包捕获' },
         },
         {
           path: 'integrations',
@@ -138,11 +145,53 @@ router.beforeEach(async (to) => {
 
 // 导航完成后兜底再清一次（处理浏览器历史前进/后退把 sso 带回地址栏等边界）。
 router.afterEach(() => {
+  // 自愈标记只在「本次导航成功」后清除：同一个路径允许在后续再次自愈，
+  // 避免标签页开久了只能恢复一次。失败时不清除，防止无限刷新。
+  sessionStorage.removeItem('loadout:chunk-reload')
   if (new URLSearchParams(window.location.search).get('sso')) {
     const url = new URL(window.location.href)
     url.searchParams.delete('sso')
     window.history.replaceState({}, '', url.pathname + url.search)
   }
+})
+
+// 动态导入失败兜底：dev 模式下浏览器缓存块损坏（ERR_CACHE_READ_FAILURE / 304）或
+// 重新构建后旧的 chunk 哈希失效，会让路由懒加载直接抛 "Failed to fetch dynamically
+// imported module"。这里强制整页重载一次（带 cache-bust 参数），让浏览器重新拉取
+// 模块图；用 sessionStorage 记一次上限，避免服务真的挂掉时陷入无限刷新。
+router.onError((err, to) => {
+  const msg = String((err as Error)?.message || err)
+  const isChunkLoad =
+    /Failed to fetch dynamically imported module|Importing a module script failed|ERR_CACHE_READ_FAILURE/i.test(
+      msg,
+    )
+  if (!isChunkLoad) return
+  const key = 'loadout:chunk-reload'
+  const target = to?.fullPath || window.location.pathname + window.location.search
+  if (sessionStorage.getItem(key) === target) {
+    // 已经为这个路径重载过一次还是失败：说明不是缓存问题，交给调用方/控制台
+    sessionStorage.removeItem(key)
+    console.error('[router] 模块加载连续失败，跳过自动重载：', msg)
+    return
+  }
+  sessionStorage.setItem(key, target)
+  const url = new URL(window.location.href)
+  url.searchParams.set('_r', String(Date.now()))
+  window.location.replace(url.toString())
+})
+
+// 首次导航就崩溃（router 报 VUE_ROUTER_R0011）时，上面的 onError 不会触发，
+// 需要给初始 mount 的 push 加 catch 兜底。dev 缓存损坏常见于页面长时间挂着后
+// 重新构建，重载一次即可恢复。
+router.isReady().catch((err) => {
+  const msg = String((err as Error)?.message || err)
+  if (!/Failed to fetch dynamically imported module|ERR_CACHE_READ_FAILURE/i.test(msg)) return
+  const key = 'loadout:chunk-reload'
+  if (sessionStorage.getItem(key) === '__ready__') return
+  sessionStorage.setItem(key, '__ready__')
+  const url = new URL(window.location.href)
+  url.searchParams.set('_r', String(Date.now()))
+  window.location.replace(url.toString())
 })
 
 export default router

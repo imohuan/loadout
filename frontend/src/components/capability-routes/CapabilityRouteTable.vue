@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import {
-  RiArrowDownLine,
-  RiArrowUpLine,
   RiDeleteBinLine,
+  RiDraggable,
   RiEditLine,
   RiLoader4Line,
 } from '@remixicon/vue'
+import { VueDraggable } from 'vue-draggable-plus'
+import { ref, watch } from 'vue'
 import type { CapabilityRoute, Channel } from '@/lib/types'
 import {
   formatChannelGroupLabel,
@@ -25,7 +26,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   edit: [route: CapabilityRoute]
   remove: [route: CapabilityRoute]
-  move: [index: number, direction: -1 | 1]
+  reorder: [routes: CapabilityRoute[]]
 }>()
 
 // 路由唯一 key：与 CapabilityRoutesView.key() 一致（capability|models|channel_ids|channel_base_urls）。
@@ -42,6 +43,21 @@ function routeKey(route: CapabilityRoute) {
 }
 function busy(route: CapabilityRoute, action: string) {
   return props.isPending ? props.isPending(`route:${routeKey(route)}:${action}`) : false
+}
+
+// 拖拽重排（vue-draggable-plus）：仅左侧把手可拖，整行拖拽会误触编辑/删除。
+// VueDraggable 需要可写数组承载内部移动，用本地副本，结束后回传新顺序。
+const dragList = ref<CapabilityRoute[]>([])
+watch(
+  () => props.routes,
+  (v) => {
+    dragList.value = [...v]
+  },
+  { immediate: true },
+)
+function onReorder(list: CapabilityRoute[]) {
+  dragList.value = list
+  emit('reorder', list)
 }
 
 const routeLabel: Record<string, string> = {
@@ -131,7 +147,9 @@ function channelScopeLabel(channels: Channel[], ids?: string[], baseURLs?: strin
       <CardHeader>
         <CardTitle class="text-base">能力路由列表</CardTitle>
         <CardDescription
-          >目标模型 × 能力 命中后按路由方式处理；代理时按候选顺序兜底。</CardDescription
+          ><strong class="font-medium text-foreground">顺序即优先级</strong
+          >：越靠上越优先。同一能力有多条规则同时命中时，只有最靠上的那条生效（例如两条都配了
+          step-5-preview 的 request_log，排在前面的决定是否保留原始 base64）。拖拽或上下移动即可调整。</CardDescription
         >
       </CardHeader>
       <CardContent class="p-0">
@@ -140,6 +158,8 @@ function channelScopeLabel(channels: Channel[], ids?: string[], baseURLs?: strin
             <Table>
               <TableHeader>
                 <TableRow>
+                  <TableHead class="w-8"></TableHead>
+                  <TableHead class="w-14">优先级</TableHead>
                   <TableHead>目标模型</TableHead>
                   <TableHead>渠道</TableHead>
                   <TableHead>能力</TableHead>
@@ -148,9 +168,15 @@ function channelScopeLabel(channels: Channel[], ids?: string[], baseURLs?: strin
                   <TableHead class="text-right">操作</TableHead>
                 </TableRow>
               </TableHeader>
-              <TableBody>
+              <VueDraggable
+                  v-model="dragList"
+                  tag="tbody"
+                  handle=".cursor-grab"
+                  :animation="150"
+                  @update:model-value="onReorder"
+                >
                 <TableRow
-                  v-for="(route, index) in routes"
+                  v-for="(route, routeIndex) in dragList"
                   :key="
                     (route.models || []).join(',') +
                     ':' +
@@ -161,6 +187,16 @@ function channelScopeLabel(channels: Channel[], ids?: string[], baseURLs?: strin
                     route.capability
                   "
                 >
+                  <TableCell class="w-8 pr-0">
+                    <RiDraggable
+                      class="cursor-grab text-muted-foreground/60 hover:text-foreground active:cursor-grabbing"
+                      size="16"
+                      aria-label="拖拽排序"
+                    />
+                  </TableCell>
+                  <TableCell class="tabular-nums text-xs text-muted-foreground">
+                    {{ routeIndex + 1 }}
+                  </TableCell>
                   <TableCell class="max-w-md text-sm text-muted-foreground">
                     <Tooltip>
                       <TooltipTrigger as-child>
@@ -211,6 +247,9 @@ function channelScopeLabel(channels: Channel[], ids?: string[], baseURLs?: strin
                           </template>
                           <template v-else-if="route.capability === 'request_log'">
                             记录完整请求/响应
+                          </template>
+                          <template v-else-if="route.capability === 'request_capture'">
+                            抓包保存原始报文（含 base64）
                           </template>
                           <template v-else-if="route.capability === 'force_stream'">
                             强制流式，整包非流式返回
@@ -292,32 +331,6 @@ function channelScopeLabel(channels: Channel[], ids?: string[], baseURLs?: strin
                           ><Button
                             variant="ghost"
                             size="icon"
-                            aria-label="上移"
-                            :disabled="index === 0 || busy(route, 'move')"
-                            @click="emit('move', index, -1)"
-                          >
-                            <RiArrowUpLine size="16" /> </Button
-                        ></TooltipTrigger>
-                        <TooltipContent>上移</TooltipContent>
-                      </Tooltip>
-                      <Tooltip>
-                        <TooltipTrigger as-child
-                          ><Button
-                            variant="ghost"
-                            size="icon"
-                            aria-label="下移"
-                            :disabled="index === routes.length - 1 || busy(route, 'move')"
-                            @click="emit('move', index, 1)"
-                          >
-                            <RiArrowDownLine size="16" /> </Button
-                        ></TooltipTrigger>
-                        <TooltipContent>下移</TooltipContent>
-                      </Tooltip>
-                      <Tooltip>
-                        <TooltipTrigger as-child
-                          ><Button
-                            variant="ghost"
-                            size="icon"
                             aria-label="编辑"
                             @click="emit('edit', route)"
                           >
@@ -345,7 +358,7 @@ function channelScopeLabel(channels: Channel[], ids?: string[], baseURLs?: strin
                     </div>
                   </TableCell>
                 </TableRow>
-              </TableBody>
+              </VueDraggable>
             </Table>
           </AxTable>
         </div>

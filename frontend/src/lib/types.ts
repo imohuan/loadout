@@ -233,6 +233,40 @@ export interface RequestLogStats {
   max_size_mb: number
 }
 
+/** request-capture 插件：一条捕获文件（列表行）。 */
+export interface CaptureItem {
+  /** 文件名（request_id 去掉 .cap.json.gz） */
+  id: string
+  request_id: string
+  model: string
+  /** 压缩后文件大小（字节） */
+  size: number
+  captured_at: string
+  method: string
+  path: string
+  stream: boolean
+}
+
+/** request-capture 列表分页结果。 */
+export interface CapturePage {
+  items: CaptureItem[]
+  total: number
+  /** 捕获目录真实占用（字节） */
+  size: number
+  /** 保留策略：只留最近多少天（0 = 不限） */
+  max_age_days: number
+  /** 保留策略：最多占用多少 MB（0 = 不限） */
+  max_size_mb: number
+}
+
+/** request-capture 详情：原始报文，未脱敏。 */
+export interface CaptureDetail extends CaptureItem {
+  query: string
+  headers: Record<string, string[]>
+  /** 原始请求体（含 base64 原文；非 UTF-8 时形如 hex:...） */
+  body: string
+}
+
 export interface Skill {
   name: string
   description?: string
@@ -354,6 +388,8 @@ export interface CapabilityRoute {
   field_rules?: FieldRules // 字段过滤规则（field_filter 用；nil/undefined = 未配置，原样透传）
   injections?: MessageInjection[] // 消息注入配置，顺序即注入顺序（message_inject 用）
   rate_limit?: RateLimitRule // 限流参数（key_rate_limit 用；undefined = 未配置，不限流）
+  /** request_log 用：保留原始 base64（图片原文照存）；false/缺省 = 转 [image: mime, NB] 占位符 */
+  request_log_keep_base64?: boolean
 }
 
 // RateLimitRule 单个上游渠道 Key 的限流参数（key_rate_limit 能力）。

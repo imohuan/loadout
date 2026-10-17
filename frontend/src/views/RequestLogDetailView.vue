@@ -13,6 +13,7 @@ import {
   RiClipboardLine,
   RiCheckLine,
   RiLink,
+  RiTerminalBoxLine,
 } from '@remixicon/vue'
 import { toast } from 'vue-sonner'
 import AxJsonViewer from '@/components/ui/AxJsonViewer.vue'
@@ -32,7 +33,7 @@ type ResponseSnapshot = {
 
 const route = useRoute()
 const router = useRouter()
-const { detail } = useRequestLogs()
+const { detail, replayScript } = useRequestLogs()
 
 const log = ref<RequestLogDetail | null>(null)
 const error = ref('')
@@ -159,6 +160,44 @@ async function copyLink() {
     toast.error('复制失败，请检查浏览器剪贴板权限')
   }
 }
+
+// ---- 填入测试：生成 Node.js 复现脚本 ----
+//
+// 模型测试页只支持「角色 + 文本」，装不下这条日志里的完整 messages + tools，
+// 所以不跳转页面，而是让后端把原始请求体写成一个可直接运行的 .mjs 脚本，
+// 前端只负责展示路径并提供复制。
+const replayOpen = ref(false)
+const replayLoading = ref(false)
+const replayPath = ref('')
+const replayBytes = ref(0)
+const replayError = ref('')
+
+async function generateReplayScript() {
+  if (!log.value || replayLoading.value) return
+  replayLoading.value = true
+  replayError.value = ''
+  try {
+    const res = await replayScript(log.value.id)
+    replayPath.value = res.path
+    replayBytes.value = res.bytes
+    replayOpen.value = true
+  } catch (e) {
+    replayError.value = e instanceof Error ? e.message : '生成复现脚本失败'
+    replayOpen.value = true
+  } finally {
+    replayLoading.value = false
+  }
+}
+
+async function copyReplayPath() {
+  if (!replayPath.value) return
+  try {
+    await navigator.clipboard.writeText(replayPath.value)
+    toast.success('已复制脚本路径')
+  } catch {
+    toast.error('复制失败，请检查浏览器剪贴板权限')
+  }
+}
 </script>
 
 <template>
@@ -232,6 +271,16 @@ async function copyLink() {
               >
                 <component :is="copied ? RiCheckLine : RiClipboardLine" size="14" />
                 {{ copied ? '已复制' : '复制完整 JSON' }}
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                class="gap-1.5"
+                :disabled="!log || replayLoading"
+                @click="generateReplayScript"
+              >
+                <RiTerminalBoxLine size="14" />
+                {{ replayLoading ? '生成中…' : '填入测试' }}
               </Button>
             </div>
           </div>
@@ -390,5 +439,48 @@ async function copyLink() {
         </CardContent>
       </Card>
     </template>
+
+    <!-- 填入测试：复现脚本路径 -->
+    <Dialog :open="replayOpen" @update:open="(o: boolean) => (replayOpen = o)">
+      <DialogContent class="max-w-xl">
+        <DialogHeader>
+          <DialogTitle class="text-base">复现脚本已生成</DialogTitle>
+          <DialogDescription class="text-xs text-muted-foreground">
+            脚本里带着这条日志的原始请求体，直接用 Node.js 跑就能重放。
+          </DialogDescription>
+        </DialogHeader>
+        <div class="space-y-3 text-sm">
+          <Alert v-if="replayError" variant="destructive">
+            <RiErrorWarningLine size="16" />
+            <AlertTitle>生成失败</AlertTitle>
+            <AlertDescription>{{ replayError }}</AlertDescription>
+          </Alert>
+          <template v-else>
+            <div class="rounded border border-border bg-muted/30 p-3">
+              <p class="break-all font-mono text-xs">{{ replayPath }}</p>
+              <p class="mt-2 text-xs text-muted-foreground">
+                脚本 {{ replayBytes }} 字节 · 目录与 request-logs 同级
+              </p>
+            </div>
+            <div class="rounded border border-border bg-muted/30 p-3 font-mono text-xs">
+              LOADOUT_API_KEY=sk-xxx node "{{ replayPath }}"
+            </div>
+            <p class="text-xs text-muted-foreground">
+              Windows PowerShell 里先设环境变量，再运行脚本：
+            </p>
+            <div class="rounded border border-border bg-muted/30 p-3 font-mono text-xs">
+              $env:LOADOUT_API_KEY = 'sk-xxx'
+            </div>
+          </template>
+        </div>
+        <DialogFooter class="gap-2">
+          <Button v-if="!replayError" variant="outline" size="sm" class="gap-1.5" @click="copyReplayPath">
+            <RiClipboardLine size="14" />
+            复制路径
+          </Button>
+          <Button size="sm" @click="replayOpen = false">关闭</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   </div>
 </template>

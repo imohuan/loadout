@@ -93,7 +93,15 @@ async function save(value: CapabilityRoute) {
   await run(
     'save',
     async () => {
-      const next = [...(routes.value || []).filter((item) => key(item) !== editingKey), value]
+      // 编辑已有路由时保持它在列表中的原位置：整体替换接口按数组顺序持久化
+      // position，把被编辑项追加到末尾会让它「悄悄下沉」，而多条同类路由命中时
+      // 是由顺序决定哪条生效（现在后端按具体度排序，但顺序仍应稳定、符合预期）。
+      const list = routes.value || []
+      const idx = editingKey ? list.findIndex((item) => key(item) === editingKey) : -1
+      const next =
+        idx >= 0
+          ? list.map((item, i) => (i === idx ? value : item))
+          : [...list, value]
       await routeService.replaceAll(next)
       editing.value = undefined
       editorOpen.value = false
@@ -113,16 +121,10 @@ async function remove(value: CapabilityRoute) {
     '能力路由已删除',
   )
 }
-// 上下移动（排序）：调整数组顺序后整体替换，后端按 position 持久化顺序。
-async function moveRoute(index: number, direction: -1 | 1) {
-  const list = routes.value || []
-  const target = index + direction
-  if (target < 0 || target >= list.length) return
-  const next = [...list]
-  const [item] = next.splice(index, 1)
-  next.splice(target, 0, item)
+// 拖拽排序（vue-draggable-plus）：拖拽结束后整体替换，后端按 position 持久化顺序。
+async function reorderRoutes(next: CapabilityRoute[]) {
   await run(
-    `route:${key(item)}:move`,
+    'route:reorder',
     async () => {
       await routeService.replaceAll(next)
       await refreshRoutes()
@@ -159,7 +161,7 @@ async function moveRoute(index: number, direction: -1 | 1) {
       :is-pending="isPending"
       @edit="openEdit"
       @remove="remove"
-      @move="moveRoute"
+      @reorder="reorderRoutes"
     />
   </div>
 </template>
