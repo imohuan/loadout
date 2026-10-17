@@ -93,6 +93,9 @@ func (p *requestLogPlugin) Apply(ctx plugin.Context) error {
 	// 详情接口 public：按 UUID 直取单条日志，前端「复制日志链接」会把它贴进外部
 	// 浏览器/IM 打开，链到就是一个可分享的访问凭据，不带会话也要能看。
 	ctx.RegisterRoute(plugin.RouteSpec{Method: http.MethodGet, Pattern: "GET /api/request-logs/{id}", Auth: plugin.AuthPublic, Handler: http.HandlerFunc(svc.handleDetail)})
+	// 复现脚本：详情页「填入测试」按钮调用。与详情同为 public——能看详情的人就能
+	// 生成复现脚本，两边拿到的信息量一致（脚本里只有请求体，不含密钥）。
+	ctx.RegisterRoute(plugin.RouteSpec{Method: http.MethodPost, Pattern: "POST /api/request-logs/{id}/replay-script", Auth: plugin.AuthPublic, Handler: http.HandlerFunc(svc.handleReplayScript)})
 
 	ctx.RegisterCheck("request-log 完整性", func() []plugin.Issue {
 		var issues []plugin.Issue

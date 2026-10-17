@@ -61,6 +61,11 @@ const attemptMetadataKey = modelgateway.MetadataRequestLogAttemptID
 // request_id 反查兜底——防止把上一个已记录 attempt 的日志行错误收尾/覆盖。
 const skippedKey = "__request_log_skipped"
 
+// keepBase64Key 本次请求的有效「保留原始 base64」配置（bool）：before-attempt
+// 从命中的能力路由读出后写入 metadata，收尾事件（响应/流式块）复用同一口径——
+// 同一个请求的请求体与响应体不能一个保留一个打码。
+const keepBase64Key = "__request_log_keep_base64"
+
 // Service 完整请求日志适配器：查能力路由、抓请求/响应快照，正文写块存储
 // （manifests/ + blobs/），request-log.db 只存元数据行。
 // 所有写库 best-effort：handler 永不 return error（否则中断整个 /v1 转发），
@@ -370,6 +375,27 @@ func (s *Service) redactEnabled() bool {
 	return redact != 0
 }
 
+// redactOptions 一次请求的脱敏口径：总开关 + 是否保留原始 base64。
+//
+// KeepBase64 来自命中的能力路由（RequestLogKeepBase64），before-attempt 时写进
+// metadata（keepBase64Key），收尾事件从这里取——保证同一次请求的请求体、响应体、
+// 流式块用同一个口径，不会出现请求体保留图片、响应体被打码这种半截行为。
+type redactOptions struct {
+	Enabled    bool
+	KeepBase64 bool
+}
+
+// redactOptions 组装本次请求的脱敏口径（metadata 缺失时按打码处理）。
+func (s *Service) redactOptions(pipe *modelgateway.ProxyPipeline) redactOptions {
+	opts := redactOptions{Enabled: s.redactEnabled()}
+	if pipe != nil && pipe.Metadata != nil {
+		if v, _ := pipe.Metadata[keepBase64Key].(bool); v {
+			opts.KeepBase64 = true
+		}
+	}
+	return opts
+}
+
 // subscribe 订阅 model-gateway 事件。
 func (s *Service) subscribe(ctx plugin.Context) {
 	ctx.On(modelgateway.ProxyBeforeAttempt, s.HandleBeforeAttempt)
@@ -419,6 +445,7 @@ func (s *Service) HandleBeforeAttempt(payload any) (any, error) {
 		// pipeRequestLogID 直接返回空、跳过反查。
 		delete(pipe.Metadata, metadataKey)
 		delete(pipe.Metadata, attemptMetadataKey)
+		delete(pipe.Metadata, keepBase64Key)
 		pipe.Metadata[skippedKey] = true
 		return payload, nil
 	}
@@ -431,6 +458,10 @@ func (s *Service) HandleBeforeAttempt(payload any) (any, error) {
 	// 落 request_log_id 列（前端内层行渲染「日志」按钮）。
 	pipe.Metadata[metadataKey] = uuid
 	pipe.Metadata[attemptMetadataKey] = uuid
+	// 本 attempt 的 base64 保留口径（能力路由配置）：写进 metadata，收尾事件
+	// （after/stream-chunk/upstream-failed）复用，保证请求体与响应体同口径。
+	// 只认 routes[0]——与 SelectCapabilityRoutes 的「首条生效」语义一致。
+	pipe.Metadata[keepBase64Key] = routes[0].RequestLogKeepBase64
 
 	// UPDATE 关联列（best-effort；loadout 连接为空或行不存在时忽略，不影响记录）。
 	// 每次尝试都覆写：外层「完整日志」入口必须指向**最后一次**渠道尝试的日志，也就是真正
@@ -444,7 +475,7 @@ func (s *Service) HandleBeforeAttempt(payload any) (any, error) {
 
 	channel, _ := pipe.Metadata["__current_channel"].(string)
 	started := time.Now().UTC()
-	snap := buildRequestSnapshot(pipe, model, s.redactEnabled())
+	snap := buildRequestSnapshot(pipe, model, s.redactOptions(pipe))
 	reqJSON, err := json.Marshal(snap)
 	if err != nil {
 		s.lg.Warn("request-log: 序列化请求快照失败", "request_id", pipe.RequestID, "err", err)
@@ -478,7 +509,7 @@ func (s *Service) beginBlobLog(pipe *modelgateway.ProxyPipeline, model, uuid, ch
 		Result:    "running",
 	}
 	// 快照 headers/method 等进 ReqExtra 的包装层（组装时还原 requestSnapshot 结构）
-	snap := buildRequestSnapshot(pipe, model, s.redactEnabled())
+	snap := buildRequestSnapshot(pipe, model, s.redactOptions(pipe))
 	// snap.Body 已含完整请求体（脱敏后）；拆的是脱敏后的 body——脱敏是确定性
 	// 替换，同一条消息前后轮脱敏结果一致，哈希命中不受影响。
 	body := []byte(snap.Body)
@@ -570,10 +601,11 @@ func (s *Service) HandleAfterUpstream(payload any) (any, error) {
 		return payload, nil // 未被记录（未命中能力路由）
 	}
 	channel, _ := ap.Pipe.Metadata["__last_tried_channel"].(string)
+	opts := s.redactOptions(ap.Pipe)
 	snap := responseSnapshot{
 		StatusCode: ap.Response.StatusCode,
-		Headers:    redactHeaders(ap.Response.Header, s.redactEnabled()),
-		Body:       redactBody(string(ap.Response.Body), s.redactEnabled()),
+		Headers:    redactHeaders(ap.Response.Header, opts.Enabled),
+		Body:       redactBody(string(ap.Response.Body), opts),
 	}
 	respJSON, err := json.Marshal(snap)
 	if err != nil {
@@ -599,7 +631,7 @@ func (s *Service) HandleUpstreamFailed(payload any) (any, error) {
 	channel, _ := fp.Pipe.Metadata["__last_tried_channel"].(string)
 	snap := responseSnapshot{
 		StatusCode: fp.StatusCode,
-		Body:       redactBody(fp.ErrorBody, s.redactEnabled()),
+		Body:       redactBody(fp.ErrorBody, s.redactOptions(fp.Pipe)),
 	}
 	respJSON, err := json.Marshal(snap)
 	if err != nil {
@@ -724,7 +756,7 @@ func (s *Service) HandleStreamChunk(payload any) (any, error) {
 	}
 	// 触顶后丢弃后续 chunk（只保留截断标记），防止大流式无限累积
 	if buf.Len() < maxStreamBuffer {
-		buf.WriteString(redactBody(string(sp.Data), s.redactEnabled()))
+		buf.WriteString(redactBody(string(sp.Data), s.redactOptions(sp.Pipe)))
 	} else {
 		sp.Pipe.Metadata[streamTruncatedKey] = true
 	}
@@ -1029,7 +1061,9 @@ func (s *Service) healStuckBlob(id, requestID string, started time.Time) {
 	}
 	respJSON := ""
 	if errBody != "" {
-		snap := responseSnapshot{StatusCode: status, Body: redactBody(errBody, s.redactEnabled())}
+		// 自愈收尾拿不到当时的路由配置（manifest 不存 keep_base64），按默认打码处理；
+		// 正常链路（after-upstream / stream-chunk / attempt-failed）都用当次请求的口径。
+		snap := responseSnapshot{StatusCode: status, Body: redactBody(errBody, redactOptions{Enabled: s.redactEnabled()})}
 		if b, err := json.Marshal(snap); err == nil {
 			respJSON = string(b)
 		}
@@ -1172,6 +1206,46 @@ func (s *Service) handleDetail(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, detail)
 }
 
+// handleReplayScript POST /api/request-logs/{id}/replay-script
+//
+// 把日志里的原始请求体生成一个可直接运行的 Node.js 复现脚本，写到
+// <数据目录>/replay-scripts/<id>.mjs，返回绝对路径。前端只负责展示路径，
+// 由用户自己在终端运行——调试 400 时不依赖管理台的模型测试页。
+//
+// 注意：脚本内容来自 request-log 记录的 body，图片 base64 在写日志时已被
+// 替换成占位符（除非该路由开启了完整保留）。需要逐字节复现请用请求捕获插件
+// 生成的脚本，那份是原始报文。
+func (s *Service) handleReplayScript(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	detail, err := s.Detail(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeJSON(w, http.StatusNotFound, map[string]any{"error": map[string]any{"message": "该请求未记录完整日志"}})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": map[string]any{"message": err.Error()}})
+		return
+	}
+	body, path, err := replayBodyFromDetail(detail)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]any{"message": err.Error()}})
+		return
+	}
+	scriptPath, size, err := s.WriteReplayScript(id, body, ReplayScriptOptions{
+		RequestID: detail.RequestID,
+		Path:      path,
+	})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": map[string]any{"message": err.Error()}})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":    true,
+		"path":  scriptPath,
+		"bytes": size,
+	})
+}
+
 // writeJSON 统一 JSON 响应。
 func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -1199,14 +1273,14 @@ type requestSnapshot struct {
 	Stream  bool           `json:"stream"`
 }
 
-// buildRequestSnapshot 序列化请求快照（脱敏 + base64 图片占位）。
-func buildRequestSnapshot(pipe *modelgateway.ProxyPipeline, model string, redact bool) requestSnapshot {
+// buildRequestSnapshot 序列化请求快照（脱敏 + 可选 base64 图片占位）。
+func buildRequestSnapshot(pipe *modelgateway.ProxyPipeline, model string, opts redactOptions) requestSnapshot {
 	return requestSnapshot{
 		Method:  pipe.Request.Method,
 		Path:    pipe.Request.Path,
 		Query:   pipe.Request.Query,
-		Headers: redactHeaders(pipe.Request.Header, redact),
-		Body:    redactBody(string(pipe.Request.Body), redact),
+		Headers: redactHeaders(pipe.Request.Header, opts.Enabled),
+		Body:    redactBody(string(pipe.Request.Body), opts),
 		Model:   model,
 		Stream:  pipe.Request.Stream,
 	}
@@ -1288,13 +1362,20 @@ func isSensitiveHeader(k string) bool {
 	return false
 }
 
-// redactBody 对 body 文本做脱敏：sk- 密钥打码、base64 data URI 转占位标记。
-func redactBody(body string, enabled bool) string {
-	if !enabled {
+// redactBody 对 body 文本做脱敏：sk- 密钥打码、按配置决定 base64 data URI 是否转占位标记。
+//
+// KeepBase64=true（能力路由开了「保留原始 base64」）只跳过图片占位，sk- 密钥
+// 仍然打码——图片原文是调试需要的，密钥原文任何时候都不该落日志。
+func redactBody(body string, opts redactOptions) string {
+	// sk- 后跟 4+ 位字母数字才算密钥（避免误伤普通文本，且已打码的 sk-*** 不重复打码）
+	// 不论总开关是否开启都执行：密钥打码是安全底线，不随「脱敏」偏好关闭。
+	body = skSecretRegex.ReplaceAllString(body, "sk-***")
+	if !opts.Enabled {
 		return body
 	}
-	// sk- 后跟 4+ 位字母数字才算密钥（避免误伤普通文本，且已打码的 sk-*** 不重复打码）
-	body = skSecretRegex.ReplaceAllString(body, "sk-***")
+	if opts.KeepBase64 {
+		return body
+	}
 	return dataURIRegex.ReplaceAllStringFunc(body, func(m string) string {
 		parts := dataURIRegex.FindStringSubmatch(m)
 		if len(parts) != 3 {

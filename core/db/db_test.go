@@ -547,6 +547,47 @@ func TestCapabilityRouteRateLimitConcurrencyPersist(t *testing.T) {
 	}
 }
 
+// TestCapabilityRouteRequestLogKeepBase64Persist 锁住 v51 的 request_log_keep_base64
+// 往返：request_log 路由的「保留原始 base64」开关必须跟着路由存读，未开启的条目
+// （包括别的能力）读出仍为 false。
+func TestCapabilityRouteRequestLogKeepBase64Persist(t *testing.T) {
+	database := mustOpen(t, filepath.Join(t.TempDir(), "loadout.db"))
+	defer database.Close()
+	repo, err := NewRepository(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	routes := []types.CapabilityRoute{
+		{
+			Models:               []string{"*"},
+			Capability:           "request_log",
+			Route:                "proxy",
+			RequestLogKeepBase64: true,
+		},
+		{
+			Models:     []string{"gpt-4o"},
+			Capability: "request_log",
+			Route:      "proxy",
+		},
+	}
+	if err := repo.ReplaceCapabilityRoutes(context.Background(), routes); err != nil {
+		t.Fatal(err)
+	}
+	got, err := repo.ListCapabilityRoutes(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("读出 %d 条能力路由，期望 2", len(got))
+	}
+	if !got[0].RequestLogKeepBase64 {
+		t.Fatalf("request_log_keep_base64 未持久化: %+v", got[0])
+	}
+	if got[1].RequestLogKeepBase64 {
+		t.Fatalf("未开启的条目读出应为 false，实际 %+v", got[1])
+	}
+}
+
 // TestMigrateIndexesPreviousAttemptAndDropsOrphans 锁住 v42 迁移的两个行为：
 //  1. route_attempts.previous_attempt_id 必须有索引——它是自引用外键（ON DELETE SET NULL），
 //     缺索引时清空日志的级联删除会退化成平方级全表扫描（页面点「清空」直接卡死）；

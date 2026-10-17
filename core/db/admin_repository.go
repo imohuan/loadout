@@ -18,7 +18,7 @@ import (
 
 // ListCapabilityRoutes 返回全部能力路由（按 position 排序）。
 func (r *Repository) ListCapabilityRoutes(ctx context.Context) ([]types.CapabilityRoute, error) {
-	rows, err := r.database.QueryContext(ctx, `SELECT capability, route, models_json, channel_ids_json, channel_base_urls_json, via_options_json, replacements_json, field_rules_json, injections_json, rate_limit_json FROM capability_routes ORDER BY position, id`)
+	rows, err := r.database.QueryContext(ctx, `SELECT capability, route, models_json, channel_ids_json, channel_base_urls_json, via_options_json, replacements_json, field_rules_json, injections_json, rate_limit_json, request_log_keep_base64 FROM capability_routes ORDER BY position, id`)
 	if err != nil {
 		return nil, fmt.Errorf("db: list capability routes: %w", err)
 	}
@@ -27,9 +27,11 @@ func (r *Repository) ListCapabilityRoutes(ctx context.Context) ([]types.Capabili
 	for rows.Next() {
 		var route types.CapabilityRoute
 		var modelsJSON, channelsJSON, baseURLsJSON, viaJSON, replJSON, fieldRulesJSON, injJSON, rateLimitJSON string
-		if err := rows.Scan(&route.Capability, &route.Route, &modelsJSON, &channelsJSON, &baseURLsJSON, &viaJSON, &replJSON, &fieldRulesJSON, &injJSON, &rateLimitJSON); err != nil {
+		var keepBase64 int
+		if err := rows.Scan(&route.Capability, &route.Route, &modelsJSON, &channelsJSON, &baseURLsJSON, &viaJSON, &replJSON, &fieldRulesJSON, &injJSON, &rateLimitJSON, &keepBase64); err != nil {
 			return nil, fmt.Errorf("db: scan capability route: %w", err)
 		}
+		route.RequestLogKeepBase64 = keepBase64 != 0
 		if err := unmarshalEach(modelsJSON, &route.Models, channelsJSON, &route.ChannelIDs, baseURLsJSON, &route.ChannelBaseURLs, viaJSON, &route.ViaOptions, replJSON, &route.Replacements, injJSON, &route.Injections); err != nil {
 			return nil, fmt.Errorf("db: parse capability route: %w", err)
 		}
@@ -99,7 +101,7 @@ func (r *Repository) ReplaceCapabilityRoutes(ctx context.Context, routes []types
 					rateLimitJSON = string(b)
 				}
 			}
-			if _, err := tx.ExecContext(ctx, `INSERT INTO capability_routes (position, capability, route, models_json, channel_ids_json, channel_base_urls_json, via_options_json, replacements_json, field_rules_json, injections_json, rate_limit_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, i, route.Capability, route.Route, string(models), string(channels), string(baseURLs), string(via), string(repl), fieldRulesJSON, string(inj), rateLimitJSON); err != nil {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO capability_routes (position, capability, route, models_json, channel_ids_json, channel_base_urls_json, via_options_json, replacements_json, field_rules_json, injections_json, rate_limit_json, request_log_keep_base64) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, i, route.Capability, route.Route, string(models), string(channels), string(baseURLs), string(via), string(repl), fieldRulesJSON, string(inj), rateLimitJSON, boolInt(route.RequestLogKeepBase64)); err != nil {
 				return fmt.Errorf("db: insert capability route: %w", err)
 			}
 		}

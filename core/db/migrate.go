@@ -1025,6 +1025,15 @@ UPDATE failure_rules SET id = 'seed-015' WHERE id = 'seed-015-swap';
 -- （重启清零，用户已确认），因此不建计数表。
 ALTER TABLE capability_routes ADD COLUMN rate_limit_json TEXT NOT NULL DEFAULT '{}';
 `,
+}, {
+	version: 51,
+	name:    "capability-routes-request-log-keep-base64",
+	sql: `
+-- request_log 能力的「保留原始 base64」开关（按路由配置，不是全局设置）：
+-- 1 = 日志里保留图片 data URI 原文，0 = 维持现状（转 [image: mime, NB] 占位符）。
+-- sk- 密钥打码与这个开关无关，任何取值下都会打码。
+ALTER TABLE capability_routes ADD COLUMN request_log_keep_base64 INTEGER NOT NULL DEFAULT 0;
+`,
 }}
 
 // Migrate applies all pending schema migrations and rejects an incompatible
