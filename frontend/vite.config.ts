@@ -17,6 +17,9 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     emptyOutDir: true,
+    // 控制台页面单包较大是预期内的；不抬高阈值时 Vite 的警告写到 stderr，
+    // 会让 scripts/pack-desktop.ps1（$ErrorActionPreference=Stop）误判为构建失败。
+    chunkSizeWarningLimit: 1200,
   },
   resolve: {
     alias: {

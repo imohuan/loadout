@@ -2,6 +2,7 @@
 // WorkBuddy 积分与用量监控面板（概览页最底部一块）。
 // 数据：积分余额来自后端缓存（手动刷新才拉上游），消耗来自本地 wb_panel_usage 聚合。
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { useDark } from '@vueuse/core'
 import { toast } from 'vue-sonner'
 import {
   RiArrowDownSLine,
@@ -88,7 +89,9 @@ const autoRefresh = ref(true)
 const autoInterval = ref(30)
 let autoTimer: ReturnType<typeof setInterval> | null = null
 
-const dark = ref(document.documentElement.classList.contains('dark'))
+// 跟随 useDark 的响应式状态：之前只在初始化时读一次 <html> 的 class，
+// 页面上切换主题后图表配色不会重算，暗色下仍是浅色网格线。
+const dark = useDark()
 
 // ---------- 账号排序与过滤 ----------
 const STATUS_ORDER: Record<string, number> = { ok: 0, warn: 1, bad: 2, off: 3 }
@@ -277,7 +280,13 @@ const trendOption = computed(() => {
       textStyle: { color: txt, fontSize: 11 },
       data: [...trendModelNames.value, '调用次数'],
     },
-    tooltip: { trigger: 'axis' as const },
+    tooltip: {
+      trigger: 'axis' as const,
+      backgroundColor: dark.value ? '#27272a' : '#ffffff',
+      borderColor: dark.value ? '#3f3f46' : '#e4e4e7',
+      borderWidth: 1,
+      textStyle: { color: dark.value ? '#e4e4e7' : '#3f3f46', fontSize: 12 },
+    },
     xAxis: {
       type: 'category' as const,
       data: axis,

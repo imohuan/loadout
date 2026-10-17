@@ -51,7 +51,9 @@ renderer.code = (codeObj) => {
   } catch {
     highlighted = escapeHtml(code)
   }
-  return `<pre class="hljs rounded-md bg-zinc-900/95 p-3 overflow-x-auto text-xs leading-relaxed"><code class="hljs${langClass}">${highlighted}</code></pre>`
+  // 亮色主题下代码块用浅底深字，暗色主题沿用深底；写死深色会在亮色页面里
+  // 变成一块突兀的黑色方块。
+  return `<pre class="hljs rounded-md bg-zinc-100 p-3 overflow-x-auto text-xs leading-relaxed dark:bg-zinc-900/95"><code class="hljs${langClass}">${highlighted}</code></pre>`
 }
 md.use({ renderer })
 
@@ -169,12 +171,12 @@ function escapeHtml(s: string): string {
 .markdown-body h1 {
   padding-bottom: 0.3em;
   font-size: 1.25em;
-  border-bottom: 1px solid hsl(var(--border));
+  border-bottom: 1px solid var(--border);
 }
 .markdown-body h2 {
   padding-bottom: 0.3em;
   font-size: 1.1em;
-  border-bottom: 1px solid hsl(var(--border));
+  border-bottom: 1px solid var(--border);
 }
 .markdown-body h3 {
   font-size: 1em;
@@ -187,7 +189,7 @@ function escapeHtml(s: string): string {
 }
 .markdown-body h6 {
   font-size: 0.85em;
-  color: hsl(var(--muted-foreground));
+  color: var(--muted-foreground);
 }
 
 .markdown-body p {
@@ -196,8 +198,8 @@ function escapeHtml(s: string): string {
 .markdown-body blockquote {
   margin: 0 0 16px;
   padding: 0 1em;
-  color: hsl(var(--muted-foreground));
-  border-left: 0.25em solid hsl(var(--border));
+  color: var(--muted-foreground);
+  border-left: 0.25em solid var(--border);
 }
 .markdown-body blockquote > :first-child {
   margin-top: 0;
@@ -254,14 +256,14 @@ function escapeHtml(s: string): string {
 .markdown-body table th,
 .markdown-body table td {
   padding: 6px 13px;
-  border: 1px solid hsl(var(--border));
+  border: 1px solid var(--border);
 }
 .markdown-body table tr {
   background-color: transparent;
-  border-top: 1px solid hsl(var(--border));
+  border-top: 1px solid var(--border);
 }
 .markdown-body table tr:nth-child(2n) {
-  background-color: hsl(var(--muted) / 0.5);
+  background-color: var(--muted);
 }
 
 .markdown-body code,
@@ -284,7 +286,7 @@ function escapeHtml(s: string): string {
   margin: 0;
   font-size: 85%;
   white-space: break-spaces;
-  background-color: hsl(var(--muted));
+  background-color: var(--muted);
   border-radius: 6px;
 }
 .markdown-body pre {
@@ -294,8 +296,9 @@ function escapeHtml(s: string): string {
   overflow: auto;
   font-size: 85%;
   line-height: 1.45;
-  color: #f8f8f2;
-  background-color: #1e1e1e;
+  /* 亮色下用深色文字 + 浅底，暗色下反转（见下方 .dark 覆盖） */
+  color: var(--foreground);
+  background-color: var(--muted);
   border-radius: 6px;
   word-wrap: normal;
 }
@@ -316,12 +319,12 @@ function escapeHtml(s: string): string {
   height: 1px;
   margin: 12px 0;
   padding: 0;
-  background-color: hsl(var(--border));
+  background-color: var(--border);
   border: 0;
 }
 
 .markdown-body a {
-  color: hsl(var(--primary));
+  color: var(--primary);
   text-decoration: none;
 }
 .markdown-body a:hover {
@@ -341,14 +344,14 @@ function escapeHtml(s: string): string {
   cursor: pointer;
 }
 
-/* highlight.js github-dark 配色（简化版），与暗背景 pre 协调 */
+/* highlight.js 配色：亮色用 GitHub Light，暗色用 GitHub Dark（.dark 作用域） */
 .markdown-body .hljs {
-  color: #c9d1d9;
+  color: #1f2328;
   background: transparent;
 }
 .markdown-body .hljs-comment,
 .markdown-body .hljs-quote {
-  color: #8b949e;
+  color: #6e7781;
   font-style: italic;
 }
 .markdown-body .hljs-keyword,
@@ -356,27 +359,60 @@ function escapeHtml(s: string): string {
 .markdown-body .hljs-section,
 .markdown-body .hljs-title,
 .markdown-body .hljs-name {
-  color: #ff7b72;
+  color: #cf222e;
 }
 .markdown-body .hljs-string,
 .markdown-body .hljs-attr {
-  color: #a5d6ff;
+  color: #0a3069;
 }
 .markdown-body .hljs-number,
 .markdown-body .hljs-literal,
 .markdown-body .hljs-symbol,
 .markdown-body .hljs-bullet {
-  color: #79c0ff;
+  color: #0550ae;
 }
 .markdown-body .hljs-built_in,
 .markdown-body .hljs-type {
-  color: #ffa657;
+  color: #953800;
 }
 .markdown-body .hljs-variable,
 .markdown-body .hljs-template-variable {
-  color: #d2a8ff;
+  color: #8250df;
 }
 .markdown-body .hljs-meta {
+  color: #6e7781;
+}
+
+.dark .markdown-body .hljs {
+  color: #c9d1d9;
+}
+.dark .markdown-body .hljs-comment,
+.dark .markdown-body .hljs-quote {
   color: #8b949e;
+}
+.dark .markdown-body .hljs-keyword,
+.dark .markdown-body .hljs-selector-tag,
+.dark .markdown-body .hljs-section,
+.dark .markdown-body .hljs-title,
+.dark .markdown-body .hljs-name {
+  color: #ff7b72;
+}
+.dark .markdown-body .hljs-string,
+.dark .markdown-body .hljs-attr {
+  color: #a5d6ff;
+}
+.dark .markdown-body .hljs-number,
+.dark .markdown-body .hljs-literal,
+.dark .markdown-body .hljs-symbol,
+.dark .markdown-body .hljs-bullet {
+  color: #79c0ff;
+}
+.dark .markdown-body .hljs-built_in,
+.dark .markdown-body .hljs-type {
+  color: #ffa657;
+}
+.dark .markdown-body .hljs-variable,
+.dark .markdown-body .hljs-template-variable {
+  color: #d2a8ff;
 }
 </style>

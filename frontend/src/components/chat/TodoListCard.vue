@@ -7,7 +7,7 @@
   >
     <template #icon>
       <svg
-        class="w-3.5 h-3.5 text-gray-400 shrink-0"
+        class="w-3.5 h-3.5 text-muted-foreground/70 shrink-0"
         fill="none"
         stroke="currentColor"
         viewBox="0 0 24 24"
@@ -28,7 +28,7 @@
     </template>
 
     <div
-      class="w-80 flex flex-col gap-1 mt-1 border border-gray-200/80 rounded-xl bg-[#f8f9fa] p-3"
+      class="w-80 flex flex-col gap-1 mt-1 rounded-xl border border-border bg-muted/50 p-3"
     >
       <div class="w-full flex flex-col gap-0.5 max-h-64 overflow-y-auto overflow-hidden">
         <TaskItem v-for="task in taskItems" :key="task.id" :task="task" />

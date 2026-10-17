@@ -7,7 +7,7 @@
   >
     <template #icon>
       <svg
-        class="w-3.5 h-3.5 text-gray-400 shrink-0 stroke-[1.8]"
+        class="w-3.5 h-3.5 text-muted-foreground/70 shrink-0 stroke-[1.8]"
         xmlns="http://www.w3.org/2000/svg"
         fill="none"
         viewBox="0 0 24 24"
@@ -21,16 +21,16 @@
       </svg>
     </template>
     <template #title="{ open: o }">
-      <span class="truncate text-xs font-mix text-gray-500">
+      <span class="truncate text-xs font-mix text-muted-foreground">
         {{ o ? expanded : collapsed }}
       </span>
     </template>
 
     <div
-      class="w-full bg-white border border-gray-200/80 rounded-2xl px-4 py-3 flex items-center gap-3 shadow-[0_1px_2px_rgba(0,0,0,0.02)] transition-all hover:border-gray-300 mt-2"
+      class="w-full bg-card border border-border rounded-2xl px-4 py-3 flex items-center gap-3 shadow-sm transition-all hover:border-muted-foreground/40 mt-2"
     >
       <svg
-        class="w-[18px] h-[18px] text-gray-700 shrink-0 stroke-[1.8]"
+        class="w-[18px] h-[18px] text-foreground/80 shrink-0 stroke-[1.8]"
         xmlns="http://www.w3.org/2000/svg"
         fill="none"
         viewBox="0 0 24 24"
@@ -42,7 +42,7 @@
           d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z"
         />
       </svg>
-      <span class="text-sm text-gray-700 font-normal tracking-wide">{{ displayMessage }}</span>
+      <span class="text-sm text-foreground/90 font-normal tracking-wide">{{ displayMessage }}</span>
     </div>
   </CollapsibleBlock>
 </template>

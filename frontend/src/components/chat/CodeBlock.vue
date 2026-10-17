@@ -1,10 +1,14 @@
 <template>
-  <div class="code-block group relative my-3 rounded-lg bg-zinc-100/70 overflow-hidden text-[13px]">
+  <div
+    class="code-block group relative my-3 rounded-lg bg-zinc-100/70 dark:bg-zinc-800/60 overflow-hidden text-[13px]"
+  >
     <div class="flex items-center justify-between px-4 pt-2 pb-1">
-      <span class="text-[11px] text-zinc-500 font-mono">{{ lang || 'text' }}</span>
+      <span class="text-[11px] text-zinc-500 dark:text-zinc-400 font-mono">{{
+        lang || 'text'
+      }}</span>
       <button
         type="button"
-        class="p-1 rounded text-zinc-400 hover:text-zinc-700 transition-opacity"
+        class="p-1 rounded text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 transition-opacity"
         :class="copied ? 'opacity-100 text-green-600' : 'opacity-0 group-hover:opacity-100'"
         :title="copied ? '已复制' : '复制'"
         @click="onCopy"

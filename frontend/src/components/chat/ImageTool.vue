@@ -7,7 +7,7 @@
   >
     <template #icon>
       <svg
-        class="w-3.5 h-3.5 text-gray-400 group-hover:text-gray-500 shrink-0"
+        class="w-3.5 h-3.5 text-muted-foreground/70 group-hover:text-foreground/80 shrink-0"
         fill="none"
         stroke="currentColor"
         stroke-width="2"
@@ -29,14 +29,16 @@
 
     <div
       v-if="images.length"
-      class="mt-1 border border-gray-200/80 rounded-xl bg-[#f8f9fa] p-3 text-xs"
+      class="mt-1 rounded-xl border border-border bg-muted/50 p-3 text-xs"
     >
-      <div class="text-[11px] text-gray-400 font-sans mb-2">{{ images.length }} 张图片</div>
+      <div class="text-[11px] text-muted-foreground font-sans mb-2">
+        {{ images.length }} 张图片
+      </div>
       <div class="flex flex-row flex-wrap gap-2">
         <div
           v-for="(src, idx) in images"
           :key="idx"
-          class="w-32 h-32 rounded-lg overflow-hidden border border-gray-200/60"
+          class="w-32 h-32 rounded-lg overflow-hidden border border-border/60"
         >
           <AxImage
             :src="src"
@@ -50,7 +52,7 @@
     </div>
     <div
       v-else
-      class="mt-1 border border-gray-200/80 rounded-xl bg-[#f8f9fa] p-3 text-xs text-gray-400 font-mono"
+      class="mt-1 rounded-xl border border-border bg-muted/50 p-3 text-xs text-muted-foreground font-mono"
     >
       无可预览图片
     </div>

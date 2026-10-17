@@ -778,10 +778,10 @@ defineExpose({
   flex-direction: column !important;
   gap: 0.375rem !important;
   padding: 0.75rem !important;
-  border: 1px solid hsl(var(--border)) !important;
+  border: 1px solid var(--border) !important;
   border-radius: 0.375rem !important;
-  background-color: hsl(var(--background)) !important;
-  color: hsl(var(--foreground)) !important;
+  background-color: var(--background) !important;
+  color: var(--foreground) !important;
   box-sizing: border-box !important;
   width: 240px !important;
   /* 拖拽增强 */

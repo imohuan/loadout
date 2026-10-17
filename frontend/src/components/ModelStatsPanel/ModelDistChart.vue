@@ -7,10 +7,13 @@ import { PieChart } from 'echarts/charts'
 import { LegendComponent, TooltipComponent } from 'echarts/components'
 import type { ModelDistPoint } from '@/lib/types'
 import { formatTokens } from '@/lib/format'
+import { useChartTheme, tooltipStyle } from '@/composables/useChartTheme'
 
 use([CanvasRenderer, PieChart, TooltipComponent, LegendComponent])
 
 const props = defineProps<{ items: ModelDistPoint[] }>()
+
+const { colors } = useChartTheme()
 
 const palette = [
   '#6366f1', // indigo
@@ -47,32 +50,41 @@ const chartData = computed(() => {
   return slices
 })
 
-const option = computed(() => ({
-  tooltip: {
-    trigger: 'item' as const,
-    formatter: (p: { name: string; value: number; percent: number }) =>
-      `${p.name}<br/>${p.value.toLocaleString()} tokens<br/>占比 ${p.percent.toFixed(1)}%`,
-  },
-  legend: { show: false },
-  series: [
-    {
-      type: 'pie' as const,
-      radius: ['42%', '72%'],
-      avoidLabelOverlap: true,
-      label: {
-        show: true,
-        formatter: '{b}\n{d}%',
-        fontSize: 11,
-      },
-      labelLine: { show: true, length: 12, length2: 8 },
-      itemStyle: {
-        borderColor: '#fff',
-        borderWidth: 2,
-      },
-      data: chartData.value,
+const option = computed(() => {
+  const c = colors.value
+  return {
+    tooltip: {
+      trigger: 'item' as const,
+      formatter: (p: { name: string; value: number; percent: number }) =>
+        `${p.name}<br/>${p.value.toLocaleString()} tokens<br/>占比 ${p.percent.toFixed(1)}%`,
+      ...tooltipStyle(c),
     },
-  ],
-}))
+    legend: { show: false },
+    series: [
+      {
+        type: 'pie' as const,
+        radius: ['42%', '72%'],
+        avoidLabelOverlap: true,
+        label: {
+          show: true,
+          formatter: '{b}\n{d}%',
+          fontSize: 11,
+          color: c.label,
+          // 显式关掉 ECharts 默认的文字描边：暗色主题下那圈浅色描边就是
+          // 「文字有白色描边」的来源
+          textBorderWidth: 0,
+        },
+        labelLine: { show: true, length: 12, length2: 8, lineStyle: { color: c.labelLine } },
+        itemStyle: {
+          // 扇区间隙用卡片背景色，而不是白色，深浅主题都不会出现白边
+          borderColor: c.surface,
+          borderWidth: 2,
+        },
+        data: chartData.value,
+      },
+    ],
+  }
+})
 
 // 前 5 名行；如存在「其他」切片，则追加一行汇总项。
 const rows = computed(() => {

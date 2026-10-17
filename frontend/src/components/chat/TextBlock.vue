@@ -1,12 +1,12 @@
 <template>
-  <div class="text-sm text-gray-800 leading-relaxed">
+  <div class="text-sm text-foreground leading-relaxed">
     <template v-for="(node, i) in blocks" :key="i">
       <CodeBlock v-if="node.type === 'code'" :code="node.text" :lang="node.lang" />
       <div v-else class="markdown-body prose prose-sm max-w-none break-words" v-html="node.html" />
     </template>
     <span
       v-if="isStreaming"
-      class="inline-block w-2 h-4 bg-gray-600 ml-0.5 align-text-bottom animate-pulse"
+      class="inline-block w-2 h-4 bg-foreground/60 ml-0.5 align-text-bottom animate-pulse"
     ></span>
   </div>
 </template>
@@ -124,12 +124,12 @@ const isStreaming = computed(
 .markdown-body h1 {
   padding-bottom: 0.3em;
   font-size: 1.25em;
-  border-bottom: 1px solid #e5e7eb;
+  border-bottom: 1px solid var(--border);
 }
 .markdown-body h2 {
   padding-bottom: 0.3em;
   font-size: 1.1em;
-  border-bottom: 1px solid #e5e7eb;
+  border-bottom: 1px solid var(--border);
 }
 .markdown-body h3 {
   font-size: 1em;
@@ -142,7 +142,7 @@ const isStreaming = computed(
 }
 .markdown-body h6 {
   font-size: 0.8em;
-  color: #6b7280;
+  color: var(--muted-foreground);
 }
 
 .markdown-body p {
@@ -151,8 +151,8 @@ const isStreaming = computed(
 .markdown-body blockquote {
   margin: 0 0 16px;
   padding: 0 1em;
-  color: #6b7280;
-  border-left: 0.25em solid #d1d5db;
+  color: var(--muted-foreground);
+  border-left: 0.25em solid var(--border);
 }
 .markdown-body blockquote > :first-child {
   margin-top: 0;
@@ -220,14 +220,14 @@ const isStreaming = computed(
 .markdown-body table th,
 .markdown-body table td {
   padding: 6px 13px;
-  border: 1px solid #d1d5db;
+  border: 1px solid var(--border);
 }
 .markdown-body table tr {
-  background-color: #ffffff;
-  border-top: 1px solid #e5e7eb;
+  background-color: transparent;
+  border-top: 1px solid var(--border);
 }
 .markdown-body table tr:nth-child(2n) {
-  background-color: #f6f8fa;
+  background-color: var(--muted);
 }
 .markdown-body table td > :last-child {
   margin-bottom: 0;
@@ -264,7 +264,7 @@ const isStreaming = computed(
   margin: 0;
   font-size: 85%;
   white-space: break-spaces;
-  background-color: #f6f8fa;
+  background-color: var(--muted);
   border-radius: 6px;
 }
 .markdown-body code br,
@@ -296,8 +296,8 @@ const isStreaming = computed(
   overflow: auto;
   font-size: 85%;
   line-height: 1.45;
-  color: #1f2328;
-  background-color: #f6f8fa;
+  color: var(--foreground);
+  background-color: var(--muted);
   border-radius: 6px;
   word-wrap: normal;
 }
@@ -318,9 +318,9 @@ const isStreaming = computed(
   padding: 3px 5px;
   font-size: 11px;
   line-height: 10px;
-  color: #1f2328;
+  color: var(--foreground);
   vertical-align: middle;
-  background-color: #f6f8fa;
+  background-color: var(--muted);
   border: solid 1px rgba(175, 184, 193, 0.2);
   border-bottom-color: #afb8c133;
   border-radius: 6px;
@@ -332,12 +332,12 @@ const isStreaming = computed(
   height: 1px;
   margin: 12px 0;
   padding: 0;
-  background-color: #d1d9e0;
+  background-color: var(--border);
   border: 0;
 }
 
 .markdown-body a {
-  color: #0969da;
+  color: var(--primary);
   text-decoration: none;
 }
 .markdown-body a:hover {
@@ -356,8 +356,8 @@ const isStreaming = computed(
   font-style: italic;
 }
 .markdown-body mark {
-  background-color: #fff8c5;
-  color: #1f2328;
+  background-color: color-mix(in oklab, var(--primary) 20%, transparent);
+  color: var(--foreground);
 }
 .markdown-body small {
   font-size: 90%;

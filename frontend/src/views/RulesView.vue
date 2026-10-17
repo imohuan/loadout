@@ -118,7 +118,7 @@ const VERDICT_TONES: Record<string, string> = {
   disable_model: 'bg-red-500/15 text-red-700 dark:text-red-300 border-red-500/20',
   disable_provider: 'bg-red-500/15 text-red-700 dark:text-red-300 border-red-500/20',
   cooldown: 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/20',
-  ignore: 'bg-slate-500/15 text-slate-700 dark:text-slate-300 border-slate-500/20',
+  ignore: 'bg-slate-500/15 text-slate-600 dark:text-slate-200 border-slate-500/25',
   retry_same: 'bg-blue-500/15 text-blue-700 dark:text-blue-300 border-blue-500/20',
   switch_next: 'bg-blue-500/15 text-blue-700 dark:text-blue-300 border-blue-500/20',
 }
@@ -135,7 +135,7 @@ const RECOVER_TONES: Record<string, string> = {
 function recoverTone(recover?: string) {
   return (
     RECOVER_TONES[recover || ''] ||
-    'bg-slate-500/15 text-slate-700 dark:text-slate-300 border-slate-500/20'
+    'bg-slate-500/15 text-slate-600 dark:text-slate-200 border-slate-500/25'
   )
 }
 
@@ -435,7 +435,7 @@ function replayOf(id: string): SampleReplayResult | null {
 // sampleTone 结果态：不一致=红（预期≠实际）；未命中=琥珀；命中=绿。
 function sampleResultTone(id: string): string {
   const r = replayOf(id)
-  if (!r) return 'bg-slate-500/15 text-slate-700 dark:text-slate-300 border-slate-500/20'
+  if (!r) return 'bg-slate-500/15 text-slate-600 dark:text-slate-200 border-slate-500/25'
   if (r.expected && !r.expected_ok)
     return 'bg-red-500/15 text-red-700 dark:text-red-300 border-red-500/20'
   // 命中草稿：琥珀（区别于正式规则的绿），呼应「临时生效需确认」的提醒。
@@ -571,7 +571,7 @@ function authorTone(sampleId: string): string {
   if (status === 'exhausted')
     return 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/25'
   if (status === 'failed') return 'bg-red-500/15 text-red-700 dark:text-red-300 border-red-500/25'
-  return 'bg-slate-500/15 text-slate-700 dark:text-slate-300 border-slate-500/20'
+  return 'bg-slate-500/15 text-slate-600 dark:text-slate-200 border-slate-500/25'
 }
 
 // authorDetail 胶囊标签下面那行灰色小字。结束态给出「最后一轮为什么没通过」
@@ -822,7 +822,7 @@ function sourceBadge(rule: FailureRule) {
     }
   return {
     text: '内置/手动',
-    class: 'bg-slate-500/15 text-slate-700 dark:text-slate-300 border-slate-500/20',
+    class: 'bg-slate-500/15 text-slate-600 dark:text-slate-200 border-slate-500/25',
   }
 }
 

@@ -3,14 +3,14 @@
     <div
       @click="handleToggle"
       :class="[
-        'w-full group inline-flex items-center gap-1.5 text-xs text-gray-500 py-0.5 transition-colors select-none',
-        disabled ? 'cursor-default' : 'hover:text-gray-900 cursor-pointer',
+        'w-full group inline-flex items-center gap-1.5 text-xs text-muted-foreground py-0.5 transition-colors select-none',
+        disabled ? 'cursor-default' : 'hover:text-foreground cursor-pointer',
       ]"
     >
       <slot name="icon">
         <svg
           v-if="!hideIcon"
-          class="w-3.5 h-3.5 text-gray-400 group-hover:text-gray-500 shrink-0"
+          class="w-3.5 h-3.5 text-muted-foreground/70 group-hover:text-foreground/80 shrink-0"
           fill="none"
           stroke="currentColor"
           viewBox="0 0 24 24"
@@ -29,7 +29,7 @@
       <svg
         v-show="!disabled"
         :class="[open ? '' : '-rotate-90']"
-        class="w-3 h-3 transition-all duration-300 text-gray-400 shrink-0 opacity-0 group-hover:opacity-100"
+        class="w-3 h-3 transition-all duration-300 text-muted-foreground/70 shrink-0 opacity-0 group-hover:opacity-100"
         fill="none"
         stroke="currentColor"
         viewBox="0 0 24 24"

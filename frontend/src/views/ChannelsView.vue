@@ -14,6 +14,7 @@ import { useListLoader } from '@/composables/useListLoader'
 import { useAsyncTask } from '@/composables/useAsyncTask'
 import { useConfirm } from '@/composables/useConfirm'
 import type { Channel } from '@/lib/types'
+import type { ChannelPlatform } from '@/lib/channels'
 import PageHeader from '@/components/PageHeader.vue'
 import LoadingBlock from '@/components/LoadingBlock.vue'
 import EmptyState from '@/components/EmptyState.vue'
@@ -251,6 +252,14 @@ async function moveGroup(baseUrl: string, direction: 'up' | 'down') {
     await refresh()
   })
 }
+// 拖拽排序渠道组（vue-draggable-plus）：拖拽结束后按新顺序全量重排。
+async function reorderGroups(next: ChannelPlatform[]) {
+  const ids = next.flatMap((group) => group.keys.map((key) => key.id))
+  await run('group:reorder', async () => {
+    await service.reorder(ids)
+    await refresh()
+  })
+}
 // 组内 Key 上下移动：调整单 key 在组内的 position（影响该渠道下多 key 的 failover 顺序）。
 async function moveKey(channel: Channel, direction: 'up' | 'down') {
   const channels = data.value || []
@@ -326,7 +335,7 @@ const totals = computed(() => {
             </span>
           </p>
         </div>
-        <ChannelPlatformGrid :platforms="platforms" @select="openPlatform" />
+        <ChannelPlatformGrid :platforms="platforms" @select="openPlatform" @reorder="reorderGroups" />
         <EmptyState
           v-if="!platforms.length"
           title="还没有配置渠道"

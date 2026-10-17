@@ -6,22 +6,28 @@ import { CanvasRenderer } from 'echarts/renderers'
 import { PieChart } from 'echarts/charts'
 import { TooltipComponent } from 'echarts/components'
 import type { ModelStats } from '@/lib/types'
+import { useChartTheme, tooltipStyle } from '@/composables/useChartTheme'
 
 use([CanvasRenderer, PieChart, TooltipComponent])
 
 const props = defineProps<{ stats: ModelStats | null }>()
 
+const { colors } = useChartTheme()
+
 const option = computed(() => {
   const h = props.stats?.hit_rate
   const total = h?.total ?? 0
+  const c = colors.value
   return {
-    tooltip: { trigger: 'item' as const },
+    tooltip: { trigger: 'item' as const, ...tooltipStyle(c) },
     series: [
       {
         type: 'pie' as const,
         radius: ['62%', '82%'],
         avoidLabelOverlap: false,
         label: { show: false },
+        // 命中率环的「未命中」部分在暗色下不能继续用浅灰，否则整圈发白
+        itemStyle: { borderColor: c.surface, borderWidth: 1 },
         data: [
           {
             value: Math.max(0, Math.round(total * 100)),
@@ -31,7 +37,7 @@ const option = computed(() => {
           {
             value: Math.max(0, Math.round((1 - total) * 100)),
             name: '未命中',
-            itemStyle: { color: '#e2e8f0' },
+            itemStyle: { color: c.split },
           },
         ],
       },

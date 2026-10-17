@@ -31,7 +31,8 @@ const TONE_BADGE: Record<string, string> = {
   ok: 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/20',
   warn: 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/20',
   bad: 'bg-red-500/15 text-red-700 dark:text-red-300 border-red-500/20',
-  off: 'bg-slate-500/15 text-slate-700 dark:text-slate-300 border-slate-500/20',
+  // 关闭态用「中性灰」，暗色下要能看清；slate-300 压在灰底上会发糊
+  off: 'bg-slate-500/15 text-slate-600 dark:text-slate-200 border-slate-500/25',
 }
 /**
  * tag 里要展示的模型清单。

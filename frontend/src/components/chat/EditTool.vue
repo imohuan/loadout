@@ -7,7 +7,7 @@
   >
     <template #icon>
       <svg
-        class="w-3.5 h-3.5 text-gray-400 group-hover:text-gray-500 shrink-0"
+        class="w-3.5 h-3.5 text-muted-foreground/70 group-hover:text-foreground/80 shrink-0"
         fill="none"
         stroke="currentColor"
         viewBox="0 0 24 24"
@@ -24,22 +24,22 @@
     <template #title>
       <span class="truncate text-xs font-mix">
         <span>已编辑</span>
-        <span class="underline underline-offset-2 px-2 text-gray-600">{{ fileName }}</span>
+        <span class="underline underline-offset-2 px-2 text-foreground/80">{{ fileName }}</span>
         <span v-if="added > 0" class="text-emerald-600">+{{ added }}</span>
         <span v-if="removed > 0" class="text-rose-500">-{{ removed }}</span>
       </span>
     </template>
 
-    <div class="mt-1 border border-gray-200 rounded-xl overflow-hidden shadow-sm text-xs font-mono">
+    <div class="mt-1 border border-border rounded-xl overflow-hidden shadow-sm text-xs font-mono">
       <div
-        class="bg-[#f8f9fa] px-3.5 py-2 border-b border-gray-200/80 flex items-center justify-between text-gray-500 text-[11px]"
+        class="bg-muted/50 px-3.5 py-2 border-b border-border flex items-center justify-between text-muted-foreground text-[11px]"
       >
         <div class="flex items-center gap-2">
-          <span class="font-semibold text-gray-700">{{ fileName }}</span>
+          <span class="font-semibold text-foreground">{{ fileName }}</span>
           <span v-if="added > 0" class="text-emerald-600">+{{ added }}</span>
           <span v-if="removed > 0" class="text-rose-500">-{{ removed }}</span>
         </div>
-        <button class="hover:text-gray-700">
+        <button class="hover:text-foreground">
           <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path
               stroke-linecap="round"
@@ -50,27 +50,27 @@
           </svg>
         </button>
       </div>
-      <div class="bg-white divide-y divide-transparent">
+      <div class="bg-card divide-y divide-transparent">
         <div
           v-for="(line, lIdx) in diffLines"
           :key="lIdx"
           :class="[
             'flex',
             line.type === 'add'
-              ? 'bg-emerald-50/70 text-emerald-900 font-medium'
+              ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 font-medium'
               : line.type === 'remove'
-                ? 'bg-rose-50/70 text-rose-800 font-medium'
-                : 'text-gray-600 hover:bg-gray-50',
+                ? 'bg-rose-500/10 text-rose-700 dark:text-rose-300 font-medium'
+                : 'text-foreground/80 hover:bg-muted/60',
           ]"
         >
           <span
             :class="[
               'w-10 select-none text-right pr-3 py-0.5',
               line.type === 'add'
-                ? 'text-emerald-500 bg-emerald-100/50'
+                ? 'text-emerald-600 dark:text-emerald-400 bg-emerald-500/10'
                 : line.type === 'remove'
-                  ? 'text-rose-400 bg-rose-100/50'
-                  : 'text-gray-400',
+                  ? 'text-rose-600 dark:text-rose-400 bg-rose-500/10'
+                  : 'text-muted-foreground',
             ]"
             >{{ line.num }}</span
           >

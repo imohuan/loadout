@@ -12,26 +12,26 @@
       </span>
     </template>
 
-    <div class="mt-1 border border-gray-200/80 rounded-xl bg-[#f8f9fa] p-3 text-xs font-mono">
-      <div class="text-[11px] text-gray-400 font-sans mb-1.5">
+    <div class="mt-1 rounded-xl border border-border bg-muted/50 p-3 text-xs font-mono">
+      <div class="text-[11px] text-muted-foreground font-sans mb-1.5">
         {{ label }}
       </div>
       <template v-if="commandText">
-        <div class="line-clamp-2 overflow-hidden text-gray-600 mb-2 select-all">
+        <div class="line-clamp-2 overflow-hidden text-foreground/80 mb-2 select-all">
           <template v-if="isMcp">调用 {{ commandText }}</template>
           <template v-else>$ {{ commandText }}</template>
         </div>
       </template>
       <div
         v-if="outputText"
-        class="overflow-auto no-scrollbar pb-1 text-gray-700 whitespace-pre-wrap break-all border-t border-gray-200/50 pt-2 max-h-80"
+        class="overflow-auto pb-1 text-foreground/90 whitespace-pre-wrap break-all border-t border-border/60 pt-2 max-h-80"
       >
         {{ outputText }}
       </div>
       <div v-if="toolCall.status === 'done'" class="flex items-center justify-end text-[11px] pt-1">
-        <div class="flex items-center gap-1 text-gray-500 font-sans font-medium">
+        <div class="flex items-center gap-1 text-muted-foreground font-sans font-medium">
           <svg
-            class="w-3.5 h-3.5 text-gray-500"
+            class="w-3.5 h-3.5 text-muted-foreground"
             fill="none"
             stroke="currentColor"
             viewBox="0 0 24 24"

@@ -6,10 +6,13 @@ import { CanvasRenderer } from 'echarts/renderers'
 import { LineChart } from 'echarts/charts'
 import { GridComponent, TooltipComponent } from 'echarts/components'
 import type { ModelStats } from '@/lib/types'
+import { useChartTheme, tooltipStyle } from '@/composables/useChartTheme'
 
 use([CanvasRenderer, LineChart, GridComponent, TooltipComponent])
 
 const props = defineProps<{ stats: ModelStats | null }>()
+
+const { colors } = useChartTheme()
 
 function fmt(n: number) {
   if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M'
@@ -19,22 +22,24 @@ function fmt(n: number) {
 
 const option = computed(() => {
   const trend = props.stats?.trend ?? []
+  const c = colors.value
   return {
     grid: { left: 40, right: 12, top: 10, bottom: 28 },
     tooltip: {
       trigger: 'axis' as const,
       valueFormatter: (v: number) => fmt(v) + ' tokens',
+      ...tooltipStyle(c),
     },
     xAxis: {
       type: 'category' as const,
       data: trend.map((p) => p.date.slice(5)),
-      axisLine: { lineStyle: { color: '#cbd5e1' } },
-      axisLabel: { color: '#64748b', fontSize: 11 },
+      axisLine: { lineStyle: { color: c.axis } },
+      axisLabel: { color: c.text, fontSize: 11 },
     },
     yAxis: {
       type: 'value' as const,
-      splitLine: { lineStyle: { color: '#e2e8f0' } },
-      axisLabel: { color: '#64748b', fontSize: 11, formatter: (v: number) => fmt(v) },
+      splitLine: { lineStyle: { color: c.split } },
+      axisLabel: { color: c.text, fontSize: 11, formatter: (v: number) => fmt(v) },
     },
     series: [
       {

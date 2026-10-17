@@ -7,7 +7,7 @@
       <div
         v-for="(img, idx) in realImages"
         :key="'real-' + idx"
-        class="w-20 h-16 bg-white border border-gray-200 rounded-lg overflow-hidden shadow-sm flex items-center justify-center cursor-pointer"
+        class="w-20 h-16 bg-muted border border-border rounded-lg overflow-hidden shadow-sm flex items-center justify-center cursor-pointer"
         @click="openPreview(idx)"
       >
         <img
@@ -44,14 +44,14 @@
     </div>
     <!-- 文字气泡 -->
     <div
-      class="max-w-[75%] bg-[#f4f4f5] rounded-2xl px-4 py-2.5 text-sm text-gray-800 leading-relaxed shadow-sm"
+      class="max-w-[75%] rounded-2xl bg-muted px-4 py-2.5 text-sm leading-relaxed text-foreground shadow-sm"
     >
       <p class="whitespace-pre-wrap break-words">{{ displayContent }}</p>
     </div>
-    <div class="flex items-center gap-1 mt-1 text-[11px] text-gray-400">
+    <div class="flex items-center gap-1 mt-1 text-[11px] text-muted-foreground">
       <span class="opacity-0 group-hover:opacity-100 transition-opacity">{{ formattedTime }}</span>
       <button
-        class="hover:text-gray-600 p-0.5 rounded inline-flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+        class="hover:text-foreground p-0.5 rounded inline-flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
         title="复制"
         @click="copyContent"
       >
@@ -90,7 +90,7 @@
       <button
         v-if="message.isGoal"
         type="button"
-        class="flex items-center gap-1 text-gray-500 hover:text-gray-600 p-0.5 rounded"
+        class="flex items-center gap-1 text-muted-foreground hover:text-foreground p-0.5 rounded"
         title="已设置目标"
       >
         <svg
@@ -114,17 +114,17 @@
 
   <!-- 编辑态 -->
   <div v-else class="flex flex-col items-end w-full">
-    <div class="w-10/12 bg-white border border-gray-200 rounded-2xl p-3 shadow-sm">
+    <div class="w-10/12 rounded-2xl border border-border bg-card p-3 shadow-sm">
       <textarea
         ref="editTextarea"
         v-model="draftText"
         rows="3"
-        class="um-edit-textarea w-full resize-none bg-transparent text-sm text-gray-800 leading-relaxed outline-none placeholder:text-gray-400"
+        class="um-edit-textarea w-full resize-none bg-transparent text-sm leading-relaxed text-foreground outline-none placeholder:text-muted-foreground"
         placeholder="输入消息…"
       />
       <div class="flex items-center justify-end gap-2 mt-3">
         <button
-          class="px-3 py-1.5 text-xs text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+          class="px-3 py-1.5 text-xs text-muted-foreground hover:bg-muted rounded-lg transition-colors"
           @click="cancelEdit"
         >
           取消

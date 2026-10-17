@@ -7,6 +7,8 @@
 //   3) 模型名方块（超出收进「+N」，悬停给完整清单）
 // 点 tag 进入状态二（该平台的 Key 明细）。
 import { RiArrowRightSLine } from '@remixicon/vue'
+import { VueDraggable } from 'vue-draggable-plus'
+import { ref, watch } from 'vue'
 import type { ChannelPlatform } from '@/lib/channels'
 import HoverTextCard from '@/components/ui/HoverTextCard.vue'
 
@@ -18,7 +20,25 @@ const props = withDefaults(
   }>(),
   { maxChips: 4 },
 )
-const emit = defineEmits<{ select: [baseUrl: string] }>()
+const emit = defineEmits<{
+  select: [baseUrl: string]
+  reorder: [platforms: ChannelPlatform[]]
+}>()
+
+// 整卡拖拽排序（vue-draggable-plus）：拖拽时整卡可拖，点击仍进详情。
+// VueDraggable 需要可写数组承载内部移动，用本地副本，结束后回传新顺序。
+const dragList = ref<ChannelPlatform[]>([])
+watch(
+  () => props.platforms,
+  (v) => {
+    dragList.value = [...v]
+  },
+  { immediate: true },
+)
+function onReorder(list: ChannelPlatform[]) {
+  dragList.value = list
+  emit('reorder', list)
+}
 
 // 启用状态徽标：全部启用=绿、部分=琥珀、全禁用=灰。
 const STATE_BADGE: Record<string, string> = {
@@ -42,13 +62,22 @@ function chips(p: ChannelPlatform) {
 </script>
 
 <template>
-  <div class="grid gap-3 [grid-template-columns:repeat(auto-fill,minmax(19rem,1fr))]">
+  <VueDraggable
+    v-model="dragList"
+    tag="div"
+    :animation="150"
+    class="grid gap-3 [grid-template-columns:repeat(auto-fill,minmax(19rem,1fr))]"
+    @update:model-value="onReorder"
+  >
     <button
-      v-for="p in platforms"
+      v-for="p in dragList"
       :key="p.baseUrl"
       type="button"
       class="group flex min-w-0 flex-col rounded-lg border border-border bg-background p-3 text-left transition-colors hover:border-muted-foreground/40 hover:bg-muted/30"
-      :class="p.enabledState === 'none' ? 'bg-muted/30' : ''"
+      :class="[
+        p.enabledState === 'none' ? 'bg-muted/30' : '',
+        'cursor-grab active:cursor-grabbing',
+      ]"
       :aria-label="`查看 ${p.name} 的 Key 明细`"
       @click="emit('select', p.baseUrl)"
     >
@@ -108,5 +137,5 @@ function chips(p: ChannelPlatform) {
         {{ p.probedFailed ? '模型探测失败' : '暂无模型' }}
       </p>
     </button>
-  </div>
+  </VueDraggable>
 </template>

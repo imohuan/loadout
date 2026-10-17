@@ -26,10 +26,10 @@
       </span>
     </template>
 
-    <div class="mt-1 border border-gray-200/80 rounded-xl bg-[#f8f9fa] p-3 text-xs font-mono">
+    <div class="mt-1 rounded-xl border border-border bg-muted/50 p-3 text-xs font-mono">
       <template v-if="promptText">
-        <div class="text-[11px] text-gray-400 font-sans mb-1.5">识别方向</div>
-        <div class="line-clamp-2 overflow-hidden text-gray-600 mb-2 select-all">
+        <div class="text-[11px] text-muted-foreground font-sans mb-1.5">识别方向</div>
+        <div class="line-clamp-2 overflow-hidden text-foreground/80 mb-2 select-all">
           {{ promptText }}
         </div>
       </template>
@@ -37,22 +37,22 @@
       <div
         v-if="resultText"
         :class="[
-          'overflow-auto no-scrollbar pb-1 text-gray-700 whitespace-pre-wrap break-all pt-2 max-h-80',
-          promptText ? 'border-t border-gray-200/50' : '',
+          'overflow-auto pb-1 text-foreground/90 whitespace-pre-wrap break-all pt-2 max-h-80',
+          promptText ? 'border-t border-border/60' : '',
         ]"
       >
-        <div class="text-[11px] text-gray-400 font-sans mb-1.5">识别结果</div>
+        <div class="text-[11px] text-muted-foreground font-sans mb-1.5">识别结果</div>
         {{ resultText }}
       </div>
 
       <div v-if="toolCall.status === 'done'" class="flex items-center justify-end text-[11px] pt-1">
         <div
           class="flex items-center gap-1 font-sans font-medium"
-          :class="isError ? 'text-red-500' : 'text-gray-500'"
+          :class="isError ? 'text-red-500' : 'text-muted-foreground'"
         >
           <svg
             v-if="!isError"
-            class="w-3.5 h-3.5 text-gray-500"
+            class="w-3.5 h-3.5 text-muted-foreground"
             fill="none"
             stroke="currentColor"
             viewBox="0 0 24 24"
