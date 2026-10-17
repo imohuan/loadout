@@ -315,11 +315,22 @@ func (s *Service) SetRepository(repo *db.Repository) { s.repo = repo }
 // 返回所有匹配的路由；native（及历史 error 降级）立即返回，proxy 路由收集全部匹配项。
 // 选择策略统一走 types.SelectCapabilityRoutes（与 vision/sensitive/field-filter 一致）。
 // 读表/解析失败 fail-open：记录日志并返回 nil（按 native 透传），不拒绝请求。
+//
+// 注意：这里只按真实模型名匹配，不知道聚合模型的虚拟名。before-attempt 场景请用
+// DecideRoutesScopeEx（聚合在 before-upstream 已把 Request.Model 改写成真实模型）。
 func (s *Service) DecideRoutesScope(model string, scope types.ChannelRequestScope) ([]*types.CapabilityRoute, error) {
+	return s.DecideRoutesScopeEx(model, "", scope)
+}
+
+// DecideRoutesScopeEx 同 DecideRoutesScope，额外支持按聚合（虚拟）模型名匹配。
+// 聚合模型（如 debug）在 before-upstream 就被改写成真实模型（deepseek-v4.1-flash），
+// 虚拟名只剩在 metadata 的 __virtual_model 里；只按真实模型匹配会让「debug + 保留
+// base64」这类专项规则永远命不中，静默退到下面的 * 兜底规则。
+func (s *Service) DecideRoutesScopeEx(model, virtualModel string, scope types.ChannelRequestScope) ([]*types.CapabilityRoute, error) {
 	if s.repo != nil {
 		routes, err := s.repo.ListCapabilityRoutes(context.Background())
 		if err == nil {
-			return types.SelectCapabilityRoutes(routes, capabilityName, model, scope), nil
+			return types.SelectCapabilityRoutesEx(routes, capabilityName, model, virtualModel, scope), nil
 		}
 		s.lg.Error("request-log: 从 SQLite 读能力路由表失败，回退 JSON", "err", err)
 	}
@@ -331,7 +342,7 @@ func (s *Service) DecideRoutesScope(model string, scope types.ChannelRequestScop
 		s.lg.Error("request-log: 读取能力路由表失败，按透传处理", "err", err)
 		return nil, nil
 	}
-	return types.SelectCapabilityRoutes(routes, capabilityName, model, scope), nil
+	return types.SelectCapabilityRoutesEx(routes, capabilityName, model, virtualModel, scope), nil
 }
 
 // requestChannelBaseURLs 反查渠道 base_url 列表：term 可为渠道 key id（精确匹配，返回该 key
@@ -431,7 +442,9 @@ func (s *Service) HandleBeforeAttempt(payload any) (any, error) {
 	// （如 hy3）时，聚合内部切换到的真实模型永远匹配不上（与 sensitive-filter 对齐）。
 	model := pipe.Request.Model
 	scope := types.ChannelScopeFromMetadata(pipe.Metadata, s.requestChannelBaseURLs)
-	routes, err := s.DecideRoutesScope(model, scope)
+	// 聚合模型的虚拟名（如 debug）也要参与匹配：聚合在 before-upstream 已把
+	// Request.Model 改写成真实模型，只用真实名会让专项规则静默落到 * 兜底。
+	routes, err := s.DecideRoutesScopeEx(model, types.VirtualModelFromMetadata(pipe.Metadata), scope)
 	if err != nil {
 		s.lg.Warn("request-log: 能力路由决策失败，跳过记录", "request_id", pipe.RequestID, "err", err)
 		return payload, nil

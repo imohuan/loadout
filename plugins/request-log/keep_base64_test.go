@@ -104,3 +104,52 @@ func TestResponseKeepsBase64FromAttemptMetadata(t *testing.T) {
 		t.Fatal("metadata 缺失时应默认打码")
 	}
 }
+
+// TestKeepBase64MatchesAggregateVirtualModel 回归：聚合模型（虚拟名 debug）在
+// before-upstream 被改写成真实模型后，request_log 的路由匹配仍要认虚拟名。
+// 否则「debug + 保留 base64」的专项规则永远命不中，只会落到下面的 * 兜底规则
+// （不保留），表现为开关配了却不生效。
+func TestKeepBase64MatchesAggregateVirtualModel(t *testing.T) {
+	reqDB, err := openRequestLogDB(t.TempDir() + "/request-log.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reqDB.Close()
+
+	svc := testService(t, []types.CapabilityRoute{
+		{
+			Models:               []string{"debug"},
+			Capability:           capabilityName,
+			Route:                types.RouteProxy,
+			RequestLogKeepBase64: true,
+		},
+		{Models: []string{"*"}, Capability: capabilityName, Route: types.RouteProxy},
+	})
+	svc.reqDB = reqDB
+
+	pipe := testPipe("req-virtual-keep")
+	pipe.Request.Model = "deepseek-v4.1-flash" // 聚合已改写为真实模型
+	pipe.Metadata["__virtual_model"] = "debug" // 虚拟名只留在 metadata
+	if _, err := svc.HandleBeforeAttempt(pipe); err != nil {
+		t.Fatal(err)
+	}
+	uuid, _ := pipe.Metadata[metadataKey].(string)
+	if uuid == "" {
+		t.Fatal("metadata missing request log id")
+	}
+
+	d, err := svc.Detail(context.Background(), uuid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snap requestSnapshot
+	if err := json.Unmarshal(d.RequestJSON, &snap); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(snap.Body, "data:image/png;base64,") {
+		t.Fatalf("虚拟模型命中的保留 base64 规则未生效，实际 body: %s", snap.Body)
+	}
+	if strings.Contains(snap.Body, "[image:") {
+		t.Fatalf("保留 base64 时不应出现占位符: %s", snap.Body)
+	}
+}
