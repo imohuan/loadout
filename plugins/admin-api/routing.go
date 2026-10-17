@@ -477,25 +477,47 @@ func (s *Service) handleChannelMoveDB(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &body) {
 		return
 	}
-	target := index
-	if body.Direction == "up" {
-		target--
-	} else if body.Direction == "down" {
-		target++
-	} else {
+	if body.Direction != "up" && body.Direction != "down" {
 		writeError(w, http.StatusBadRequest, "方向必须是 up 或 down")
 		return
 	}
-	if index < 0 || target < 0 || target >= len(channels) {
+	if index < 0 {
+		writeError(w, http.StatusBadRequest, "无法移动：渠道不存在")
+		return
+	}
+	// 两级顺序：这个接口只挪「组内 Key」，在同一个 base_url 组里找相邻项交换，
+	// 不会跨到别的渠道组（跨组要改的是 channel_position，走 reorder 的 group 模式）。
+	// 旧实现在扁平数组里 index±1，会把 Key 从组尾挪到下一个组的组首。
+	group := db.NormalizeBaseURLForOrder(channels[index].BaseURL)
+	target := -1
+	if body.Direction == "up" {
+		for i := index - 1; i >= 0; i-- {
+			if db.NormalizeBaseURLForOrder(channels[i].BaseURL) == group {
+				target = i
+				break
+			}
+		}
+	} else {
+		for i := index + 1; i < len(channels); i++ {
+			if db.NormalizeBaseURLForOrder(channels[i].BaseURL) == group {
+				target = i
+				break
+			}
+		}
+	}
+	if target < 0 {
 		writeError(w, http.StatusBadRequest, "无法移动：已在边界或渠道不存在")
 		return
 	}
 	channels[index], channels[target] = channels[target], channels[index]
-	if err := s.routing.ReplaceChannels(r.Context(), channels); err != nil {
+	// 组内交换后保持组内连续，按数组顺序重写 key_position 即可；组间顺序
+	// 由数组里各组的首现顺序决定，本接口不改变它。
+	out := s.applyReorderMode(channels, "key")
+	if err := s.routing.ReplaceChannels(r.Context(), out); err != nil {
 		s.writeServerError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, channels)
+	writeJSON(w, http.StatusOK, out)
 }
 
 // handleChannelsReorderDB 全量重排渠道顺序：按提交的 id 数组顺序设置 position。

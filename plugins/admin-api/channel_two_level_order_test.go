@@ -134,3 +134,71 @@ func TestReorderLevelsAreIndependent(t *testing.T) {
 		t.Fatalf("wb 组 key_position 应为 0,1,2: %v", keyPos)
 	}
 }
+
+// TestMoveKeyStaysInsideGroup 回归：/api/channels/{id}/move 只能在同渠道组内挪 Key。
+//
+// 旧实现按扁平数组 index±1 交换：当被移动的 Key 是组内最后一个时，「下移」会把
+// 它换到下一个渠道组的第一个位置，等于把 Key 挪进了别的组（base_url 不变，
+// 但组内顺序被打乱，且下一个组少了一个 Key 的位置）。
+func TestMoveKeyStaysInsideGroup(t *testing.T) {
+	ts, _, pw := newDBTestServer(t)
+	cookie := login(t, ts, pw)
+	add := func(name, base string) string {
+		resp, data := apiReq(t, ts, http.MethodPost, "/api/channels", map[string]any{
+			"name": name, "base_url": base, "enabled": true,
+			"models": []string{"m"},
+		}, cookie)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("创建 %s 失败: %d %s", name, resp.StatusCode, data)
+		}
+		var created types.Channel
+		if err := json.Unmarshal(data, &created); err != nil {
+			t.Fatalf("解析创建响应: %v", err)
+		}
+		return created.ID
+	}
+	wb1 := add("wb1", "http://wb/v1")
+	wb2 := add("wb2", "http://wb/v1")
+	px1 := add("px1", "http://px/v1")
+
+	order := func() []string {
+		_, data := apiReq(t, ts, http.MethodGet, "/api/channels", nil, cookie)
+		var list []types.Channel
+		if err := json.Unmarshal(data, &list); err != nil {
+			t.Fatalf("解析渠道列表: %v", err)
+		}
+		out := make([]string, 0, len(list))
+		for _, ch := range list {
+			out = append(out, ch.Name)
+		}
+		return out
+	}
+	if got := order(); len(got) != 3 || got[0] != "wb1" || got[2] != "px1" {
+		t.Fatalf("初始顺序异常: %v", got)
+	}
+
+	// wb2 是 wb 组最后一个：下移应失败（组内已到边界），不能跨到 px1 前面。
+	resp, data := apiReq(t, ts, http.MethodPost, "/api/channels/"+wb2+"/move",
+		map[string]any{"direction": "down"}, cookie)
+	if resp.StatusCode == http.StatusOK {
+		if got := order(); got[0] != "wb1" || got[1] != "wb2" || got[2] != "px1" {
+			t.Fatalf("wb2 下移不应跨组, 实际 %v", got)
+		}
+	}
+	_ = data
+
+	// wb1 下移：应在组内与 wb2 交换。
+	resp, _ = apiReq(t, ts, http.MethodPost, "/api/channels/"+wb1+"/move",
+		map[string]any{"direction": "down"}, cookie)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("wb1 下移期望 200, 实际 %d", resp.StatusCode)
+	}
+	got := order()
+	want := []string{"wb2", "wb1", "px1"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("组内下移后顺序 = %v, 期望 %v", got, want)
+		}
+	}
+	_ = px1
+}

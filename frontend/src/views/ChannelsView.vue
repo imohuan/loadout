@@ -276,7 +276,10 @@ async function moveKey(channel: Channel, direction: 'up' | 'down') {
   ;[next[i], next[j]] = [next[j], next[i]]
   await run(keyKey(channel, `move-${direction}`), async () => {
     // 只改组内 Key 顺序，组间顺序保持不动。
-    await service.reorder(next.map((c) => c.id), 'key')
+    await service.reorder(
+      next.map((c) => c.id),
+      'key',
+    )
     await refresh()
   })
 }

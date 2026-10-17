@@ -709,7 +709,8 @@ func (s *Service) List(ctx context.Context) ([]contracts.ChannelStatus, error) {
 }
 
 func (s *Service) listChannelStatus(ctx context.Context) ([]channelStatusRow, error) {
-	// 必须按 channels.position 排：模型状态页的 Key 列表与「渠道与模型」页同源，
+	// 必须按渠道两级顺序排（channel_position, key_position）：模型状态页的 Key 列表与
+	// 「渠道与模型」页同源，
 	// 用户在那里看到的上下顺序就是真实的路由优先级。按 c.id（随机 hex）排会让
 	// 两个页面的顺序对不上，批量测试等按列表顺序跑的操作也随之跑偏。
 	rows, err := s.db.QueryContext(ctx, `SELECT c.id, c.name, c.channel_name, c.base_url, c.manual_enabled, c.sync_billing, COALESCE(cs.status, 'available'), cs.disabled_until, COALESCE(cs.last_failure_class, ''), COALESCE(cs.last_rule_id, ''), COALESCE(cs.last_rule_name, '') FROM channels c LEFT JOIN channel_states cs ON cs.channel_id = c.id ORDER BY c.channel_position, c.key_position, c.id`)

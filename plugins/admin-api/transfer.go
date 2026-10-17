@@ -926,6 +926,10 @@ func (s *Service) importChannels(ctx context.Context, data []byte, mode string) 
 			}
 		}
 	}
+	// 两级顺序：导入数组按原顺序排在前，追加的现有渠道接在后面，但同一
+	// base_url 组必须连续（否则 ReplaceChannels 会按「组首次出现」重排组间
+	// 顺序，导入后页面顺序会跳）。这里按组连续化，组内保持各自原顺序。
+	merged = groupChannelsContiguous(merged)
 	// 渠道名称兜底：空渠道名继承同 Base URL 组内首个非空渠道名（与创建/更新逻辑一致，
 	// 保证"同组同步一致"）；全组为空时回退为 Key 名，避免导入后渠道名缺失。
 	fillChannelNames(merged)
@@ -933,6 +937,29 @@ func (s *Service) importChannels(ctx context.Context, data []byte, mode string) 
 		return 0, err
 	}
 	return len(values), nil
+}
+
+// groupChannelsContiguous 把渠道按 base_url 归组后连续排列：组的先后 = 组首次
+// 出现的顺序，组内保持输入里各自的相对顺序。导入/合并后必须做这一步，否则
+// 同一组的 Key 会被别的组隔开，而两级 position 要求「同组共用 channel_position、
+// key_position 组内连续」。
+func groupChannelsContiguous(channels []db.Channel) []db.Channel {
+	seen := map[string]bool{}
+	order := make([]string, 0, len(channels))
+	byGroup := map[string][]db.Channel{}
+	for _, ch := range channels {
+		key := db.NormalizeBaseURLForOrder(ch.BaseURL)
+		if !seen[key] {
+			seen[key] = true
+			order = append(order, key)
+		}
+		byGroup[key] = append(byGroup[key], ch)
+	}
+	out := make([]db.Channel, 0, len(channels))
+	for _, key := range order {
+		out = append(out, byGroup[key]...)
+	}
+	return out
 }
 
 // fillChannelNames 补齐空渠道名：同 Base URL 组内继承首个非空 ChannelName；
