@@ -8,12 +8,12 @@
  *   约 800 个单元格在拖动过程中被反复重建。实测：每次鼠标移动触发 109 次行渲染，
  *   帧间隔被顶到 66~87ms，手感就是「卡、不跟手」。
  *
- *   把手柄拆成独立子组件后，高频状态只驱动这 7 个手柄重渲染，表格本体一次都不动。
+ *   把手柄拆成独立子组件后，高频状态只驱动这几个手柄重渲染，表格本体一次都不动。
  *
- * 样式（.axt-overlay / .axt-handle / .axt-line）由 AxTable 注入的样式表提供，
- * 选择器以 AxTable 根 id 作用域限定，本组件渲染在其内部，因此照常生效。
+ * 样式（.axt-overlay / .axt-handle / .axt-band / .axt-line）由 AxTable 注入的
+ * 样式表提供，选择器以 AxTable 根 id 作用域限定，本组件渲染在其内部，因此照常生效。
  */
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 
 const props = defineProps<{
   /** 每条列边界的水平位置（px，相对表格内容坐标系）。 */
@@ -34,72 +34,98 @@ const emit = defineEmits<{
   reset: [index: number]
 }>()
 
-/** hover 状态留在本组件内部：它是纯视觉反馈，不该影响外层。 */
-const hovered = ref<number | null>(null)
-
 /**
- * 方案 B：跟随鼠标的交互条。
- * 鼠标在表头内任意位置移动时，指示条始终出现在「离鼠标最近的那条列边界」上
- * （不限制距离），鼠标左右移动时它在边界间跳转；一次只显示一条。
- * 拖拽中的那条强制常亮。
+ * 列高亮（方案 C）：
+ *   鼠标在表头内移动时，高亮「鼠标所在的那一列」——一个从左边到该列右边界的
+ *   矩形色块（即该列自己的宽度）。拖拽边界时色块宽度实时变化，所见即所得。
+ *   不再用指示竖线：竖线在左右对齐混排的表头里没有稳定的视觉锚点。
  */
-const nearest = ref<number | null>(null)
+const hoverCol = ref<number | null>(null)
+/** 光标是否贴近边界（±5px）：贴边才显示 col-resize 并允许拖拽。 */
+const nearEdge = ref(false)
+/** 鼠标是否在表头区内（真实或合成事件都会触发）。 */
+const inHeader = ref(false)
+/** 光标最近的一条边界序号（-1 = 没有贴边）。 */
+const nearestDivider = ref(-1)
+/** 色块显示的列：优先鼠标悬停列；拖拽中没有 hover，就用被拖边界右侧的列。 */
+const bandCol = computed<number | null>(() => {
+  if (hoverCol.value !== null) return Math.min(hoverCol.value, props.dividers.length - 1)
+  if (props.draggingIndex !== null) {
+    return Math.min(props.draggingIndex, props.dividers.length - 1)
+  }
+  return null
+})
 
+/** 指针所在位置 → 列序号 + 是否贴近右边界。dividers[i] 是第 i+1 列的右边界。 */
 function onMove(e: PointerEvent) {
   const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
   const x = e.clientX - rect.left
-  let best = -1
-  let bestDist = Infinity
-  for (let i = 0; i < props.dividers.length; i++) {
-    const d = Math.abs(props.dividers[i] - x)
-    if (d < bestDist) {
-      bestDist = d
-      best = i
-    }
-  }
-  nearest.value = best
+  // 列序号：x 落在 (dividers[i-1], dividers[i]] 之间就是第 i 列。
+  let col = 0
+  while (col < props.dividers.length && x > props.dividers[col]) col++
+  if (col >= props.dividers.length) col = props.dividers.length - 1
+  hoverCol.value = col
+  inHeader.value = true
+  // 光标位置相对最近边界（左边界或右边界）的距离。
+  const leftEdge = col === 0 ? 0 : props.dividers[col - 1]
+  const dRight = Math.abs(props.dividers[col] - x)
+  const dLeft = Math.abs(x - leftEdge)
+  nearEdge.value = Math.min(dRight, dLeft) <= 5
+  nearestDivider.value = dRight <= dLeft ? col : col - 1
 }
 
 function onLeave() {
-  nearest.value = null
-  hovered.value = null
+  inHeader.value = false
+  hoverCol.value = null
+  nearEdge.value = false
+  nearestDivider.value = -1
 }
 
-/** 某条边界当前是否应显示（被鼠标选中 或 正在拖拽）。 */
-function isActive(i: number) {
-  return nearest.value === i || props.draggingIndex === i
+/** 第 col 列高亮矩形的 left/width：左边界 = 前一条 divider（或 0），右边界 = 本列 divider。 */
+function bandLeft(col: number) {
+  return col === 0 ? 0 : props.dividers[col - 1]
+}
+function bandWidth(col: number) {
+  return props.dividers[col] - bandLeft(col)
 }
 </script>
 
 <template>
   <div
-    class="axt-overlay"
+		class="axt-overlay"
+		:class="{ 'is-near-cursor': nearEdge }"
     :style="{
       top: `${overlayTop}px`,
       height: `${headerHeight}px`,
       transform: `translateX(${-scrollLeft}px)`,
     }"
     data-ax-overlay
+      @pointerenter="inHeader = true"
     @pointermove="onMove"
     @pointerleave="onLeave"
   >
+    <!-- 列高亮色块：悬停列的表头底色；拖拽时跟随边界实时变宽/变窄。 -->
+		<div
+			v-if="bandCol !== null"
+			class="axt-band"
+			:class="{ 'is-dragging': draggingIndex === bandCol || draggingIndex === bandCol + 1, 'is-on': inHeader }"
+			:style="{ left: `${bandLeft(bandCol)}px`, width: `${bandWidth(bandCol)}px` }"
+		/>
+    <!-- 边界手柄：贴边 ±5px 显示 col-resize；拖拽/双击逻辑与之前一致。 -->
     <div
       v-for="(x, i) in dividers"
       :key="i"
       class="axt-handle"
-      :class="{ 'is-dragging': draggingIndex === i }"
+			:class="{ 'is-near': nearEdge && i === nearestDivider }"
       role="separator"
       aria-orientation="vertical"
       :aria-label="`调整第 ${i + 1} 列宽度，双击恢复自动宽度`"
       :tabindex="0"
       :style="{ left: `${x}px` }"
-      @pointerdown="(e) => emit('dragStart', i, e)"
+			@pointerdown="(e) => nearEdge && i === nearestDivider && emit('dragStart', i, e)"
       @dblclick="emit('reset', i)"
       @keydown="(e) => emit('dragKey', i, e)"
-    >
-      <!-- 交互条：仅当鼠标靠近该边界（±6px）或正在拖拽时显示。 -->
-      <span class="axt-line" :class="{ 'is-active': isActive(i) }" />
-    </div>
+    />
   </div>
 </template>
 

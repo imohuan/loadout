@@ -268,20 +268,25 @@ function buildTableCss(w: number[]): string {
     `  transform: translateX(-50%); cursor: col-resize; user-select: none;`,
     `  pointer-events: auto;`,
     `}`,
-			// 列边界指示线本体：绝对定位在边界上，默认透明（零噪音）。
-			`${scope} .axt-line {`,
-			`  position: absolute; top: 4px; bottom: 4px; left: 50%; width: 2px;`,
-			`  transform: translateX(-50%); border-radius: 9999px;`,
-			`  background: var(--primary); opacity: 0;`,
-			`  transition: opacity 0.12s, width 0.12s, background 0.12s;`,
-			`}`,
-			// 方案 B：交互条由 JS（AxTableResizers）按「鼠标最近的边界 ±6px」点亮，
-			// 同一时刻最多一条，主色常亮；拖拽中的那条也走同一规则，全程稳定无闪烁。
-			`${scope} .axt-line.is-active {`,
-			`  opacity: 1 !important; width: 3px !important; background: var(--primary) !important;`,
-			`},`,
-      // 键盘可达：聚焦时让线现身。
-      `${scope} .axt-handle:focus-visible .axt-line { opacity: 1; }`,
+            // 列高亮色块：绝对定位铺满表头高度，悬停列淡显主色底；拖拽时随边界实时变宽变窄。
+            `${scope} .axt-band {`,
+            `  position: absolute; top: 0; bottom: 0; pointer-events: none;`,
+            `  background: var(--primary); opacity: 0;`,
+            `  transition: opacity 0.12s;`,
+            `}`,
+            `${scope} .axt-band.is-dragging {`,
+            `  opacity: 0.18;`,
+            `}`,
+			`${scope} .axt-band.is-on {`,
+            `  opacity: 0.08;`,
+            `}`,
+            // 手柄光标：默认继承（正常文本光标），贴边 ±5px 时切 col-resize。
+            `${scope} .axt-handle { cursor: default; }`,
+            `${scope} .axt-handle.is-near { cursor: col-resize; }`,
+			`${scope} .axt-overlay.is-near-cursor { cursor: col-resize; }`,
+            // 键盘可达：聚焦时显示边界线。
+            `${scope} .axt-handle:focus-visible .axt-line { opacity: 1; }`,
+            `${scope} .axt-handle:focus-visible { outline: 1px solid var(--primary); outline-offset: -1px; }`,
       `${scope} .axt-handle:focus-visible { outline: 1px solid var(--primary); outline-offset: -1px; }`,
   )
   w.forEach((width, i) => {
