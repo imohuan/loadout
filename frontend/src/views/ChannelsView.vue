@@ -248,7 +248,8 @@ async function moveGroup(baseUrl: string, direction: 'up' | 'down') {
   ;[groups[index], groups[target]] = [groups[target], groups[index]]
   const ids = groups.flatMap((group) => group.keys.map((key) => key.id))
   await run(groupKey(baseUrl, `move-${direction}`), async () => {
-    await service.reorder(ids)
+    // 只改组间顺序，组内 Key 顺序保持不动。
+    await service.reorder(ids, 'group')
     await refresh()
   })
 }
@@ -256,7 +257,7 @@ async function moveGroup(baseUrl: string, direction: 'up' | 'down') {
 async function reorderGroups(next: ChannelPlatform[]) {
   const ids = next.flatMap((group) => group.keys.map((key) => key.id))
   await run('group:reorder', async () => {
-    await service.reorder(ids)
+    await service.reorder(ids, 'group')
     await refresh()
   })
 }
@@ -274,7 +275,8 @@ async function moveKey(channel: Channel, direction: 'up' | 'down') {
   const next = [...channels]
   ;[next[i], next[j]] = [next[j], next[i]]
   await run(keyKey(channel, `move-${direction}`), async () => {
-    await service.reorder(next.map((c) => c.id))
+    // 只改组内 Key 顺序，组间顺序保持不动。
+    await service.reorder(next.map((c) => c.id), 'key')
     await refresh()
   })
 }
@@ -301,7 +303,7 @@ async function reorderKeys(baseUrl: string, keys: Channel[]) {
   )
   try {
     await run(groupKey(target, 'reorder-keys'), async () => {
-      await service.reorder(ids)
+      await service.reorder(ids, 'key')
       await refresh()
     })
   } catch {

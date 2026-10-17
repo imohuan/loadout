@@ -5,13 +5,23 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 )
+
+// NormalizeBaseURLForOrder 渠道组标识：去掉尾部斜杠。同一 Base URL 的多个 Key
+// 归为一个渠道组，share 同一个 channel_position。
+func NormalizeBaseURLForOrder(baseURL string) string {
+	return strings.TrimRight(strings.TrimSpace(baseURL), "/")
+}
 
 // Channel is a persisted upstream configuration and its model catalog.
 type Channel struct {
 	ID            string         `json:"id"`
-	Position      int            `json:"-"`
+	// Position 是组内的「Key 顺序」（= key_position），决定同一渠道里各 Key 的
+	// failover 先后。渠道组之间的顺序用 ChannelPosition，两者独立。
+	Position        int `json:"-"`
+	ChannelPosition int `json:"-"`
 	Name          string         `json:"name"`         // Key 名称
 	ChannelName   string         `json:"channel_name"` // 渠道名称（Base URL 组级，同组同步一致）
 	BaseURL       string         `json:"base_url"`
@@ -141,7 +151,9 @@ func WithTx(ctx context.Context, database *sql.DB, fn func(*sql.Tx) error) error
 
 // ListChannels returns channels and their complete model catalogs.
 func (r *Repository) ListChannels(ctx context.Context) ([]Channel, error) {
-	rows, err := r.database.QueryContext(ctx, `SELECT id, position, name, channel_name, base_url, COALESCE(framework, ''), api_key_cipher, manual_enabled, sync_billing, models_error, created_at, updated_at FROM channels ORDER BY position, id`)
+	// 两级顺序：先渠道组（channel_position），再组内 Key（key_position）。
+	// 仍需一个稳定兜底（id），避免并列时顺序随机。
+	rows, err := r.database.QueryContext(ctx, `SELECT id, key_position, channel_position, name, channel_name, base_url, COALESCE(framework, ''), api_key_cipher, manual_enabled, sync_billing, models_error, created_at, updated_at FROM channels ORDER BY channel_position, key_position, id`)
 	if err != nil {
 		return nil, fmt.Errorf("db: list channels: %w", err)
 	}
@@ -151,7 +163,7 @@ func (r *Repository) ListChannels(ctx context.Context) ([]Channel, error) {
 	byID := make(map[string]int)
 	for rows.Next() {
 		var channel Channel
-		if err := rows.Scan(&channel.ID, &channel.Position, &channel.Name, &channel.ChannelName, &channel.BaseURL, &channel.Framework, &channel.APIKeyCipher, &channel.ManualEnabled, &channel.SyncBilling, &channel.ModelsError, &channel.CreatedAt, &channel.UpdatedAt); err != nil {
+		if err := rows.Scan(&channel.ID, &channel.Position, &channel.ChannelPosition, &channel.Name, &channel.ChannelName, &channel.BaseURL, &channel.Framework, &channel.APIKeyCipher, &channel.ManualEnabled, &channel.SyncBilling, &channel.ModelsError, &channel.CreatedAt, &channel.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("db: scan channel: %w", err)
 		}
 		byID[channel.ID] = len(channels)
@@ -185,6 +197,22 @@ func (r *Repository) ListChannels(ctx context.Context) ([]Channel, error) {
 func (r *Repository) ReplaceChannels(ctx context.Context, channels []Channel) error {
 	return r.Transaction(ctx, func(tx *sql.Tx) error {
 		seen := make(map[string]struct{}, len(channels))
+		// 两级顺序：入参数组的顺序决定**渠道组**的先后；组内 Key 的顺序沿用
+		// 调用方给的 channel.Position（= key_position）。这样「拖某一组」只改
+		// 组间顺序、「拖组内某个 Key」只改组内顺序，两者互不覆盖。
+		//
+		// 调用方若没显式设 ChannelPosition（全为 0），退化为「按数组首次出现的
+		// 组的顺序」补全，保证老调用方（JSON 导入等）仍有确定结果。
+		groupOrder := map[string]int{}
+		nextGroup := 0
+		for i := range channels {
+			base := NormalizeBaseURLForOrder(channels[i].BaseURL)
+			if _, ok := groupOrder[base]; !ok {
+				groupOrder[base] = nextGroup
+				nextGroup++
+			}
+		}
+		keyOrder := map[string]int{}
 		for i := range channels {
 			channel := channels[i]
 			if channel.ID == "" || channel.Name == "" || channel.BaseURL == "" {
@@ -201,8 +229,16 @@ func (r *Repository) ReplaceChannels(ctx context.Context, channels []Channel) er
 			if channel.UpdatedAt == "" {
 				channel.UpdatedAt = now
 			}
-			channel.Position = i
-			if _, err := tx.ExecContext(ctx, `INSERT INTO channels (id, position, name, channel_name, base_url, framework, api_key_cipher, manual_enabled, sync_billing, models_error, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET position = excluded.position, name = excluded.name, channel_name = excluded.channel_name, base_url = excluded.base_url, framework = excluded.framework, api_key_cipher = excluded.api_key_cipher, manual_enabled = excluded.manual_enabled, sync_billing = excluded.sync_billing, models_error = excluded.models_error, updated_at = excluded.updated_at`, channel.ID, channel.Position, channel.Name, channel.ChannelName, channel.BaseURL, channel.Framework, channel.APIKeyCipher, channel.ManualEnabled, channel.SyncBilling, channel.ModelsError, channel.CreatedAt, channel.UpdatedAt); err != nil {
+			base := NormalizeBaseURLForOrder(channel.BaseURL)
+			channel.ChannelPosition = groupOrder[base]
+			// 组内 Key 顺序 = 该 Key 在本组里出现的第几个。整组拖拽时数组里
+			// 一堆同组 Key 仍然连续，算出来的组内序号不变；组内拖某一个 Key
+			// 时只影响它自己这一组的 key_position，别的组不受影响。
+			channel.Position = keyOrder[base]
+			keyOrder[base]++
+			// 兼容列 position 保留为「全局扁平顺序」（数组下标），仅供尚未迁移到
+			// 两级字段的旧代码/旧查询兜底；新代码一律读 channel_position/key_position。
+			if _, err := tx.ExecContext(ctx, `INSERT INTO channels (id, position, channel_position, key_position, name, channel_name, base_url, framework, api_key_cipher, manual_enabled, sync_billing, models_error, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET position = excluded.position, channel_position = excluded.channel_position, key_position = excluded.key_position, name = excluded.name, channel_name = excluded.channel_name, base_url = excluded.base_url, framework = excluded.framework, api_key_cipher = excluded.api_key_cipher, manual_enabled = excluded.manual_enabled, sync_billing = excluded.sync_billing, models_error = excluded.models_error, updated_at = excluded.updated_at`, channel.ID, i, channel.ChannelPosition, channel.Position, channel.Name, channel.ChannelName, channel.BaseURL, channel.Framework, channel.APIKeyCipher, channel.ManualEnabled, channel.SyncBilling, channel.ModelsError, channel.CreatedAt, channel.UpdatedAt); err != nil {
 				return fmt.Errorf("db: replace channel %q: %w", channel.ID, err)
 			}
 			if err := replaceChannelModels(ctx, tx, channel.ID, channel.Models); err != nil {

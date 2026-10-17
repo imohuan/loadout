@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -503,6 +504,11 @@ func (s *Service) handleChannelMoveDB(w http.ResponseWriter, r *http.Request) {
 func (s *Service) handleChannelsReorderDB(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		IDs []string `json:"ids"`
+		// Mode 决定这次提交改哪一级顺序：
+		//   "" / "all"    —— 入参数组顺序即「组间顺序 + 组内顺序」（兼容旧调用）；
+		//   "group"       —— 只改渠道组间顺序，组内 Key 顺序保持库里的 key_position；
+		//   "key"         —— 只改组内 Key 顺序，组间顺序保持库里的 channel_position。
+		Mode string `json:"mode"`
 	}
 	if !decodeJSON(w, r, &body) {
 		return
@@ -512,25 +518,31 @@ func (s *Service) handleChannelsReorderDB(w http.ResponseWriter, r *http.Request
 		s.writeServerError(w, err)
 		return
 	}
-	byID := make(map[string]int, len(channels))
+	byID := make(map[string]db.Channel, len(channels))
 	for i := range channels {
-		byID[channels[i].ID] = i
+		byID[channels[i].ID] = channels[i]
 	}
-	out := make([]db.Channel, 0, len(channels))
+	// 按提交顺序取出记录（未知/重复 id 忽略，未提交的按原顺序追加尾部）。
+	ordered := make([]db.Channel, 0, len(channels))
 	seen := make(map[string]bool, len(body.IDs))
 	for _, id := range body.IDs {
-		idx, ok := byID[id]
+		ch, ok := byID[id]
 		if !ok || seen[id] {
 			continue
 		}
 		seen[id] = true
-		out = append(out, channels[idx])
+		ordered = append(ordered, ch)
 	}
 	for i := range channels {
 		if !seen[channels[i].ID] {
-			out = append(out, channels[i])
+			ordered = append(ordered, channels[i])
 		}
 	}
+
+	// 两级顺序：组间 channel_position 与组内 key_position 独立。
+	// mode 决定这次输入影响哪一级，另一级沿用库里已有的值（不能被"按数组下标
+	// 重排"顺手改掉，否则拖组内 Key 会把组顺序也搅乱，反之亦然）。
+	out := s.applyReorderMode(ordered, strings.ToLower(strings.TrimSpace(body.Mode)))
 	if err := s.routing.ReplaceChannels(r.Context(), out); err != nil {
 		s.writeServerError(w, err)
 		return
@@ -540,6 +552,64 @@ func (s *Service) handleChannelsReorderDB(w http.ResponseWriter, r *http.Request
 		result = append(result, channelAPI(out[i]))
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+// applyReorderMode 把「提交顺序」落实到两级 position 上：
+//   - mode=group：只重排渠道组（同组连续），组内 key_position 保持不变；
+//   - mode=key：只重排组内 Key，channel_position 保持不变；
+//   - 其它（含空）：两级都按提交顺序重排（兼容旧行为）。
+//
+// 返回的切片顺序保持「组内连续」——ReplaceChannels 会按组首次出现顺序补
+// channel_position、按组内出现顺序补 key_position，因此这里只需保证同一组的
+// Key 在切片里相邻。
+func (s *Service) applyReorderMode(ordered []db.Channel, mode string) []db.Channel {
+	if mode == "group" {
+		// 按「组首次出现」的顺序重排，组内保持库里的 key_position 顺序。
+		seenGroup := map[string]bool{}
+		var groupSeq []string
+		byGroup := map[string][]db.Channel{}
+		for _, ch := range ordered {
+			key := normalizeChannelBase(ch.BaseURL)
+			if !seenGroup[key] {
+				seenGroup[key] = true
+				groupSeq = append(groupSeq, key)
+			}
+			byGroup[key] = append(byGroup[key], ch)
+		}
+		out := make([]db.Channel, 0, len(ordered))
+		for _, key := range groupSeq {
+			keys := byGroup[key]
+			sort.SliceStable(keys, func(i, j int) bool { return keys[i].Position < keys[j].Position })
+			out = append(out, keys...)
+		}
+		return out
+	}
+	if mode != "key" {
+		return ordered
+	}
+	// mode=key：组内按提交顺序，组间顺序保持库里的 channel_position。
+	// ordered 来自 listDBChannels（已按 channel_position, key_position 排过），
+	// 前端只在上面的基础上交换同一组内两个 Key，因此「组首次出现的顺序」
+	// 就是原组间顺序。按首现顺序把每组展开即可。
+	groupSeq := make([]string, 0, len(ordered))
+	byGroup := map[string][]db.Channel{}
+	for _, ch := range ordered {
+		key := normalizeChannelBase(ch.BaseURL)
+		if _, ok := byGroup[key]; !ok {
+			groupSeq = append(groupSeq, key)
+		}
+		byGroup[key] = append(byGroup[key], ch)
+	}
+	out := make([]db.Channel, 0, len(ordered))
+	for _, key := range groupSeq {
+		out = append(out, byGroup[key]...)
+	}
+	return out
+}
+
+// normalizeChannelBase 渠道组标识（去尾斜杠、去空白）。
+func normalizeChannelBase(baseURL string) string {
+	return strings.TrimRight(strings.TrimSpace(baseURL), "/")
 }
 
 func (s *Service) handleChannelTestDB(w http.ResponseWriter, r *http.Request) {

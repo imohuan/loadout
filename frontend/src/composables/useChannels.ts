@@ -67,8 +67,16 @@ export function useChannels() {
   const remove = (id: string) => request<void>(`/api/channels/${id}`, 'DELETE')
   const move = (id: string, direction: 'up' | 'down') =>
     request<void>(`/api/channels/${id}/move`, 'POST', { direction })
-  /** 全量重排渠道顺序：提交 id 数组按新顺序，支撑按 base_url 分组的整组移动 */
-  const reorder = (ids: string[]) => request<void>('/api/channels/reorder', 'POST', { ids })
+  /**
+   * 重排渠道顺序：提交 id 数组按新顺序。
+   *
+   * mode 指定改哪一级（两级顺序互相独立）：
+   *   - 'group'：只改渠道组间顺序，组内 Key 顺序不动；
+   *   - 'key'  ：只改组内 Key 顺序，组间顺序不动；
+   *   - 省略   ：两级一起按提交顺序重排（旧行为）。
+   */
+  const reorder = (ids: string[], mode?: 'group' | 'key') =>
+    request<void>('/api/channels/reorder', 'POST', mode ? { ids, mode } : { ids })
   /** 启用/禁用单个 key（渠道记录） */
   const setEnabled = (id: string, enabled: boolean) =>
     request<void>(`/api/model-status/channels/${id}`, 'PATCH', { manual_enabled: enabled })

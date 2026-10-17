@@ -1034,6 +1034,35 @@ ALTER TABLE capability_routes ADD COLUMN rate_limit_json TEXT NOT NULL DEFAULT '
 -- sk- 密钥打码与这个开关无关，任何取值下都会打码。
 ALTER TABLE capability_routes ADD COLUMN request_log_keep_base64 INTEGER NOT NULL DEFAULT 0;
 `,
+}, {
+	version: 52,
+	name:    "channels-key-position",
+	sql: `
+-- 两级顺序：channel_position = 渠道组顺序，key_position = 组内 Key 顺序。
+--
+-- 历史数据只有 position（全局扁平顺序）。迁移时拆成两级：
+--   - channel_position：同 base_url 组按组内首个 Key 的旧 position 排名（组间顺序不变）；
+--   - key_position：组内按旧 position 排名（组内顺序不变）。
+-- 这样迁移后页面看到的顺序与迁移前完全一致，只是从此两级可以独立调整。
+-- 子查询只读 position / base_url / id（本次不修改的列），不会读到半更新状态。
+ALTER TABLE channels ADD COLUMN channel_position INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE channels ADD COLUMN key_position INTEGER NOT NULL DEFAULT 0;
+
+UPDATE channels SET key_position = (
+  SELECT COUNT(*) FROM channels c3
+  WHERE c3.base_url = channels.base_url
+    AND (c3.position < channels.position OR (c3.position = channels.position AND c3.id < channels.id))
+);
+
+UPDATE channels SET channel_position = (
+  SELECT COUNT(*) FROM (
+    SELECT base_url, MIN(position) AS first_pos FROM channels GROUP BY base_url
+  ) g
+  WHERE g.first_pos < (SELECT MIN(c2.position) FROM channels c2 WHERE c2.base_url = channels.base_url)
+);
+
+CREATE INDEX idx_channels_order ON channels(channel_position, key_position);
+`,
 }}
 
 // Migrate applies all pending schema migrations and rejects an incompatible

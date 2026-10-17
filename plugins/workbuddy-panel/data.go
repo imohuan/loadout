@@ -266,7 +266,7 @@ func (s *Service) wbChannels(ctx context.Context) ([]struct {
 }, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT c.id, COALESCE(c.name,''), COALESCE(c.base_url,''), COALESCE(c.api_key_cipher,''), COALESCE(wc.usage_synced_at,'')
 		FROM channels c LEFT JOIN wb_panel_credits wc ON wc.channel_id = c.id
-		WHERE c.manual_enabled = 1 ORDER BY c.position, c.id`)
+		WHERE c.manual_enabled = 1 ORDER BY c.channel_position, c.key_position, c.id`)
 	if err != nil {
 		return nil, err
 	}

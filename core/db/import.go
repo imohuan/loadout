@@ -138,9 +138,24 @@ func ImportLegacyJSON(ctx context.Context, database *sql.DB, st *store.Store, ba
 
 func importChannels(ctx context.Context, tx *sql.Tx, values []types.Channel) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
+	// 导入时按数组顺序同时确定两级：组首次出现顺序 = channel_position，
+	// 组内出现顺序 = key_position。
+	groupPos := map[string]int{}
+	keyPos := map[string]int{}
+	nextGroup := 0
+	for _, channel := range values {
+		base := NormalizeBaseURLForOrder(channel.BaseURL)
+		if _, ok := groupPos[base]; !ok {
+			groupPos[base] = nextGroup
+			nextGroup++
+		}
+	}
 	for position, channel := range values {
 		manual := channel.ManualEnabled || channel.Enabled
-		if _, err := tx.ExecContext(ctx, `INSERT INTO channels(id, position, name, base_url, api_key_cipher, manual_enabled, sync_billing, models_error, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, channel.ID, position, channel.Name, channel.BaseURL, channel.APIKeyCipher, manual, channel.SyncBilling, channel.ModelsError, now, now); err != nil {
+		base := NormalizeBaseURLForOrder(channel.BaseURL)
+		kp := keyPos[base]
+		keyPos[base]++
+		if _, err := tx.ExecContext(ctx, `INSERT INTO channels(id, position, channel_position, key_position, name, base_url, api_key_cipher, manual_enabled, sync_billing, models_error, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, channel.ID, position, groupPos[base], kp, channel.Name, channel.BaseURL, channel.APIKeyCipher, manual, channel.SyncBilling, channel.ModelsError, now, now); err != nil {
 			return fmt.Errorf("db: import channel %q: %w", channel.ID, err)
 		}
 		for _, model := range channel.Models {
