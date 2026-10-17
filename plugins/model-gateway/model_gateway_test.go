@@ -92,6 +92,9 @@ func writeTestChannel(t *testing.T, st *store.Store, baseURL string) {
 	}
 }
 
+// 【已停用】随 Service.RouteCapability 一起注释（该方法无生产调用方）。
+// 需要恢复时，请先给实现补上虚拟模型参数，再取消此处注释。
+/*
 func TestRouteCapability(t *testing.T) {
 	svc, st := newTestService(t)
 	routes := []types.CapabilityRoute{
@@ -184,6 +187,7 @@ func TestRouteCapabilityNoFile(t *testing.T) {
 		t.Fatalf("无路由表应返回 nil，实际 %+v", got)
 	}
 }
+*/
 
 func TestResolveChannelsForModel(t *testing.T) {
 	_, st := newTestService(t)

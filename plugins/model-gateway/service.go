@@ -55,60 +55,68 @@ func (s *Service) SetRoutingServices(database *sql.DB, health contracts.ModelHea
 	}
 }
 
-// RouteCapability 查能力路由：给定 model + capability + 请求渠道，返回命中条目；
-// channelID 为请求当前渠道（空 = 未知，仅全渠道/通配路由命中）。
-// 选择策略统一走 types.SelectCapabilityRoutes（native/历史 error 短路优先，proxy 取首候选）。
-// 未命中返回 nil（视为 native 透传）。SQLite 优先，fallback capability_routes.json。
-func (s *Service) RouteCapability(model, capability, channelID string) (*types.CapabilityRoute, error) {
-	requestBaseURL := s.requestChannelBaseURL(channelID)
-	scope := types.ChannelRequestScope{}
-	if channelID != "" {
-		scope.IDs = []string{channelID}
-	}
-	if requestBaseURL != "" {
-		scope.BaseURLs = []string{requestBaseURL}
-	}
-	if s.routing != nil {
-		routes, err := s.routing.ListCapabilityRoutes(context.Background())
-		if err == nil {
-			selected := types.SelectCapabilityRoutes(routes, capability, model, scope)
-			if len(selected) == 0 {
-				return nil, nil
-			}
-			return selected[0], nil
-		}
-		s.lg.Warn("modelgateway: 从 SQLite 读能力路由失败，回退 JSON", "err", err)
-	}
-	var routes []types.CapabilityRoute
-	if err := s.st.Read(types.FileCapabilityRoutes, &routes); err != nil {
-		if errors.Is(err, store.ErrNotExist) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("modelgateway: 读取能力路由表失败: %w", err)
-	}
-	selected := types.SelectCapabilityRoutes(routes, capability, model, scope)
-	if len(selected) == 0 {
-		return nil, nil
-	}
-	return selected[0], nil
-}
-
-// requestChannelBaseURL 取请求渠道的 base_url（用于渠道级匹配），无渠道或查不到返回空串。
-func (s *Service) requestChannelBaseURL(channelID string) string {
-	if channelID == "" || s.routing == nil {
-		return ""
-	}
-	channels, err := s.routing.ListChannels(context.Background())
-	if err != nil {
-		return ""
-	}
-	for _, ch := range channels {
-		if ch.ID == channelID {
-			return ch.BaseURL
-		}
-	}
-	return ""
-}
+// 【已停用，勿接回生产链路】RouteCapability / requestChannelBaseURL 曾经是
+// 「按能力查路由」的通用入口，但生产链路已全部改走各插件自己的 Decide* 方法
+// （统一经 types.SelectCapabilityRoutesEx 同时匹配真实模型与聚合虚拟模型）：
+//   - vision_v2：plugins/vision_v2/routes.go 的 DecideRouteScope
+//   - sensitive-filter / field-filter / message-inject / force-stream /
+//     key-rate-limit / request-capture / request-log：各自的 decide/decode 方法
+//
+// 保留这段代码会重演 request-log 的「保留 base64 不生效」事故：本方法只按真实
+// 模型名匹配（SelectCapabilityRoutes 不传虚拟名），聚合模型（如 debug）在
+// before-upstream 已被改写成真实模型名，按虚拟名配置的专项规则永远命不中。
+// 若将来确要恢复，必须先补上 __virtual_model 参数再接入任何一处调用。
+//
+// func (s *Service) RouteCapability(model, capability, channelID string) (*types.CapabilityRoute, error) {
+// 	requestBaseURL := s.requestChannelBaseURL(channelID)
+// 	scope := types.ChannelRequestScope{}
+// 	if channelID != "" {
+// 		scope.IDs = []string{channelID}
+// 	}
+// 	if requestBaseURL != "" {
+// 		scope.BaseURLs = []string{requestBaseURL}
+// 	}
+// 	if s.routing != nil {
+// 		routes, err := s.routing.ListCapabilityRoutes(context.Background())
+// 		if err == nil {
+// 			selected := types.SelectCapabilityRoutes(routes, capability, model, scope)
+// 			if len(selected) == 0 {
+// 				return nil, nil
+// 			}
+// 			return selected[0], nil
+// 		}
+// 		s.lg.Warn("modelgateway: 从 SQLite 读能力路由失败，回退 JSON", "err", err)
+// 	}
+// 	var routes []types.CapabilityRoute
+// 	if err := s.st.Read(types.FileCapabilityRoutes, &routes); err != nil {
+// 		if errors.Is(err, store.ErrNotExist) {
+// 			return nil, nil
+// 		}
+// 		return nil, fmt.Errorf("modelgateway: 读取能力路由表失败: %w", err)
+// 	}
+// 	selected := types.SelectCapabilityRoutes(routes, capability, model, scope)
+// 	if len(selected) == 0 {
+// 		return nil, nil
+// 	}
+// 	return selected[0], nil
+// }
+//
+// // requestChannelBaseURL 取请求渠道的 base_url（用于渠道级匹配），无渠道或查不到返回空串。
+// func (s *Service) requestChannelBaseURL(channelID string) string {
+// 	if channelID == "" || s.routing == nil {
+// 		return ""
+// 	}
+// 	channels, err := s.routing.ListChannels(context.Background())
+// 	if err != nil {
+// 		return ""
+// 	}
+// 	for _, ch := range channels {
+// 		if ch.ID == channelID {
+// 			return ch.BaseURL
+// 		}
+// 	}
+// 	return ""
+// }
 
 // ResolveChannelsForModel 返回支持 model 的候选渠道（按 channels.json 数组顺序）：
 // 已知支持（Models 含 model）的在前，未知（Models 空）的在后，明确不支持（Models 非空且不含）的排除。
@@ -247,6 +255,9 @@ func (s *Service) collectChannelModels(ctx context.Context) []channelModelEntry 
 func (s *Service) HandleModels(w http.ResponseWriter, r *http.Request) {
 	// model → 支持它的启用渠道集合（同名模型跨渠道：任一渠道可用即保留）。
 	modelChannels := map[string]map[string]bool{}
+	// 模型首次出现的顺序（按渠道 position、渠道内模型目录顺序）。输出必须按它走：
+	// 直接 range map 的顺序是随机的，客户端每次拉到的 /v1/models 会乱序。
+	var modelOrder []string
 	// model → 该模型在任一渠道上报的上下文窗口（token）；0 = 无渠道上报。
 	modelContext := map[string]int64{}
 	// model → OpenRouter 元数据（最大输出/视觉/推理），真实模型的能力声明来源。
@@ -259,6 +270,7 @@ func (s *Service) HandleModels(w http.ResponseWriter, r *http.Request) {
 	for _, e := range entries {
 		if modelChannels[e.Model] == nil {
 			modelChannels[e.Model] = map[string]bool{}
+			modelOrder = append(modelOrder, e.Model)
 		}
 		modelChannels[e.Model][e.ChannelID] = true
 		ctx := e.Context
@@ -286,7 +298,8 @@ func (s *Service) HandleModels(w http.ResponseWriter, r *http.Request) {
 	// 同名模型在所有渠道都被禁用才从列表移除；至少一个渠道可用则保留。
 	disabled := s.disabledModelSet(r.Context())
 	var models []string
-	for model, channels := range modelChannels {
+	for _, model := range modelOrder {
+		channels := modelChannels[model]
 		available := false
 		for cid := range channels {
 			if !disabled[cid+"\x00"+model] {
@@ -353,6 +366,9 @@ func (s *Service) HandleModels(w http.ResponseWriter, r *http.Request) {
 func (s *Service) HandleModelsV2(w http.ResponseWriter, r *http.Request) {
 	// displayName → 支持它的启用 Key 集合（v2 维度：ChannelName/model）。
 	modelChannels := map[string]map[string]bool{}
+	// 展示名首次出现的顺序（语义同 v1）：输出按渠道 position + 模型目录顺序，
+	// 保证 v2 列表稳定，不随 Go map 迭代随机。
+	var modelOrder []string
 	// displayName → 上下文窗口（token）；0 = 无渠道上报。
 	modelContext := map[string]int64{}
 	// displayName → OpenRouter 元数据（真实模型的能力声明来源）。
@@ -370,6 +386,7 @@ func (s *Service) HandleModelsV2(w http.ResponseWriter, r *http.Request) {
 		display := e.ChannelName + "/" + e.Model
 		if modelChannels[display] == nil {
 			modelChannels[display] = map[string]bool{}
+			modelOrder = append(modelOrder, display)
 		}
 		modelChannels[display][e.ChannelID] = true
 		ctx := e.Context
@@ -400,7 +417,8 @@ func (s *Service) HandleModelsV2(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	var models []string
-	for display, channels := range modelChannels {
+	for _, display := range modelOrder {
+		channels := modelChannels[display]
 		available := false
 		for cid := range channels {
 			if !disabled[cid+"\x00"+strings.TrimPrefix(display, channelNameByID[cid]+"/")] {
