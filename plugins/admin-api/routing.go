@@ -143,7 +143,25 @@ func (s *Service) handleChannelCreateDB(w http.ResponseWriter, r *http.Request) 
 		s.writeServerError(w, err)
 		return
 	}
-	channels = append(channels, channel)
+	// 新 Key 必须插到「同 Base URL 组」的末尾，而不是全局列表末尾。
+	// position 是全局顺序，前端按 base_url 分组展示：直接 append 会让新 Key
+	// 排到其它平台之后（组被切开），界面上却仍显示在原来的组里 —— 用户在
+	// 「渠道与模型」里拖出的组顺序与实际路由优先级对不上。
+	// 同组不存在时（新平台）才追加到末尾。
+	target := strings.TrimRight(channel.BaseURL, "/")
+	insertAt := -1
+	for i := range channels {
+		if strings.TrimRight(channels[i].BaseURL, "/") == target {
+			insertAt = i + 1
+		}
+	}
+	if insertAt < 0 {
+		channels = append(channels, channel)
+	} else {
+		channels = append(channels, db.Channel{})
+		copy(channels[insertAt+1:], channels[insertAt:])
+		channels[insertAt] = channel
+	}
 	if err := s.routing.ReplaceChannels(r.Context(), channels); err != nil {
 		s.writeServerError(w, err)
 		return
