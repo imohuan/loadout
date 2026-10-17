@@ -89,9 +89,8 @@ func TestCaptureMissModel(t *testing.T) {
 
 	pipe := &modelgateway.ProxyPipeline{
 		RequestID: "cap-miss",
-		Request: &modelgateway.ProxyPipelineRequest{},
+		Request:   &modelgateway.ProxyRequest{Method: "POST", Path: "chat/completions", Model: "glm-5", Body: []byte("{}")},
 	}
-	pipe.Request = &modelgateway.ProxyRequest{Method: "POST", Path: "chat/completions", Model: "glm-5", Body: []byte("{}")}
 	if _, err := s.HandleProxyBeforeUpstream(pipe); err != nil {
 		t.Fatalf("hook 返回错误: %v", err)
 	}

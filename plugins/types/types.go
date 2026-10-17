@@ -140,6 +140,15 @@ func SelectCapabilityRoutesEx(routes []CapabilityRoute, capability, model, virtu
 		}
 		matched = append(matched, &routes[i])
 	}
+	// 多条 proxy 路由命中时按**表格顺序**返回，调用方取 routes[0] 即为生效规则。
+	//
+	// 顺序即优先级（用户确认的最终标准）：不按「匹配具体度」自动排序。
+	// 两条规则对同一请求的匹配范围完全相同时（例如都配 step-5-preview，
+	// 一条开 base64 保留、一条关），机器没有客观依据判定谁该赢，顺序是唯一
+	// 可解释、可操作的裁决方式；界面已显示优先级序号并支持拖拽调整。
+	//
+	// 代价与约定（写在界面说明里）：* 通配兜底规则如果忘了拖到最下面，
+	// 它会盖住下面所有专项规则——这是纯顺序方案的固有代价。
 	return matched
 }
 
@@ -431,6 +440,9 @@ type CapabilityRoute struct {
 	FieldRules      *FieldRules            `json:"field_rules,omitempty"`       // 字段过滤规则（field_filter 用；nil=未配置）
 	Injections      []MessageInjection     `json:"injections,omitempty"`        // 消息注入配置，顺序即注入顺序（message_inject 用）
 	RateLimit       *RateLimitRule         `json:"rate_limit,omitempty"`        // 限流参数（key_rate_limit 用；nil=未配置，不限流）
+	// RequestLogKeepBase64 request_log 用：保留原始 base64（图片不再转占位符）。
+	// 仅影响日志落盘内容，sk- 密钥仍然打码；false = 维持打码行为（默认）。
+	RequestLogKeepBase64 bool `json:"request_log_keep_base64,omitempty"`
 }
 
 // RateLimitRule 单个上游渠道 Key 的限流参数（key_rate_limit 能力用；nil = 未配置，不限流）。
