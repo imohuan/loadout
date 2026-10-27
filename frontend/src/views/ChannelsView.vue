@@ -9,11 +9,12 @@
 import { computed, ref, watch } from 'vue'
 import { RiAddLine, RiArrowLeftSLine, RiRefreshLine } from '@remixicon/vue'
 import { useChannels, normalizeBaseURL, type ChannelInput } from '@/composables/useChannels'
+import { useModelStatus } from '@/composables/useModelStatus'
 import { summarizeChannelPlatforms, channelModelCount } from '@/lib/channels'
 import { useListLoader } from '@/composables/useListLoader'
 import { useAsyncTask } from '@/composables/useAsyncTask'
 import { useConfirm } from '@/composables/useConfirm'
-import type { Channel } from '@/lib/types'
+import type { Channel, ChannelStatus } from '@/lib/types'
 import type { ChannelPlatform } from '@/lib/channels'
 import PageHeader from '@/components/PageHeader.vue'
 import LoadingBlock from '@/components/LoadingBlock.vue'
@@ -25,7 +26,25 @@ import ChannelKeyList from '@/components/channels/ChannelKeyList.vue'
 import ChannelKeyDetail from '@/components/channels/ChannelKeyDetail.vue'
 
 const service = useChannels()
-const { data, loading, refreshing, refresh } = useListLoader(service.list)
+const statusService = useModelStatus()
+
+/** 渠道页同时取渠道列表与健康状态：状态只用于左栏展示，取不到也不影响渠道管理。 */
+async function loadChannelsPage(): Promise<{ channels: Channel[]; statuses: ChannelStatus[] }> {
+  const [channels, statuses] = await Promise.all([
+    service.list(),
+    statusService.list().catch(() => [] as ChannelStatus[]),
+  ])
+  return { channels, statuses }
+}
+
+const { data: page, loading, refreshing, refresh } = useListLoader(loadChannelsPage)
+const data = computed(() => page.value?.channels || [])
+/** Key id → 健康状态；左栏据此显示「可用 / 冷却中 / 额度用尽…」。 */
+const statusById = computed(() => {
+  const map = new Map<string, ChannelStatus>()
+  for (const item of page.value?.statuses || []) map.set(item.channel.id, item)
+  return map
+})
 const { run, isPending } = useAsyncTask()
 const { confirmDialog } = useConfirm()
 
@@ -50,19 +69,10 @@ const platforms = computed(() => summarizeChannelPlatforms(data.value || []))
 const activePlatform = computed(
   () => platforms.value.find((p) => p.baseUrl === selectedBaseUrl.value) || platforms.value[0],
 )
-/** 当前平台在列表中的下标（整组上移/下移的禁用判断）。 */
-const activePlatformIndex = computed(() =>
-  platforms.value.findIndex((p) => p.baseUrl === activePlatform.value?.baseUrl),
-)
 /** 当前 Key：优先按选中 id 找，找不到回落到该平台第一个 Key。 */
 const activeKey = computed(() => {
   const keys = activePlatform.value?.keys || []
   return keys.find((k) => k.id === selectedKeyId.value) || keys[0]
-})
-/** 当前 Key 在组内下标。 */
-const activeKeyIndex = computed(() => {
-  const keys = activePlatform.value?.keys || []
-  return keys.findIndex((k) => k.id === activeKey.value?.id)
 })
 
 // 平台筛选后原来选中的平台/Key 可能消失：这里把选中值同步回落，避免右栏空转。
@@ -240,46 +250,11 @@ async function removeGroup(baseUrl: string) {
     '渠道已删除',
   )
 }
-async function moveGroup(baseUrl: string, direction: 'up' | 'down') {
-  const groups = platforms.value.map((p) => ({ baseUrl: p.baseUrl, keys: p.keys }))
-  const index = groups.findIndex((group) => group.baseUrl === normalizeBaseURL(baseUrl))
-  const target = direction === 'up' ? index - 1 : index + 1
-  if (index < 0 || target < 0 || target >= groups.length) return
-  ;[groups[index], groups[target]] = [groups[target], groups[index]]
-  const ids = groups.flatMap((group) => group.keys.map((key) => key.id))
-  await run(groupKey(baseUrl, `move-${direction}`), async () => {
-    // 只改组间顺序，组内 Key 顺序保持不动。
-    await service.reorder(ids, 'group')
-    await refresh()
-  })
-}
 // 拖拽排序渠道组（vue-draggable-plus）：拖拽结束后按新顺序全量重排。
 async function reorderGroups(next: ChannelPlatform[]) {
   const ids = next.flatMap((group) => group.keys.map((key) => key.id))
   await run('group:reorder', async () => {
     await service.reorder(ids, 'group')
-    await refresh()
-  })
-}
-// 组内 Key 上下移动：调整单 key 在组内的 position（影响该渠道下多 key 的 failover 顺序）。
-async function moveKey(channel: Channel, direction: 'up' | 'down') {
-  const channels = data.value || []
-  const keys = groupKeys(channel.base_url)
-  const idxInGroup = keys.findIndex((k) => k.id === channel.id)
-  const target = direction === 'up' ? idxInGroup - 1 : idxInGroup + 1
-  if (idxInGroup < 0 || target < 0 || target >= keys.length) return
-  const targetKey = keys[target]
-  const i = channels.findIndex((c) => c.id === channel.id)
-  const j = channels.findIndex((c) => c.id === targetKey.id)
-  if (i < 0 || j < 0) return
-  const next = [...channels]
-  ;[next[i], next[j]] = [next[j], next[i]]
-  await run(keyKey(channel, `move-${direction}`), async () => {
-    // 只改组内 Key 顺序，组间顺序保持不动。
-    await service.reorder(
-      next.map((c) => c.id),
-      'key',
-    )
     await refresh()
   })
 }
@@ -408,6 +383,7 @@ const totals = computed(() => {
             :platforms="platforms"
             :active-base-url="activePlatform?.baseUrl || ''"
             :active-key-id="activeKey?.id"
+            :status-by-id="statusById"
             @select-platform="selectPlatform"
             @select-key="selectKey"
             @reorder="reorderKeys"
@@ -416,19 +392,15 @@ const totals = computed(() => {
             v-if="activePlatform"
             :platform="activePlatform"
             :channel="activeKey"
-            :key-index="activeKeyIndex"
-            :group-index="activePlatformIndex"
-            :group-count="platforms.length"
+            :status="activeKey ? statusById.get(activeKey.id) : undefined"
             :is-pending="isPending"
             @add-key="openAddKey"
             @toggle-key="toggleKey"
             @refresh-key="refreshKey"
             @edit-key="openEdit"
-            @move-key="moveKey"
             @remove-key="removeKey"
             @sync-models="openSync"
             @refresh-group="refreshGroup"
-            @move-group="moveGroup"
             @remove-group="removeGroup"
           />
         </div>

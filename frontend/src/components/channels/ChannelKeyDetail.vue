@@ -2,31 +2,29 @@
 // 状态二右栏：选中 Key 的详情与操作区。
 //
 // 原 ChannelTable 展开行里那些按钮全部在这里保留：启用/停用、刷新模型、编辑、
-// 上移/下移、删除 Key，以及平台层面的同步模型 / 刷新全部 / 整组优先级 / 添加 Key /
-// 删除整组（放在平台信息卡上，因为它们是整组操作）。
-import { computed } from 'vue'
+// 删除 Key，以及平台层面的同步模型 / 刷新全部 / 添加 Key / 删除整组
+// （放在平台信息卡上，因为它们是整组操作）。
+//
+// 排序统一由左栏拖拽完成，这里不再保留下移/上移按钮：两套入口同时存在时，
+// 用户很难判断哪一个才是真正生效的顺序。
 import {
   RiAddLine,
-  RiArrowDownLine,
-  RiArrowUpLine,
   RiDeleteBinLine,
   RiEditLine,
   RiExchangeLine,
   RiLoader4Line,
   RiRefreshLine,
 } from '@remixicon/vue'
-import type { Channel } from '@/lib/types'
+import type { Channel, ChannelStatus } from '@/lib/types'
 import { channelEnabled, channelModelLabel, type ChannelPlatform } from '@/lib/channels'
+import ModelHealthBadge from '@/components/model-status/ModelHealthBadge.vue'
 
 const props = defineProps<{
   platform: ChannelPlatform
   /** 选中的 Key；平台下没有 Key 时为 undefined。 */
   channel?: Channel
-  /** 该 Key 在组内的下标（0 起），用于上移/下移禁用判断。 */
-  keyIndex: number
-  /** 该平台在全部平台中的下标与总数，用于整组上移/下移禁用判断。 */
-  groupIndex: number
-  groupCount: number
+  /** 该 Key 的模型状态记录（健康状态、故障原因）；取不到时为 undefined。 */
+  status?: ChannelStatus
   isPending?: (key: string) => boolean
 }>()
 
@@ -35,11 +33,9 @@ const emit = defineEmits<{
   toggleKey: [key: Channel]
   refreshKey: [key: Channel]
   editKey: [key: Channel]
-  moveKey: [key: Channel, direction: 'up' | 'down']
   removeKey: [key: Channel]
   syncModels: [baseUrl: string]
   refreshGroup: [baseUrl: string]
-  moveGroup: [baseUrl: string, direction: 'up' | 'down']
   removeGroup: [baseUrl: string]
 }>()
 
@@ -53,17 +49,11 @@ function keyKey(channel: Channel, action: string) {
 function busy(key: string) {
   return props.isPending ? props.isPending(key) : false
 }
-
-/** 平台位置：整组上移/下移由外部按全量列表判断，这里只给出是否可点。 */
-const canMoveUp = computed(() => props.keyIndex > 0)
-const canMoveDown = computed(() => props.keyIndex < props.platform.keyCount - 1)
-const canMoveGroupUp = computed(() => props.groupIndex > 0)
-const canMoveGroupDown = computed(() => props.groupIndex < props.groupCount - 1)
 </script>
 
 <template>
   <div class="flex min-h-0 min-w-0 flex-1 flex-col">
-    <!-- 平台操作条：整组级动作（同步模型 / 刷新全部 / 整组优先级 / 添加 / 删除）。 -->
+    <!-- 平台操作条：整组级动作（同步模型 / 刷新全部 / 添加 / 删除）。 -->
     <div class="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2 text-sm">
       <span class="text-xs text-muted-foreground">
         {{ platform.keyCount }} 个 Key · {{ platform.enabledKeyCount }} 个启用 ·
@@ -97,26 +87,6 @@ const canMoveGroupDown = computed(() => props.groupIndex < props.groupCount - 1)
         />
         <RiRefreshLine v-else size="14" />刷新全部模型
       </Button>
-      <Button
-        variant="outline"
-        size="sm"
-        :disabled="busy(groupKey(platform.baseUrl, 'move-up')) || !canMoveGroupUp"
-        aria-label="提高整组优先级"
-        title="提高整组优先级"
-        @click="emit('moveGroup', platform.baseUrl, 'up')"
-      >
-        <RiArrowUpLine size="14" />
-      </Button>
-      <Button
-        variant="outline"
-        size="sm"
-        :disabled="busy(groupKey(platform.baseUrl, 'move-down')) || !canMoveGroupDown"
-        aria-label="降低整组优先级"
-        title="降低整组优先级"
-        @click="emit('moveGroup', platform.baseUrl, 'down')"
-      >
-        <RiArrowDownLine size="14" />
-      </Button>
       <Button variant="outline" size="sm" @click="emit('addKey', platform.baseUrl)">
         <RiAddLine size="14" />添加 Key
       </Button>
@@ -136,10 +106,20 @@ const canMoveGroupDown = computed(() => props.groupIndex < props.groupCount - 1)
     </div>
 
     <template v-if="channel">
-      <!-- Key 头部：名称、启用状态、模型数。 -->
+      <!-- Key 头部：名称、健康状态（完整成因）、模型数。 -->
       <div class="flex flex-wrap items-center gap-3 border-b border-border px-3 py-2.5">
         <span class="text-sm font-semibold">{{ channel.name }}</span>
-        <Badge :variant="channelEnabled(channel) ? 'default' : 'secondary'">{{
+        <ModelHealthBadge
+          v-if="status"
+          :status="status.health_status"
+          :available="status.effective_available"
+          :manual-enabled="status.manual_enabled"
+          :failure-class="status.failure_class"
+          :rule-id="status.last_rule_id"
+          :rule-name="status.last_rule_name"
+          :last-error="status.reason"
+        />
+        <Badge v-else :variant="channelEnabled(channel) ? 'default' : 'secondary'">{{
           channelEnabled(channel) ? '启用' : '禁用'
         }}</Badge>
         <span class="text-xs tabular-nums text-muted-foreground">{{
@@ -175,25 +155,6 @@ const canMoveGroupDown = computed(() => props.groupIndex < props.groupCount - 1)
         </Button>
         <Button variant="outline" size="sm" @click="emit('editKey', channel)">
           <RiEditLine size="14" />编辑
-        </Button>
-        <span class="mx-0.5 h-5 w-px bg-border" />
-        <Button
-          variant="outline"
-          size="sm"
-          aria-label="上移 Key"
-          :disabled="busy(keyKey(channel, 'move-up')) || !canMoveUp"
-          @click="emit('moveKey', channel, 'up')"
-        >
-          <RiArrowUpLine size="14" />
-        </Button>
-        <Button
-          variant="outline"
-          size="sm"
-          aria-label="下移 Key"
-          :disabled="busy(keyKey(channel, 'move-down')) || !canMoveDown"
-          @click="emit('moveKey', channel, 'down')"
-        >
-          <RiArrowDownLine size="14" />
         </Button>
         <Button
           variant="outline"

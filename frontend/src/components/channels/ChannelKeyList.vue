@@ -8,13 +8,16 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RiArrowDownSLine } from '@remixicon/vue'
 import { VueDraggable } from 'vue-draggable-plus'
-import type { Channel } from '@/lib/types'
+import type { Channel, ChannelStatus } from '@/lib/types'
 import { channelEnabled, channelModelLabel, type ChannelPlatform } from '@/lib/channels'
+import { keyStatusBrief, TONE_STYLE_SOFT } from '@/lib/modelStatus'
 
 const props = defineProps<{
   platforms: ChannelPlatform[]
   activeBaseUrl: string
   activeKeyId?: string
+  /** Key id → 健康状态；缺省时退回只显示启用状态。 */
+  statusById?: Map<string, ChannelStatus>
 }>()
 
 const emit = defineEmits<{
@@ -27,12 +30,21 @@ const activePlatform = computed(
   () => props.platforms.find((p) => p.baseUrl === props.activeBaseUrl) || props.platforms[0],
 )
 
+/** 左栏一行的状态：优先显示健康状态，没有状态数据时退回启用/禁用。 */
+function keyStatus(key: Channel) {
+  const status = props.statusById?.get(key.id)
+  if (status) return keyStatusBrief(status)
+  return channelEnabled(key)
+    ? { label: '启用', tone: 'ok' as const }
+    : { label: '禁用', tone: 'off' as const }
+}
+
 // 组内拖拽排序（vue-draggable-plus）：只渲染当前平台这一组 Key，拖拽列表用本地
 // 副本承载内部移动，松手后把新顺序回传给页面。
 // 跨组拖拽有两道闸：1) 这里只存在当前组的一个列表，且不声明 Sortable group
 // （未声明 group 的列表不接收也不外送元素），切换平台时靠 key 重建实例；
 // 2) 页面侧再校验 id 集合与 base_url 必须都属于当前组。
-// 上移/下移按钮仍保留在右栏（ChannelKeyDetail），拖拽只是额外能力。
+// 排序只走拖拽：右栏原有的上移/下移按钮已移除，避免两套排序入口互相打架。
 //
 // 整卡可拖（没有独立手柄）：不设 handle、不设 delay，按下即可拖。
 // 不要加 delay——delay 期间一旦鼠标移动就会被判成"移动过"而取消拖拽，
@@ -196,13 +208,9 @@ onBeforeUnmount(() => {
           </span>
           <span
             class="shrink-0 rounded px-1 py-0.5 text-[10px] font-medium"
-            :class="
-              channelEnabled(key)
-                ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
-                : 'bg-slate-500/15 text-slate-700 dark:text-slate-300'
-            "
+            :class="TONE_STYLE_SOFT[keyStatus(key).tone]"
           >
-            {{ channelEnabled(key) ? '启用' : '禁用' }}
+            {{ keyStatus(key).label }}
           </span>
         </button>
       </VueDraggable>
