@@ -5,7 +5,9 @@
  * 递归渲染 JSON 数据，支持展开/折叠节点；Ctrl/⌘+点击递归展开/折叠子树。
  * 字符串值中的 http/https URL 自动转为可点击链接（v-html，先转义防 XSS）。
  */
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { RiCheckLine, RiClipboardLine } from '@remixicon/vue'
+import { toast } from 'vue-sonner'
 import DataUriValue from './DataUriValue.vue'
 
 /** 长 base64 data URI 的判定阈值：超过它就折叠成摘要，hover 预览。 */
@@ -200,6 +202,37 @@ const itemCount = computed(() => {
 const openBracket = computed(() => (dataType.value === 'array' ? '[' : '{'))
 const closeBracket = computed(() => (dataType.value === 'array' ? ']' : '}'))
 
+/** 只有最外层实例显示复制按钮：递归子节点的 depth 都大于 0。 */
+const isRootNode = computed(() => props.isRoot || props.depth === 0)
+
+/** 复制当前展示的数据：对象/数组格式化缩进，普通字符串保持原文。 */
+const copyText = computed(() => {
+  const val = parsedData.value
+  if (typeof val === 'string') return val
+  try {
+    return JSON.stringify(val, null, 2) ?? String(val)
+  } catch {
+    return String(val)
+  }
+})
+
+const copied = ref(false)
+let copyTimer: ReturnType<typeof setTimeout> | undefined
+
+async function copyJson() {
+  try {
+    await navigator.clipboard.writeText(copyText.value)
+    copied.value = true
+    toast.success('已复制 JSON')
+    clearTimeout(copyTimer)
+    copyTimer = setTimeout(() => (copied.value = false), 2000)
+  } catch {
+    toast.error('复制失败，请检查浏览器剪贴板权限')
+  }
+}
+
+onBeforeUnmount(() => clearTimeout(copyTimer))
+
 function formatValue(val: unknown): string {
   if (val === null) return 'null'
   if (typeof val === 'boolean') return val ? 'true' : 'false'
@@ -232,109 +265,124 @@ watch(
 </script>
 
 <template>
-  <div
-    class="font-mono text-[12px] leading-[1.7] text-foreground text-left select-text"
-    :class="{
-      'whitespace-pre overflow-x-auto': !props.wrapEnabled && props.isRoot,
-      'whitespace-pre-wrap break-words [overflow-wrap:anywhere]': props.wrapEnabled,
-    }"
-  >
-    <!-- 简单值（非对象/数组） -->
-    <div v-if="!isComplex" class="flex items-start gap-[2px] py-[1px]">
-      <div class="w-[14px] shrink-0" />
-      <div class="flex-1 min-w-0">
-        <span v-if="nodeKey !== null" class="text-primary font-medium mr-1">
-          <span class="text-muted-foreground">'</span>{{ nodeKey
-          }}<span class="text-muted-foreground">'</span><span class="text-muted-foreground">:</span>
-        </span>
-        <span
-          v-if="isLongDataUri"
-          :class="valueColorClass"
-          class="inline-block align-bottom"
-        >"<DataUriValue :value="String(parsedData)" />"</span>
-        <span
-          v-else
-          :class="valueColorClass"
-          class="inline-block align-bottom"
-          v-html="linkify(formatValue(data))"
-        />
-        <span v-if="!isLast" class="text-muted-foreground shrink-0">,</span>
-      </div>
+  <div :class="isRootNode ? 'relative group/json' : undefined">
+    <!-- 复制按钮：只在最外层、悬停时显示；用 sticky 保证日志区滚动后仍在右上角 -->
+    <div v-if="isRootNode" class="pointer-events-none sticky top-0 z-10 flex h-0 justify-end pr-1">
+      <button
+        type="button"
+        class="pointer-events-none mt-1 inline-flex size-6 items-center justify-center rounded-md border border-border bg-background/90 text-muted-foreground opacity-0 shadow-sm backdrop-blur transition-opacity hover:text-foreground focus-visible:pointer-events-auto focus-visible:opacity-100 group-hover/json:pointer-events-auto group-hover/json:opacity-100 group-focus-within/json:pointer-events-auto group-focus-within/json:opacity-100"
+        :title="copied ? '已复制' : '复制 JSON'"
+        :aria-label="copied ? '已复制' : '复制 JSON'"
+        @click.stop="copyJson"
+      >
+        <RiCheckLine v-if="copied" size="14" class="text-emerald-600" />
+        <RiClipboardLine v-else size="14" />
+      </button>
     </div>
 
-    <!-- 对象 / 数组 -->
-    <div v-else class="flex flex-col items-start gap-[2px] py-[1px]">
-      <!-- 头部行：箭头 + 键 + 开括号 -->
-      <div class="flex items-start gap-[2px] cursor-pointer min-w-0" @click="handleToggle">
-        <div
-          class="w-[20px] h-[20px] shrink-0 inline-flex items-center justify-center rounded-[4px] text-muted-foreground"
-          :class="{ invisible: isEmpty }"
-        >
-          <svg
-            class="w-[14px] h-[14px] transition-transform duration-150 hover:text-foreground"
-            :class="{ 'rotate-90': isExpanded }"
-            width="12"
-            height="12"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-          >
-            <path d="m9 18 6-6-6-6" />
-          </svg>
-        </div>
-
+    <div
+      class="font-mono text-[12px] leading-[1.7] text-foreground text-left select-text"
+      :class="{
+        'whitespace-pre overflow-x-auto': !props.wrapEnabled && props.isRoot,
+        'whitespace-pre-wrap break-words [overflow-wrap:anywhere]': props.wrapEnabled,
+      }"
+    >
+      <!-- 简单值（非对象/数组） -->
+      <div v-if="!isComplex" class="flex items-start gap-[2px] py-[1px]">
+        <div class="w-[14px] shrink-0" />
         <div class="flex-1 min-w-0">
-          <span v-if="nodeKey !== null" class="mr-1">
+          <span v-if="nodeKey !== null" class="text-primary font-medium mr-1">
             <span class="text-muted-foreground">'</span>{{ nodeKey
             }}<span class="text-muted-foreground">'</span
             ><span class="text-muted-foreground">:</span>
           </span>
-          <span class="text-muted-foreground px-2">{{ openBracket }}</span>
-          <template v-if="!isExpanded && !isEmpty">
-            <span v-if="dataType === 'array'" class="text-muted-foreground italic pr-2">...</span>
-            <span v-else class="text-muted-foreground italic pr-2">{{ itemCount }} 项</span>
-          </template>
-          <span v-if="!isExpanded || isEmpty" class="text-muted-foreground">
-            <span v-if="!isExpanded && dataType === 'array' && !isEmpty"> </span>{{ closeBracket
-            }}<span v-if="!isLast">,</span>
-          </span>
-        </div>
-      </div>
-
-      <!-- 展开的子节点 -->
-      <div v-show="isExpanded && !isEmpty" class="relative pl-[28px] min-w-0 w-full">
-        <div class="absolute left-[14px] top-0 bottom-0 w-px bg-border opacity-60" />
-        <div>
-          <AxJsonViewer
-            v-for="(val, key, index) in parsedData as any"
-            :key="key"
-            :node-key="dataType === 'array' ? null : key"
-            :data="val"
-            :is-last="
-              index ===
-              (dataType === 'array'
-                ? (parsedData as any[]).length
-                : Object.keys(parsedData as object).length) -
-                1
-            "
-            :expand-trigger="expandTrigger"
-            :deep-expand-trigger="childDeepTrigger"
-            :depth="(props.depth ?? 0) + 1"
-            :expand-level="props.expandLevel"
-            :default-expand-all="props.defaultExpandAll"
-            :is-root="false"
-            :wrap-enabled="props.wrapEnabled"
+          <span v-if="isLongDataUri" :class="valueColorClass" class="inline-block align-bottom"
+            >"<DataUriValue :value="String(parsedData)" />"</span
+          >
+          <span
+            v-else
+            :class="valueColorClass"
+            class="inline-block align-bottom"
+            v-html="linkify(formatValue(data))"
           />
+          <span v-if="!isLast" class="text-muted-foreground shrink-0">,</span>
         </div>
       </div>
 
-      <!-- 闭合括号 -->
-      <div v-show="isExpanded && !isEmpty" class="flex items-start gap-[2px] min-w-0 w-full">
-        <div class="w-[14px] shrink-0" />
-        <div class="text-muted-foreground">{{ closeBracket }}<span v-if="!isLast">,</span></div>
+      <!-- 对象 / 数组 -->
+      <div v-else class="flex flex-col items-start gap-[2px] py-[1px]">
+        <!-- 头部行：箭头 + 键 + 开括号 -->
+        <div class="flex items-start gap-[2px] cursor-pointer min-w-0" @click="handleToggle">
+          <div
+            class="w-[14px] h-[20px] shrink-0 inline-flex items-center justify-center rounded-[4px] text-muted-foreground"
+            :class="{ invisible: isEmpty }"
+          >
+            <svg
+              class="w-[14px] h-[14px] transition-transform duration-150 hover:text-foreground"
+              :class="{ 'rotate-90': isExpanded }"
+              width="12"
+              height="12"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="m9 18 6-6-6-6" />
+            </svg>
+          </div>
+
+          <div class="flex-1 min-w-0">
+            <span v-if="nodeKey !== null" class="mr-1">
+              <span class="text-muted-foreground">'</span>{{ nodeKey
+              }}<span class="text-muted-foreground">'</span
+              ><span class="text-muted-foreground">:</span>
+            </span>
+            <span class="text-muted-foreground px-2">{{ openBracket }}</span>
+            <template v-if="!isExpanded && !isEmpty">
+              <span v-if="dataType === 'array'" class="text-muted-foreground italic pr-2">...</span>
+              <span v-else class="text-muted-foreground italic pr-2">{{ itemCount }} 项</span>
+            </template>
+            <span v-if="!isExpanded || isEmpty" class="text-muted-foreground">
+              <span v-if="!isExpanded && dataType === 'array' && !isEmpty"> </span>{{ closeBracket
+              }}<span v-if="!isLast">,</span>
+            </span>
+          </div>
+        </div>
+
+        <!-- 展开的子节点 -->
+        <div v-show="isExpanded && !isEmpty" class="relative pl-[28px] min-w-0 w-full">
+          <div class="absolute left-[14px] top-0 bottom-0 w-px bg-border opacity-60" />
+          <div>
+            <AxJsonViewer
+              v-for="(val, key, index) in parsedData as any"
+              :key="key"
+              :node-key="dataType === 'array' ? null : key"
+              :data="val"
+              :is-last="
+                index ===
+                (dataType === 'array'
+                  ? (parsedData as any[]).length
+                  : Object.keys(parsedData as object).length) -
+                  1
+              "
+              :expand-trigger="expandTrigger"
+              :deep-expand-trigger="childDeepTrigger"
+              :depth="(props.depth ?? 0) + 1"
+              :expand-level="props.expandLevel"
+              :default-expand-all="props.defaultExpandAll"
+              :is-root="false"
+              :wrap-enabled="props.wrapEnabled"
+            />
+          </div>
+        </div>
+
+        <!-- 闭合括号 -->
+        <div v-show="isExpanded && !isEmpty" class="flex items-start gap-[2px] min-w-0 w-full">
+          <div class="w-[14px] shrink-0" />
+          <div class="text-muted-foreground">{{ closeBracket }}<span v-if="!isLast">,</span></div>
+        </div>
       </div>
     </div>
   </div>

@@ -48,7 +48,7 @@ func TestLogManagerWriteReadIncremental(t *testing.T) {
 	seg := files[0].Name
 
 	// 全量读
-	data, size, eof, err := m.Read("github", seg, 0, 0)
+	data, _, size, eof, err := m.Read("github", seg, 0, 0)
 	if err != nil {
 		t.Fatalf("Read 全量: %v", err)
 	}
@@ -70,17 +70,20 @@ func TestLogManagerWriteReadIncremental(t *testing.T) {
 
 	// 增量读：读前半，再读后半，拼起来 = 全量
 	half := size / 2
-	d1, size1, eof1, err := m.Read("github", seg, 0, half)
+	d1, next1, size1, eof1, err := m.Read("github", seg, 0, half)
 	if err != nil {
 		t.Fatalf("Read 前半: %v", err)
 	}
 	if size1 != size {
 		t.Fatalf("前半 size = %d，期望 %d", size1, size)
 	}
+	if next1 != half {
+		t.Fatalf("读满 limit 时 next_offset 应等于 limit，got %d want %d", next1, half)
+	}
 	if eof1 {
 		t.Fatal("前半不应 eof")
 	}
-	d2, _, eof2, err := m.Read("github", seg, half, 0)
+	d2, _, _, eof2, err := m.Read("github", seg, half, 0)
 	if err != nil {
 		t.Fatalf("Read 后半: %v", err)
 	}
@@ -92,7 +95,7 @@ func TestLogManagerWriteReadIncremental(t *testing.T) {
 	}
 
 	// offset 超过段大小 → 空 + eof
-	d3, _, eof3, err := m.Read("github", seg, size+100, 0)
+	d3, _, _, eof3, err := m.Read("github", seg, size+100, 0)
 	if err != nil {
 		t.Fatalf("Read 超界: %v", err)
 	}
@@ -101,10 +104,10 @@ func TestLogManagerWriteReadIncremental(t *testing.T) {
 	}
 
 	// 非法段名 → 错误
-	if _, _, _, err := m.Read("github", "../evil.log", 0, 0); err == nil {
+	if _, _, _, _, err := m.Read("github", "../evil.log", 0, 0); err == nil {
 		t.Fatal("非法段名 ../evil.log 应返回错误")
 	}
-	if _, _, _, err := m.Read("github", "not-a-segment", 0, 0); err == nil {
+	if _, _, _, _, err := m.Read("github", "not-a-segment", 0, 0); err == nil {
 		t.Fatal("非法段名 not-a-segment 应返回错误")
 	}
 }
@@ -132,7 +135,7 @@ func TestLogManagerRollOnMaxSize(t *testing.T) {
 		}
 	}
 	// 旧段（第一段）内容仍可读
-	data, size, _, err := m.Read("github", files[0].Name, 0, 0)
+	data, _, size, _, err := m.Read("github", files[0].Name, 0, 0)
 	if err != nil || size == 0 {
 		t.Fatalf("旧段读取失败: err=%v size=%d", err, size)
 	}
@@ -142,7 +145,7 @@ func TestLogManagerRollOnMaxSize(t *testing.T) {
 	// 所有段都有日志行
 	total := 0
 	for _, f := range files {
-		d, _, _, err := m.Read("github", f.Name, 0, 0)
+		d, _, _, _, err := m.Read("github", f.Name, 0, 0)
 		if err != nil {
 			t.Fatalf("读段 %s: %v", f.Name, err)
 		}
@@ -166,7 +169,7 @@ func TestLogManagerEnsureIdempotentAndRemove(t *testing.T) {
 	if len(files) != 1 {
 		t.Fatalf("Ensure 重建后段数 = %d，期望 1（续写不新建）", len(files))
 	}
-	data, _, _, _ := m.Read("github", files[0].Name, 0, 0)
+	data, _, _, _, _ := m.Read("github", files[0].Name, 0, 0)
 	if !strings.Contains(string(data), "cmd=") || !strings.Contains(string(data), "[CONNECT-OK]") {
 		t.Fatalf("续写内容缺失:\n%s", string(data))
 	}
@@ -215,7 +218,7 @@ func TestLogManagerConcurrentWriteAndRoll(t *testing.T) {
 	}
 	total := 0
 	for _, f := range files {
-		d, _, _, err := m.Read("github", f.Name, 0, 0)
+		d, _, _, _, err := m.Read("github", f.Name, 0, 0)
 		if err != nil {
 			t.Fatalf("读段 %s: %v", f.Name, err)
 		}

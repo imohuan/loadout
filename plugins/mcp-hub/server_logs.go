@@ -225,27 +225,32 @@ func (m *LogManager) ListFiles(serverName string) []LogFileInfo {
 }
 
 // Read 增量读指定段文件：从 offset 起读 limit 字节（append-only，读不锁写）。
-// 返回 (数据, 段总字节, eof, err)；offset 超过段大小返回空 + eof=true。
-func (m *LogManager) Read(serverName, segment string, offset, limit int64) ([]byte, int64, bool, error) {
+// 返回 (数据, 本次读到的末尾偏移, 段总字节, eof, err)；offset 超过段大小返回空 + eof=true。
+//
+// nextOffset 是「本次实际读到哪里」，前端必须用它推进游标：段文件可能比一次
+// limit 大得多（首屏只要尾部 512KB），直接拿 size 当已读会跳过中间内容。
+// 另外 content 按字节截断后可能不足 limit（只会在文件尾发生），调用方也不该
+// 用 Go 字符串长度反推字节数（UTF-8 中文多字节）。
+func (m *LogManager) Read(serverName, segment string, offset, limit int64) ([]byte, int64, int64, bool, error) {
 	if m.root == "" || serverName == "" || filepath.Base(serverName) != serverName ||
 		!segmentNameRe.MatchString(segment) {
-		return nil, 0, false, fmt.Errorf("mcphub: 非法日志段 %q", segment)
+		return nil, 0, 0, false, fmt.Errorf("mcphub: 非法日志段 %q", segment)
 	}
 	f, err := os.Open(filepath.Join(m.root, serverName, segment))
 	if err != nil {
-		return nil, 0, false, err
+		return nil, 0, 0, false, err
 	}
 	defer f.Close()
 	st, err := f.Stat()
 	if err != nil {
-		return nil, 0, false, err
+		return nil, 0, 0, false, err
 	}
 	size := st.Size()
 	if offset < 0 {
 		offset = 0
 	}
 	if offset >= size {
-		return nil, size, true, nil
+		return nil, offset, size, true, nil
 	}
 	if limit <= 0 {
 		limit = 64 * 1024
@@ -255,13 +260,14 @@ func (m *LogManager) Read(serverName, segment string, offset, limit int64) ([]by
 	}
 	buf := make([]byte, limit)
 	if _, err := f.Seek(offset, io.SeekStart); err != nil {
-		return nil, 0, false, err
+		return nil, 0, 0, false, err
 	}
 	n, err := io.ReadFull(f, buf)
 	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
-		return nil, 0, false, err
+		return nil, 0, 0, false, err
 	}
-	return buf[:n], size, offset+int64(n) >= size, nil
+	next := offset + int64(n)
+	return buf[:n], next, size, next >= size, nil
 }
 
 // ---------------------------------------------------------------------------

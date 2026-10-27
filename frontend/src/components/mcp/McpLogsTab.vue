@@ -6,11 +6,22 @@
 //   GET /api/mcp-servers/{name}/log?file=&offset=  增量读（offset 为段内字节偏移）
 // 策略：尾部 512KB 加载 + 「加载更早」向上翻页（跨段回溯）+ 1s 轮询只追最新段。
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { RiArrowUpLine, RiLoader4Line } from '@remixicon/vue'
+import { RiArrowUpLine, RiClipboardLine, RiCloseLine, RiLoader4Line } from '@remixicon/vue'
 import { toast } from 'vue-sonner'
 import { api } from '@/lib/api'
 import { ansiToHtml } from '@/lib/ansi'
 import { useMcpNavStore } from '@/stores/mcpNavigation'
+import AxJsonViewer from '@/components/ui/AxJsonViewer.vue'
+import {
+  parseLogLine,
+  isFrameLine,
+  decodeJson,
+  frameId,
+  normalizeBody,
+  splitCompleteLines,
+  stripLeadingPartialLine,
+  type LogLine,
+} from '@/lib/mcpLogs'
 
 interface LogFileInfo {
   name: string
@@ -28,17 +39,13 @@ interface LogReadResp {
   name: string
   file: string
   offset: number
+  /** 本次实际读到的末尾字节偏移：游标必须用它推进，不能用 size（首屏只读尾部）。 */
+  next_offset: number
   size: number
   eof: boolean
   content: string
 }
 
-// 日志行（解析后）：时间戳 + [KIND] + 正文（正文经 ansiToHtml 解析 ANSI 颜色码）。
-interface LogLine {
-  ts: string
-  kind: string
-  body: string
-}
 
 // [KIND] 染色映射（Tailwind token，与 Badge tint 风格一致）。
 const KIND_CLASS: Record<string, string> = {
@@ -51,14 +58,61 @@ const KIND_CLASS: Record<string, string> = {
   STDERR: 'text-orange-600 dark:text-orange-400',
 }
 
-// parseLogLine 用正则拆一行：`2026-08-24T18:35:25.645+08:00 [FRAME_IN] msg="..."`。
-// 只提取时间戳与 [KIND] 用于染色，正文原样保留（纯文本，不解析 JSON）。
-function parseLogLine(line: string): LogLine {
-  const m = line.match(/^(\S+) \[([^\]]+)\] (.*)$/)
-  if (!m) {
-    return { ts: '', kind: '', body: line }
+// 完整内容弹窗：点哪一条就只显示哪一条。
+// 曾经尝试按 JSON-RPC id 自动配对「请求→响应」，但重连后 id 会重复，
+// 而且一次调用可能收到多条结果（进度通知、双份输出），配对结果并不可靠，
+// 反而误导人。这里改成只展示被点中的这一条，完全不做推断。
+const detailOpen = ref(false)
+const detailLine = ref<LogLine | null>(null)
+
+function openDetail(line: LogLine) {
+  detailLine.value = line
+  detailOpen.value = true
+}
+
+// frameLabel 给帧行一个人类可读的名字：tools/call → tools/call。
+// 通知（没有 method）退回日志类型名。
+function frameLabel(line: LogLine | null | undefined): string {
+  if (!line) return ''
+  const msg = decodeJson(line) as { method?: string } | null
+  if (msg && typeof msg.method === 'string') return msg.method
+  return line.kind || '日志'
+}
+
+// detailJson 把选中的这一条解析成对象，供 AxJsonViewer 渲染。
+const detailJson = computed(() => (detailLine.value ? decodeJson(detailLine.value) : null))
+
+// detailId 当前这条日志的 JSON-RPC id（没有则为空串）。
+const detailId = computed(() => frameId(detailJson.value))
+
+// displayBody 列表里显示的正文：去掉 msg="..." 外壳与 \" 转义，
+// 让每行直接是可读 JSON（比如 {"jsonrpc":"2.0",...}）。
+function displayBody(line: LogLine): string {
+  const text = normalizeBody(line.body)
+  // 超长帧在列表里只占一行，这里仍截断显示，完整内容点开看。
+  return isFrameLine(line) && text.length > 400 ? text.slice(0, 400) + '…' : text
+}
+
+// copyDetail 复制弹窗里的完整正文（与弹窗看到的一致：已去掉转义、缩进展开）。
+async function copyDetail() {
+  try {
+    await navigator.clipboard.writeText(prettyBody(detailLine.value))
+    toast.success('已复制完整内容')
+  } catch (e) {
+    toast.error('复制失败', { description: e instanceof Error ? e.message : String(e) })
   }
-  return { ts: m[1], kind: m[2], body: m[3] }
+}
+
+// prettyBody 弹窗正文：先去掉 msg="..." 外壳与转义，能解析成 JSON 就缩进展开，
+// 否则原样显示（stderr / connect 等非 JSON 行）。这样界面上看不到 \" 这类噪音。
+function prettyBody(line: LogLine | null): string {
+  if (!line) return ''
+  const decoded = normalizeBody(line.body)
+  try {
+    return JSON.stringify(JSON.parse(decoded), null, 2)
+  } catch {
+    return decoded
+  }
 }
 
 const lines = computed<LogLine[]>(() => {
@@ -69,8 +123,21 @@ const lines = computed<LogLine[]>(() => {
     .map(parseLogLine)
 })
 
+// 跨块读取时尾部可能是被切断的半行。日志行都以 \n 结束，所以没有换行符的
+// 尾段一定还没写完；直接渲染就会看到半截 JSON（用户说的「被截取」）。
+// 未完成的行留在 pendingTail，等下一块字节补齐再显示（切行逻辑见 lib/mcpLogs）。
+const pendingTail = ref('')
+function appendChunk(chunk: string) {
+  if (!chunk) return
+  const { complete, rest } = splitCompleteLines(pendingTail.value, chunk)
+  content.value += complete
+  pendingTail.value = rest
+}
+
 const TAIL_BYTES = 512 * 1024 // 首次加载尾部大小
 const PAGE_BYTES = 64 * 1024 // 「加载更早」每次前翻块大小
+// 首次加载最多读多少字节（服务端单次上限 1MB）：首屏一次读满，避免被 64KB 默认值截断。
+const READ_BYTES = 1024 * 1024
 const POLL_MS = 1000
 
 const servers = ref<LogServerItem[]>([])
@@ -149,8 +216,14 @@ async function selectServer(name: string) {
     // 读最新段尾部 TAIL_BYTES
     const start = Math.max(0, latest.size - TAIL_BYTES)
     const data = await readLog(name, latest.name, start)
-    content.value = data.content
-    tailOffset = data.size
+    // 首屏从段中间开始读，第一行可能只有后半截：丢掉它（前面用「加载更早」补）。
+    const initial = stripLeadingPartialLine(data.content, start === 0)
+    pendingTail.value = ''
+    content.value = ''
+    appendChunk(initial)
+    // 游标用 next_offset（本次真正读到的末尾），不能用 size：
+    // 段文件可能远大于单次读取上限，直接跳 size 会跳过中间内容。
+    tailOffset = data.next_offset
     earliestFile = latest.name
     earliestOffset = start
   } catch (e) {
@@ -162,8 +235,16 @@ async function selectServer(name: string) {
   }
 }
 
-async function readLog(name: string, file: string, offset: number): Promise<LogReadResp> {
-  const q = new URLSearchParams({ file, offset: String(offset) })
+async function readLog(
+  name: string,
+  file: string,
+  offset: number,
+  limit = READ_BYTES,
+): Promise<LogReadResp> {
+  // 必须显式带 limit：服务端默认只回 64KB。首屏要读尾部 512KB 时不带 limit
+  // 就只拿到一小段，而游标若直接跳到文件尾，中间内容会被整个跳过 ——
+  // 这正是「日志被截断、最后一行只有半截」的根因。
+  const q = new URLSearchParams({ file, offset: String(offset), limit: String(limit) })
   return api<LogReadResp>(`/api/mcp-servers/${encodeURIComponent(name)}/log?${q.toString()}`)
 }
 
@@ -185,12 +266,17 @@ async function loadEarlier() {
     } else {
       offset = Math.max(0, offset - PAGE_BYTES)
     }
-    const data = await readLog(selected.value, file, offset)
-    const chunk = data.content
-    if (chunk) {
-      // prepend：正文最早处插入更早内容
-      content.value = chunk + content.value
+    // 向前翻页只取一块（PAGE_BYTES），不要用首屏的 1MB。
+    const data = await readLog(selected.value, file, offset, PAGE_BYTES)
+    // 向上翻页时本块末尾可能停在半行（下一块的起点就在它后面），
+    // 这里截到最后一个换行，保证拼接后不会出现断成两截的 JSON。
+    let chunk = data.content
+    // 未读到段尾说明这块是按 limit 切断的，末尾可能是半行 → 截到最后一个换行。
+    if (!data.eof) {
+      const cut = chunk.lastIndexOf('\n')
+      chunk = cut >= 0 ? chunk.slice(0, cut + 1) : ''
     }
+    if (chunk) content.value = chunk + content.value
     earliestFile = file
     earliestOffset = offset
     if (content.value && preRef.value && !follow.value) {
@@ -211,24 +297,38 @@ async function retryLoad() {
   await selectServer(selected.value)
 }
 
-// 1s 轮询：只追最新段增量；检测滚动后自动切新段。
+// 1s 轮询：只追最新段增量；同步刷新段列表（徽章的 KB/最近时间读这里）；
+// 检测滚动后自动切新段。
 async function poll() {
   if (!selected.value || !latestFile.value || loading.value) return
   try {
     const data = await readLog(selected.value, latestFile.value, tailOffset)
     if (data.content) {
-      content.value += data.content
-      tailOffset = data.size
+      appendChunk(data.content)
+      tailOffset = data.next_offset
       scrollFollow()
     }
     // 最新段可能已滚动：files 列表尾部出现新段时切换
+    // 每次轮询刷新 files：badges（size/last_ts）依赖它，滚动/新段检测也依赖它。
     const resp = await api<{ items: LogFileInfo[] }>(
       `/api/mcp-servers/${encodeURIComponent(selected.value)}/log/files`,
     )
     const items = resp.items || []
+    if (items.length) {
+      const known = files.value[files.value.length - 1]
+      const fresh = items[items.length - 1]
+      // 同一段文件大小/时间变化 → 原地更新徽章；出现新段 → 稍后滚动检测统一处理。
+      if (known && fresh.name === known.name &&
+          (fresh.size !== known.size || fresh.last_ts !== known.last_ts)) {
+        files.value = items
+      } else if (!known || fresh.name !== known.name) {
+        // 新段：列表先更新（后续分支负责切换 tailOffset）。
+        files.value = items
+      }
+    }
     if (items.length && items[items.length - 1].name !== latestFile.value) {
-      // 旧段已读满（tailOffset == 旧段 size）才切，避免丢内容
-      if (tailOffset >= data.size) {
+      // 旧段必须读到段尾（服务端 eof）才切下一段，否则中间内容会丢。
+      if (data.eof) {
         files.value = items
         latestFile.value = items[items.length - 1].name
         tailOffset = 0
@@ -375,7 +475,8 @@ onMounted(loadServers)
           <div
             v-for="(line, i) in lines"
             :key="i"
-            class="log-line whitespace-pre-wrap break-all px-3 py-0.5 hover:bg-muted/40"
+            class="log-line px-3 py-0.5 hover:bg-muted/40"
+            :class="isFrameLine(line) ? 'truncate' : 'whitespace-pre-wrap break-all'"
           >
             <span class="text-muted-foreground/50 tabular-nums">{{ line.ts }}</span>
             <span
@@ -383,7 +484,14 @@ onMounted(loadServers)
               class="px-2 font-semibold"
               :class="KIND_CLASS[line.kind] || 'text-muted-foreground'"
               >[{{ line.kind }}]</span
-            ><span v-html="ansiToHtml(line.body)" />
+            ><!-- 整行文字：悬停显示下划线，点击打开完整内容（不再放行尾按钮）。
+                正文先去掉 msg="..." 外壳与转义，列表里直接是可读的 JSON。 -->
+            <span
+              class="cursor-pointer decoration-dotted underline-offset-2 hover:underline"
+              title="点击查看完整内容"
+              @click="openDetail(line)"
+              v-html="ansiToHtml(displayBody(line))"
+            />
           </div>
         </div>
         <div
@@ -395,4 +503,39 @@ onMounted(loadServers)
       </div>
     </CardContent>
   </Card>
+
+  <!-- 完整内容弹窗 -->
+  <Dialog v-model:open="detailOpen">
+    <DialogContent
+      class="flex h-[86vh] w-[94vw] max-w-[94vw]! flex-col gap-0 overflow-hidden p-0 sm:max-w-[94vw]!"
+      :show-close-button="false"
+    >
+      <DialogHeader
+        class="flex shrink-0 flex-row items-start gap-2 border-b border-border px-4 py-2.5"
+      >
+        <div class="min-w-0 flex-1">
+          <DialogTitle class="truncate text-base">
+            {{ frameLabel(detailLine) }}
+          </DialogTitle>
+          <DialogDescription class="truncate font-mono text-xs">
+            {{ detailLine?.ts }} {{ detailLine ? '[' + detailLine.kind + ']' : '' }}
+            <template v-if="detailId"> · id={{ detailId }} </template>
+          </DialogDescription>
+        </div>
+        <Button variant="ghost" size="icon" aria-label="复制完整内容" @click="copyDetail">
+          <RiClipboardLine class="size-4" />
+        </Button>
+        <Button variant="ghost" size="icon" aria-label="关闭" @click="detailOpen = false">
+          <RiCloseLine class="size-4" />
+        </Button>
+      </DialogHeader>
+      <!-- 只显示被点中的这一条：不做请求/响应配对，避免顺序错乱误导阅读。 -->
+      <div class="min-h-0 flex-1 overflow-auto bg-muted/20 px-4 py-3">
+        <AxJsonViewer v-if="detailJson !== null" :data="detailJson" :expand-level="6" wrap-enabled />
+        <pre v-else class="whitespace-pre-wrap break-all font-mono text-xs leading-relaxed">{{
+          prettyBody(detailLine)
+        }}</pre>
+      </div>
+    </DialogContent>
+  </Dialog>
 </template>

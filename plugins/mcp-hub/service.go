@@ -1609,11 +1609,11 @@ func (s *Service) ListLogFiles(name string) []LogFileInfo {
 	return s.logMgr.ListFiles(name)
 }
 
-// ReadLog 增量读指定段文件：返回 (数据, 段总字节, eof, err)。
+// ReadLog 增量读指定段文件：返回 (数据, 本次读到的末尾偏移, 段总字节, eof, err)。
 // name/segment 的合法性由 LogManager.Read 校验（单段名 + 段名正则）。
-func (s *Service) ReadLog(name, segment string, offset, limit int64) ([]byte, int64, bool, error) {
+func (s *Service) ReadLog(name, segment string, offset, limit int64) ([]byte, int64, int64, bool, error) {
 	if s.logMgr == nil {
-		return nil, 0, false, nil
+		return nil, offset, 0, true, nil
 	}
 	return s.logMgr.Read(name, segment, offset, limit)
 }

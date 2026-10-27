@@ -136,6 +136,26 @@ func TestMCPLogsEndpoints(t *testing.T) {
 		t.Fatal("增量拼接 != 全量")
 	}
 
+	// 回归：读接口必须如实返回「本次真正读到的末尾位置」（next_offset）。
+	// 前端首屏从文件尾往前取 512KB，如果只拿 size 当已读游标，中间 448KB 就被跳过；
+	// 另外 content 已按字节截断，前端不能拿字符串长度当字节数（中文会错位）。
+	_, dBig := apiReq(t, ts, http.MethodGet, "/api/mcp-servers/github/log?offset=0&limit="+itos(96*1024), nil, cookie)
+	var big struct {
+		Content    string `json:"content"`
+		Offset     int64  `json:"offset"`
+		NextOffset int64  `json:"next_offset"`
+		Size       int64  `json:"size"`
+		EOF        bool   `json:"eof"`
+	}
+	_ = json.Unmarshal([]byte(dBig), &big)
+	if big.NextOffset != big.Offset+int64(len(big.Content)) {
+		t.Fatalf("next_offset 应等于 offset+实际字节数，got next_offset=%d offset=%d len=%d",
+			big.NextOffset, big.Offset, len(big.Content))
+	}
+	if !big.EOF && big.NextOffset != big.Offset+96*1024 {
+		t.Fatalf("未到文件尾时应读满 limit，got offset=%d next=%d size=%d", big.Offset, big.NextOffset, big.Size)
+	}
+
 	// 默认 file 参数（不传 file）= 最新段
 	_, dDefault := apiReq(t, ts, http.MethodGet, "/api/mcp-servers/github/log", nil, cookie)
 	var def struct {

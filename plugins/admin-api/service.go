@@ -1492,7 +1492,7 @@ func (s *Service) handleMCPLogRead(w http.ResponseWriter, r *http.Request) {
 		}
 		segment = files[len(files)-1].Name
 	}
-	data, size, eof, err := s.hub.ReadLog(name, segment, offset, limit)
+	data, next, size, eof, err := s.hub.ReadLog(name, segment, offset, limit)
 	if err != nil {
 		// 段不存在（被删/未创建）→ 空响应不报错，前端按空处理。
 		if os.IsNotExist(err) {
@@ -1504,7 +1504,10 @@ func (s *Service) handleMCPLogRead(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"name": name, "file": segment, "offset": offset,
-		"size": size, "eof": eof, "content": string(data),
+		// next_offset：本次真正读到的末尾位置（字节）。前端必须用它推进游标，
+		// 不能用 size（文件总长）——首屏只读尾部时二者并不相等。
+		"next_offset": next,
+		"size":        size, "eof": eof, "content": string(data),
 	})
 }
 
