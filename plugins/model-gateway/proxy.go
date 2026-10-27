@@ -18,6 +18,7 @@ import (
 	"unicode"
 
 	"loadout/core/config"
+	"loadout/core/db"
 	"loadout/plugins/contracts"
 	gatewaykeys "loadout/plugins/gateway-keys"
 	"loadout/plugins/types"
@@ -567,9 +568,9 @@ func (s *Service) proxyForward(w http.ResponseWriter, r *http.Request, pipe *Pro
 	// 触发聚合切换烧光所有候选 Key，最后连 DB 查询都因 ctx 取消而报错。
 	if cerr := r.Context().Err(); cerr != nil {
 		s.lg.Info("客户端已断开，跳过转发", "request_id", pipe.RequestID, "model", model, "err", cerr.Error())
-			// 收尾请求日志：proxyBeginLog 已写入 running 占位，早退不写 Finish 会让
-			// 这条记录永久卡「进行中」（前端终止后拉详情只会看到 running）。
-			s.proxyFinishLog(r, pipe, model, "", "", "stream_interrupted", 0, time.Since(started), cerr, pipe.Request.Stream, contracts.TokenUsage{}, "")
+		// 收尾请求日志：proxyBeginLog 已写入 running 占位，早退不写 Finish 会让
+		// 这条记录永久卡「进行中」（前端终止后拉详情只会看到 running）。
+		s.proxyFinishLog(r, pipe, model, "", "", "stream_interrupted", 0, time.Since(started), cerr, pipe.Request.Stream, contracts.TokenUsage{}, "")
 		return nil
 	}
 	candidates, resolveErr := s.resolveProxyChannels(r.Context(), model, pipe)
@@ -683,7 +684,7 @@ func (s *Service) proxyForward(w http.ResponseWriter, r *http.Request, pipe *Pro
 		// 每次尝试前再查一次：上一渠道的缓冲读流/透传期间客户端可能刚断开。
 		if cerr := r.Context().Err(); cerr != nil {
 			s.lg.Info("客户端已断开，终止 failover", "request_id", pipe.RequestID, "model", model, "err", cerr.Error())
-				s.proxyFinishLog(r, pipe, model, "", "", "stream_interrupted", 0, time.Since(started), cerr, pipe.Request.Stream, contracts.TokenUsage{}, "")
+			s.proxyFinishLog(r, pipe, model, "", "", "stream_interrupted", 0, time.Since(started), cerr, pipe.Request.Stream, contracts.TokenUsage{}, "")
 			return nil
 		}
 		res := &attemptResult{}
@@ -1792,8 +1793,10 @@ func (s *Service) proxyRejectedLog(r *http.Request, pipe *ProxyPipeline, err err
 	// 渠道名称反查：聚合目标只有 id/base_url，被拒时渠道名从渠道表补
 	//（Key 删除后前端仍能显示「@渠道名(Unknown)」）。
 	nameByID := map[string]string{}
+	var channels []db.Channel
 	if s.routing != nil {
 		if chans, err := s.routing.ListChannels(logCtx); err == nil {
+			channels = chans
 			for _, c := range chans {
 				nameByID[c.ID] = c.ChannelName
 			}
@@ -1820,12 +1823,48 @@ func (s *Service) proxyRejectedLog(r *http.Request, pipe *ProxyPipeline, err err
 					if t.ChannelID != "" {
 						candidateIDs = append([]string{t.ChannelID}, candidateIDs...)
 					}
-					if reason := s.unavailableReason(t.Model, candidateIDs); reason != "" {
+					// 渠道级目标（只有 base_url）必须把组内 Key 全部查一遍：否则日志
+					// 里 channel_id 为空，用户无法知道哪个账号被禁用，也无法解释
+					// 「为什么 17 个账号只写了一条」。candidateIDs 仅用于查原因；
+					// 每个账号的原因由下方逐条 attempt 记录。
+					if t.ChannelBaseURL != "" && len(candidateIDs) == 0 {
+						for _, ch := range channelsByBaseURL(channels, t.ChannelBaseURL) {
+							candidateIDs = append(candidateIDs, ch.ID)
+						}
+					}
+					if reason := s.unavailableReasonOrKeyState(t.Model, candidateIDs); reason != "" {
 						msg = fmt.Sprintf("目标 %q 不可用：%s", t.Model, reason)
 					}
 				}
 				if pluginClass != "" {
 					failureClass = pluginClass
+				}
+				// 渠道级目标展开成「每个账号一条」：日志要能直接回答「哪些账号被
+				// 跳过、各是什么原因」。没有这一层时 UI 只有一条空 channel_id 的
+				// skipped，看起来像只测了一个账号，实际是所有账号都被前置过滤。
+				if t.ChannelBaseURL != "" && t.ChannelID == "" && len(t.ChannelIDs) == 0 {
+					expanded := channelsByBaseURL(channels, t.ChannelBaseURL)
+					if len(expanded) > 0 {
+						for _, ch := range expanded {
+							accountMsg := msg
+							if pluginReason == "" {
+								reason, class := s.unavailableReasonOrKeyStateClass(t.Model, ch.ID)
+								if reason != "" {
+									accountMsg = fmt.Sprintf("目标 %q 的账号 %q 不可用：%s", t.Model, ch.Name, reason)
+								} else {
+									accountMsg = fmt.Sprintf("目标 %q 的账号 %q 当前不可用", t.Model, ch.Name)
+								}
+								// 账号级熔断（401/403/额度）只写在 channel_states：模型自己
+								// 的状态往往还是 available，日志里必须按账号级成因分类，
+								// 否则筛选「鉴权失败」会漏掉这批请求。
+								if class != "" {
+									failureClass = class
+								}
+							}
+							s.proxyAttemptLog(r, pipe, t.Model, ch.ID, ch.ChannelName, nil, "", started, "skipped", failureClass, 0, stream, contracts.TokenUsage{}, errors.New(accountMsg), "")
+						}
+						continue
+					}
 				}
 				s.proxyAttemptLog(r, pipe, t.Model, t.ChannelID, nameByID[t.ChannelID], append([]string(nil), t.ChannelIDs...), t.ChannelBaseURL, started, "skipped", failureClass, 0, stream, contracts.TokenUsage{}, errors.New(msg), "")
 			}
@@ -1868,6 +1907,20 @@ func rejectedClass(err error) string {
 	return "no_available"
 }
 
+// channelsByBaseURL 返回同一 base_url 组下启用的 Key（保持渠道表顺序）。
+// 聚合的渠道级目标只配了 base_url，日志要逐账号说明被跳过原因时必须先展开。
+func channelsByBaseURL(channels []db.Channel, baseURL string) []db.Channel {
+	target := NormalizeBaseURL(baseURL)
+	var out []db.Channel
+	for _, ch := range channels {
+		if !ch.ManualEnabled || NormalizeBaseURL(ch.BaseURL) != target {
+			continue
+		}
+		out = append(out, ch)
+	}
+	return out
+}
+
 // unavailableReason 查询 model_states 获取目标模型当前不可用的具体原因
 // （如 "模型免费额度用完" 冷却中 / 已禁用），返回空串表示未命中或查询失败。
 //
@@ -1878,8 +1931,16 @@ func rejectedClass(err error) string {
 // channelIDs 接收多个候选 channel_id（聚合目标在 Key 多选模式下具体到 Key 失败场景，
 // volc-free-quota 写入 model_states 时使用的是具体 channel_id），任一命中即返回。
 func (s *Service) unavailableReason(model string, channelIDs []string) string {
+	reason, _ := s.unavailableReasonClass(model, channelIDs)
+	return reason
+}
+
+// unavailableReasonClass 同 unavailableReason，额外返回失败分类。
+// 账号级熔断（401/403/额度）只写在 channel_states，模型自己的 model_states
+// 往往仍是 available；聚合日志要给每个被跳过的账号说明真实原因，必须补查账号级状态。
+func (s *Service) unavailableReasonClass(model string, channelIDs []string) (string, string) {
 	if s.database == nil || model == "" || len(channelIDs) == 0 {
-		return ""
+		return "", ""
 	}
 	placeholders := strings.Repeat("?,", len(channelIDs))
 	placeholders = strings.TrimSuffix(placeholders, ",")
@@ -1892,24 +1953,72 @@ func (s *Service) unavailableReason(model string, channelIDs []string) string {
 		args = append(args, id)
 	}
 	if len(args) <= 1 {
-		return ""
+		return "", ""
 	}
 	// 重新算 placeholder 个数（去掉空 string 后），保持与 args 一一对应。
 	placeholders = strings.TrimSuffix(strings.Repeat("?,", len(args)-1), ",")
 	var lastErr string
 	var status string
-	err := s.database.QueryRow(`SELECT status, COALESCE(last_error, '') FROM model_states WHERE model = ? AND channel_id IN (`+placeholders+`) ORDER BY fail_count DESC, updated_at DESC LIMIT 1`, args...).Scan(&status, &lastErr)
+	var failureClass string
+	err := s.database.QueryRow(`SELECT status, COALESCE(last_error, ''), COALESCE(last_failure_class, '') FROM model_states WHERE model = ? AND channel_id IN (`+placeholders+`) ORDER BY fail_count DESC, updated_at DESC LIMIT 1`, args...).Scan(&status, &lastErr, &failureClass)
 	if err != nil {
-		return ""
+		return "", ""
 	}
 	if lastErr != "" {
-		return lastErr
+		return lastErr, failureClass
 	}
 	switch status {
 	case "cooling":
-		return "冷却中"
+		return "冷却中", failureClass
 	case "disabled":
-		return "已禁用"
+		return "已禁用", failureClass
 	}
-	return ""
+	return "", failureClass
+}
+
+// unavailableReasonOrKeyState 先查模型级状态；没有时补查账号级状态。
+// 聚合目标渠道级展开后，被跳过的往往正是「账号已禁用/冷却」而模型状态仍 available 的
+// 情况——只查 model_states 会得到空串，日志退回笼统文案，用户依旧看不到原因。
+func (s *Service) unavailableReasonOrKeyState(model string, channelIDs []string) string {
+	reason, _ := s.unavailableReasonOrKeyStateClass(model, channelIDs...)
+	return reason
+}
+
+// unavailableReasonOrKeyStateClass 同 unavailableReasonOrKeyState，额外返回分类。
+func (s *Service) unavailableReasonOrKeyStateClass(model string, channelIDs ...string) (string, string) {
+	if reason, class := s.unavailableReasonClass(model, channelIDs); reason != "" {
+		return reason, class
+	}
+	if s.database == nil || len(channelIDs) == 0 {
+		return "", ""
+	}
+	ids := make([]string, 0, len(channelIDs))
+	for _, id := range channelIDs {
+		if id != "" {
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		return "", ""
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
+	args := make([]any, 0, len(ids))
+	for _, id := range ids {
+		args = append(args, id)
+	}
+	var status, lastErr, class string
+	err := s.database.QueryRow(`SELECT status, COALESCE(last_error, ''), COALESCE(last_failure_class, '') FROM channel_states WHERE channel_id IN (`+placeholders+`) ORDER BY fail_count DESC, updated_at DESC LIMIT 1`, args...).Scan(&status, &lastErr, &class)
+	if err != nil {
+		return "", ""
+	}
+	if lastErr != "" {
+		return lastErr, class
+	}
+	switch status {
+	case "cooling":
+		return "账号冷却中", class
+	case "disabled":
+		return "账号已禁用", class
+	}
+	return "", class
 }

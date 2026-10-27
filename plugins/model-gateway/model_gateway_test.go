@@ -634,6 +634,74 @@ func TestProxyRejectedLogCarriesUnavailableReason(t *testing.T) {
 	}
 }
 
+// TestProxyRejectedLogExpandsChannelLevelTargets 用户报告：渠道级聚合目标
+// （只配 base_url）全部账号不可用时，转发日志只有一条空 channel_id 的 skipped，
+// 看起来像「只测了一个账号」。日志必须按账号逐个记录，并带出各自原因。
+func TestProxyRejectedLogExpandsChannelLevelTargets(t *testing.T) {
+	database, err := db.Open(t.TempDir() + "/loadout.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { database.Close() })
+	if _, err := database.Exec(`INSERT INTO channels(id, name, channel_name, base_url, manual_enabled, sync_billing, created_at, updated_at) VALUES
+		('k1', 'acct-1', 'workbuddy', 'https://copilot.example/v2', 1, 1, 'now', 'now'),
+		('k2', 'acct-2', 'workbuddy', 'https://copilot.example/v2', 1, 1, 'now', 'now')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`INSERT INTO channel_states(channel_id, status, last_failure_class, last_error, updated_at) VALUES
+		('k1','disabled','auth','invalid api key','now'),
+		('k2','cooling','rule_disable_key_daily','额度已用尽','now')`); err != nil {
+		t.Fatal(err)
+	}
+
+	svc, _ := newTestService(t)
+	log := &mockRouteLog{}
+	svc.SetRoutingServices(database, nil, log)
+
+	ctx := newMockCtx()
+	ctx.On(ProxyBeforeUpstream, func(payload any) (any, error) {
+		pipe := payload.(*ProxyPipeline)
+		pipe.Metadata = map[string]any{
+			"__virtual_model": "auto-demo",
+			"__aggregate_targets": []types.AggregateTarget{
+				{Model: "glm-5.3-flash", ChannelBaseURL: "https://copilot.example/v2"},
+			},
+		}
+		return nil, &GatewayError{
+			Status: http.StatusServiceUnavailable,
+			Type:   "no_available_model",
+			Msg:    `聚合模型 "auto-demo" 的所有目标当前不可用`,
+		}
+	})
+	svc.ctx = ctx
+
+	body := `{"model":"auto-demo","messages":[{"role":"user","content":"hi"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.RemoteAddr = "127.0.0.1:12345"
+	rec := httptest.NewRecorder()
+	svc.HandleProxy(rec, req)
+
+	if len(log.attempts) != 2 {
+		t.Fatalf("渠道级目标应按账号展开成 2 条 skipped，实际 %d: %+v", len(log.attempts), log.attempts)
+	}
+	got := map[string]contracts.RouteAttempt{}
+	for _, a := range log.attempts {
+		got[a.ChannelID] = a
+	}
+	if got["k1"].FailureClass != "auth" || !strings.Contains(got["k1"].ErrorMessage, "invalid api key") {
+		t.Fatalf("k1 应说明账号级鉴权原因: %+v", got["k1"])
+	}
+	if got["k2"].FailureClass != "rule_disable_key_daily" || !strings.Contains(got["k2"].ErrorMessage, "额度已用尽") {
+		t.Fatalf("k2 应说明额度原因: %+v", got["k2"])
+	}
+	if got["k1"].ChannelName != "workbuddy" || got["k2"].ChannelName != "workbuddy" {
+		t.Fatalf("账号记录应带渠道组名，实际 k1=%q k2=%q", got["k1"].ChannelName, got["k2"].ChannelName)
+	}
+	if !strings.Contains(got["k1"].ErrorMessage, "acct-1") || !strings.Contains(got["k2"].ErrorMessage, "acct-2") {
+		t.Fatalf("账号记录应写明具体账号: k1=%q k2=%q", got["k1"].ErrorMessage, got["k2"].ErrorMessage)
+	}
+}
+
 // TestHandleModelsV2 v2/models：渠道模型输出 ChannelName/model，同模型跨渠道全保留，
 // 虚拟模型原名，同组多 Key 只输出一次。
 func TestHandleModelsV2(t *testing.T) {
