@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { toast } from 'vue-sonner'
 import {
@@ -9,12 +9,14 @@ import {
   RiCheckLine,
   RiClipboardLine,
   RiDeleteBinLine,
+  RiDraggable,
   RiEditLine,
   RiFileCopyLine,
   RiKey2Line,
   RiLoader4Line,
   RiRefreshLine,
   RiTestTubeLine,
+  RiToolsLine,
   RiToggleFill,
   RiToggleLine,
 } from '@remixicon/vue'
@@ -33,8 +35,133 @@ import { useManagementApi } from '@/composables/useManagementApi'
 import { useAsyncTask } from '@/composables/useAsyncTask'
 import { getLoadoutBase, getLoadoutBaseSync } from '@/lib/base'
 import { useMcpNavStore } from '@/stores/mcpNavigation'
+import { useDraggable } from 'vue-draggable-plus'
+import { request } from '@/lib/api'
 const mcp = reactive(useMcpManagement())
 const api = useManagementApi()
+
+// ===== 工具快捷访问（持久化在 mcp_servers.quick_tools_json）=====
+// 每台 MCP 自己的快捷工具列表，刷新/重启后仍保留；只影响管理页展示，不改变客户端可见的工具。
+type QuickTool = { serverId: string; serverName: string; toolName: string; description?: string }
+const quickTools = ref<QuickTool[]>([])
+
+// syncQuickToolsFromServers 把接口返回的 quick_tools 拍平成按钮列表。
+// 每次 refresh 后重建（以服务端为准），避免显示过期按钮。
+function syncQuickToolsFromServers(
+  servers: { id: string; name: string; quick_tools?: string[] }[],
+) {
+  const next: QuickTool[] = []
+  for (const srv of servers) {
+    for (const toolName of srv.quick_tools || []) {
+      next.push({ serverId: srv.id, serverName: srv.name, toolName })
+    }
+  }
+  quickTools.value = next
+}
+watch(
+  () => mcp.servers,
+  (list) => syncQuickToolsFromServers(list),
+  { immediate: true, deep: true },
+)
+
+function isQuickTool(serverId: string, toolName: string) {
+  return quickTools.value.some((t) => t.serverId === serverId && t.toolName === toolName)
+}
+
+// saveQuickTools 把某台 MCP 的快捷工具列表整体写回数据库。
+async function saveQuickTools(serverId: string, names: string[]) {
+  try {
+    await request(`/api/mcp-servers/${encodeURIComponent(serverId)}/quick-tools`, 'PUT', names)
+    // 本地立即同步，不必等下一次轮询。
+    for (const srv of mcp.servers) {
+      if (srv.id === serverId) srv.quick_tools = names
+    }
+    syncQuickToolsFromServers(mcp.servers)
+  } catch (error) {
+    toast.error('保存快捷访问失败', {
+      description: error instanceof Error ? error.message : String(error),
+    })
+    await mcp.refresh()
+  }
+}
+
+async function toggleQuickTool(
+  server: { id: string; name: string },
+  tool: { name: string; description?: string },
+) {
+  const current = (mcp.servers.find((s) => s.id === server.id)?.quick_tools || []).slice()
+  const exists = current.includes(tool.name)
+  const next = exists ? current.filter((n) => n !== tool.name) : [...current, tool.name]
+  await saveQuickTools(server.id, next)
+  toast.success(exists ? '已从快捷访问移除' : '已加入快捷访问')
+}
+
+function quickToolsFor(serverId: string) {
+  const names = mcp.servers.find((s) => s.id === serverId)?.quick_tools || []
+  return names.map((toolName) => {
+    const entry = mcp.tools.find((e) => e.id === serverId)?.tools.find((t) => t.name === toolName)
+    return { toolName, description: entry?.description }
+  })
+}
+function serverToolCount(serverId: string) {
+  return mcp.tools.find((entry) => entry.id === serverId)?.tools.length ?? 0
+}
+
+// ---------- 拖拽排序（useDraggable 绑定表格与 serverDragList / reorderServers） ----------
+const serverDragList = computed({
+  get: () => mcp.servers,
+  set: (v: typeof mcp.servers) => {
+    mcp.servers = v
+  },
+})
+async function reorderServers(v: typeof mcp.servers) {
+  // 只提交顺序（id 列表）：不把运行期状态写回配置，也不会触发进程重启。
+  try {
+    await request(
+      '/api/mcp-servers/reorder',
+      'POST',
+      v.map((item) => item.id),
+    )
+    toast.success('顺序已保存')
+    await mcp.refresh()
+  } catch (error) {
+    toast.error('保存顺序失败', {
+      description: error instanceof Error ? error.message : String(error),
+    })
+    await mcp.refresh()
+  }
+}
+
+// 每台服务器用一个 <tbody> 承载「主行 + 工具列表」：排序库把每个 tbody 当作一个
+// 排序项，展开的工具列表跟着主行一起移动，不会多算一行导致索引错位。
+// 拖拽容器是表格本身（thead 不是 tbody，所以不会被当成排序项）。
+const upstreamTableWrap = ref<HTMLElement | null>(null)
+const upstreamTableEl = ref<HTMLTableElement | null>(null)
+const serverDrag = useDraggable(upstreamTableEl, serverDragList, {
+  immediate: false,
+  handle: '.cursor-grab',
+  draggable: 'tbody',
+  animation: 150,
+  // 在 choose 阶段折叠「当前被拖的那一行」：这个事件早于拖拽影子生成，
+  // 影子才是折叠后的高度；如果等到 start 再折叠，影子仍是展开时的一整块。
+  // 只折叠当前行，其他行保持原状；拖完也保持折叠，避免松手后页面被长列表突然撑开。
+  onChoose: (event) => {
+    const serverId = (event.item as HTMLElement | undefined)?.dataset?.serverId
+    if (!serverId) return
+    const index = expandedServers.value.indexOf(serverId)
+    if (index >= 0) expandedServers.value.splice(index, 1)
+  },
+  onUpdate: () => void reorderServers([...serverDragList.value]),
+})
+watch(
+  upstreamTableWrap,
+  (wrap) => {
+    upstreamTableEl.value = wrap?.querySelector('table') ?? null
+    if (upstreamTableEl.value) serverDrag.start()
+    else serverDrag.destroy()
+  },
+  { flush: 'post' },
+)
 // 与 TranslateView 一致的 MCP 文本 textKey，复用已翻译结果
 const toolDescKey = (serverName: string, toolName: string) => `mcp:${serverName}/${toolName}`
 const toolParamDescKey = (serverName: string, toolName: string, paramName: string) =>
@@ -83,6 +210,26 @@ const toolLoading = ref(false)
 const toolExecuting = ref(false)
 const toolEditName = ref('')
 const toolEditDescription = ref('')
+// ===== 状态自动刷新 =====
+// 重连在后台异步进行（1s→2s→4s 退避），前端定时拉一次状态才能看到「重连中 1→2→3」；
+// 页面隐藏或已有操作在进行时跳过，避免多余请求与状态闪动。
+const STATUS_REFRESH_MS = 3000
+let statusTimer: ReturnType<typeof setInterval> | null = null
+function startStatusPolling() {
+  stopStatusPolling()
+  statusTimer = setInterval(() => {
+    if (document.hidden || mcp.pending || mcp.refreshing) return
+    void mcp.refresh()
+  }, STATUS_REFRESH_MS)
+}
+function stopStatusPolling() {
+  if (statusTimer) {
+    clearInterval(statusTimer)
+    statusTimer = null
+  }
+}
+onMounted(startStatusPolling)
+onBeforeUnmount(stopStatusPolling)
 // ===== $smart 入口工具描述 tab =====
 type SmartToolDescRow = {
   name: string
@@ -179,6 +326,7 @@ function toggleServer(serverId: string) {
   if (index >= 0) expandedServers.value.splice(index, 1)
   else expandedServers.value.push(serverId)
 }
+
 function isServerExpanded(serverId: string) {
   return expandedServers.value.includes(serverId)
 }
@@ -416,232 +564,328 @@ async function copyConfig(endpoint: { path: string; label: string }) {
             <CardDescription>维护 HTTP、SSE 或 stdio 服务，并测试连接状态。</CardDescription>
           </CardHeader>
           <CardContent class="p-0">
-            <div v-if="mcp.servers.length" class="w-full overflow-hidden">
-              <AxTable>
-                <Table>
+            <div v-if="mcp.servers.length" ref="upstreamTableWrap" class="w-full overflow-x-auto">
+              <!-- 铺满容器：每列都声明了 min-w，窗口太窄时整体横向滚动，不会被压扁。 -->
+              <AxTable fill>
+                <!-- 每个服务器一个 tbody；只在「最后一个 tbody 的最后一行」去掉底边，
+                     否则所有折叠行都会跟着丢边框。 -->
+                <Table class="[&>tbody:last-child>tr:last-child]:border-0">
                   <colgroup>
-                    <col class="w-10" />
+                    <col class="w-[46px] min-w-0" />
                     <col />
-                    <col class="" />
-                    <col class="w-[100px]" />
-                    <col class="w-[180px]" />
+                    <col class="w-[130px]" />
+                    <col class="w-[92px]" />
+                    <col class="w-[84px]" />
+                    <col class="w-[250px]" />
+                    <col class="w-[150px]" />
                   </colgroup>
                   <TableHeader>
                     <TableRow>
-                      <TableHead></TableHead>
-                      <TableHead>名称</TableHead>
-                      <TableHead>传输</TableHead>
-                      <TableHead>状态</TableHead>
-                      <TableHead class="text-right">操作</TableHead>
+                      <TableHead class="w-[46px] min-w-0"></TableHead>
+                      <TableHead class="min-w-[140px] max-w-[360px]">名称</TableHead>
+                      <TableHead class="min-w-[120px]">传输</TableHead>
+                      <TableHead class="min-w-[80px]">状态</TableHead>
+                      <TableHead class="min-w-[60px] text-center">工具</TableHead>
+                      <TableHead class="min-w-[220px]">快捷调用</TableHead>
+                      <TableHead class="min-w-[140px] text-right">操作</TableHead>
                     </TableRow>
                   </TableHeader>
-                  <TableBody>
-                    <template v-for="server in mcp.servers" :key="server.id">
-                      <TableRow>
-                        <TableCell class="px-0"
-                          ><Button
-                            variant="ghost"
-                            size="icon"
-                            class="size-8"
-                            :aria-label="isServerExpanded(server.id) ? '收起工具' : '展开工具'"
-                            :aria-expanded="isServerExpanded(server.id)"
-                            @click="toggleServer(server.id)"
+                  <!-- 每台服务器的「主行 + 工具列表」放在同一个 tbody：
+                       排序库以 tbody 为一个排序项，展开时也不会把详情行当成额外一行。 -->
+                  <tbody
+                    v-for="server in serverDragList"
+                    :key="server.id"
+                    :data-server-id="server.id"
+                  >
+                    <!-- 整行可点：点空白/名称/传输/状态都能展开或折叠；
+                           按钮、下拉、输入框上的点击由它们自己 stopPropagation，不会误触。 -->
+                    <TableRow
+                      class="cursor-pointer"
+                      :aria-expanded="isServerExpanded(server.id)"
+                      :title="isServerExpanded(server.id) ? '点击收起工具列表' : '点击展开工具列表'"
+                      @click="toggleServer(server.id)"
+                    >
+                      <!-- 第一列：拖拽把手在最左，展开箭头紧跟其后（合并成一列，避免中间空白）。 -->
+                      <TableCell class="w-[56px] py-0 pl-2 pr-0">
+                        <div class="flex items-center gap-0">
+                          <span
+                            class="flex size-5 shrink-0 cursor-grab items-center justify-center rounded text-muted-foreground/40 hover:bg-muted hover:text-foreground active:cursor-grabbing"
+                            role="button"
+                            tabindex="0"
+                            aria-label="拖拽排序"
+                            title="拖动调整顺序"
+                            @click.stop
+                          >
+                            <RiDraggable size="16" />
+                          </span>
+                          <!-- 展开箭头只是视觉提示：不接收点击、没有背景；
+                                 点击由整行处理，避免箭头与行各触发一次互相抵消。 -->
+                          <span
+                            class="pointer-events-none flex size-5 shrink-0 items-center justify-center text-muted-foreground/70"
+                            aria-hidden="true"
                           >
                             <RiArrowDownSLine v-if="isServerExpanded(server.id)" size="16" />
-                            <RiArrowRightSLine v-else size="16" /> </Button
-                        ></TableCell>
-                        <TableCell>
-                          <div class="font-medium flex items-center gap-2">
-                            <span>{{ server.name }}</span>
-                            <Badge v-if="server.builtin" variant="secondary">内置</Badge>
-                          </div>
-                          <div class="w-full truncate text-xs text-muted-foreground">
-                            {{ server.url || server.command }}
-                          </div>
-                        </TableCell>
-                        <TableCell>{{ labels[server.transport] || server.transport }}</TableCell>
-                        <TableCell>
+                            <RiArrowRightSLine v-else size="16" />
+                          </span>
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <div class="font-medium flex items-center gap-2">
+                          <span>{{ server.name }}</span>
+                          <Badge v-if="server.builtin" variant="secondary">内置</Badge>
+                        </div>
+                        <div class="w-full truncate text-xs text-muted-foreground">
+                          {{ server.url || server.command }}
+                        </div>
+                      </TableCell>
+                      <TableCell>{{ labels[server.transport] || server.transport }}</TableCell>
+                      <TableCell>
+                        <TooltipProvider>
+                          <!-- 状态文案按「进行中 → 重试 1/2/3 → 失败」一条线展示：
+                                 重试次数用尽后落库的失败态固定显示「失败」，不会退回「已停止」。 -->
+                          <Tooltip v-if="server.status === 'reconnecting'">
+                            <TooltipTrigger as-child
+                              ><Badge
+                                class="bg-amber-500/15 text-amber-700 border-amber-500/20 dark:text-amber-300"
+                                >{{
+                                  server.reconnect_attempts
+                                    ? `重试 ${server.reconnect_attempts}`
+                                    : '重试中'
+                                }}</Badge
+                              ></TooltipTrigger
+                            >
+                            <TooltipContent
+                              >连接断开，正在自动重试（次数可在设置页调整）</TooltipContent
+                            >
+                          </Tooltip>
+                          <Tooltip v-else-if="server.status === 'failed'">
+                            <TooltipTrigger as-child
+                              ><Badge variant="destructive">失败</Badge></TooltipTrigger
+                            >
+                            <TooltipContent class="max-w-xs break-words">{{
+                              server.error ||
+                              (server.enabled === false
+                                ? '自动重试次数已用完，已停止；修好后点开关重新启用'
+                                : '进程启动失败或已退出')
+                            }}</TooltipContent>
+                          </Tooltip>
+                          <Badge
+                            v-else-if="server.status === 'running'"
+                            class="bg-green-500/15 text-green-700 border-green-500/20 dark:text-green-300"
+                            >进行中</Badge
+                          >
+                          <Badge
+                            v-else
+                            :variant="server.enabled === false ? 'secondary' : 'default'"
+                            >{{ server.enabled === false ? '已停止' : '启用' }}</Badge
+                          >
+                        </TooltipProvider>
+                      </TableCell>
+                      <!-- 工具数量：一眼看到这个 MCP 暴露了多少个工具 -->
+                      <TableCell class="text-center">
+                        <Badge variant="outline" class="tabular-nums">
+                          {{ serverToolCount(server.id) }}
+                        </Badge>
+                      </TableCell>
+                      <!-- 快捷调用：已加入快捷访问的工具直接平铺成按钮（不做下拉聚合） -->
+                      <TableCell class="align-top">
+                        <div v-if="quickToolsFor(server.id).length" class="flex flex-wrap gap-1">
+                          <Button
+                            v-for="qt in quickToolsFor(server.id)"
+                            :key="qt.toolName"
+                            variant="outline"
+                            size="sm"
+                            class="h-6 max-w-[170px] px-2 text-xs"
+                            :title="qt.description || qt.toolName"
+                            @click.stop="
+                              openToolTest(server, {
+                                name: qt.toolName,
+                                description: qt.description,
+                              })
+                            "
+                          >
+                            <RiToolsLine size="12" class="shrink-0" />
+                            <span class="truncate">{{ qt.toolName }}</span>
+                          </Button>
+                        </div>
+                        <button
+                          v-else
+                          type="button"
+                          class="text-xs text-muted-foreground/70 hover:text-foreground"
+                          :disabled="!serverTools(server.id).length"
+                          title="展开这一行，点工具的「快捷访问」即可加到这一列"
+                          @click.stop="toggleServer(server.id)"
+                        >
+                          {{ serverTools(server.id).length ? '展开后添加' : '无工具' }}
+                        </button>
+                      </TableCell>
+                      <TableCell>
+                        <!-- 操作按钮自己处理点击：阻止冒泡，避免顺手把这一行折叠/展开。 -->
+                        <div v-if="!server.builtin" class="flex justify-end gap-1" @click.stop>
                           <TooltipProvider>
-                            <Tooltip v-if="server.status === 'failed'">
+                            <Tooltip>
                               <TooltipTrigger as-child
-                                ><Badge variant="destructive">失败</Badge></TooltipTrigger
-                              >
-                              <TooltipContent class="max-w-xs break-words">{{
-                                server.error || '进程启动失败或已退出'
+                                ><Button
+                                  variant="ghost"
+                                  size="icon"
+                                  aria-label="测试"
+                                  :disabled="mcp.isPending(`server:${server.id}:test`)"
+                                  @click="mcp.testServer(server, server.name)"
+                                >
+                                  <RiLoader4Line
+                                    v-if="mcp.isPending(`server:${server.id}:test`)"
+                                    class="animate-spin"
+                                    size="16"
+                                  /><RiTestTubeLine v-else size="16" /> </Button
+                              ></TooltipTrigger>
+                              <TooltipContent>测试连接</TooltipContent>
+                            </Tooltip>
+                            <Tooltip>
+                              <TooltipTrigger as-child
+                                ><Button
+                                  variant="ghost"
+                                  size="icon"
+                                  aria-label="编辑"
+                                  @click="openServerDialog(server)"
+                                >
+                                  <RiEditLine size="16" /> </Button
+                              ></TooltipTrigger>
+                              <TooltipContent>编辑</TooltipContent>
+                            </Tooltip>
+                            <Tooltip>
+                              <TooltipTrigger as-child
+                                ><Button
+                                  variant="ghost"
+                                  size="icon"
+                                  class="size-8"
+                                  :aria-label="
+                                    isServerActive(server)
+                                      ? `禁用 ${server.name}`
+                                      : server.enabled === false
+                                        ? `启用 ${server.name}`
+                                        : `重试启动 ${server.name}`
+                                  "
+                                  :disabled="mcp.isPending(`server:${server.id}:toggle`)"
+                                  @click="mcp.toggleServer(server)"
+                                >
+                                  <RiLoader4Line
+                                    v-if="mcp.isPending(`server:${server.id}:toggle`)"
+                                    class="animate-spin"
+                                    size="16"
+                                  /><RiToggleFill
+                                    v-else-if="isServerActive(server)"
+                                    class="size-5 text-emerald-600"
+                                  /><RiToggleLine
+                                    v-else
+                                    class="size-5 text-muted-foreground"
+                                  /> </Button
+                              ></TooltipTrigger>
+                              <TooltipContent>{{
+                                isServerActive(server)
+                                  ? '禁用'
+                                  : server.enabled === false
+                                    ? '启用'
+                                    : '进程失败，点击重试'
                               }}</TooltipContent>
                             </Tooltip>
-                            <Badge
-                              v-else-if="server.status === 'running'"
-                              class="bg-green-500/15 text-green-700 border-green-500/20 dark:text-green-300"
-                              >运行中</Badge
-                            >
-                            <Badge
-                              v-else
-                              :variant="server.enabled === false ? 'secondary' : 'default'"
-                              >{{ server.enabled === false ? '已停止' : '启用' }}</Badge
-                            >
+                            <Tooltip>
+                              <TooltipTrigger as-child
+                                ><Button
+                                  variant="ghost"
+                                  size="icon"
+                                  aria-label="删除"
+                                  :disabled="mcp.isPending(`server:${server.id}:remove`)"
+                                  @click="mcp.removeServer(server)"
+                                >
+                                  <RiLoader4Line
+                                    v-if="mcp.isPending(`server:${server.id}:remove`)"
+                                    class="animate-spin"
+                                    size="16"
+                                  /><RiDeleteBinLine v-else size="16" /> </Button
+                              ></TooltipTrigger>
+                              <TooltipContent>删除</TooltipContent>
+                            </Tooltip>
                           </TooltipProvider>
-                        </TableCell>
-                        <TableCell>
-                          <div v-if="!server.builtin" class="flex justify-end gap-1">
-                            <TooltipProvider>
-                              <Tooltip>
-                                <TooltipTrigger as-child
-                                  ><Button
-                                    variant="ghost"
-                                    size="icon"
-                                    aria-label="测试"
-                                    :disabled="mcp.isPending(`server:${server.id}:test`)"
-                                    @click="mcp.testServer(server, server.name)"
-                                  >
-                                    <RiLoader4Line
-                                      v-if="mcp.isPending(`server:${server.id}:test`)"
-                                      class="animate-spin"
-                                      size="16"
-                                    /><RiTestTubeLine v-else size="16" /> </Button
-                                ></TooltipTrigger>
-                                <TooltipContent>测试连接</TooltipContent>
-                              </Tooltip>
-                              <Tooltip>
-                                <TooltipTrigger as-child
-                                  ><Button
-                                    variant="ghost"
-                                    size="icon"
-                                    aria-label="编辑"
-                                    @click="openServerDialog(server)"
-                                  >
-                                    <RiEditLine size="16" /> </Button
-                                ></TooltipTrigger>
-                                <TooltipContent>编辑</TooltipContent>
-                              </Tooltip>
-                              <Tooltip>
-                                <TooltipTrigger as-child
-                                  ><Button
-                                    variant="ghost"
-                                    size="icon"
-                                    class="size-8"
-                                    :aria-label="
-                                      isServerActive(server)
-                                        ? `禁用 ${server.name}`
-                                        : server.enabled === false
-                                          ? `启用 ${server.name}`
-                                          : `重试启动 ${server.name}`
-                                    "
-                                    :disabled="mcp.isPending(`server:${server.id}:toggle`)"
-                                    @click="mcp.toggleServer(server)"
-                                  >
-                                    <RiLoader4Line
-                                      v-if="mcp.isPending(`server:${server.id}:toggle`)"
-                                      class="animate-spin"
-                                      size="16"
-                                    /><RiToggleFill
-                                      v-else-if="isServerActive(server)"
-                                      class="size-5 text-emerald-600"
-                                    /><RiToggleLine
-                                      v-else
-                                      class="size-5 text-muted-foreground"
-                                    /> </Button
-                                ></TooltipTrigger>
-                                <TooltipContent>{{
-                                  isServerActive(server)
-                                    ? '禁用'
-                                    : server.enabled === false
-                                      ? '启用'
-                                      : '进程失败，点击重试'
-                                }}</TooltipContent>
-                              </Tooltip>
-                              <Tooltip>
-                                <TooltipTrigger as-child
-                                  ><Button
-                                    variant="ghost"
-                                    size="icon"
-                                    aria-label="删除"
-                                    :disabled="mcp.isPending(`server:${server.id}:remove`)"
-                                    @click="mcp.removeServer(server)"
-                                  >
-                                    <RiLoader4Line
-                                      v-if="mcp.isPending(`server:${server.id}:remove`)"
-                                      class="animate-spin"
-                                      size="16"
-                                    /><RiDeleteBinLine v-else size="16" /> </Button
-                                ></TooltipTrigger>
-                                <TooltipContent>删除</TooltipContent>
-                              </Tooltip>
-                            </TooltipProvider>
-                          </div>
-                        </TableCell>
-                      </TableRow>
-                      <TableRow
-                        v-if="isServerExpanded(server.id)"
-                        class="bg-muted/30 hover:bg-muted/30"
-                      >
-                        <TableCell
-                          :colspan="5"
-                          class="whitespace-normal p-0 w-full overflow-hidden"
-                        >
-                          <div class="space-y-3 px-4 py-4">
-                            <div class="flex items-center justify-between gap-3">
-                              <div class="min-w-0">
-                                <div class="font-medium">工具列表</div>
-                                <div class="text-xs text-muted-foreground">
-                                  显示该上游服务器提供的工具名称和描述。
-                                </div>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                    <TableRow
+                      v-if="isServerExpanded(server.id)"
+                      class="bg-muted/30 hover:bg-muted/30"
+                    >
+                      <TableCell :colspan="7" class="whitespace-normal p-0 w-full overflow-hidden">
+                        <div class="space-y-3 px-4 py-4">
+                          <div class="flex items-center justify-between gap-3">
+                            <div class="min-w-0">
+                              <div class="font-medium">工具列表</div>
+                              <div class="text-xs text-muted-foreground">
+                                显示该上游服务器提供的工具名称和描述。
                               </div>
-                              <Badge variant="outline" class="shrink-0"
-                                >{{ serverTools(server.id).length }} 个工具</Badge
-                              >
                             </div>
-                            <div
-                              v-if="serverTools(server.id).length"
-                              class="divide-y rounded-md border bg-background"
+                            <Badge variant="outline" class="shrink-0"
+                              >{{ serverTools(server.id).length }} 个工具</Badge
                             >
-                              <div
-                                v-for="tool in serverTools(server.id)"
-                                :key="tool.name"
-                                class="flex flex-col gap-3 px-3 py-3 sm:flex-row sm:items-center sm:justify-between"
-                              >
-                                <div class="min-w-0 flex-1 overflow-hidden">
-                                  <div class="truncate font-mono text-sm">{{ tool.name }}</div>
-                                  <div
-                                    class="mt-1 line-clamp-2 break-words text-xs leading-5 text-muted-foreground"
-                                  >
-                                    <TranslateText
-                                      v-if="tool.description"
-                                      :source="tool.description"
-                                      :text-key="toolDescKey(server.name, tool.name)"
-                                      source-type="mcp"
-                                      :source-id="`${server.name}/${tool.name}`"
-                                    />
-                                    <span v-else>暂无描述</span>
-                                  </div>
-                                </div>
-                                <div class="flex shrink-0 gap-2">
-                                  <Button
-                                    variant="outline"
-                                    size="sm"
-                                    @click="openToolTest(server, tool)"
-                                  >
-                                    <RiTestTubeLine size="16" />测试 </Button
-                                  ><Button
-                                    variant="ghost"
-                                    size="sm"
-                                    @click="openToolEdit(server, tool)"
-                                  >
-                                    <RiEditLine size="16" />编辑
-                                  </Button>
+                          </div>
+                          <div
+                            v-if="serverTools(server.id).length"
+                            class="divide-y rounded-md border bg-background"
+                          >
+                            <div
+                              v-for="tool in serverTools(server.id)"
+                              :key="tool.name"
+                              class="flex flex-col gap-3 px-3 py-3 sm:flex-row sm:items-center sm:justify-between"
+                            >
+                              <div class="min-w-0 flex-1 overflow-hidden">
+                                <div class="truncate font-mono text-sm">{{ tool.name }}</div>
+                                <div
+                                  class="mt-1 line-clamp-2 break-words text-xs leading-5 text-muted-foreground"
+                                >
+                                  <TranslateText
+                                    v-if="tool.description"
+                                    :source="tool.description"
+                                    :text-key="toolDescKey(server.name, tool.name)"
+                                    source-type="mcp"
+                                    :source-id="`${server.name}/${tool.name}`"
+                                  />
+                                  <span v-else>暂无描述</span>
                                 </div>
                               </div>
+                              <div class="flex shrink-0 gap-2">
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  @click="openToolTest(server, tool)"
+                                >
+                                  <RiTestTubeLine size="16" />测试 </Button
+                                ><Button
+                                  variant="ghost"
+                                  size="sm"
+                                  @click="openToolEdit(server, tool)"
+                                >
+                                  <RiEditLine size="16" />编辑
+                                </Button>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  :class="isQuickTool(server.id, tool.name) ? 'text-primary' : ''"
+                                  @click="toggleQuickTool(server, tool)"
+                                >
+                                  <RiToolsLine size="16" />{{
+                                    isQuickTool(server.id, tool.name) ? '已快捷' : '快捷访问'
+                                  }}
+                                </Button>
+                              </div>
                             </div>
-                            <EmptyState
-                              v-else
-                              title="没有工具"
-                              description="该服务器当前没有返回可用工具。"
-                            />
                           </div>
-                        </TableCell>
-                      </TableRow>
-                    </template>
-                  </TableBody>
+                          <EmptyState
+                            v-else
+                            title="没有工具"
+                            description="该服务器当前没有返回可用工具。"
+                          />
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  </tbody>
                 </Table>
               </AxTable>
             </div>

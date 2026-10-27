@@ -19,10 +19,14 @@ export interface McpServer {
   enabled?: boolean
   // 是否为内置端点注册的 server（如多模态），前端显示「内置」标签。
   builtin?: boolean
-  // 进程运行状态（后端 /api/mcp-servers 返回）：running / stopped / failed。
-  status?: 'running' | 'stopped' | 'failed'
+  // 进程运行状态（后端 /api/mcp-servers 返回）：running / stopped / failed / reconnecting。
+  status?: 'running' | 'stopped' | 'failed' | 'reconnecting'
+  // status=reconnecting（自动重连中）时的当前重试次数（第 N 次）。
+  reconnect_attempts?: number
   // 失败原因（status=failed 时）。
   error?: string
+  // 管理页「快捷调用」列里平铺展示的工具名（持久化在数据库，顺序即按钮顺序）。
+  quick_tools?: string[]
 }
 // "实际激活态" = 配置启用 且 进程没挂。status=failed 时即便 enabled=true，
 // 开关也要呈现关闭态，与状态列的「失败」Badge 保持一致；且点击=重试启动而非禁用。

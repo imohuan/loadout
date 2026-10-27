@@ -262,16 +262,16 @@ function buildTableCss(w: number[]): string {
     `${scope} { position: relative; overflow: hidden; }`,
     // 覆盖层：只盖表头区间，本身不吃指针事件（手柄单独恢复）。
     `${scope} .axt-overlay { position: absolute; left: 0; z-index: 10; pointer-events: none; }`,
-			`${scope} .axt-overlay { cursor: col-resize; }`,
-      // 手柄：承担「双击恢复/键盘调宽」，平时完全透明。
-      `${scope} .axt-handle {`,
-        `  position: absolute; top: 0; height: 100%; width: 14px;`,
-        `  transform: translateX(-50%); outline: none; user-select: none;`,
-        `  pointer-events: auto;`,
-      `}`,
-      // 列边界指示线本体：默认透明；仅拖拽中 / 键盘聚焦时现身。
-      // 键盘可达：聚焦时显示边界线。
-      `${scope} .axt-handle:focus-visible { outline: 1px solid var(--primary); outline-offset: -1px; }`,
+    `${scope} .axt-overlay { cursor: col-resize; }`,
+    // 手柄：承担「双击恢复/键盘调宽」，平时完全透明。
+    `${scope} .axt-handle {`,
+    `  position: absolute; top: 0; height: 100%; width: 14px;`,
+    `  transform: translateX(-50%); outline: none; user-select: none;`,
+    `  pointer-events: auto;`,
+    `}`,
+    // 列边界指示线本体：默认透明；仅拖拽中 / 键盘聚焦时现身。
+    // 键盘可达：聚焦时显示边界线。
+    `${scope} .axt-handle:focus-visible { outline: 1px solid var(--primary); outline-offset: -1px; }`,
   )
   w.forEach((width, i) => {
     const col = `> tr > th:nth-child(${i + 1})`
@@ -525,11 +525,13 @@ onMounted(() => {
   }
 
   // 单元格文字变化（异步加载、内容更新）也要重测 —— 否则列宽会停在旧内容上。
-  // 只观察 tbody：本组件通过 <head> 里的样式表设宽，不写单元格属性，不会自触发。
-  const body = tableEl()?.querySelector('tbody')
-  if (body) {
+  // 观察整张表：主表可能按「一组多行」拆成多个 tbody（如 MCP 列表的每个服务器一个
+  // tbody），只盯第一个 tbody 会漏掉后面的分组；本组件通过 <head> 里的样式表设宽，
+  // 不写单元格属性，不会自触发重测。
+  const table = tableEl()
+  if (table) {
     mutator = new MutationObserver(() => scheduleRemeasure())
-    mutator.observe(body, { childList: true, subtree: true, characterData: true })
+    mutator.observe(table, { childList: true, subtree: true, characterData: true })
   }
 })
 

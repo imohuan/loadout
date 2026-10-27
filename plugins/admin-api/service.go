@@ -140,6 +140,10 @@ func (s *Service) Routes() []plugin.RouteSpec {
 		{Method: http.MethodPost, Pattern: "POST /api/mcp-servers", Auth: plugin.AuthSession, Handler: s.session(s.handleMCPServerCreate)},
 		{Method: http.MethodPut, Pattern: "PUT /api/mcp-servers", Auth: plugin.AuthSession, Handler: s.session(s.handleMCPServersReplace)},
 		{Method: http.MethodPut, Pattern: "PUT /api/mcp-servers/{id}", Auth: plugin.AuthSession, Handler: s.session(s.handleMCPServerUpdate)},
+		// 拖拽排序：只调整 position，不碰配置字段，也不重启任何进程。
+		{Method: http.MethodPost, Pattern: "POST /api/mcp-servers/reorder", Auth: plugin.AuthSession, Handler: s.session(s.handleMCPServersReorder)},
+		// 快捷访问：给某台上游保存「管理页平铺展示的工具按钮」列表（持久化到 quick_tools_json）。
+		{Method: http.MethodPut, Pattern: "PUT /api/mcp-servers/{id}/quick-tools", Auth: plugin.AuthSession, Handler: s.session(s.handleMCPServerQuickToolsPut)},
 		{Method: http.MethodDelete, Pattern: "DELETE /api/mcp-servers", Auth: plugin.AuthSession, Handler: s.session(s.handleMCPServerDelete)},
 		{Method: http.MethodPost, Pattern: "POST /api/mcp-servers/test", Auth: plugin.AuthSession, Handler: s.session(s.handleMCPServerTest)},
 		{Method: http.MethodGet, Pattern: "GET /api/mcp-servers/logs", Auth: plugin.AuthSession, Handler: s.session(s.handleMCPLogsList)},
@@ -1600,7 +1604,94 @@ func (s *Service) handleMCPServersReplace(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
+// handleMCPServersReorder 拖拽排序：按请求体里的 id 顺序重排 mcp_servers 的 position。
+// 只改顺序，不动配置字段、不重启进程，避免拖一下就把所有 stdio 上游重连一遍。
+// 请求体：字符串数组，元素是 server id（未列出的条目按原顺序补在末尾，不会丢配置）。
+func (s *Service) handleMCPServersReorder(w http.ResponseWriter, r *http.Request) {
+	var ids []string
+	if !decodeJSON(w, r, &ids) {
+		return
+	}
+	items, err := s.readMCPServers(r.Context())
+	if err != nil {
+		s.writeServerError(w, err)
+		return
+	}
+	byID := make(map[string]types.MCPServer, len(items))
+	for _, it := range items {
+		byID[it.ID] = it
+	}
+	ordered := make([]types.MCPServer, 0, len(items))
+	used := make(map[string]bool, len(items))
+	for _, id := range ids {
+		if used[id] {
+			continue
+		}
+		if it, ok := byID[id]; ok {
+			ordered = append(ordered, it)
+			used[id] = true
+		}
+	}
+	for _, it := range items {
+		if !used[it.ID] {
+			ordered = append(ordered, it)
+		}
+	}
+	if err := s.writeMCPServers(r.Context(), ordered); err != nil {
+		s.writeServerError(w, err)
+		return
+	}
+	s.invalidateHub()
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
 // handleMCPServerDelete 按请求体里的 id 删除一个 MCP 服务器。
+
+// handleMCPServerQuickToolsPut 保存某台上游的「快捷访问」工具列表。
+// 只改管理页展示用的 quick_tools_json：不重启进程、不影响客户端拿到的工具集合。
+// 请求体：字符串数组（工具原始名，顺序即按钮顺序）。
+func (s *Service) handleMCPServerQuickToolsPut(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var names []string
+	if !decodeJSON(w, r, &names) {
+		return
+	}
+	items, err := s.readMCPServers(r.Context())
+	if err != nil {
+		s.writeServerError(w, err)
+		return
+	}
+	found := false
+	for i := range items {
+		if items[i].ID != id {
+			continue
+		}
+		found = true
+		// 去重并去掉空串：前端可能因连点重复提交同一个工具名。
+		seen := make(map[string]bool, len(names))
+		clean := make([]string, 0, len(names))
+		for _, n := range names {
+			n = strings.TrimSpace(n)
+			if n == "" || seen[n] {
+				continue
+			}
+			seen[n] = true
+			clean = append(clean, n)
+		}
+		items[i].QuickTools = clean
+		break
+	}
+	if !found {
+		writeError(w, http.StatusNotFound, "MCP 服务器不存在")
+		return
+	}
+	if err := s.writeMCPServers(r.Context(), items); err != nil {
+		s.writeServerError(w, err)
+		return
+	}
+	// 只影响管理页展示：不 invalidateHub、不动进程。
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "quick_tools": names})
+}
 func (s *Service) handleMCPServerDelete(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		ID string `json:"id"`
