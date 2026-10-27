@@ -89,6 +89,7 @@ loadout/
 │   ├── sensitive-filter/ # 敏感词过滤能力
 │   ├── route-log/      # 转发日志
 │   ├── request-log/    # 完整请求日志
+│   ├── toolcall-repair/ # 工具调用序列补全能力（按能力路由开关）
 │   └── volc-free-quota/# 火山免额聚合刷新
 ├── apps/
 │   ├── server/      # 纯服务版 main（Linux）

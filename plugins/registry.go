@@ -24,6 +24,7 @@ import (
 	routelog "loadout/plugins/route-log"
 	sensitivefilter "loadout/plugins/sensitive-filter"
 	skills "loadout/plugins/skills"
+	toolcallrepair "loadout/plugins/toolcall-repair"
 	translate "loadout/plugins/translate"
 	unifyai "loadout/plugins/unifyai"
 	// vision "loadout/plugins/vision"
@@ -42,6 +43,7 @@ func All() []plugin.Plugin {
 		modelgateway.New(),
 		modelhealth.New(),
 		messageinject.New(),
+		toolcallrepair.New(),
 		routelog.New(),
 		requestlog.New(),
 		requestcapture.New(),

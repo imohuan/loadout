@@ -168,25 +168,11 @@ func (s *Service) proxyHandle(w http.ResponseWriter, r *http.Request, version st
 		pipe.Request.Query = rewriteModelQuery(pipe.Request.Query, modelFrom, pipe.Request.Model)
 	}
 
-	// 工具调用序列补全：chat/completions 的历史 messages 可能缺 assistant tool_calls 的
-	// 对应 tool 结果（或反之），上游会 400 tool_call_sequence_broken。转发前自动补全，
-	// 正常序列零改动。仅 chat/completions（OpenAI 工具调用协议）适用。
-	if pipe.Request != nil && pipe.Request.Path == "chat/completions" {
-		// 残缺 assistant 剥除：客户端流式中断后写进历史的半截 assistant 消息（空 content
-		// + 空 tool_call name）上游会 400（code 11133）。转发前自动剥掉，及其引用的
-		// tool 结果一并剥除。必须在 repairToolCallSequence 之前：先剥残缺声明，
-		// repair 才不会给被剥消息误补占位结果。
-		if filtered, ok := stripBrokenAssistantMessages(pipe.Request.Body); ok {
-			pipe.Request.Body = filtered
-			s.lg.Debug("model-gateway: 转发前剥除了残缺的 assistant 消息",
-				"request_id", pipe.RequestID, "model", pipe.Request.Model)
-		}
-		if fixed, ok := repairToolCallSequence(pipe.Request.Body); ok {
-			pipe.Request.Body = fixed
-			s.lg.Debug("model-gateway: 转发前补全了不完整的工具调用序列",
-				"request_id", pipe.RequestID, "model", pipe.Request.Model)
-		}
-	}
+	// 工具调用序列补全已拆成独立能力（capability="toolcall_repair"），由
+	// plugins/toolcall-repair 在 proxy:before-attempt 阶段按能力路由执行：
+	// 未配置即字节级透传，配置后才清理空工具名 / 补全缺失的 tool 结果。
+	// 这里不再隐式改写请求体——曾经内置的补全给孤儿 tool 结果补出 name:"" 的声明，
+	// 反过来触发上游 400（code 11133）。
 
 	// 转发（proxyForward 负责写出最终响应：成功透传或最终失败原样透传上游错误）。
 	s.proxyForward(w, r, pipe, pipe.Request.Model, started)

@@ -32,6 +32,17 @@ volc-free-quota 对子请求**不豁免**（额度按账号归属，子请求也
 glm-5.2 误拦成「免费额度用完」（已修，`checkAllCandidatesExhausted` 开头的
 归属检查 + 回归测试 `TestHandleProxyBeforeUpstreamSkipsForeignModels`）。
 
+## 工具调用补全：能力路由开关，别在网关核心隐式改写
+
+`plugins/toolcall-repair`（capability=`toolcall_repair`）负责清理空工具名、补全缺失的
+tool 结果、合并相邻 assistant。**默认不生效**：只有能力路由里配了 proxy 才改写，
+未配置时字节级透传；网关核心不再内置任何工具调用改写逻辑。
+
+**红线**：任何「修复历史」的合成消息都必须带**真实工具名**。给孤立 tool 结果补声明时
+写 `name:""` 会被上游直接 400（step-5-preview：code 11133 input_invalid）。借不到
+真实名字时宁可丢掉那条孤立结果，也不要造空名声明。回归先例：79ed5ee492c3d825——
+原样请求 200，网关补出空名后 400。
+
 ## 渠道上下文的时序：你要的信息在哪个阶段才存在
 
 | 阶段 | 管线 metadata 里有什么 |

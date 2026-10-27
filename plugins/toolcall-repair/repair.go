@@ -1,4 +1,4 @@
-package modelgateway
+package toolcallrepair
 
 import (
 	"bytes"
@@ -6,74 +6,28 @@ import (
 	"strings"
 )
 
-// repairToolCallSequence 修复 OpenAI chat/completions 请求里 messages 的工具调用序列，
-// 使每条 assistant 消息声明的 tool_calls 与 role=tool 的结果消息一一对应。
+// repairToolCallSequenceMessages 修复 OpenAI chat/completions 的 messages 工具调用序列，
+// 使每条 assistant 声明的 tool_calls 与 role=tool 结果一一对应。返回 (新切片, 是否修改)。
 //
-// 背景：agent 客户端（如本机 harness）把完整对话历史回传给网关时，历史序列可能不完整——
-// 一次 assistant 声明的多个 tool_calls 缺了部分结果、某条 role=tool 结果缺少前置的
-// assistant 声明（孤立结果）、或序列以孤立的 tool_calls/结果结尾。上游（火山方舟等）
-// 对这种不匹配直接返回 400 `tool_call_sequence_broken`（"tool calls and tool results do not match"），
-// 整个请求作废。本函数在转发到上游之前自动补全，让请求能通过上游校验。
+// 背景：agent 客户端回传完整对话历史时，序列可能不完整——一次 assistant 声明的多个
+// tool_calls 缺部分结果、role=tool 缺前置声明（孤立结果）、相邻两条 assistant。部分上游
+// （火山方舟等）对这种不匹配直接 400（tool_call_sequence_broken / 400001）。
 //
-// 修复策略（补全缺失、清理无法归属的结果，避免丢上下文）：
-//   - assistant 声明了 tool_calls 但后续没有对应的 role=tool 结果 → 在下一段 assistant 正文前
-//     补一条占位 tool 结果（content 为空）。
-//   - role=tool 结果缺少前置 assistant 的 tool_calls 声明（孤立结果）→ 在其前补一条合成
-//     assistant 消息声明该 tool_call，名字沿用最近一次已声明的工具名；一条都借不到时
-//     直接剥掉这条孤立结果。绝不能写 name:""——上游会把空工具名当参数非法直接 400。
-//   - 序列以未消化的 tool_calls 结尾 → 在末尾补占位 tool 结果。
-//
-// 返回 (修复后 body, 是否发生修改)。正常序列或非 chat/completions 形态原样返回，零改动。
-func repairToolCallSequence(body []byte) ([]byte, bool) {
-	content := body
-	if bytes.HasPrefix(content, []byte("\xEF\xBB\xBF")) {
-		content = content[3:]
-	}
-	trimmed := bytes.TrimLeft(content, " \t\r\n")
-	if len(trimmed) == 0 || trimmed[0] != '{' {
-		return body, false // 非 JSON 对象：原样透传
-	}
-
-	var root map[string]json.RawMessage
-	if err := json.Unmarshal(trimmed, &root); err != nil {
-		return body, false
-	}
-	messagesRaw, ok := root["messages"]
-	if !ok {
-		return body, false // 无 messages（如 /responses 等其他端点）：不适用本修复
-	}
-	var messages []json.RawMessage
-	if err := json.Unmarshal(messagesRaw, &messages); err != nil {
-		return body, false
-	}
-
-	repaired, changed := repairToolCallSequenceMessages(messages)
-	if !changed {
-		return body, false
-	}
-	repairedJSON, err := json.Marshal(repaired)
-	if err != nil {
-		return body, false
-	}
-	root["messages"] = repairedJSON
-	out, err := json.Marshal(root)
-	if err != nil {
-		return body, false
-	}
-	return out, true
-}
-
-// repairToolCallSequenceMessages 对 messages 切片做工具调用序列补全，返回 (新切片, 是否修改)。
-// 输入的每条消息以 json.RawMessage 保留原样；仅当需要补全时才重建对象或插入新消息。
+// 修复策略：
+//   - assistant 的结果缺失 → 补一条占位 tool 结果（content 为空）。
+//   - 孤立 tool 结果 → 补一条合成 assistant 声明，名字沿用最近一次真实工具名；
+//     借不到名字时直接剥掉该结果。绝不写 name:""（上游会 400 code 11133）。
+//   - 相邻 assistant → 合并（content 拼接、tool_calls 合并），不丢信息。
+//   - 序列以未消化的 tool_calls 结尾 → 末尾补占位结果。
 func repairToolCallSequenceMessages(messages []json.RawMessage) ([]json.RawMessage, bool) {
 	if len(messages) == 0 {
 		return messages, false
 	}
 	changed := false
 	out := make([]json.RawMessage, 0, len(messages)+4)
-	// pending：最近一条带 tool_calls 的 assistant 消息声明的、尚未被 tool 结果消化的 id 列表。
+	// pending：最近一条带 tool_calls 的 assistant 声明的、尚未被 tool 结果消化的 id 列表。
 	var pending []string
-	// lastName：最近一次能确认的工具名，用于给孤立结果补声明时避免写空名。
+	// lastName：最近一次能确认的工具名，给孤立结果补声明时避免写空名。
 	lastName := ""
 
 	for _, raw := range messages {
@@ -81,11 +35,8 @@ func repairToolCallSequenceMessages(messages []json.RawMessage) ([]json.RawMessa
 
 		switch role {
 		case "assistant":
-			// 连续 assistant：上游（方舟 DeepSeek 等）严格禁止相邻两条 assistant 消息
-			// （必须被 tool 结果或 user 间隔），否则返回 400 `400001` 参数拒绝。典型场景是
-			// 客户端把"上轮工具调用的最终回复"和"新一轮的 assistant 工具调用"直接连发。
-			// 安全修复：把当前 assistant 与输出里最后一条 assistant 合并成一条
-			// （content 拼接、tool_calls 合并），不丢任何信息。
+			// 连续 assistant：上游（方舟 DeepSeek 等）严格禁止相邻两条 assistant，
+			// 必须被 tool 结果或 user 间隔，否则 400 `400001`。合并成一条不丢信息。
 			if len(out) > 0 {
 				lastRole, _, _ := peekToolMessage(out[len(out)-1])
 				if lastRole == "assistant" {
@@ -93,7 +44,6 @@ func repairToolCallSequenceMessages(messages []json.RawMessage) ([]json.RawMessa
 					if ok {
 						out[len(out)-1] = merged
 						changed = true
-						// 合并后 pending 由 toolCalls 覆盖（新声明），直接进入下一轮。
 						pending = append([]string{}, toolCalls...)
 						continue
 					}
@@ -103,16 +53,14 @@ func repairToolCallSequenceMessages(messages []json.RawMessage) ([]json.RawMessa
 				if names := toolNamesOf(raw); len(names) > 0 {
 					lastName = names[len(names)-1]
 				}
-				// 新的工具调用声明：若上一组 pending 还没被消化完就被新声明打断，
-				// 说明上一组工具结果缺失 → 先补占位结果再进入本轮。
+				// 新声明打断上一组未消化的工具调用 → 先补占位结果。
 				for _, id := range pending {
 					out = append(out, buildToolResultMessage(id))
 					changed = true
 				}
 				pending = append([]string{}, toolCalls...)
 			} else {
-				// 普通 assistant 回复（无 tool_calls）：若 pending 仍非空，
-				// 说明上组工具调用缺结果 → 补占位结果，然后清空。
+				// 普通回复（无 tool_calls）：上一组缺结果同样先补占位。
 				for _, id := range pending {
 					out = append(out, buildToolResultMessage(id))
 					changed = true
@@ -123,10 +71,7 @@ func repairToolCallSequenceMessages(messages []json.RawMessage) ([]json.RawMessa
 
 		case "tool":
 			if len(pending) == 0 {
-				// 孤立 tool 结果：前一条 assistant 没有声明该 tool_call。
-				// 有 id 且有可借用的工具名时补一条合成 assistant 声明让结果有出处；
-				// 连工具名都借不到时结果无法归属，直接剥掉（合成空名的声明会被
-				// 上游当参数非法拒绝，code 11133）。
+				// 孤立 tool 结果：有 id 且有可借用工具名时补声明；否则无法归属，剥掉。
 				if toolCallID != "" && lastName != "" {
 					out = append(out, buildAssistantDeclMessage(toolCallID, lastName))
 					changed = true
@@ -140,9 +85,7 @@ func repairToolCallSequenceMessages(messages []json.RawMessage) ([]json.RawMessa
 			out = append(out, raw)
 
 		default:
-			// system / user / developer 等：不影响工具调用序列，原样透传。
-			// 但若此时上一条 assistant 的 tool_calls 还未被结果消化（pending 非空），
-			// 说明工具结果缺失且被新消息打断 → 先补占位结果，再透传本条。
+			// system / user / developer：若上一组 tool_calls 未被消化就先补占位结果。
 			for _, id := range pending {
 				out = append(out, buildToolResultMessage(id))
 				changed = true
@@ -152,7 +95,7 @@ func repairToolCallSequenceMessages(messages []json.RawMessage) ([]json.RawMessa
 		}
 	}
 
-	// 序列末尾收尾：最后一段 assistant 声明的 tool_calls 若仍未被结果消化，补占位结果。
+	// 末尾收尾：最后一段声明的 tool_calls 若仍未被结果消化，补占位结果。
 	for _, id := range pending {
 		out = append(out, buildToolResultMessage(id))
 		changed = true
@@ -161,7 +104,6 @@ func repairToolCallSequenceMessages(messages []json.RawMessage) ([]json.RawMessa
 }
 
 // peekToolMessage 宽松解析一条消息的 role / tool_calls id 列表 / tool_call_id。
-// 无法解析时返回空 role（按普通消息透传）。
 func peekToolMessage(raw json.RawMessage) (role string, toolCallIDs []string, toolCallID string) {
 	var m struct {
 		Role      string `json:"role"`
@@ -181,7 +123,7 @@ func peekToolMessage(raw json.RawMessage) (role string, toolCallIDs []string, to
 	return m.Role, toolCallIDs, m.ToolCallID
 }
 
-// buildToolResultMessage 构造一条占位 tool 结果：tool_call_id 对应缺失的结果，content 为空。
+// buildToolResultMessage 构造一条占位 tool 结果：tool_call_id 对应缺失结果，content 为空。
 func buildToolResultMessage(toolCallID string) json.RawMessage {
 	b, _ := json.Marshal(map[string]any{
 		"role":         "tool",
@@ -191,9 +133,8 @@ func buildToolResultMessage(toolCallID string) json.RawMessage {
 	return b
 }
 
-// buildAssistantDeclMessage 构造一条合成 assistant 消息，声明一个空参数的 tool_call，
-// 用于给孤立的 role=tool 结果补上出处。name 必须是真实工具名：上游对空 name 返回
-// 400 code 11133（"the request parameters were rejected by the model provider"）。
+// buildAssistantDeclMessage 构造一条合成 assistant 消息，给孤立 tool 结果补出处。
+// name 必须是真实工具名：上游对空 name 返回 400 code 11133。
 func buildAssistantDeclMessage(toolCallID, name string) json.RawMessage {
 	b, _ := json.Marshal(map[string]any{
 		"role":    "assistant",
@@ -228,15 +169,8 @@ func toolNamesOf(raw json.RawMessage) []string {
 	return out
 }
 
-// mergeAssistantMessages 将两条相邻的 assistant 消息合并为一条：content 拼接、tool_calls 合并。
-// 返回 (合并后的消息 JSON, 是否成功)。仅当两条消息 role 都是 assistant 且都可解析时才成功；
-// 否则返回原样（调用方应按其它策略处理，例如直接透传）。
-//
-// content 可能是字符串，也可能是 OpenAI 分段数组（[{type:"text",text:...}]）：
-//   - 均为字符串 → 用换行拼接。
-//   - 均为数组 → 元素直接拼接。
-//   - 一为字符串一为数组 → 把字符串包成一段 text 元素再拼接。
-//   - 为空/缺失 → 按无内容处理，取另一条的 content 原样。
+// mergeAssistantMessages 合并两条相邻 assistant：content 拼接、tool_calls 合并。
+// content 支持字符串与 OpenAI 分段数组混合。
 func mergeAssistantMessages(a, b json.RawMessage) (json.RawMessage, bool) {
 	var ma, mb map[string]json.RawMessage
 	if err := json.Unmarshal(a, &ma); err != nil {
@@ -263,7 +197,6 @@ func mergeAssistantMessages(a, b json.RawMessage) (json.RawMessage, bool) {
 		merged[k] = v
 	}
 
-	// content 拼接。
 	if contentB, ok := mb["content"]; ok {
 		contentA, hasA := ma["content"]
 		if !hasA {
@@ -276,11 +209,9 @@ func mergeAssistantMessages(a, b json.RawMessage) (json.RawMessage, bool) {
 			merged["content"] = joined
 		}
 	} else if _, ok := ma["content"]; ok {
-		// b 无 content，保留 a 的。
 		merged["content"] = ma["content"]
 	}
 
-	// tool_calls 合并。
 	tca, _ := ma["tool_calls"].MarshalJSON()
 	tcb, _ := mb["tool_calls"].MarshalJSON()
 	if string(tcb) != "null" && string(tcb) != "" {
@@ -326,7 +257,7 @@ func joinContents(a, b json.RawMessage) (json.RawMessage, bool) {
 		if err := json.Unmarshal(b, &sb); err != nil {
 			return nil, false
 		}
-		// 一方为空字符串时不加换行，直接取非空的一方，避免 "first\n" 这类尾随换行。
+		// 一方为空字符串时不加换行，避免 "first\n" 这类尾随换行。
 		if sa == "" {
 			return b, true
 		}
@@ -339,7 +270,6 @@ func joinContents(a, b json.RawMessage) (json.RawMessage, bool) {
 		}
 		return out, true
 	default:
-		// 至少一个是数组：统一成数组再拼接。
 		as, ok := asContentArray(a, isNullA)
 		if !ok {
 			return nil, false

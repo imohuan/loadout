@@ -192,8 +192,14 @@ function configTags(route: CapabilityRoute): ConfigTag[] {
         : { text: '图片打码', kind: 'off' },
     ]
   }
-  // request_capture / force_stream 没有可调项，摘要一行就够了，不再加标签。
-  if (route.capability === 'request_capture' || route.capability === 'force_stream') return []
+  // request_capture / force_stream / toolcall_repair 没有可调项，摘要一行就够。
+  if (
+    route.capability === 'request_capture' ||
+    route.capability === 'force_stream' ||
+    route.capability === 'toolcall_repair'
+  ) {
+    return []
+  }
   if (route.capability === 'vision') {
     const count = (route.via_options || []).length
     return [{ text: count ? `${count} 个候选` : '未配置候选', kind: count ? 'info' : 'off' }]
@@ -215,6 +221,7 @@ function configPreview(route: CapabilityRoute): string {
   if (route.capability === 'request_log') return '记录完整请求/响应（脱敏后落库）'
   if (route.capability === 'request_capture') return '抓包保存原始报文（含 base64）'
   if (route.capability === 'force_stream') return '强制流式，整包非流式返回'
+  if (route.capability === 'toolcall_repair') return '清理空工具名、补齐缺失的工具结果'
   return ''
 }
 // 摘要最多显示两条，多余的用「等 N 条」收尾。
@@ -430,6 +437,11 @@ function channelScopeLabel(channels: Channel[], ids?: string[], baseURLs?: strin
                         <template v-else-if="route.capability === 'force_stream'">
                           <span class="whitespace-pre-wrap"
                             >非流式客户端请求在此转流式请求上游，缓冲完整段后整包按非流式返回</span
+                          >
+                        </template>
+                        <template v-else-if="route.capability === 'toolcall_repair'">
+                          <span class="whitespace-pre-wrap"
+                            >转发前整理工具调用历史：清掉空工具名的坏调用，补齐缺失的工具结果，合并相邻 assistant</span
                           >
                         </template>
                         <template v-else>

@@ -71,6 +71,7 @@ const CAP_REQUEST_LOG = 'request_log'
 const CAP_REQUEST_CAPTURE = 'request_capture'
 const CAP_FORCE_STREAM = 'force_stream'
 const CAP_KEY_RATE_LIMIT = 'key_rate_limit'
+const CAP_TOOLCALL_REPAIR = 'toolcall_repair'
 
 // 限流参数编辑态：模板绑定原始文本，提交时才解析为数字——避免输入过程中被受控转换吞字符。
 type RateLimitForm = {
@@ -368,6 +369,7 @@ const capabilityOptions = [
   { value: CAP_REQUEST_CAPTURE, label: 'request_capture（请求抓包捕获）' },
   { value: CAP_FORCE_STREAM, label: 'force_stream（强制流式·非流式客户端兼容）' },
   { value: CAP_KEY_RATE_LIMIT, label: 'key_rate_limit（Key 限流·账号轮换）' },
+  { value: CAP_TOOLCALL_REPAIR, label: 'toolcall_repair（工具调用序列补全）' },
 ]
 // 路由方式选项：sensitive_filter 三态里 error（命中拒绝）已废弃移除——
 // 「不支持就不管他」：命中敏感词不再直接拒绝，只能替换（proxy）或透传（native）。
@@ -417,6 +419,13 @@ const routeHint = computed(() => {
       proxy:
         '该渠道/模型只接受流式时使用：客户端发非流式(stream:false)请求，网关内部转流式请求、缓冲完整段后整包按非流式 JSON 返回，客户端无感知。',
       native: '按原始方式透传，不做强制流式转换（适合已原生支持非流式的模型）。',
+    }[form.route]
+  }
+  if (form.capability === CAP_TOOLCALL_REPAIR) {
+    return {
+      proxy:
+        '转发前整理对话历史：清掉工具名为空的坏调用，补齐缺失的工具结果，合并相邻 assistant。适合会因历史不完整直接报 400 的上游。',
+      native: '请求体按原样透传，不整理工具调用历史（适合自己能消化残缺历史的上游）。',
     }[form.route]
   }
   if (form.capability === CAP_MESSAGE_INJECT) {
@@ -474,6 +483,8 @@ function submit() {
       // request_capture 无额外配置（纯 on/off 能力），直接放行
     } else if (form.capability === CAP_FORCE_STREAM) {
       // force_stream 无额外配置（纯 on/off 能力），直接放行
+    } else if (form.capability === CAP_TOOLCALL_REPAIR) {
+      // toolcall_repair 无额外配置（纯 on/off 能力），直接放行
     } else if (form.capability === CAP_KEY_RATE_LIMIT) {
       // key_rate_limit 两个维度（次数 / 并发）至少要配一个，否则规则没有意义。
       // 注意：格子填了内容但解析不出正整数（如手滑打成 "faf"）必须明确指出是哪一格，
