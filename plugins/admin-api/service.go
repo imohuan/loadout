@@ -17,7 +17,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -31,7 +30,6 @@ import (
 	"loadout/core/deps"
 	"loadout/core/mcpkit"
 	"loadout/core/plugin"
-	"loadout/core/procreg"
 	"loadout/core/store"
 	"loadout/plugins/admin-auth"
 	"loadout/plugins/contracts"
@@ -203,7 +201,21 @@ func (s *Service) Routes() []plugin.RouteSpec {
 		{Method: http.MethodPost, Pattern: "POST /api/processes/{id}/kill", Auth: plugin.AuthSession, Handler: s.session(s.handleProcessKill)},
 
 		// OpenCodex（ocx CLI）
-		{Method: http.MethodPost, Pattern: "POST /api/opencodex/sync", Auth: plugin.AuthSession, Handler: s.session(s.handleOpenCodexSync)},
+		{Method: http.MethodGet, Pattern: "GET /api/opencodex/status", Auth: plugin.AuthSession, Handler: s.session(s.handleOcxStatus)},
+		{Method: http.MethodPost, Pattern: "POST /api/opencodex/start", Auth: plugin.AuthSession, Handler: s.session(s.ocxActionHandler("start"))},
+		{Method: http.MethodPost, Pattern: "POST /api/opencodex/stop", Auth: plugin.AuthSession, Handler: s.session(s.ocxActionHandler("stop"))},
+		{Method: http.MethodPost, Pattern: "POST /api/opencodex/autostart", Auth: plugin.AuthSession, Handler: s.session(s.ocxActionHandler("autostart"))},
+		{Method: http.MethodPost, Pattern: "POST /api/opencodex/gui", Auth: plugin.AuthSession, Handler: s.session(s.ocxActionHandler("gui"))},
+		{Method: http.MethodPost, Pattern: "POST /api/opencodex/sync-config", Auth: plugin.AuthSession, Handler: s.session(s.ocxActionHandler("sync"))},
+		// 生命周期操作：服务 / shim / 初始化向导
+		{Method: http.MethodPost, Pattern: "POST /api/opencodex/service-install", Auth: plugin.AuthSession, Handler: s.session(s.ocxActionHandler("service-install"))},
+		{Method: http.MethodPost, Pattern: "POST /api/opencodex/service-repair", Auth: plugin.AuthSession, Handler: s.session(s.ocxActionHandler("service-repair"))},
+		{Method: http.MethodPost, Pattern: "POST /api/opencodex/service-start", Auth: plugin.AuthSession, Handler: s.session(s.ocxActionHandler("service-start"))},
+		{Method: http.MethodPost, Pattern: "POST /api/opencodex/service-stop", Auth: plugin.AuthSession, Handler: s.session(s.ocxActionHandler("service-stop"))},
+		{Method: http.MethodPost, Pattern: "POST /api/opencodex/service-uninstall", Auth: plugin.AuthSession, Handler: s.session(s.ocxActionHandler("service-uninstall"))},
+		{Method: http.MethodPost, Pattern: "POST /api/opencodex/shim-install", Auth: plugin.AuthSession, Handler: s.session(s.ocxActionHandler("shim-install"))},
+		{Method: http.MethodPost, Pattern: "POST /api/opencodex/shim-uninstall", Auth: plugin.AuthSession, Handler: s.session(s.ocxActionHandler("shim-uninstall"))},
+		{Method: http.MethodPost, Pattern: "POST /api/opencodex/init", Auth: plugin.AuthSession, Handler: s.session(s.ocxActionHandler("init"))},
 
 		// UnifyAI 配置同步
 		{Method: http.MethodGet, Pattern: "GET /api/unifyai/platforms", Auth: plugin.AuthSession, Handler: s.session(s.handleUnifyaiPlatforms)},
@@ -3044,27 +3056,6 @@ func (s *Service) handleDepsInstall(w http.ResponseWriter, r *http.Request) {
 		// /api/deps/refresh 单库刷新并更新缓存。这里不再额外 refreshDep，避免重复自检。
 		if err := deps.Install(name, req.ID, nil); err != nil {
 			s.lg.Warn("deps: 安装失败", "name", name, "err", err)
-		}
-	}()
-	writeJSON(w, http.StatusOK, map[string]any{"started": true, "id": req.ID})
-}
-
-// handleOpenCodexSync 后台执行 `ocx sync`（OpenCodex CLI 同步指令）。
-// 经 procreg 统一启动（日志实时推 /api/processes/stream，ProcessFooter 可见可终止），
-// 立即返回 {started, id}；结束后前端由 useTask 监听进程终态收尾。
-func (s *Service) handleOpenCodexSync(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		ID string `json:"id"`
-	}
-	_ = json.NewDecoder(r.Body).Decode(&req)
-	cmd, err := exec.LookPath("ocx")
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "未找到 ocx 指令，请先全局安装 @bitkyc08/opencodex（npm install -g @bitkyc08/opencodex）")
-		return
-	}
-	go func() {
-		if _, err := procreg.RunCollect("OpenCodex 同步", "opencodex", cmd, []string{"sync"}, nil); err != nil {
-			s.lg.Warn("opencodex: ocx sync 执行失败", "err", err)
 		}
 	}()
 	writeJSON(w, http.StatusOK, map[string]any{"started": true, "id": req.ID})

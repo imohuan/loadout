@@ -15,7 +15,6 @@ import {
   RiQuestionLine,
   RiRefreshLine,
   RiSettings3Line,
-  RiTerminalLine,
 } from '@remixicon/vue'
 import PageHeader from '@/components/PageHeader.vue'
 import LoadingBlock from '@/components/LoadingBlock.vue'
@@ -25,6 +24,7 @@ import ExcludeMatrix from '@/components/unifyai/ExcludeMatrix.vue'
 import CommandPreview from '@/components/unifyai/CommandPreview.vue'
 import KeyValueRowsEditor from '@/components/mcp/KeyValueRowsEditor.vue'
 import HelpDialog from '@/components/unifyai/HelpDialog.vue'
+import OcxCtaCard from '@/components/unifyai/OcxCtaCard.vue'
 import {
   DEFAULT_SOURCE,
   IMPORT_MCP_ARGS,
@@ -906,48 +906,6 @@ function confirmAndExecute() {
   executeWithArgs(args, dryRun, config)
 }
 
-// ---------- ocx sync（OpenCodex CLI，经 /api/opencodex/sync 由 procreg 后台执行，日志进全局进程面板） ----------
-const ocxSyncing = ref(false)
-
-/** 启动 `ocx sync`（后台任务，结束后弹提示）。日志在全局进程面板实时可见。 */
-async function startOcxSync() {
-  if (ocxSyncing.value) return
-  const id = `opencodex:sync:${Date.now()}`
-  ocxSyncing.value = true
-  registerTask(id, {
-    kind: 'opencodex',
-    onDone: () => {
-      ocxSyncing.value = false
-      toast.success('ocx sync 完成')
-    },
-    onError: (e) => {
-      ocxSyncing.value = false
-      toast.error('ocx sync 失败', { description: String(e) })
-    },
-  })
-  const processStore = useProcessStore()
-  processStore.openLog(id) // 自动弹出日志对话框查看实时输出
-  try {
-    await startTask({
-      id,
-      kind: 'opencodex',
-      run: () =>
-        fetch('/api/opencodex/sync', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ id }),
-        }).then(async (res) => {
-          if (!res.ok)
-            throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`)
-        }),
-    })
-  } catch (e) {
-    clearTask(id)
-    ocxSyncing.value = false
-    toast.error('ocx sync 启动失败', { description: String(e) })
-  }
-}
-
 // ---------- 帮助 ----------
 const helpOpen = ref(false)
 
@@ -1075,6 +1033,8 @@ async function applyModelsInBackground() {
 
     <LoadingBlock v-if="initialLoading" />
     <template v-else>
+      <!-- OpenCodex 集成状态（优先级 0：不就绪时同步没有数据源，必须最先提示） -->
+      <OcxCtaCard />
       <!-- ① 同步内容与目标平台（头部含同步内容 + 全部平台） -->
       <Card class="rounded-md">
         <CardHeader
@@ -1214,11 +1174,6 @@ async function applyModelsInBackground() {
             </div>
           </div>
           <div class="flex flex-wrap justify-end gap-2">
-            <Button variant="secondary" :disabled="runStatus || ocxSyncing" @click="startOcxSync">
-              <RiLoader4Line v-if="ocxSyncing" size="16" class="animate-spin" />
-              <RiTerminalLine v-else size="16" />
-              {{ ocxSyncing ? 'ocx sync 执行中…' : 'ocx sync' }}
-            </Button>
             <Button variant="outline" :disabled="runStatus" @click="execute(true)">
               <RiLoader4Line v-if="runStatus && dryRunMode" size="16" class="animate-spin" />
               <RiPlayLine v-else size="16" />

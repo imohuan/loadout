@@ -620,6 +620,215 @@ export async function fetchAllConfig(enableVision = false): Promise<AllConfigRes
   }
 }
 
+// ============================================================================
+// OpenCodex（ocx CLI）集成检测与控制
+// ============================================================================
+
+/** 后端 GET /api/opencodex/status 的返回结构。 */
+export interface OcxStatus {
+  cliInstalled: boolean
+  serviceRunning: boolean
+  loadoutProvider: boolean
+  codexInjected: boolean
+  port: number
+  proxyUrl: string
+  loadoutBaseUrl: string
+  missing: string[]
+  /** ~/.opencodex/config.json 存在且可解析（ocx init 已完成） */
+  configInitialized: boolean
+  providerCount: number
+  defaultProvider: string
+  /** Loadout provider 下可同步的模型数 */
+  modelCount: number
+  /** 后台服务已注册（service-state.json 存在） */
+  serviceInstalled: boolean
+  /** 服务管理器：scheduler / launchd / systemd / winsw */
+  serviceBackend: string
+  /** Codex 自启动 shim 已安装 */
+  shimInstalled: boolean
+  /** 当前代理的拉起方式 */
+  launchMode: 'service' | 'shim' | 'tray' | 'manual' | 'unknown'
+  /** 开机/崩溃保护：none / shim / service / service+shim */
+  protection: string
+  /** 重启电脑后代理是否会自动回来 */
+  rebootSafe: boolean
+  serviceLog: string
+  cliVersion: string
+  proxyVersion: string
+  proxyPid: number
+  /** 生命周期能力清单（主视图） */
+  capabilities: OcxCapability[]
+  /** 三种启动方式 */
+  methods: OcxMethod[]
+  checkedAt: string
+}
+
+/** 一条生命周期能力：CLI / 初始化 / 运行 / 接入 / 模型 / 注入 / 保护 */
+export interface OcxCapability {
+  key: string
+  label: string
+  desc: string
+  ok: boolean
+  detail?: string
+  fixHint?: string
+  fixAction?: string
+}
+
+/** 一种启动方式（ocx start / ocx service / ocx codex-shim） */
+export interface OcxMethod {
+  key: 'start' | 'service' | 'shim'
+  label: string
+  command: string
+  desc: string
+  ready: boolean
+  active: boolean
+  action?: string
+  actionLabel?: string
+  elevated: boolean
+}
+
+/** 后端未启动 / 请求失败时的兜底占位（全部视为未配置，触发提示卡片）。 */
+export const INITIAL_OCX_STATUS: OcxStatus = {
+  cliInstalled: false,
+  serviceRunning: false,
+  loadoutProvider: false,
+  codexInjected: false,
+  port: 10100,
+  proxyUrl: 'http://127.0.0.1:10100',
+  loadoutBaseUrl: 'http://localhost:3000',
+  missing: ['后端接口不可用'],
+  configInitialized: false,
+  providerCount: 0,
+  defaultProvider: '',
+  modelCount: 0,
+  serviceInstalled: false,
+  serviceBackend: '',
+  shimInstalled: false,
+  launchMode: 'unknown',
+  protection: 'none',
+  rebootSafe: false,
+  serviceLog: '',
+  cliVersion: '',
+  proxyVersion: '',
+  proxyPid: 0,
+  capabilities: [],
+  methods: [],
+  checkedAt: '',
+}
+
+/** 拉取 OpenCodex 集成状态（后端读 ~/.opencodex/config.json + ~/.codex/config.toml + 探测代理端口）。 */
+export async function fetchOcxStatus(): Promise<OcxStatus> {
+  try {
+    const res = await fetch('/api/opencodex/status')
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    return normalizeOcxStatus((await res.json()) as Partial<OcxStatus>)
+  } catch (err) {
+    console.warn('[unifyai] 获取 OpenCodex 状态失败', err)
+    return { ...INITIAL_OCX_STATUS }
+  }
+}
+
+/**
+ * 归一化后端状态：切片字段（missing / capabilities / methods）在 Go 里可能是 nil，
+ * JSON 序列化后就是 null。直接赋值会让模板里的 .length / v-for 抛
+ * "Cannot read properties of null"，整块内容渲染失败（实测踩到过）。
+ */
+export function normalizeOcxStatus(raw: Partial<OcxStatus>): OcxStatus {
+  return {
+    ...INITIAL_OCX_STATUS,
+    ...raw,
+    missing: Array.isArray(raw.missing) ? raw.missing : [],
+    capabilities: Array.isArray(raw.capabilities) ? raw.capabilities : [],
+    methods: Array.isArray(raw.methods) ? raw.methods : [],
+  }
+}
+
+/** 启动 / 关闭 / 自启 / 打开 GUI / 同步配置 通用调用（后端经 procreg 后台执行 ocx 指令）。 */
+export type OcxAction =
+  | 'start'
+  | 'stop'
+  | 'autostart'
+  | 'gui'
+  | 'sync-config'
+  | 'service-install'
+  | 'service-repair'
+  | 'service-start'
+  | 'service-stop'
+  | 'service-uninstall'
+  | 'shim-install'
+  | 'shim-uninstall'
+  | 'init'
+
+async function ocxAction(
+  action: OcxAction,
+  id?: string,
+): Promise<{ started: boolean; id: string }> {
+  const res = await fetch(`/api/opencodex/${action}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id }),
+  })
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string }
+    throw new Error(body.error || `HTTP ${res.status}`)
+  }
+  return (await res.json()) as { started: boolean; id: string }
+}
+
+/** 启动 OpenCodex 代理服务（管理员授权，UAC 弹窗）。 */
+export function startOcxService(id?: string) {
+  return ocxAction('start', id)
+}
+/** 关闭 OpenCodex 代理服务并还原原生 Codex（管理员授权，UAC 弹窗）。 */
+export function stopOcxService(id?: string) {
+  return ocxAction('stop', id)
+}
+/** 安装 OpenCodex 开机自启（管理员授权，UAC 弹窗）。 */
+export function installOcxAutostart(id?: string) {
+  return ocxAction('autostart', id)
+}
+/** 打开 OpenCodex 管理面板（浏览器网页，无需管理员授权）。 */
+export function openOcxGui(id?: string) {
+  return ocxAction('gui', id)
+}
+/** 运行 ocx sync（把 Loadout 的模型源同步注入 ~/.codex/config.toml）。 */
+export function syncOcxConfig(id?: string) {
+  return ocxAction('sync-config', id)
+}
+
+/** 安装后台服务（ocx service install，管理员授权）。 */
+export function installOcxService(id?: string) {
+  return ocxAction('service-install', id)
+}
+/** 修复后台服务（ocx service repair，管理员授权）。 */
+export function repairOcxService(id?: string) {
+  return ocxAction('service-repair', id)
+}
+/** 启动已注册的后台服务（管理员授权）。 */
+export function startOcxServiceDaemon(id?: string) {
+  return ocxAction('service-start', id)
+}
+/** 停止已注册的后台服务（管理员授权）。 */
+export function stopOcxServiceDaemon(id?: string) {
+  return ocxAction('service-stop', id)
+}
+/** 卸载后台服务（管理员授权）。 */
+export function uninstallOcxService(id?: string) {
+  return ocxAction('service-uninstall', id)
+}
+/** 安装 Codex 自启动 shim（按需拉起代理）。 */
+export function installOcxShim(id?: string) {
+  return ocxAction('shim-install', id)
+}
+/** 卸载 Codex 自启动 shim。 */
+export function uninstallOcxShim(id?: string) {
+  return ocxAction('shim-uninstall', id)
+}
+/** 打开 ocx init 交互式向导（管理员终端，用户自己回答）。 */
+export function runOcxInit(id?: string) {
+  return ocxAction('init', id)
+}
+
 /** 同步配置文件路径（后端 ~/.unifyai/sync.json，命令预览与执行共用）。 */
 export const SYNC_CONFIG_PATH = '~/.unifyai/sync.json'
 
