@@ -359,9 +359,28 @@ func (r *Registry) Snapshot() []Proc {
 		out = append(out, *p)
 	}
 	sort.SliceStable(out, func(i, j int) bool {
+		// 同 ID 时运行中优先，避免旧历史（结束时间可能更晚）把新进程挤到后面
+		// 被去重丢掉。安装任务使用固定 ID（dep-install:skills），这条规则是必需的。
+		if out[i].ID == out[j].ID {
+			if (out[i].Status == StatusRunning) != (out[j].Status == StatusRunning) {
+				return out[i].Status == StatusRunning
+			}
+		}
 		return timeOf(out[i]).After(timeOf(out[j]))
 	})
-	return out
+	// 同一 ID 只保留最新一条：安装/检查等任务使用固定 ID（dep-install:skills），
+	// 上一轮历史与新一轮运行进程会同时出现在快照里。不去重时前端按 ID 查找
+	// 会命中旧历史，左侧状态一直显示「已完成」，直到手动刷新才被纠正。
+	deduped := out[:0]
+	seenID := make(map[string]bool, len(out))
+	for _, p := range out {
+		if seenID[p.ID] {
+			continue
+		}
+		seenID[p.ID] = true
+		deduped = append(deduped, p)
+	}
+	return deduped
 }
 
 // timeOf 取进程的排序时间锚点：已结束用结束时间，否则用开始时间。
@@ -589,9 +608,38 @@ func (r *Registry) appendLog(p *Proc, line string) {
 	if len(p.Log) > r.maxLogLines {
 		p.Log = p.Log[len(p.Log)-r.maxLogLines:]
 	}
+	copyProc := *p
+	copyProc.Log = append([]string(nil), p.Log...)
 	r.mu.Unlock()
-	// 日志不逐行广播（量太大），前端经历史展开时从快照读取。
+	// 普通子进程仍不逐行广播（输出量大，前端展开时从快照读即可）。
+	// 需要实时日志的场景（提权命令：输出少、等待久）用 AppendLog 显式广播。
+	_ = copyProc
 }
+
+// AppendLog 向指定运行中进程追加一行日志，并立即广播一次 update，
+// 让前端进度弹窗能实时看到输出。
+//
+// 与 appendLog 的区别：appendLog 只存不推（避免高频输出打爆 SSE），
+// 这里专供「需要边执行边看结果」的少量命令（如 ocx 提权操作）使用。
+func (r *Registry) AppendLog(id, line string) {
+	r.mu.Lock()
+	p, ok := r.running[id]
+	if !ok {
+		r.mu.Unlock()
+		return
+	}
+	p.Log = append(p.Log, line)
+	if len(p.Log) > r.maxLogLines {
+		p.Log = p.Log[len(p.Log)-r.maxLogLines:]
+	}
+	copyProc := *p
+	copyProc.Log = append([]string(nil), p.Log...)
+	r.mu.Unlock()
+	r.broadcast(Event{Type: "update", Data: []Proc{copyProc}})
+}
+
+// AppendLogPackage 包级便捷函数：向全局注册表中的运行中进程追加日志并广播。
+func AppendLogPackage(id, line string) { Get().AppendLog(id, line) }
 
 // finish 进程结束：从运行中移除，进历史，广播。
 func (r *Registry) finish(p *Proc, runErr error) {

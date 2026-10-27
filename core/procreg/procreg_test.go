@@ -246,6 +246,26 @@ func TestSetMemAndSnapshot(t *testing.T) {
 	}
 }
 
+// TestSnapshotDedupesReusedTaskID 回归：安装任务使用固定 ID
+// （dep-install:skills）时，上一轮历史与新进程会同 ID 共存。快照必须只保留
+// 新进程，否则前端按 ID 查找会命中旧历史，左侧一直显示「已完成/已断开」，
+// 直到手动刷新才被全量快照纠正。
+func TestSnapshotDedupesReusedTaskID(t *testing.T) {
+	r := New()
+	r.RegisterExisting("dep-install:skills", "检查已装 skills", "dep", nil)
+	r.Unregister("dep-install:skills", nil)
+	r.RegisterExisting("dep-install:skills", "安装 skills", "dep", nil)
+	defer r.Unregister("dep-install:skills", nil)
+
+	snap := r.Snapshot()
+	if len(snap) != 1 {
+		t.Fatalf("同一 ID 只应保留新进程，实际 %d 条: %+v", len(snap), snap)
+	}
+	if snap[0].Name != "安装 skills" || snap[0].Status != StatusRunning {
+		t.Fatalf("应保留运行中的新进程，实际 %+v", snap[0])
+	}
+}
+
 // TestShutdownKillsRunning 验证 Shutdown 终止所有运行中的进程并移入历史。
 func TestShutdownKillsRunning(t *testing.T) {
 	r := New()

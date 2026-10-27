@@ -231,14 +231,13 @@ function openView(p: ProcessInfo) {
               </AccordionTrigger>
               <AccordionContent>
                 <div class="space-y-1 text-xs text-muted-foreground">
-                  <Badge
+                  <!-- 命令行可换行展示，避免长命令被截断成看不懂的一行 -->
+                  <div
                     v-if="p.cmd"
-                    variant="outline"
-                    class="block w-fit truncate font-mono text-[11px]"
-                    :title="p.cmd"
+                    class="max-h-24 overflow-y-auto rounded border bg-muted/40 px-2 py-1 font-mono text-[11px] leading-relaxed break-all whitespace-pre-wrap"
                   >
                     {{ p.cmd }}
-                  </Badge>
+                  </div>
                   <div
                     v-if="p.log.length"
                     class="mt-1 max-h-60 overflow-y-auto rounded border border-border bg-muted/30 p-2 font-mono text-[11px] leading-relaxed text-muted-foreground"
@@ -262,29 +261,31 @@ function openView(p: ProcessInfo) {
     <Dialog v-model:open="viewOpen" @update:open="(o: boolean) => o || processStore.closeLog()">
       <DialogContent class="max-w-5xl!">
         <DialogHeader v-if="viewProc">
-          <DialogTitle class="flex items-center gap-2">
-            <span class="size-2 rounded-full" :class="statusDot(viewProc.status)" />
-            {{ viewProc.name }}
+          <DialogTitle class="flex flex-wrap items-center gap-2">
+            <span class="size-2 shrink-0 rounded-full" :class="statusDot(viewProc.status)" />
+            <span class="min-w-0 break-words">{{ viewProc.name }}</span>
             <span class="text-xs font-normal text-muted-foreground">{{
               statusLabel(viewProc.status)
             }}</span>
           </DialogTitle>
-          <DialogDescription class="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
-            <Badge
+          <DialogDescription class="space-y-1.5 text-xs">
+            <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
+              <Badge variant="secondary" class="tabular-nums">PID {{ viewProc.pid || '—' }}</Badge>
+              <Badge variant="secondary" class="tabular-nums"
+                >内存 {{ fmtMem(viewProc.memBytes) }}</Badge
+              >
+              <span v-if="viewProc.startedAt" class="text-muted-foreground"
+                >已运行 {{ fmtDuration(viewProc) }}</span
+              >
+            </div>
+            <!-- 命令行单独一行、可换行：之前塞进 Badge + truncate，
+                 长命令被截断成一行怪样子（用户反馈的「文本显示异常」）。 -->
+            <div
               v-if="viewProc.cmd"
-              variant="outline"
-              class="max-w-full truncate font-mono text-[11px]"
-              :title="viewProc.cmd"
+              class="max-h-24 overflow-y-auto rounded border bg-muted/40 px-2 py-1 font-mono text-[11px] leading-relaxed text-muted-foreground break-all whitespace-pre-wrap"
             >
               {{ viewProc.cmd }}
-            </Badge>
-            <Badge variant="secondary" class="tabular-nums">PID {{ viewProc.pid || '—' }}</Badge>
-            <Badge variant="secondary" class="tabular-nums"
-              >内存 {{ fmtMem(viewProc.memBytes) }}</Badge
-            >
-            <span v-if="viewProc.startedAt" class="text-muted-foreground"
-              >已运行 {{ fmtDuration(viewProc) }}</span
-            >
+            </div>
           </DialogDescription>
         </DialogHeader>
         <div

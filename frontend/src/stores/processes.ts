@@ -2,6 +2,7 @@ import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { request } from '@/lib/api'
 import { getLoadoutBase, getSseToken } from '@/lib/base'
+import { dedupeProcesses, upsertProcess } from '@/lib/processes'
 import type { ProcessEvent, ProcessInfo } from '@/lib/types'
 
 // useProcessStore 全局进程状态：单例维护一条 /api/processes/stream SSE 连接，
@@ -26,9 +27,9 @@ export const useProcessStore = defineStore('processes', () => {
   const MAX_RECONNECT_DELAY_MS = 30000
 
   function upsert(p: ProcessInfo) {
-    const i = processes.value.findIndex((x) => x.id === p.id)
-    if (i >= 0) processes.value[i] = p
-    else processes.value.unshift(p)
+    // 不能只改第一条：固定任务 id（dep-install:skills）会留下同 id 旧历史，
+    // 只更新第一条会让列表同时显示旧状态与新状态，左侧一直不刷新。
+    processes.value = upsertProcess(processes.value, p)
   }
 
   function clearReconnectTimer() {
@@ -65,7 +66,8 @@ export const useProcessStore = defineStore('processes', () => {
         } catch {
           return
         }
-        if (ev.type === 'snapshot') processes.value = ev.data || []
+        // 快照也去重：后端可能同时给出同 id 的历史与新运行进程。
+        if (ev.type === 'snapshot') processes.value = dedupeProcesses(ev.data || [])
         else if (ev.type === 'update' && ev.data?.[0]) upsert(ev.data[0])
       }
       es.onerror = () => {
