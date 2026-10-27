@@ -615,6 +615,7 @@ type channelStatusRow struct {
 	LastClass    string // 渠道级失败分类（rule_disable_provider / rule_disable / auth / channel_billing…）
 	LastRuleID   string // 命中并禁用该 Key 的规则（UI 溯源）
 	LastRuleName string
+	LastError    string // 账号级最近错误（模型行继承成因时展示）
 }
 
 // modelStateRow 模型自动状态的扁平行。
@@ -660,6 +661,7 @@ func (s *Service) List(ctx context.Context) ([]contracts.ChannelStatus, error) {
 			FailureClass:  channel.LastClass,
 			LastRuleID:    channel.LastRuleID,
 			LastRuleName:  channel.LastRuleName,
+			LastError:     channel.LastError,
 			Health:        availabilityOf(channel.Manual, channel.Status, channel.Until.String, "channel"),
 		}
 		for _, model := range catalog[channel.ID] {
@@ -680,6 +682,15 @@ func (s *Service) List(ctx context.Context) ([]contracts.ChannelStatus, error) {
 				lastRuleID, lastRuleName = row.LastRuleID, row.LastRuleName
 			}
 			availability := availabilityOf(manual, status, until, "model")
+			// 账号（Key）级熔断优先于模型自己的状态：网关的 Check 先看 channel_states，
+			// 账号被 401/403/额度不足禁用时，它名下的所有模型都不会参与路由。
+			// 旧实现只按 model_states 组装模型行，导致页面显示「模型可用」、实际路由
+			// 直接跳过该账号（用户看到的就是「除了一个账号都正常」却全是 503）。
+			inheritedFromKey := availability.EffectiveAvailable && !item.Health.EffectiveAvailable
+			if inheritedFromKey {
+				availability = item.Health
+				availability.ManualEnabled = availability.ManualEnabled && manual
+			}
 			modelStatus := contracts.ModelStatus{
 				Model:         model.Model,
 				ManualEnabled: availability.ManualEnabled,
@@ -691,6 +702,14 @@ func (s *Service) List(ctx context.Context) ([]contracts.ChannelStatus, error) {
 				FailCount:     failCount,
 				Source:        model.Source,
 			}
+			if inheritedFromKey {
+				if modelStatus.FailureClass == "" {
+					modelStatus.FailureClass = channel.LastClass
+				}
+				if modelStatus.LastError == "" {
+					modelStatus.LastError = channel.LastError
+				}
+			}
 			if lastSuccess.Valid {
 				if parsed, err := time.Parse(time.RFC3339Nano, lastSuccess.String); err == nil {
 					modelStatus.LastSuccessAt = &parsed
@@ -698,6 +717,13 @@ func (s *Service) List(ctx context.Context) ([]contracts.ChannelStatus, error) {
 			}
 			if disabledUntil.Valid {
 				if parsed, err := time.Parse(time.RFC3339Nano, disabledUntil.String); err == nil {
+					modelStatus.DisabledUntil = &parsed
+				}
+			}
+			// 账号级恢复时间优先：账号被 429 冷却/额度恢复时，模型自己的状态可能
+			// 没有截止时间。否则徽标会误显示「需手动恢复」，与实际自动恢复不符。
+			if inheritedFromKey && channel.Until.Valid {
+				if parsed, err := time.Parse(time.RFC3339Nano, channel.Until.String); err == nil {
 					modelStatus.DisabledUntil = &parsed
 				}
 			}
@@ -713,7 +739,7 @@ func (s *Service) listChannelStatus(ctx context.Context) ([]channelStatusRow, er
 	// 「渠道与模型」页同源，
 	// 用户在那里看到的上下顺序就是真实的路由优先级。按 c.id（随机 hex）排会让
 	// 两个页面的顺序对不上，批量测试等按列表顺序跑的操作也随之跑偏。
-	rows, err := s.db.QueryContext(ctx, `SELECT c.id, c.name, c.channel_name, c.base_url, c.manual_enabled, c.sync_billing, COALESCE(cs.status, 'available'), cs.disabled_until, COALESCE(cs.last_failure_class, ''), COALESCE(cs.last_rule_id, ''), COALESCE(cs.last_rule_name, '') FROM channels c LEFT JOIN channel_states cs ON cs.channel_id = c.id ORDER BY c.channel_position, c.key_position, c.id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT c.id, c.name, c.channel_name, c.base_url, c.manual_enabled, c.sync_billing, COALESCE(cs.status, 'available'), cs.disabled_until, COALESCE(cs.last_failure_class, ''), COALESCE(cs.last_rule_id, ''), COALESCE(cs.last_rule_name, ''), COALESCE(cs.last_error, '') FROM channels c LEFT JOIN channel_states cs ON cs.channel_id = c.id ORDER BY c.channel_position, c.key_position, c.id`)
 	if err != nil {
 		return nil, err
 	}
@@ -721,7 +747,7 @@ func (s *Service) listChannelStatus(ctx context.Context) ([]channelStatusRow, er
 	var result []channelStatusRow
 	for rows.Next() {
 		var row channelStatusRow
-		if err := rows.Scan(&row.ID, &row.Name, &row.ChannelName, &row.BaseURL, &row.Manual, &row.SyncBilling, &row.Status, &row.Until, &row.LastClass, &row.LastRuleID, &row.LastRuleName); err != nil {
+		if err := rows.Scan(&row.ID, &row.Name, &row.ChannelName, &row.BaseURL, &row.Manual, &row.SyncBilling, &row.Status, &row.Until, &row.LastClass, &row.LastRuleID, &row.LastRuleName, &row.LastError); err != nil {
 			return nil, err
 		}
 		result = append(result, row)

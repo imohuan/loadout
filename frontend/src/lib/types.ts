@@ -73,6 +73,15 @@ export interface ModelStatus {
   last_error?: string
   /** 失败分类（rate_limit/auth/model_quota/free_quota_exhausted/rule_<verdict>_<recover>…） */
   failure_class?: string
+  /**
+   * 故障作用域：
+   *   key   = 账号级，整个账号都被跳过（该账号下所有模型都不可请求）
+   *   model = 模型级，只跳过这个模型（同账号的其他模型仍可用）
+   * 空 = 没有已知故障。
+   */
+  failure_scope?: 'key' | 'model' | ''
+  /** 账号级最近错误（模型行因账号熔断时用于解释原因） */
+  key_last_error?: string
   /** 命中并禁用该模型的失败规则（空 = 无规则命中/AI 兜底） */
   last_rule_id?: string
   last_rule_name?: string
@@ -90,6 +99,8 @@ export interface ChannelStatus {
   /** 命中并禁用该 Key 的失败规则 */
   last_rule_id?: string
   last_rule_name?: string
+  /** 账号级最近错误（模型行因账号熔断时用于解释原因） */
+  last_error?: string
   health_status: 'available' | 'cooling' | 'disabled' | string
   effective_available: boolean
   reason?: string

@@ -58,7 +58,9 @@ test('summarizePlatform 统计 Key 数、可用 Key 数、模型总数与可用�
   assert.equal(s.keyCount, 2)
   assert.equal(s.availableKeyCount, 1)
   assert.equal(s.modelCount, 3)
-  assert.equal(s.availableModelCount, 3)
+  // k2 已熔断，它名下的 m3 不会参与路由，不能算可用。
+  assert.equal(s.availableModelCount, 2)
+  assert.equal(s.models.find((m) => m.model === 'm3')?.available, false)
 })
 
 test('summarizePlatform 按模型名去重：同名模型只要有一条 Key 可用就算可用', () => {
@@ -128,6 +130,22 @@ test('summarizePlatform 空列表不崩溃', () => {
   assert.equal(s.keyCount, 0)
   assert.equal(s.modelCount, 0)
   assert.equal(s.models.length, 0)
+})
+
+// 用户报告的「页面显示正常，路由却整组跳过」：账号（Key）已被 401/403/额度
+// 熔断，但它名下的模型行只看自己的 model_states，仍是 available。页面必须
+// 同时表达账号级熔断，否则用户会以为模型真的可用。
+test('summarizePlatform 账号已熔断时，其下的模型不能算可用', () => {
+  const s = summarizePlatform([
+    channel('dead', {
+      health_status: 'disabled',
+      effective_available: false,
+      models: [model('glm-5.3-flash')],
+    }),
+  ])
+  assert.equal(s.models[0].available, false, '账号已禁用时模型不能显示为可用')
+  assert.equal(s.availableModelCount, 0)
+  assert.equal(s.tone, 'bad')
 })
 
 test('wildcardToRegex 把 * 当通配符，其余字符按字面量匹配', () => {

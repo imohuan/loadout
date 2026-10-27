@@ -992,12 +992,25 @@ func flattenStatus(values []contracts.ChannelStatus) []map[string]any {
 	for _, value := range values {
 		models := make([]map[string]any, 0, len(value.Models))
 		for _, model := range value.Models {
+			// 失败作用域：账号级（value 的 failure_class 非空）优先于模型级。
+			// 账号级故障会跳过该账号下全部模型；模型级只影响当前模型。
+			// 前端据此显示「账号级 / 模型级」，避免把整号熔断误读成模型坏了。
+			failureScope := ""
+			if value.FailureClass != "" {
+				failureScope = "key"
+			} else if model.FailureClass != "" {
+				failureScope = "model"
+			}
 			models = append(models, map[string]any{
 				"model": model.Model, "manual_enabled": model.ManualEnabled,
 				"health_status": model.Health.HealthStatus, "effective_available": model.Health.EffectiveAvailable,
 				"reason": model.Health.Reason, "last_error": model.LastError, "fail_count": model.FailCount,
-				"failure_class": model.FailureClass,
-				"last_rule_id":  model.LastRuleID, "last_rule_name": model.LastRuleName,
+				// 账号级原因：模型行继承账号熔断时，前端不能只看 reason（它是
+				// "model cooling/disabled" 这类内部文案），要能拿到账号最近错误。
+				"key_last_error": value.LastError,
+				"failure_scope":  failureScope,
+				"failure_class":  model.FailureClass,
+				"last_rule_id":   model.LastRuleID, "last_rule_name": model.LastRuleName,
 				"last_success_at": model.LastSuccessAt, "disabled_until": model.DisabledUntil, "source": model.Source,
 			})
 		}

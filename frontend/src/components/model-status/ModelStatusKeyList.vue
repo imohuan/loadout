@@ -225,7 +225,14 @@ function modelSummary(key: ChannelStatus) {
       </button>
     </div>
 
-    <!-- Key 列表：一行一个 Key，选中项高亮。 -->
+    <!--
+      Key 列表：一行一个 Key，选中项高亮。
+
+      这里不做拖拽排序：显示顺序是按状态分组排过的（可用 → 手动关闭 → 异常 →
+      不可用），不是「渠道与模型」里的真实路由顺序。在这份重排过的列表上再拖，
+      要么得把结果换算回库序（跨组拖拽还会被分组弹回），要么就得放弃状态分组。
+      排序统一在「渠道与模型」页做，两边共用同一份 channels.key_position。
+    -->
     <div class="max-h-72 min-h-0 flex-1 overflow-auto p-1.5 md:max-h-none!">
       <button
         v-for="key in visibleKeys"

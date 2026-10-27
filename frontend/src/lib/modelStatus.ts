@@ -76,19 +76,22 @@ export function summarizePlatform(keys: ChannelStatus[]): PlatformSummary {
 
   for (const key of keys) {
     for (const m of key.models) {
+      // 账号级熔断会跳过它名下的全部模型；模型自己的 effective_available 仍是 true，
+      // 只看它就会把已停用的账号算成「模型可用」。两者同时成立才算真的可用。
+      const usable = key.effective_available && m.effective_available
       const existing = modelMap.get(m.model)
       if (existing) {
         existing.keyCount += 1
-        if (m.effective_available) {
+        if (usable) {
           existing.availableKeyCount += 1
           existing.available = true
         }
       } else {
         modelMap.set(m.model, {
           model: m.model,
-          available: m.effective_available,
+          available: usable,
           keyCount: 1,
-          availableKeyCount: m.effective_available ? 1 : 0,
+          availableKeyCount: usable ? 1 : 0,
         })
       }
     }
@@ -202,6 +205,9 @@ export function matchKey(key: ChannelStatus, keyword?: string): boolean {
 
 /** Key 的可用模型数（用于列表副标题）。 */
 export function availableModelCount(key: ChannelStatus): number {
+  // 账号已熔断 → 其下全部模型都不可路由。模型自己的状态可能还是 available，
+  // 直接按模型状态计数会得到「9/11 可用」这种与真实路由相反的结论。
+  if (!key.effective_available) return 0
   return key.models.filter((m) => m.effective_available).length
 }
 

@@ -108,10 +108,13 @@ type ChannelStatus struct {
 	// FailureClass 渠道级最近失败分类（auth / channel_billing / rule_disable_provider…）
 	FailureClass string `json:"failure_class,omitempty"`
 	// LastRuleID / LastRuleName 命中的失败规则（UI 溯源 + 跳转规则页用）。
-	LastRuleID   string        `json:"last_rule_id,omitempty"`
-	LastRuleName string        `json:"last_rule_name,omitempty"`
-	Health       Availability  `json:"health"`
-	Models       []ModelStatus `json:"models"`
+	LastRuleID   string `json:"last_rule_id,omitempty"`
+	LastRuleName string `json:"last_rule_name,omitempty"`
+	// LastError 账号级最近错误。模型行因账号熔断而不可用时，UI 用它在
+	// 不打开 Key 详情的情况下解释原因。
+	LastError string        `json:"last_error,omitempty"`
+	Health    Availability  `json:"health"`
+	Models    []ModelStatus `json:"models"`
 }
 
 type ModelStatus struct {

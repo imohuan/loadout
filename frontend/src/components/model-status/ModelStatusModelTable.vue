@@ -20,6 +20,14 @@ import AxTable from '@/components/ui/AxTable.vue'
 
 const props = defineProps<{
   item: ChannelStatus
+  /**
+   * 当前 Key（账号）是否能参与路由。
+   *
+   * 模型行自己的 effective_available 只反映 model_states，账号被 401/403 熔断时
+   * 它仍可能为 true；两者必须同时成立才是「真的可用」，否则页面会把整组账号
+   * 全部停用显示成「9/11 模型可用」。
+   */
+  keyEffectiveAvailable?: boolean
   mode: 'table' | 'tags'
   isPending?: (key: string) => boolean
   /** 这个「Key + 模型」组合是否正在测试：每行按钮各自的 loading。 */
@@ -39,9 +47,33 @@ const emit = defineEmits<{
 const selected = ref(new Set<string>())
 
 // 可用模型数：在 model.effective_available 维度上计数（独立于 Key 自身开关）。
-const availableModels = computed(
-  () => props.item.models.filter((m) => m.effective_available).length,
-)
+const availableModels = computed(() => {
+  if (props.keyEffectiveAvailable === false) return 0
+  return props.item.models.filter((m) => m.effective_available).length
+})
+const modelAvailable = (m: ModelStatus) =>
+  props.keyEffectiveAvailable !== false && m.effective_available
+/** 账号级熔断时，表格的“最后错误”要指向账号原因；模型自己的旧错误会误导排查。 */
+const modelError = (m: ModelStatus) =>
+  props.keyEffectiveAvailable === false
+    ? props.item.last_error || props.item.reason || m.last_error || m.reason
+    : m.last_error || m.reason
+/**
+ * 故障作用域标签：区分「账号级」和「模型级」。
+ *
+ * 账号级 = 整个账号停用，它名下所有模型都不能请求。
+ * 模型级 = 只停这个模型，同账号其他模型照常可用。
+ * 两者混在一起时，用户会误以为「一个模型额度用尽 → 整号不能用」。
+ */
+const scopeLabel = (m: ModelStatus): { text: string; cls: string } | null => {
+  if (props.keyEffectiveAvailable === false) {
+    return { text: '账号级', cls: 'bg-red-500/15 text-red-700 dark:text-red-300' }
+  }
+  if (!m.effective_available) {
+    return { text: '模型级', cls: 'bg-amber-500/15 text-amber-700 dark:text-amber-300' }
+  }
+  return null
+}
 const selectedModels = computed(() => props.item.models.filter((m) => selected.value.has(m.model)))
 const hasSelection = computed(() => selected.value.size > 0)
 const allSelected = computed(
@@ -227,27 +259,44 @@ defineExpose({ resetSelection })
                   />
                 </TableCell>
                 <TableCell>
+                  <span
+                    v-if="scopeLabel(model)"
+                    class="mb-1 inline-flex rounded px-1 py-0.5 text-[10px] font-medium"
+                    :class="scopeLabel(model)?.cls"
+                    >{{ scopeLabel(model)?.text }}</span
+                  >
                   <ModelHealthBadge
-                    :status="model.health_status"
-                    :available="model.effective_available"
+                    :status="
+                      keyEffectiveAvailable === false ? item.health_status : model.health_status
+                    "
+                    :available="modelAvailable(model)"
                     :manual-enabled="model.manual_enabled"
-                    :failure-class="model.failure_class"
+                    :failure-class="
+                      model.failure_class ||
+                      (keyEffectiveAvailable === false ? item.failure_class : '')
+                    "
                     :disabled-until="model.disabled_until"
-                    :rule-id="model.last_rule_id"
-                    :rule-name="model.last_rule_name"
-                    :last-error="model.last_error || model.reason"
+                    :rule-id="
+                      model.last_rule_id ||
+                      (keyEffectiveAvailable === false ? item.last_rule_id : '')
+                    "
+                    :rule-name="
+                      model.last_rule_name ||
+                      (keyEffectiveAvailable === false ? item.last_rule_name : '')
+                    "
+                    :last-error="modelError(model)"
                     hide-when-available
                   />
                 </TableCell>
                 <TableCell class="text-xs text-muted-foreground">
-                  <Tooltip v-if="model.last_error || model.reason">
+                  <Tooltip v-if="modelError(model)">
                     <TooltipTrigger as-child>
                       <span class="block w-full truncate">{{
-                        model.last_error || model.reason
+                        modelError(model)
                       }}</span>
                     </TooltipTrigger>
                     <TooltipContent class="max-w-md whitespace-normal break-words">{{
-                      model.last_error || model.reason
+                      modelError(model)
                     }}</TooltipContent>
                   </Tooltip>
                   <span v-else>-</span>
@@ -317,15 +366,28 @@ defineExpose({ resetSelection })
           @click="toggleSelect(model.model)"
         >
           <span class="font-mono">{{ model.model }}</span>
+          <span
+            v-if="scopeLabel(model)"
+            class="rounded px-1 py-0.5 text-[10px] font-medium"
+            :class="scopeLabel(model)?.cls"
+            >{{ scopeLabel(model)?.text }}</span
+          >
           <ModelHealthBadge
-            :status="model.health_status"
-            :available="model.effective_available"
+            :status="keyEffectiveAvailable === false ? item.health_status : model.health_status"
+            :available="modelAvailable(model)"
             :manual-enabled="model.manual_enabled"
-            :failure-class="model.failure_class"
+            :failure-class="
+              model.failure_class || (keyEffectiveAvailable === false ? item.failure_class : '')
+            "
             :disabled-until="model.disabled_until"
-            :rule-id="model.last_rule_id"
-            :rule-name="model.last_rule_name"
-            :last-error="model.last_error || model.reason"
+            :rule-id="
+              model.last_rule_id || (keyEffectiveAvailable === false ? item.last_rule_id : '')
+            "
+            :rule-name="
+              model.last_rule_name ||
+              (keyEffectiveAvailable === false ? item.last_rule_name : '')
+            "
+            :last-error="modelError(model)"
             hide-when-available
           />
           <Tooltip v-if="model.source === 'manual'">

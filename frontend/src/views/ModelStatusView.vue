@@ -145,6 +145,7 @@ function selectPlatform(baseUrl: string) {
 function selectKey(key: ChannelStatus) {
   selectedKeyId.value = key.channel.id
 }
+
 function backToPlatforms() {
   state.value = 'platforms'
 }
@@ -754,6 +755,7 @@ async function testModel(item: ChannelStatus, model: ModelStatus) {
               <ModelStatusModelTable
                 :key="activeKey.channel.id"
                 :item="activeKey"
+                :key-effective-available="activeKey.effective_available"
                 :mode="mode"
                 :is-pending="isPending"
                 :is-testing="(model) => batchTest.isTesting(activeKey.channel.id, model)"
