@@ -529,6 +529,12 @@ type MCPServer struct {
 	Headers     map[string]string `json:"headers,omitempty"`     // http / sse：附加请求头
 	Enabled     bool              `json:"enabled"`               // MCP 级开关
 	Builtin     bool              `json:"builtin,omitempty"`     // 是否为内置端点注册的自连 server（前端显示「内置」标签）
+	// QuickTools 管理页「快捷调用」列里平铺展示的工具名（顺序即按钮顺序）。
+	// 只影响管理后台展示，不改变工具是否暴露给客户端。
+	QuickTools []string `json:"quick_tools,omitempty"`
+	// LastError 自动重试耗尽时的终态失败原因（持久化）。
+	// 非空 + enabled=false 表示「失败」（重试机会用完）；空 + enabled=false 表示用户手动停止。
+	LastError string `json:"last_error,omitempty"`
 }
 
 // ============ 5.7 单工具开关与分类 ============
@@ -641,6 +647,8 @@ type Settings struct {
 	RequestLogMaxSizeMB int `json:"request_log_max_size_mb"`
 	// RuleAIModel 失败规则引擎的 AI 兜底模型名（空 = 关闭 AI 兜底）。
 	RuleAIModel string `json:"rule_ai_model"`
+	// McpReconnectMax MCP 上游探活失败后的自动重连次数（0 = 默认 3）。
+	McpReconnectMax int `json:"mcp_reconnect_max"`
 }
 
 // ============ 5.12 模型健康状态（aggregate 插件） ============

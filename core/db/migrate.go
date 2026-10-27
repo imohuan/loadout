@@ -1063,6 +1063,32 @@ UPDATE channels SET channel_position = (
 
 CREATE INDEX idx_channels_order ON channels(channel_position, key_position);
 `,
+}, {
+	version: 53,
+	name:    "settings-mcp-reconnect-max",
+	sql: `
+-- MCP 上游自动重连次数（设置页可改）：探活失败后自动重连 N 次（0 = 用后端默认 3），
+-- N 次仍失败才置为「失败」。探活与重连状态只存内存，重启后重新开始。
+ALTER TABLE settings ADD COLUMN mcp_reconnect_max INTEGER NOT NULL DEFAULT 0;
+`,
+}, {
+	version: 54,
+	name:    "mcp-servers-quick-tools",
+	sql: `
+-- MCP 上游的「快捷访问」工具：存工具名的 JSON 数组（["tool_a","tool_b"]）。
+-- 管理页每行直接把这些工具渲染成按钮，点一下打开测试弹窗；刷新/重启都保留。
+-- 默认 []：老数据没有快捷工具，行为与改造前一致。
+ALTER TABLE mcp_servers ADD COLUMN quick_tools_json TEXT NOT NULL DEFAULT '[]';
+`,
+}, {
+	version: 55,
+	name:    "mcp-servers-last-error",
+	sql: `
+-- 自动重试耗尽后的终态失败原因。语义：enabled=0 且 last_error 非空 =「失败」
+--（重试机会已用完，不会自动重启）；enabled=0 且 last_error 为空 = 用户手动停止。
+-- 手动重新启用成功后会清空该列。
+ALTER TABLE mcp_servers ADD COLUMN last_error TEXT NOT NULL DEFAULT '';
+`,
 }}
 
 // Migrate applies all pending schema migrations and rejects an incompatible

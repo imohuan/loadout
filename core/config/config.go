@@ -93,6 +93,10 @@ var MCPInvokeTimeout = 120 * time.Second // env: LOADOUT_MCP_INVOKE_TIMEOUT
 // 上游挂起时若无超时，$smart / 分组端点会无限卡住（BuildIndex 用 Background ctx）。
 var McpListToolsTimeout = 15 * time.Second // env: LOADOUT_MCP_LIST_TOOLS_TIMEOUT
 
+// McpReconnectMax MCP 上游探活失败后的默认自动重连次数。
+// 真正生效的次数以设置页保存的 mcp_reconnect_max 为准（0 = 用这个默认值）。
+var McpReconnectMax = 3 // env: LOADOUT_MCP_RECONNECT_MAX
+
 // HTTPReadTimeout 普通 HTTP 请求读超时。
 var HTTPReadTimeout = 10 * time.Second // env: LOADOUT_HTTP_READ_TIMEOUT
 
@@ -255,6 +259,7 @@ func Load() {
 	VisionTimeout = durEnv("LOADOUT_VISION_TIMEOUT", 60*time.Second)
 	MCPInvokeTimeout = durEnv("LOADOUT_MCP_INVOKE_TIMEOUT", 120*time.Second)
 	McpListToolsTimeout = durEnv("LOADOUT_MCP_LIST_TOOLS_TIMEOUT", 15*time.Second)
+	McpReconnectMax = intEnv("LOADOUT_MCP_RECONNECT_MAX", 3)
 	HTTPReadTimeout = durEnv("LOADOUT_HTTP_READ_TIMEOUT", 10*time.Second)
 
 	LogLevel = strEnv("LOADOUT_LOG_LEVEL", "info")

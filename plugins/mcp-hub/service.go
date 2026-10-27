@@ -98,6 +98,8 @@ type Service struct {
 	// **不落数据库**（mcp_servers 表无记录，重启后由插件重新注册）。供 admin-api 合并
 	// 到上游 MCP 列表展示，以及 $smart 聚合/端点解析使用。
 	builtinServers map[string]types.MCPServer
+	// health 上游探活与自动重连状态（探活失败 → 重连 N 次 → 仍失败自动停用）。
+	health *healthMonitor
 }
 
 // NewService 创建 MCP 聚合网关服务，技能仓库目录取 config.SkillsDir。
@@ -112,7 +114,7 @@ func NewService(st *store.Store, lg *slog.Logger, database *sql.DB) *Service {
 	if config.LogsDir != "" {
 		logsRoot = filepath.Join(config.LogsDir, "mcp")
 	}
-	return &Service{
+	svc := &Service{
 		st:             st,
 		lg:             lg,
 		db:             database,
@@ -123,6 +125,9 @@ func NewService(st *store.Store, lg *slog.Logger, database *sql.DB) *Service {
 		builtinTools:   map[string]map[string]*ToolEntry{},
 		builtinServers: map[string]types.MCPServer{},
 	}
+	svc.health = newHealthMonitor()
+	svc.startHealthLoop()
+	return svc
 }
 
 // BuildIndex 从上游收集工具并构建索引：遍历 mcp_servers（enabled）ListTools，
@@ -808,6 +813,12 @@ func (s *Service) getUpstream(srv types.MCPServer) *mcpkit.Upstream {
 			// 事件回调里先确保 ServerLog 存在再写。
 			s.logMgr.Ensure(srv.ID, srv.Name)
 			s.logMgr.Write(srv.ID, kind, s.enrichHookFields(srv, kind, fields...)...)
+			// 子进程退出（用户从进程面板杀掉、进程崩溃）：立刻进入重试。
+			// 否则要等后台探活下一轮（最多 15 秒），这段时间前端只能看到「失败」。
+			// 注意：回调可能在 Upstream 持锁期间触发，这里只能调度，不能调 Upstream 方法。
+			if kind == "disconnect" && disconnectReason(fields) == "process_exit" {
+				s.handleUpstreamProcessExit(srv.ID)
+			}
 		},
 	})
 	s.upstreams[srv.ID] = u
@@ -881,6 +892,8 @@ const (
 	StateStopped ServerRunState = "stopped"
 	// StateFailed 启动失败或进程已崩溃退出（enabled=true 但进程没活着）。
 	StateFailed ServerRunState = "failed"
+	// StateReconnecting 自动重连中（探活失败进入重试队列时显示）.
+	StateReconnecting ServerRunState = "reconnecting"
 )
 
 // SetServerEnabled 按开关启停上游进程（进程生命周期与 enabled 开关绑定）：
@@ -893,9 +906,15 @@ func (s *Service) SetServerEnabled(ctx context.Context, id string, enabled bool)
 		return err
 	}
 	if !enabled {
+		// 用户手动关闭（或自动重连用尽停用）：无论当前是否报错都必须杀掉进程/断开连接，
+		// 否则界面上关了、后台进程还在跑（这正是「左侧关掉进程，上游服务没变化」的成因之一）。
 		if up := s.getUpstreamByID(id); up != nil {
 			_ = up.Close()
 			s.dropUpstream(id)
+		}
+		// 清掉重连进度：手动关闭后不应继续显示「重连中」。
+		if s.health != nil {
+			s.health.Clear(id)
 		}
 		return nil
 	}
@@ -903,6 +922,11 @@ func (s *Service) SetServerEnabled(ctx context.Context, id string, enabled bool)
 	// 不能只依赖 LogHook 的 connect 事件：连接复用（连接池里已有存活连接）时
 	// mcpkit 不发 connect，旧日志会残留；这里在入口处显式清空保证行为稳定。
 	s.logMgr.RemoveServerLogs(srv.Name)
+	// 用户主动重新启用 = 重新开始计数：清掉上一次「重试耗尽」的失败标记，
+	// 否则成功后状态列仍会显示「失败」。
+	if srv.LastError != "" {
+		s.clearLastError(id)
+	}
 	return s.getUpstream(*srv).Connect(ctx)
 }
 
@@ -1025,6 +1049,8 @@ func (s *Service) StartEnabled(ctx context.Context) {
 				failed++
 				mu.Unlock()
 				s.warn("mcphub: 启动恢复拉起失败", "server", srv.Name, "err", err)
+				// 启动失败也进入自动重连流程（与运行期探活失败同一条路径）。
+				s.startReconnect(srv, err)
 			} else {
 				s.info("mcphub: 启动恢复拉起成功", "server", srv.Name)
 			}
@@ -1038,23 +1064,33 @@ func (s *Service) StartEnabled(ctx context.Context) {
 // ServerStatus 返回指定 server 的进程运行状态。
 //   - enabled=false → stopped
 //   - HTTP/SSE（外部服务，进程不在我们这边）：
-//     池中 Upstream 有记录但最近一次 Connect 失败（lastErr 非空）→ failed；
-//     否则 enabled 即视为 running（避免每次 list 都去远程探活）。
-//   - stdio：池中无 Upstream 或进程未存活 → failed（启动失败 / 已崩溃，不自动重启）
-//   - stdio：进程存活 → running
+//     后台定时 tools/list 探活失败后进入自动重连 → reconnecting（前端显示「重连中 N」）；
+//     重连次数用尽仍失败 → 自动停用（enabled=false），状态回落 stopped。
+//   - stdio：进程存活 → running；进程已退出 → failed（并触发自动重连）。
+//
+// 本方法只读内存状态：探活与重连都在后台跑，列表刷新不会被坏上游拖慢。
 func (s *Service) ServerStatus(id string) (ServerRunState, error) {
 	srv, err := s.findServer(id)
 	if err != nil {
 		return StateStopped, nil
 	}
+	// 正在自动重试时，这个状态优先于 enabled 和任何残留的连接错误。
+	// 重试耗尽的收尾会先把 enabled 写成 false、再清进度；如果这里不先判重试，
+	// 就会在最后一刻显示「失败」，随即又变回「重试」，正是用户看到的来回跳。
+	if attempts, reconnecting := s.health.RetrySnapshot(id); attempts > 0 || reconnecting {
+		return StateReconnecting, nil
+	}
 	if !srv.Enabled {
+		// 已停用：有持久化的终态错误 = 「失败」（重试机会已用完）；
+		// 没有错误 = 用户手动停止。两者都显示不同文案，避免用户误以为还能自愈。
+		if strings.TrimSpace(srv.LastError) != "" {
+			return StateFailed, nil
+		}
 		return StateStopped, nil
 	}
 	if srv.Transport != "stdio" {
-		// SetServerEnabled(true) 对 HTTP/SSE 也会走 ensureSession 主动握手一次；
-		// 失败时把 err 存入 up.lastErr，此时必须把状态报成 failed，否则前端
-		// 看不到失败信号、误判"已启动"。up 为 nil 通常是还没被拉起过（首次
-		// 查询），按乐观 running 处理，等真正调 SetServerEnabled 再探测。
+		// HTTP/SSE：只有「最近一次 Connect 明确失败」才报 failed；健康判断交给后台探活，
+		// 避免每次列表刷新都对所有远端做一次握手（几十个上游会把管理页拖到几十秒）。
 		if up := s.getUpstreamByID(id); up != nil && up.LastError() != "" {
 			return StateFailed, nil
 		}
@@ -1062,6 +1098,8 @@ func (s *Service) ServerStatus(id string) (ServerRunState, error) {
 	}
 	up := s.getUpstreamByID(id)
 	if up == nil || !up.Alive() {
+		// 进程没起来 / 已退出：状态报 failed，自动重连由后台探活循环接手，
+		// 不在「读状态」这条只读路径上产生副作用（否则一次列表刷新会触发几十次重连）。
 		return StateFailed, nil
 	}
 	return StateRunning, nil
@@ -1069,16 +1107,42 @@ func (s *Service) ServerStatus(id string) (ServerRunState, error) {
 
 // ServerError 返回指定 server 最近一次建连失败的错误原因（无记录返回空串）。
 func (s *Service) ServerError(id string) string {
-	up := s.getUpstreamByID(id)
-	if up == nil {
-		return ""
+	if msg := s.health.LastError(id); msg != "" {
+		return msg
 	}
-	return up.LastError()
+	up := s.getUpstreamByID(id)
+	if up != nil && up.LastError() != "" {
+		return up.LastError()
+	}
+	// 重试耗尽后会清空内存进度，错误只剩数据库里的终态记录。
+	if srv, err := s.findServer(id); err == nil {
+		return srv.LastError
+	}
+	return ""
+}
+
+// SetReconnectMax 设置自动重连次数上限（admin-api 保存设置后调用，0 = 用默认 3）。
+func (s *Service) SetReconnectMax(n int) {
+	if s.health != nil {
+		s.health.SetMax(n)
+	}
+}
+
+// ReconnectAttempts 返回该上游当前自动重连次数（不在重连中返回 0）。
+func (s *Service) ReconnectAttempts(id string) int {
+	if s.health == nil {
+		return 0
+	}
+	return s.health.Attempts(id)
 }
 
 // Close 实现 io.Closer：退出时杀掉所有已拉起的上游子进程，关闭全部日志句柄。
 // core/plugin 的 Assembly.Unload 会检测 io.Closer 并自动调用。
 func (s *Service) Close() error {
+	// 先停掉后台探活/重连，避免关闭连接的过程中又被拉起。
+	if s.health != nil {
+		s.health.Close()
+	}
 	s.mu.Lock()
 	ups := make([]*mcpkit.Upstream, 0, len(s.upstreams))
 	for _, up := range s.upstreams {

@@ -100,6 +100,8 @@ export function useManagementApi() {
       request_log_max_age_days: number
       /** 完整请求日志库最大占用 MB（0 = 不限），超限按时间从旧到新删 */
       request_log_max_size_mb: number
+      /** MCP 上游自动重连次数（0 = 后端默认 3） */
+      mcp_reconnect_max?: number
     }>('/api/settings')
   const saveSettings = (body: {
     active_preset: string
@@ -107,6 +109,7 @@ export function useManagementApi() {
     use_global_cmd: boolean
     request_log_max_age_days: number
     request_log_max_size_mb: number
+    mcp_reconnect_max?: number
   }) => request<void>('/api/settings', 'PUT', body)
   const changePassword = (body: { old: string; new: string }) =>
     request<void>('/api/change-password', 'POST', body)

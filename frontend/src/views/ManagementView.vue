@@ -59,6 +59,7 @@ const settingsForm = reactive({
   request_log_max_age_days: 0,
   request_log_max_size_mb: 0,
   rule_ai_model: '',
+  mcp_reconnect_max: 0,
 })
 watch(
   settingsData,
@@ -149,6 +150,12 @@ async function saveSettings() {
   await run(
     'save-settings',
     async () => {
+      // 0 / 空值 = 用后端默认（3 次）；负数与超大值在提交前收口，避免写进怪配置。
+      const reconnectMax = Number(settingsForm.mcp_reconnect_max)
+      settingsForm.mcp_reconnect_max =
+        Number.isFinite(reconnectMax) && reconnectMax > 0
+          ? Math.min(Math.floor(reconnectMax), 20)
+          : 0
       await api.saveSettings({ ...settingsForm })
       await refreshSettings()
     },
@@ -372,6 +379,31 @@ onMounted(() => {
             @save="saveLogRetention"
             @clean="cleanRequestLogsNow"
           />
+          <Card class="rounded-md">
+            <CardHeader>
+              <CardTitle class="text-base">MCP 自动重连</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <form class="flex items-end gap-2" @submit.prevent="saveSettings">
+                <div class="flex-1 space-y-1">
+                  <Label for="mcp-reconnect-max">探活失败后自动重连次数</Label>
+                  <Input
+                    id="mcp-reconnect-max"
+                    v-model.number="settingsForm.mcp_reconnect_max"
+                    type="number"
+                    min="1"
+                    max="20"
+                    placeholder="3"
+                  />
+                </div>
+                <Button type="submit" variant="outline">保存</Button>
+              </form>
+              <p class="mt-2 text-xs text-muted-foreground">
+                MCP 上游探活失败后自动重连这么多次（默认 3 次），仍失败会自动停用该上游；重连进度在
+                MCP 管理页状态列显示。
+              </p>
+            </CardContent>
+          </Card>
           <div class="grid gap-4 lg:grid-cols-2">
             <Card class="rounded-md hidden">
               <CardHeader>

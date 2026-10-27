@@ -92,6 +92,10 @@ func (p *adminAPI) Apply(ctx plugin.Context) error {
 
 	svc := NewService(st, lg, auth, keys, skill, hub, unify)
 	svc.SetRoutingServices(database, routing, health, routeLog)
+	// MCP 自动重连次数：启动时把用户配置同步给 mcp-hub（0 = 用后端默认 3）。
+	if settings, err := svc.readSettings(context.Background()); err == nil {
+		hub.SetReconnectMax(settings.McpReconnectMax)
+	}
 	// 依赖状态：先同步全局指令开关，再后台自动检查一次（unifyai / skills）。
 	svc.syncUseGlobal(context.Background())
 	plugin.RunBackground("deps-startup-check", func() error {

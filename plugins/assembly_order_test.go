@@ -1,11 +1,11 @@
 package plugins
 
 import (
-	"database/sql"
 	"log/slog"
 	"net/http"
 	"testing"
 
+	"loadout/core/db"
 	"loadout/core/plugin"
 	"loadout/core/store"
 )
@@ -22,7 +22,10 @@ func TestAssemblyOrderLogPlugins(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	database, err := sql.Open("sqlite", t.TempDir()+"/loadout.db")
+	// 必须用 db.Open：它会设 MaxOpenConns(1) + busy_timeout + WAL，并按版本建表。
+	// 裸 sql.Open 拿到的连接没有这些 PRAGMA，后面 workbuddy-panel 迁移会偶发
+	// SQLITE_BUSY（database is locked），造成与本测试目标无关的随机失败。
+	database, err := db.Open(t.TempDir() + "/loadout.db")
 	if err != nil {
 		t.Fatal(err)
 	}

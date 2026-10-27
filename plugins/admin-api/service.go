@@ -1389,6 +1389,8 @@ type mcpServerWithStatus struct {
 	types.MCPServer
 	// Status 进程运行状态：running / stopped / failed（见 mcphub.ServerRunState）。
 	Status string `json:"status"`
+	// ReconnectAttempts status=reconnecting 时的当前重试次数（第 N 次自动重连）。
+	ReconnectAttempts int `json:"reconnect_attempts,omitempty"`
 	// Error 失败原因（仅 status=failed 时非空）。
 	Error string `json:"error,omitempty"`
 }
@@ -1406,6 +1408,9 @@ func (s *Service) withStatus(it types.MCPServer) mcpServerWithStatus {
 		return out
 	}
 	out.Status = string(st)
+	if st == mcphub.StateReconnecting {
+		out.ReconnectAttempts = s.hub.ReconnectAttempts(it.ID)
+	}
 	if st == mcphub.StateFailed {
 		out.Error = s.hub.ServerError(it.ID)
 	}
@@ -2843,6 +2848,9 @@ func (s *Service) handleSettingsPut(w http.ResponseWriter, r *http.Request) {
 	deps.UseGlobal = req.UseGlobalCmd // 开关即时生效（unifyai/skills 后续执行按此选命令）
 	if s.health != nil {
 		s.health.SetRuleAIModel(req.RuleAIModel) // 失败规则引擎 AI 兜底热更新
+	}
+	if s.hub != nil {
+		s.hub.SetReconnectMax(req.McpReconnectMax) // MCP 自动重连次数热更新（0 = 默认 3）
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }

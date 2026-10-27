@@ -17,6 +17,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -81,6 +82,10 @@ type Upstream struct {
 	mu      sync.Mutex
 	cfg     UpstreamConfig
 	session *mcp.ClientSession
+	// probeDepth > 0 表示正在做健康探活：期间的协议帧不写会话日志，
+	// 避免每 15 秒一轮的 tools/list 把「原始日志」刷满、挤掉真正的错误信息。
+	// 只在「已连接」的 ListTools 期间置位，建连/握手日志照常记录。
+	probeDepth atomic.Int32
 	// cmd stdio 子进程引用（用于判断进程存活；非 stdio 传输恒为 nil）。
 	cmd *exec.Cmd
 	// lastErr 最近一次建连失败的错误（供 UI 展示失败原因）。
@@ -141,6 +146,20 @@ func (u *Upstream) CallTool(ctx context.Context, name string, args map[string]an
 // 供「开关启动」与「启动自动恢复」使用：调用后进程常驻后台，直到 Close。
 func (u *Upstream) Connect(ctx context.Context) error {
 	_, err := u.ensureSession(ctx)
+	return err
+}
+
+// Probe 健康探活：建立/复用连接后执行一次 tools/list。
+// 探活期间的协议帧不写会话日志（否则每 15 秒一轮的探活会刷满「原始日志」），
+// 但建连/握手阶段（ensureSession）的日志照常记录，便于排查真正的连接问题。
+func (u *Upstream) Probe(ctx context.Context) error {
+	u.probeDepth.Add(1)
+	defer u.probeDepth.Add(-1)
+	session, err := u.ensureSession(ctx)
+	if err != nil {
+		return err
+	}
+	_, err = session.ListTools(ctx, &mcp.ListToolsParams{})
 	return err
 }
 
@@ -240,6 +259,10 @@ func (w *frameLogWriter) Write(p []byte) (int, error) {
 }
 
 func (w *frameLogWriter) emit(line string) {
+	// 健康探活（每 15s 一次 tools/list）不落帧日志，避免把原始日志刷满。
+	if w.u.probeDepth.Load() > 0 {
+		return
+	}
 	switch {
 	case strings.HasPrefix(line, "read: "):
 		w.u.hook("frame_in", "msg", trimFrameMsg(line[len("read: "):]))

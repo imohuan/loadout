@@ -113,7 +113,7 @@ func (r *Repository) ReplaceCapabilityRoutes(ctx context.Context, routes []types
 
 // ListMCPServers 返回全部 MCP 服务器（按 position 排序）。
 func (r *Repository) ListMCPServers(ctx context.Context) ([]types.MCPServer, error) {
-	rows, err := r.database.QueryContext(ctx, `SELECT id, name, description, transport, command, args_json, env_json, url, headers_json, enabled, builtin FROM mcp_servers ORDER BY position, name`)
+	rows, err := r.database.QueryContext(ctx, `SELECT id, name, description, transport, command, args_json, env_json, url, headers_json, enabled, builtin, quick_tools_json, last_error FROM mcp_servers ORDER BY position, name`)
 	if err != nil {
 		return nil, fmt.Errorf("db: list mcp servers: %w", err)
 	}
@@ -121,12 +121,19 @@ func (r *Repository) ListMCPServers(ctx context.Context) ([]types.MCPServer, err
 	var servers []types.MCPServer
 	for rows.Next() {
 		var srv types.MCPServer
-		var argsJSON, envJSON, headersJSON string
+		var argsJSON, envJSON, headersJSON, quickToolsJSON, lastError string
 		var builtin int
-		if err := rows.Scan(&srv.ID, &srv.Name, &srv.Description, &srv.Transport, &srv.Command, &argsJSON, &envJSON, &srv.URL, &headersJSON, &srv.Enabled, &builtin); err != nil {
+		if err := rows.Scan(&srv.ID, &srv.Name, &srv.Description, &srv.Transport, &srv.Command, &argsJSON, &envJSON, &srv.URL, &headersJSON, &srv.Enabled, &builtin, &quickToolsJSON, &lastError); err != nil {
 			return nil, fmt.Errorf("db: scan mcp server: %w", err)
 		}
 		srv.Builtin = builtin != 0
+		srv.LastError = lastError
+		// 快捷工具是 JSON 数组；空/损坏时按空处理，不影响 MCP 本身可用。
+		if quickToolsJSON != "" {
+			if err := json.Unmarshal([]byte(quickToolsJSON), &srv.QuickTools); err != nil {
+				srv.QuickTools = nil
+			}
+		}
 		if err := unmarshalEach(argsJSON, &srv.Args, envJSON, &srv.Env, headersJSON, &srv.Headers); err != nil {
 			return nil, fmt.Errorf("db: parse mcp server %q: %w", srv.Name, err)
 		}
@@ -158,7 +165,14 @@ func (r *Repository) ReplaceMCPServers(ctx context.Context, servers []types.MCPS
 			if err != nil {
 				return fmt.Errorf("db: marshal server headers: %w", err)
 			}
-			if _, err := tx.ExecContext(ctx, `INSERT INTO mcp_servers (id, position, name, description, transport, command, args_json, env_json, url, headers_json, enabled, builtin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, srv.ID, i, srv.Name, srv.Description, srv.Transport, srv.Command, string(args), string(env), srv.URL, string(headers), boolInt(srv.Enabled), boolInt(srv.Builtin)); err != nil {
+			// 快捷工具列表：整体替换时按服务器维度原样写回，保证拖拽/编辑不丢快捷按钮。
+			quickTools, err := json.Marshal(srv.QuickTools)
+			if err != nil {
+				return fmt.Errorf("db: marshal server quick tools: %w", err)
+			}
+			// last_error 是「重试耗尽」的终态标记，必须跟 enabled 一起整体写回，
+			// 否则刷新后失败态会被误显示成用户手动停止。
+			if _, err := tx.ExecContext(ctx, `INSERT INTO mcp_servers (id, position, name, description, transport, command, args_json, env_json, url, headers_json, enabled, builtin, quick_tools_json, last_error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, srv.ID, i, srv.Name, srv.Description, srv.Transport, srv.Command, string(args), string(env), srv.URL, string(headers), boolInt(srv.Enabled), boolInt(srv.Builtin), string(quickTools), srv.LastError); err != nil {
 				return fmt.Errorf("db: insert mcp server %q: %w", srv.Name, err)
 			}
 		}
@@ -392,7 +406,7 @@ func (r *Repository) GetSettings(ctx context.Context) (types.Settings, error) {
 	var settings types.Settings
 	var targetsJSON string
 	var useGlobalCmd int
-	err := r.database.QueryRowContext(ctx, `SELECT active_preset, active_preset_target, active_preset_targets_json, default_model, use_global_cmd, request_log_max_age_days, request_log_max_size_mb, COALESCE(rule_ai_model, '') FROM settings WHERE id = 1`).Scan(&settings.ActivePreset, &settings.ActivePresetTarget, &targetsJSON, &settings.DefaultModel, &useGlobalCmd, &settings.RequestLogMaxAgeDays, &settings.RequestLogMaxSizeMB, &settings.RuleAIModel)
+	err := r.database.QueryRowContext(ctx, `SELECT active_preset, active_preset_target, active_preset_targets_json, default_model, use_global_cmd, request_log_max_age_days, request_log_max_size_mb, COALESCE(rule_ai_model, ''), mcp_reconnect_max FROM settings WHERE id = 1`).Scan(&settings.ActivePreset, &settings.ActivePresetTarget, &targetsJSON, &settings.DefaultModel, &useGlobalCmd, &settings.RequestLogMaxAgeDays, &settings.RequestLogMaxSizeMB, &settings.RuleAIModel, &settings.McpReconnectMax)
 	settings.UseGlobalCmd = useGlobalCmd == 1
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -412,7 +426,7 @@ func (r *Repository) PutSettings(ctx context.Context, settings types.Settings) e
 	if err != nil {
 		return fmt.Errorf("db: marshal settings targets: %w", err)
 	}
-	if _, err := r.database.ExecContext(ctx, `INSERT INTO settings (id, active_preset, active_preset_target, active_preset_targets_json, default_model, use_global_cmd, request_log_max_age_days, request_log_max_size_mb, rule_ai_model) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET active_preset = excluded.active_preset, active_preset_target = excluded.active_preset_target, active_preset_targets_json = excluded.active_preset_targets_json, default_model = excluded.default_model, use_global_cmd = excluded.use_global_cmd, request_log_max_age_days = excluded.request_log_max_age_days, request_log_max_size_mb = excluded.request_log_max_size_mb, rule_ai_model = excluded.rule_ai_model`, settings.ActivePreset, settings.ActivePresetTarget, string(targets), settings.DefaultModel, boolInt(settings.UseGlobalCmd), settings.RequestLogMaxAgeDays, settings.RequestLogMaxSizeMB, settings.RuleAIModel); err != nil {
+	if _, err := r.database.ExecContext(ctx, `INSERT INTO settings (id, active_preset, active_preset_target, active_preset_targets_json, default_model, use_global_cmd, request_log_max_age_days, request_log_max_size_mb, rule_ai_model, mcp_reconnect_max) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET active_preset = excluded.active_preset, active_preset_target = excluded.active_preset_target, active_preset_targets_json = excluded.active_preset_targets_json, default_model = excluded.default_model, use_global_cmd = excluded.use_global_cmd, request_log_max_age_days = excluded.request_log_max_age_days, request_log_max_size_mb = excluded.request_log_max_size_mb, rule_ai_model = excluded.rule_ai_model, mcp_reconnect_max = excluded.mcp_reconnect_max`, settings.ActivePreset, settings.ActivePresetTarget, string(targets), settings.DefaultModel, boolInt(settings.UseGlobalCmd), settings.RequestLogMaxAgeDays, settings.RequestLogMaxSizeMB, settings.RuleAIModel, settings.McpReconnectMax); err != nil {
 		return fmt.Errorf("db: put settings: %w", err)
 	}
 	return nil
