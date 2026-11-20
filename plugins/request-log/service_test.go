@@ -2,6 +2,7 @@ package requestlog
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -1091,6 +1092,186 @@ func TestApplyRetentionNoLimitIsNoop(t *testing.T) {
 	}
 	if count != 3 {
 		t.Fatalf("rows = %d, want 3 (no limit must not delete)", count)
+	}
+}
+
+// fillBlob 往块存储写一段接近 incompressible 的内容，返回字节数与哈希。
+// 随机内容避免 gzip 把测试数据压成几百字节。
+func fillBlob(t *testing.T, svc *Service, size int) (int64, string) {
+	t.Helper()
+	data := make([]byte, size)
+	if _, err := rand.Read(data); err != nil {
+		t.Fatal(err)
+	}
+	h, err := svc.blobs.putBlob(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(svc.blobs.blobPath(h))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return info.Size(), h
+}
+
+// TestStatsSizeIncludesBlobStorage 回归：界面「当前占用」必须算上日志正文。
+// 旧实现只报 request-log.db 主文件（几 MB），用户误以为 200MB 上限远未用满。
+func TestStatsSizeIncludesBlobStorage(t *testing.T) {
+	path := t.TempDir() + "/request-log.db"
+	reqDB, err := openRequestLogDB(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reqDB.Close()
+	svc := NewService(nil, slog.New(slog.DiscardHandler), reqDB, nil)
+	svc.SetDBPath(path)
+	if err := svc.SetBlobDir(t.TempDir() + "/request-logs"); err != nil {
+		t.Fatal(err)
+	}
+	blobBytes, hash := fillBlob(t, svc, 512*1024)
+	now := time.Now().UTC()
+	seedManifestWithHashes(t, svc, "blob-size", now, []string{hash})
+
+	stats := svc.Stats(context.Background())
+	if stats.Size < blobBytes {
+		t.Fatalf("stats.size = %d, want >= %d (blob storage must be counted)", stats.Size, blobBytes)
+	}
+}
+
+// seedManifestWithHashes 写清单 + 元数据行，指定引用的已有块。
+func seedManifestWithHashes(t *testing.T, svc *Service, id string, started time.Time, hashes []string) {
+	t.Helper()
+	m := requestManifest{
+		ID:        id,
+		RequestID: id,
+		Model:     "m",
+		StartedAt: started.Format(time.RFC3339Nano),
+		Result:    "success",
+		Messages:  hashes,
+	}
+	if err := svc.blobs.writeManifest(id, m); err != nil {
+		t.Fatal(err)
+	}
+	seedMetaRow(t, svc.reqDB, id, m.StartedAt)
+}
+
+// TestApplyRetentionBySizeKeepsNewest 回归：容量清理要按真实占用精确扣减，
+// 删到阈值以下就停。旧实现每删一条清单就重算「整目录」大小，把还没 GC 的块
+// 也算进去，目录永远「超限」，于是把日志一路删到只剩个位数。
+func TestApplyRetentionBySizeKeepsNewest(t *testing.T) {
+	path := t.TempDir() + "/request-log.db"
+	reqDB, err := openRequestLogDB(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reqDB.Close()
+	svc := NewService(nil, slog.New(slog.DiscardHandler), reqDB, nil)
+	svc.SetDBPath(path)
+	if err := svc.SetBlobDir(t.TempDir() + "/request-logs"); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now().UTC()
+	// 12 条 × 约 1MB ≈ 12MB，上限 4MB：应保留最近 3~5 条。
+	for i := 0; i < 12; i++ {
+		_, hash := fillBlob(t, svc, 1024*1024)
+		seedManifestWithHashes(t, svc, fmt.Sprintf("row-%02d", i), now.Add(time.Duration(i)*time.Minute), []string{hash})
+	}
+
+	svc.ApplyRetention(context.Background(), RetentionConfig{MaxSizeMB: 4})
+
+	var count int
+	if err := reqDB.QueryRow(`SELECT count(*) FROM request_logs`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count < 2 || count > 6 {
+		t.Fatalf("rows after size cleanup = %d, want 2..6 (must stop near 4MB, not delete everything)", count)
+	}
+	// 保留的必须是最新的：最旧一条不能活下来。
+	var oldest string
+	if err := reqDB.QueryRow(`SELECT id FROM request_logs ORDER BY started_at ASC LIMIT 1`).Scan(&oldest); err != nil {
+		t.Fatal(err)
+	}
+	if oldest == "row-00" {
+		t.Fatalf("oldest row survived: %q", oldest)
+	}
+}
+
+// TestApplyRetentionCollectsOrphansFirst 回归：无人引用的旧块必须先回收，
+// 不能因为目录里堆着孤儿块就误删仍然有效的日志。
+func TestApplyRetentionCollectsOrphansFirst(t *testing.T) {
+	oldGrace := orphanGrace
+	orphanGrace = 0
+	t.Cleanup(func() { orphanGrace = oldGrace })
+	path := t.TempDir() + "/request-log.db"
+	reqDB, err := openRequestLogDB(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reqDB.Close()
+	svc := NewService(nil, slog.New(slog.DiscardHandler), reqDB, nil)
+	svc.SetDBPath(path)
+	if err := svc.SetBlobDir(t.TempDir() + "/request-logs"); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now().UTC()
+	for i := 0; i < 3; i++ {
+		_, hash := fillBlob(t, svc, 100*1024)
+		seedManifestWithHashes(t, svc, fmt.Sprintf("live-%d", i), now.Add(time.Duration(i)*time.Minute), []string{hash})
+	}
+	// 孤儿块：没有清单引用，旧实现会把它们算进占用，然后删光有效日志。
+	for i := 0; i < 4; i++ {
+		fillBlob(t, svc, 512*1024)
+	}
+
+	svc.ApplyRetention(context.Background(), RetentionConfig{MaxSizeMB: 1})
+
+	var count int
+	if err := reqDB.QueryRow(`SELECT count(*) FROM request_logs`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 3 {
+		t.Fatalf("rows = %d, want 3 (orphans must be reclaimed before deleting live logs)", count)
+	}
+}
+
+// TestCollectGarbageToleratesCorruptManifest 回归：一份损坏清单不能让整轮回收
+// 直接放弃（磁盘写满曾留下全零清单，导致 500MB+ 孤儿块永远滞留）。
+func TestCollectGarbageToleratesCorruptManifest(t *testing.T) {
+	oldGrace := orphanGrace
+	orphanGrace = 0
+	t.Cleanup(func() { orphanGrace = oldGrace })
+	svc := testService(t, nil)
+	reqDB, err := openRequestLogDB(t.TempDir() + "/request-log.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reqDB.Close()
+	svc.reqDB = reqDB
+	_, liveHash := fillBlob(t, svc, 64*1024)
+	seedManifestWithHashes(t, svc, "live", time.Now().UTC(), []string{liveHash})
+	_, orphanHash := fillBlob(t, svc, 64*1024)
+	// 模拟断电/写满留下的全零清单。
+	if err := os.WriteFile(svc.blobs.manifestPath("broken"), make([]byte, 128), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	removed, corrupt, err := svc.blobs.collectGarbage()
+	if err != nil {
+		t.Fatalf("collectGarbage = %v, want tolerate corrupt manifest", err)
+	}
+	if len(corrupt) != 1 || corrupt[0] != "broken" {
+		t.Fatalf("corrupt = %v, want [broken]", corrupt)
+	}
+	if removed != 1 {
+		t.Fatalf("removed = %d, want 1 orphan blob", removed)
+	}
+	if !svc.blobs.hasBlob(liveHash) {
+		t.Fatal("live blob must survive")
+	}
+	if svc.blobs.hasBlob(orphanHash) {
+		t.Fatal("orphan blob must be collected")
 	}
 }
 

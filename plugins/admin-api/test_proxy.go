@@ -140,6 +140,12 @@ func (s *Service) resolveTestTarget(r *http.Request, in testTarget, model string
 		if key == "" {
 			key = channelKey
 		}
+		// base_url 显式给了就用它：渠道编辑弹窗里「测试」要用表单上**当前**填的地址
+		// （用户可能刚改过还没保存），密钥仍取渠道已存的那把。
+		// 不传时保持原行为（以渠道记录为准）。
+		if override := strings.TrimSpace(in.BaseURL); override != "" {
+			baseURL = override
+		}
 		return baseURL, key, "", nil
 	}
 	if strings.TrimSpace(in.BaseURL) == "" {
@@ -466,9 +472,20 @@ func (s *Service) handleTestChat(w http.ResponseWriter, r *http.Request) {
 		s.lg.Warn("模型测试上游返回错误", "status", resp.StatusCode)
 		message := fmt.Sprintf("上游返回错误(%d): %s", resp.StatusCode, upstreamErrorText(upstreamBody))
 		s.setTestLogHeader(w, buildTestLogSummary(requestID, req.Model, channelID, skKeyName, started, time.Now(), "failed", failureClassForStatus(resp.StatusCode), resp.StatusCode, req.Stream, contracts.TokenUsage{}, errors.New(message)))
-		// 透传上游错误体，便于前端展示原始错误。
+		// 透传上游错误体，便于前端展示原始错误；但 401 必须改成 502。
+		//
+		// 401 在这个管理接口上只有一个合法含义：本机会话失效。前端的 fetch 包装
+		// 只按状态码判断，一旦看到 401 就认为「你被登出了」，直接跳登录页。而上游
+		// 某个 Key 失效（workbuddy 过期 token 就会回 401）测出来也是 401 —— 用户
+		// 只是点了「测试」，却被踢出后台，刷新一下又好了，因为会话根本没坏。
+		// 上游的真实状态码仍记录在 X-Test-Log（http_status）里，模型状态页照常
+		// 显示 auth 类失败，信息一点没丢。
+		status := resp.StatusCode
+		if status == http.StatusUnauthorized {
+			status = http.StatusBadGateway
+		}
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(resp.StatusCode)
+		w.WriteHeader(status)
 		_, _ = w.Write(upstreamBody)
 		return
 	}

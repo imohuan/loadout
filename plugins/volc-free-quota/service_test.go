@@ -188,6 +188,167 @@ func newTestService(t *testing.T) *Service {
 	return svc
 }
 
+// mustExecTest 测试里直接执行 SQL 的小工具（失败即 Fatal）。
+func mustExecTest(t *testing.T, svc *Service, q string, args ...any) {
+	t.Helper()
+	if _, err := svc.db.Exec(q, args...); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// attemptPipe 构造「当前尝试渠道已确定」的管线（proxyAttempt 会写 __current_channel）。
+func attemptPipe(model, channelID string) *modelgateway.ProxyPipeline {
+	return &modelgateway.ProxyPipeline{
+		RequestID: "req-attempt",
+		Request:   &modelgateway.ProxyRequest{Model: model, Path: "chat/completions"},
+		Metadata:  map[string]any{modelgateway.MetadataCurrentChannel: channelID},
+	}
+}
+
+// TestHandleProxyBeforeAttemptPredictsOnlyThisChannelModel 核心语义：预测失败只针对
+// 「这个账号的这个模型」。它返回的是可重试错误（网关当成一次失败尝试继续 failover），
+// 不是整单拒绝；同一条渠道上的其它模型照常放行。
+func TestHandleProxyBeforeAttemptPredictsOnlyThisChannelModel(t *testing.T) {
+	svc := newTestService(t)
+	aid := accountID("AKxxx")
+	// ch1 上的 doubao 免费额度耗尽。
+	mustExecTest(t, svc, `UPDATE volc_quota_packages SET local_remaining=0, status='UsedUp'
+		WHERE account_id=? AND model='doubao-pro-32k'`, aid)
+	// ch1 也提供 deepseek，且它还有额度。
+	mustExecTest(t, svc, `INSERT INTO volc_quota_packages(account_id, instance_no, product, product_name, configuration_code,
+	       configuration_name, model, total_amount, available_amount, used_amount, initial_total, local_remaining, unit, status, synced_at)
+		VALUES (?, 'inst-ds', 'ark_bd', 'DeepSeek', 'DeepSeek_V4_flash_0731_data_collaboration', 'pack', 'deepseek-v4-flash-0731',
+		        2000000, 2000000, 0, 2000000, 2000000, 'Tokens', 'Effective', 'now')`, aid)
+
+	// 1) 这个渠道 + 这个模型 → 预测失败，返回可重试错误。
+	pipe := attemptPipe("doubao-1-5-pro-32k-250115", "ch1")
+	if _, err := svc.HandleProxyBeforeAttempt(pipe); err == nil {
+		t.Fatal("该渠道该模型额度耗尽时应返回预测失败")
+	} else {
+		gw, ok := err.(*modelgateway.GatewayError)
+		if !ok {
+			t.Fatalf("应返回 GatewayError，实际 %T", err)
+		}
+		if !gw.Retryable {
+			t.Fatal("额度预测必须标记 Retryable，否则会终止整个请求、不会切换下一个模型")
+		}
+		if gw.Type != "free_quota_exhausted" || gw.Status != 429 {
+			t.Fatalf("错误语义应为 429 free_quota_exhausted，实际 %d %q", gw.Status, gw.Type)
+		}
+	}
+
+	// 2) 同一账号、同一模型，但换成另一条还有额度的渠道 → 放行。
+	mustExecTest(t, svc, `INSERT INTO channels(id, name, base_url, created_at, updated_at)
+		VALUES ('ch2', 'ark2', 'https://ark.cn-beijing.volces.com/api/v3', 'now', 'now')`)
+	mustExecTest(t, svc, `INSERT INTO volc_quota_config(channel_id, access_key, account_id, secret_key_cipher, enabled, force_block, updated_at)
+		VALUES ('ch2', 'AKyyy', ?, '', 1, 1, 'now')`, accountID("AKyyy"))
+	mustExecTest(t, svc, `INSERT INTO volc_quota_packages(account_id, instance_no, product, product_name, configuration_code,
+	       configuration_name, model, total_amount, available_amount, used_amount, initial_total, local_remaining, unit, status, synced_at)
+		VALUES (?, 'inst-ch2', 'ark_bd', 'Doubao', 'Doubao_Pro_32k_data_collaboration', 'pack', 'doubao-pro-32k',
+		        2000000, 2000000, 0, 2000000, 2000000, 'Tokens', 'Effective', 'now')`, accountID("AKyyy"))
+	if _, err := svc.HandleProxyBeforeAttempt(attemptPipe("doubao-1-5-pro-32k-250115", "ch2")); err != nil {
+		t.Fatalf("另一条还有额度的渠道不应被预测失败，实际 err=%v", err)
+	}
+
+	// 3) 同一渠道上的另一个模型（deepseek）→ 放行，绝不连带影响。
+	if _, err := svc.HandleProxyBeforeAttempt(attemptPipe("deepseek-v4-flash-ga-260731", "ch1")); err != nil {
+		t.Fatalf("同一渠道的其它模型不应被拦截，实际 err=%v", err)
+	}
+
+	// 4) 不归火山额度管的渠道（别的平台）→ 放行。
+	mustExecTest(t, svc, `INSERT INTO channels(id, name, base_url, created_at, updated_at)
+		VALUES ('ch-wb', 'wb', 'https://workbuddy.example/v1', 'now', 'now')`)
+	if _, err := svc.HandleProxyBeforeAttempt(attemptPipe("doubao-1-5-pro-32k-250115", "ch-wb")); err != nil {
+		t.Fatalf("其它平台渠道不应被火山额度预测影响，实际 err=%v", err)
+	}
+}
+
+// TestHandleProxyBeforeAttemptSkipsWithoutForceBlock 没开「强制关停」时不预测失败，
+// 交由 model_states 冷却控制（保持原有开关语义）。
+func TestHandleProxyBeforeAttemptSkipsWithoutForceBlock(t *testing.T) {
+	svc := newTestService(t)
+	// 该模型属于 ch1 但这条渠道没配额度、或配置未启用强制关停 → 不预测。
+	if _, err := svc.HandleProxyBeforeAttempt(attemptPipe("doubao-1-5-pro-32k-250115", "ch-unknown")); err != nil {
+		t.Fatalf("未知渠道不应被预测失败，实际 err=%v", err)
+	}
+}
+
+// TestHandleProxyBeforeAttemptIgnoresForeignModel 归属检查：请求的模型不是这条
+// 火山渠道提供的（比如模型测试页测别家同名模型）→ 不预测失败。
+func TestHandleProxyBeforeAttemptIgnoresForeignModel(t *testing.T) {
+	svc := newTestService(t)
+	aid := accountID("AKxxx")
+	mustExecTest(t, svc, `INSERT INTO volc_quota_packages(account_id, instance_no, product, product_name, configuration_code,
+	       configuration_name, model, total_amount, available_amount, used_amount, initial_total, local_remaining, unit, status, synced_at)
+		VALUES (?, 'inst-glm', 'ark_bd', 'GLM 5.2', 'GLM_5_2_pack', 'pack', 'glm-5-2',
+		        2000000, 0, 2000000, 2000000, 0, 'Tokens', 'UsedUp', 'now')`, aid)
+	// ch1 的 channel_models 里没有 glm-5.2（只有 doubao / deepseek）。
+	if _, err := svc.HandleProxyBeforeAttempt(attemptPipe("glm-5.2", "ch1")); err != nil {
+		t.Fatalf("火山渠道不提供该模型时不应预测失败，实际 err=%v", err)
+	}
+}
+
+// TestHandleProxyBeforeAttemptSkipsPinnedChannel 回归：模型状态页逐 Key「测试」按钮
+// 的语义是「真的打一次这个 Key」，不能被本地额度预测挡掉（否则测不到真实结果）。
+func TestHandleProxyBeforeAttemptSkipsPinnedChannel(t *testing.T) {
+	svc := newTestService(t)
+	aid := accountID("AKxxx")
+	mustExecTest(t, svc, `UPDATE volc_quota_packages SET local_remaining=0, status='UsedUp'
+		WHERE account_id=? AND model='doubao-pro-32k'`, aid)
+	pipe := attemptPipe("doubao-1-5-pro-32k-250115", "ch1")
+	pipe.Metadata[modelgateway.MetadataPinChannel] = "ch1"
+	if _, err := svc.HandleProxyBeforeAttempt(pipe); err != nil {
+		t.Fatalf("钉定渠道（测试按钮）应放行真实请求，实际 err=%v", err)
+	}
+}
+
+// TestHandleProxyBeforeAttemptDoesNotDisableModel 回归：预测失败只影响这一次尝试，
+// 不能顺手把 model_states 写成冷却——否则后续其它请求也被一起改道，超出「预测」范围。
+func TestHandleProxyBeforeAttemptDoesNotDisableModel(t *testing.T) {
+	svc := newTestService(t)
+	aid := accountID("AKxxx")
+	mustExecTest(t, svc, `UPDATE volc_quota_packages SET local_remaining=0, status='UsedUp'
+		WHERE account_id=? AND model='doubao-pro-32k'`, aid)
+	if _, err := svc.HandleProxyBeforeAttempt(attemptPipe("doubao-1-5-pro-32k-250115", "ch1")); err == nil {
+		t.Fatal("额度耗尽时应返回预测失败")
+	}
+	var count int
+	if err := svc.db.QueryRow(`SELECT COUNT(*) FROM model_states WHERE channel_id='ch1' AND model='doubao-1-5-pro-32k-250115'`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("预测失败不应写 model_states 冷却，实际写了 %d 行", count)
+	}
+}
+
+// TestHandleProxyBeforeAttemptSameAccountDifferentKey 回归：同一个火山账号下有两个
+// 渠道 Key，额度是按账号共享的，但「预测失败」仍然只针对当前这一次尝试用的那个 Key。
+// 换到同账号的另一个 Key 时同样会预测失败（额度确实已用尽），但不会波及别的模型；
+// 换到另一个账号的 Key 则正常放行。
+func TestHandleProxyBeforeAttemptSameAccountDifferentKey(t *testing.T) {
+	svc := newTestService(t)
+	aid := accountID("AKxxx")
+	mustExecTest(t, svc, `UPDATE volc_quota_packages SET local_remaining=0, status='UsedUp'
+		WHERE account_id=? AND model='doubao-pro-32k'`, aid)
+	// 同账号第二个 Key（共享同一份额度）。
+	mustExecTest(t, svc, `INSERT INTO channels(id, name, base_url, created_at, updated_at)
+		VALUES ('ch1b', 'ark1b', 'https://ark.cn-beijing.volces.com/api/v3', 'now', 'now')`)
+	mustExecTest(t, svc, `INSERT INTO volc_quota_config(channel_id, access_key, account_id, secret_key_cipher, enabled, force_block, updated_at)
+		VALUES ('ch1b', 'AKxxx', ?, '', 1, 1, 'now')`, aid)
+	// 该 Key 已探测到同一个模型（真实环境里渠道同步后会写 channel_models）。
+	mustExecTest(t, svc, `INSERT INTO channel_models(channel_id, model, source, enabled, first_seen_at, last_seen_at)
+		VALUES ('ch1b', 'doubao-1-5-pro-32k-250115', 'probe', 1, 'now', 'now')`)
+	mustExecTest(t, svc, `INSERT INTO channel_models(channel_id, model, source, enabled, first_seen_at, last_seen_at)
+		VALUES ('ch1b', 'deepseek-v4-flash-ga-260731', 'probe', 1, 'now', 'now')`)
+	if _, err := svc.HandleProxyBeforeAttempt(attemptPipe("doubao-1-5-pro-32k-250115", "ch1b")); err == nil {
+		t.Fatal("同账号共用额度，第二个 Key 也应预测失败")
+	}
+	// 但同一 Key 上的另一个模型仍然放行。
+	if _, err := svc.HandleProxyBeforeAttempt(attemptPipe("deepseek-v4-flash-ga-260731", "ch1b")); err != nil {
+		t.Fatalf("同账号其它模型不受影响，实际 err=%v", err)
+	}
+}
+
 func TestDecrementLocalRemaining(t *testing.T) {
 	svc := newTestService(t)
 	aid := accountID("AKxxx")
@@ -278,28 +439,28 @@ func TestDecrementLocalRemainingSharesAcrossPackages(t *testing.T) {
 	}
 }
 
-func TestCheckAllCandidatesExhaustedLocalFirst(t *testing.T) {
+func TestCheckExhaustedLocalFirst(t *testing.T) {
 	svc := newTestService(t)
 	aid := accountID("AKxxx")
-	// 本地余额还有 → 不拦截。
-	exhausted, allExhausted, err := svc.checkAllCandidatesExhausted([]string{"ch1"}, "doubao-1-5-pro-32k-250115")
+	// 本地余额还有 → 不预测失败。
+	exhausted, err := svc.checkExhausted([]string{"ch1"}, "doubao-1-5-pro-32k-250115")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if exhausted || allExhausted {
-		t.Errorf("本地余额未耗尽时应放行, got exhausted=%v allExhausted=%v", exhausted, allExhausted)
+	if exhausted {
+		t.Errorf("本地余额未耗尽时应放行, got exhausted=%v", exhausted)
 	}
-	// 扣到 0 → 拦截。
+	// 扣到 0 → 预测失败。
 	svc.decrementLocalRemaining(aid, "doubao-1-5-pro-32k-250115", 2000000)
-	exhausted, allExhausted, err = svc.checkAllCandidatesExhausted([]string{"ch1"}, "doubao-1-5-pro-32k-250115")
+	exhausted, err = svc.checkExhausted([]string{"ch1"}, "doubao-1-5-pro-32k-250115")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !exhausted || !allExhausted {
-		t.Errorf("本地余额耗尽时应拦截, got exhausted=%v allExhausted=%v", exhausted, allExhausted)
+	if !exhausted {
+		t.Errorf("本地余额耗尽时应判定耗尽, got exhausted=%v", exhausted)
 	}
 	// 不匹配的 model 不受影响。
-	exhausted, _, err = svc.checkAllCandidatesExhausted([]string{"ch1"}, "gpt-4o")
+	exhausted, err = svc.checkExhausted([]string{"ch1"}, "gpt-4o")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -308,9 +469,9 @@ func TestCheckAllCandidatesExhaustedLocalFirst(t *testing.T) {
 	}
 }
 
-// TestCheckAllCandidatesExhaustedAggregatesAcrossPackages 回归：同模型多包时，
+// TestCheckExhaustedAggregatesAcrossPackages 回归：同模型多包时，
 // 耗尽判据 = 聚合剩余 SUM(local_remaining)，不是任一包（避免"一个包剩 5000 其余 200 万"误拦）。
-func TestCheckAllCandidatesExhaustedAggregatesAcrossPackages(t *testing.T) {
+func TestCheckExhaustedAggregatesAcrossPackages(t *testing.T) {
 	svc := newTestService(t)
 	aid := accountID("AKxxx")
 	mustExec := func(q string, args ...any) {
@@ -332,115 +493,31 @@ func TestCheckAllCandidatesExhaustedAggregatesAcrossPackages(t *testing.T) {
 			        ?, ?, 0, ?, ?, 'Tokens', 'Effective', 'now')`,
 			aid, c.inst, c.bal, c.bal, c.bal, c.bal)
 	}
-	// 聚合剩余 = 500 + 400000 = 400500，远超阈值 → 不拦截。
-	exhausted, allExhausted, err := svc.checkAllCandidatesExhausted([]string{"ch1"}, "deepseek-v4-flash-ga-260731")
+	// 聚合剩余 = 500 + 400000 = 400500，远超阈值 → 不判耗尽。
+	exhausted, err := svc.checkExhausted([]string{"ch1"}, "deepseek-v4-flash-ga-260731")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if exhausted || allExhausted {
-		t.Errorf("聚合剩余充足时应放行, got exhausted=%v allExhausted=%v", exhausted, allExhausted)
+	if exhausted {
+		t.Errorf("聚合剩余充足时应放行, got exhausted=%v", exhausted)
 	}
 	// 把大包扣光：聚合剩余 = 500 + 0 = 500 > 默认阈值 0 → 仍不拦（小包还有余量）。
 	svc.decrementLocalRemaining(aid, "deepseek-v4-flash-ga-260731", 400000)
-	exhausted, allExhausted, err = svc.checkAllCandidatesExhausted([]string{"ch1"}, "deepseek-v4-flash-ga-260731")
+	exhausted, err = svc.checkExhausted([]string{"ch1"}, "deepseek-v4-flash-ga-260731")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if exhausted || allExhausted {
-		t.Errorf("聚合剩余 500 > 阈值 0 时应放行, got exhausted=%v allExhausted=%v", exhausted, allExhausted)
+	if exhausted {
+		t.Errorf("聚合剩余 500 > 阈值 0 时应放行, got exhausted=%v", exhausted)
 	}
-	// 小包也扣光：聚合剩余 = 0 ≤ 阈值 0 → 拦截。
+	// 小包也扣光：聚合剩余 = 0 ≤ 阈值 0 → 判耗尽。
 	svc.decrementLocalRemaining(aid, "deepseek-v4-flash-ga-260731", 500)
-	exhausted, allExhausted, err = svc.checkAllCandidatesExhausted([]string{"ch1"}, "deepseek-v4-flash-ga-260731")
+	exhausted, err = svc.checkExhausted([]string{"ch1"}, "deepseek-v4-flash-ga-260731")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !exhausted || !allExhausted {
-		t.Errorf("聚合剩余归零时应拦截, got exhausted=%v allExhausted=%v", exhausted, allExhausted)
-	}
-}
-
-// TestHandleProxyBeforeUpstreamSkipsForeignModels 端到端回归：候选渠道兜底把火山
-// 渠道带进来时，请求的模型若不是火山渠道自己提供的（如测 workbuddy 的 glm-5.2，
-// 火山只有 glm-5-2-260617），即使火山有模型的额度耗尽，也不应拦截。
-//
-// 修复前的判定只按包名模糊匹配（matchOne("glm-5-2","glm-5.2") 命中）+ 聚合余额 0
-// → 误拦。修复后先确认「请求模型属于火山渠道提供的模型清单」，不属于直接放行。
-// TestPinChannelBypassesQuotaCheck 回归：测试锁定请求（逐 Key「测试」按钮）钉在
-// workbuddy 渠道上时，火山额度检查只看这个渠道 —— 火山账本里同名模型的空记录
-// 不参与判定，请求正常放行去 workbuddy。
-func TestPinChannelBypassesQuotaCheck(t *testing.T) {
-	svc := newTestService(t)
-	aid := accountID("AKxxx")
-	// 火山账本里造一个与 glm-5.2 模糊匹配、已耗尽的包。
-	if _, err := svc.db.Exec(`INSERT INTO volc_quota_packages(account_id, instance_no, product, product_name, configuration_code,
-	       configuration_name, model, total_amount, available_amount, used_amount, initial_total, local_remaining, unit, status, synced_at)
-		VALUES (?, 'inst-glm', 'ark_bd', 'GLM 5.2', 'GLM_5_2_pack', 'pack', 'glm-5-2',
-		        2000000, 0, 2000000, 2000000, 0, 'Tokens', 'Effective', 'now')`, aid); err != nil {
-		t.Fatal(err)
-	}
-	// 渠道模型清单也造一个匹配的（让「归属检查」这道防线也通过，
-	// 单独验证钉定渠道检查本身生效）。
-	if _, err := svc.db.Exec(`INSERT INTO channel_models(channel_id, model, source, enabled, first_seen_at, last_seen_at)
-		VALUES ('ch1', 'glm-5.2', 'probe', 1, 'now', 'now')`); err != nil {
-		t.Fatal(err)
-	}
-
-	// 不带 pin：火山自有模型 glm-5.2（模拟），账本耗尽 → 拦截。
-	pipe := &modelgateway.ProxyPipeline{
-		RequestID: "req-a",
-		Request:   &modelgateway.ProxyRequest{Model: "glm-5.2", Path: "chat/completions"},
-		Metadata:  map[string]any{},
-	}
-	if _, err := svc.HandleProxyBeforeUpstream(pipe); err == nil {
-		t.Logf("不带 pin 未拦截（归属检查通过但聚合口径与测试数据有关，继续验证 pin 路径）")
-	}
-
-	// 带 pin 钉到别的渠道：即使候选解析还没跑，也只查被钉的渠道。
-	// ch1 是唯一的火山渠道 —— 钉到非火山渠道（ch-other）时火山账本不应参与判定。
-	pipe2 := &modelgateway.ProxyPipeline{
-		RequestID: "req-b",
-		Request:   &modelgateway.ProxyRequest{Model: "glm-5.2", Path: "chat/completions"},
-		Metadata:  map[string]any{modelgateway.MetadataPinChannel: "ch-other"},
-	}
-	if _, err := svc.HandleProxyBeforeUpstream(pipe2); err != nil {
-		t.Fatalf("钉定非火山渠道时不应被火山账本拦截，实际 err=%v", err)
-	}
-}
-
-func TestHandleProxyBeforeUpstreamSkipsForeignModels(t *testing.T) {
-	svc := newTestService(t)
-	aid := accountID("AKxxx")
-	// 火山账本里造一个与 glm-5.2 模糊匹配、已耗尽的包。
-	// 渠道模型清单里没有 glm-5.2（只有 doubao / deepseek-v4-flash，见 newTestService）。
-	if _, err := svc.db.Exec(`INSERT INTO volc_quota_packages(account_id, instance_no, product, product_name, configuration_code,
-	       configuration_name, model, total_amount, available_amount, used_amount, initial_total, local_remaining, unit, status, synced_at)
-		VALUES (?, 'inst-glm', 'ark_bd', 'GLM 5.2', 'GLM_5_2_pack', 'pack', 'glm-5-2',
-		        2000000, 0, 2000000, 2000000, 0, 'Tokens', 'Effective', 'now')`, aid); err != nil {
-		t.Fatal(err)
-	}
-
-	// 请求 glm-5.2（不是火山渠道提供的模型）→ 不应被拦截。
-	pipe := &modelgateway.ProxyPipeline{
-		RequestID: "req-x",
-		Request:   &modelgateway.ProxyRequest{Model: "glm-5.2", Path: "chat/completions"},
-		Metadata:  map[string]any{},
-	}
-	if _, err := svc.HandleProxyBeforeUpstream(pipe); err != nil {
-		t.Fatalf("模型不属于火山渠道时不应拦截，实际 err=%v", err)
-	}
-
-	// 对照：请求火山自己提供的模型（doubao-1-5-pro-32k-250115），账本耗尽 → 应拦截。
-	if _, err := svc.db.Exec(`UPDATE volc_quota_packages SET local_remaining=0, status='UsedUp' WHERE account_id=? AND model='doubao-pro-32k'`, aid); err != nil {
-		t.Fatal(err)
-	}
-	pipe2 := &modelgateway.ProxyPipeline{
-		RequestID: "req-y",
-		Request:   &modelgateway.ProxyRequest{Model: "doubao-1-5-pro-32k-250115", Path: "chat/completions"},
-		Metadata:  map[string]any{},
-	}
-	if _, err := svc.HandleProxyBeforeUpstream(pipe2); err == nil {
-		t.Fatal("火山自有模型额度耗尽时应拦截")
+	if !exhausted {
+		t.Errorf("聚合剩余归零时应判定耗尽, got exhausted=%v", exhausted)
 	}
 }
 

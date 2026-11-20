@@ -1,0 +1,55 @@
+ok  	loadout/apps/server	34.769s
+?   	loadout/build	[no test files]
+ok  	loadout/core/auth	(cached)
+?   	loadout/core/cmdutil	[no test files]
+ok  	loadout/core/config	(cached)
+ok  	loadout/core/db	(cached)
+ok  	loadout/core/deps	(cached)
+ok  	loadout/core/linkfs	(cached)
+ok  	loadout/core/logger	(cached)
+ok  	loadout/core/mcpkit	(cached)
+ok  	loadout/core/plugin	(cached)
+ok  	loadout/core/procreg	(cached)
+ok  	loadout/core/servercore	(cached)
+ok  	loadout/core/store	(cached)
+?   	loadout/frontend	[no test files]
+ok  	loadout/plugins	(cached)
+ok  	loadout/plugins/admin-api	(cached)
+ok  	loadout/plugins/admin-auth	(cached)
+ok  	loadout/plugins/aggregate	(cached)
+ok  	loadout/plugins/contracts	(cached)
+ok  	loadout/plugins/failure-rules	(cached)
+ok  	loadout/plugins/field-filter	(cached)
+ok  	loadout/plugins/force-stream	(cached)
+ok  	loadout/plugins/gateway-keys	(cached)
+ok  	loadout/plugins/key-rate-limit	(cached)
+ok  	loadout/plugins/mcp-hub	(cached)
+ok  	loadout/plugins/message-inject	(cached)
+ok  	loadout/plugins/model-gateway	(cached)
+ok  	loadout/plugins/model-health	(cached)
+ok  	loadout/plugins/multimodal-mcp	(cached)
+ok  	loadout/plugins/request-capture	(cached)
+ok  	loadout/plugins/request-log	9.533s
+ok  	loadout/plugins/route-log	(cached)
+ok  	loadout/plugins/sensitive-filter	(cached)
+ok  	loadout/plugins/skills	(cached)
+ok  	loadout/plugins/toolcall-repair	(cached)
+ok  	loadout/plugins/translate	(cached)
+ok  	loadout/plugins/types	(cached)
+ok  	loadout/plugins/unifyai	3.656s
+ok  	loadout/plugins/vision	(cached)
+ok  	loadout/plugins/vision_v2	(cached)
+ok  	loadout/plugins/volc-free-quota	(cached)
+?   	loadout/plugins/workbuddy-panel	[no test files]
+?   	loadout/scratchpad/checkpwd	[no test files]
+?   	loadout/scratchpad/probeai	[no test files]
+?   	loadout/scratchpad/probeai2	[no test files]
+?   	loadout/scratchpad/probekeys	[no test files]
+?   	loadout/scratchpad/qsamples	[no test files]
+?   	loadout/scratchpad/showkey	[no test files]
+?   	loadout/scratchpad/sso	[no test files]
+?   	loadout/testkit/cmd/fake-mcp-server	[no test files]
+ok  	loadout/testkit/fake-llm	(cached)
+ok  	loadout/testkit/fake-mcp	(cached)
+?   	loadout/testkit/routetest	[no test files]
+?   	loadout/testkit/signtoken	[no test files]

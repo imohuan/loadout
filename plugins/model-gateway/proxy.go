@@ -310,7 +310,9 @@ func (s *Service) proxyAttempt(w http.ResponseWriter, r *http.Request, pipe *Pro
 		result := "failed"
 		if handled {
 			result = "success"
-		} else if _, isReject := res.err.(*GatewayError); isReject {
+		} else if !isRetryableReject(res.err) && isGatewayError(res.err) {
+			// 可重试的 GatewayError（如额度预测）是「这条渠道这次不行」，
+			// 语义等同一次失败尝试，不能算整个请求被拒绝。
 			result = "rejected"
 		}
 		s.ctx.Emit(ProxyAttemptFinished, &ProxyAttemptFinishedPayload{
@@ -336,6 +338,17 @@ func (s *Service) proxyAttempt(w http.ResponseWriter, r *http.Request, pipe *Pro
 	// 安检：每次渠道尝试前执行输入侧能力（敏感词过滤、字段过滤）。
 	out, aerr := s.ctx.Waterfall(ProxyBeforeAttempt, pipe)
 	if aerr != nil {
+		// 可重试的拒绝（volc-free-quota 额度预测等）：只针对「当前渠道 + 当前模型」，
+		// 按一次失败的尝试落库，交给 proxyForward 继续 failover / 聚合切换下一个目标。
+		// 与普通拒绝（内容违规、鉴权）严格区分：后者仍然终止整个请求。
+		if gw, ok := retryableReject(aerr); ok {
+			res.err = aerr
+			res.channelID = ch.ID
+			res.statusCode = statusOrDefault(gw.Status, http.StatusTooManyRequests)
+			res.errorBody = openAIErrorBody(gw.Type, gw.Msg)
+			s.proxyAttemptLog(r, pipe, model, ch.ID, ch.ChannelName, nil, "", attemptStarted, "failed", gatewayFailureClass(gw), res.statusCode, pipe.Request.Stream, contracts.TokenUsage{}, aerr, res.errorBody)
+			return pipe, false
+		}
 		// 安检拒绝（如敏感词 error 模式命中）：请求内容违规，与渠道无关，终止整个请求。
 		res.err = aerr
 		res.channelID = ch.ID
@@ -733,6 +746,12 @@ func (s *Service) proxyForward(w http.ResponseWriter, r *http.Request, pipe *Pro
 		"duration_ms", time.Since(started).Milliseconds(),
 	)
 	s.proxyFinishLog(r, pipe, model, lastChannelID, lastChannelName, "failed", statusOrDefault(lastStatusCode, http.StatusBadGateway), time.Since(started), lastErr, pipe.Request.Stream, contracts.TokenUsage{}, truncateErrorBody(lastErrorBody))
+	// 最后一条失败若是「可重试的预测失败」（额度预测等），错误体本身就是网关生成的
+	// OpenAI 错误，直接原样回给客户端；其余情况保持上游错误体透传语义。
+	if gw, ok := retryableReject(lastErr); ok {
+		writeOpenAIError(w, statusOrDefault(gw.Status, http.StatusTooManyRequests), gw.Type, gw.Msg)
+		return nil
+	}
 	writeProxyError(w, lastStatusCode, lastErrorBody, lastHeader, lastErr)
 	return nil
 }
@@ -1480,6 +1499,47 @@ func probeUpstreamError(body string) (string, string) {
 	return "application/json", body
 }
 
+// rejectedClass 从前置拒绝错误提取 failure_class：GatewayError（插件拒绝）优先用它
+// 显式声明的 FailureClass，其次用 Type，其余归 no_available。拦截发生在渠道解析之前，
+// 渠道归属未知，分类只用于日志筛选定位。
+//
+// retryableReject 判断这次拒绝是否只针对「当前渠道 + 当前模型」。
+//
+// 语义：Retryable 的 GatewayError 代表这次尝试会失败（例如额度预测），请求换个渠道或
+// 换个模型还能继续；网关据此按一次失败尝试处理并继续 failover，而不是终止整个请求。
+// 统一走这里判定，避免各处分别用类型断言 / errors.As 两种写法。
+func retryableReject(err error) (*GatewayError, bool) {
+	var gw *GatewayError
+	if errors.As(err, &gw) && gw.Retryable {
+		return gw, true
+	}
+	return nil, false
+}
+
+// isRetryableReject 仅判断是否为「可重试拒绝」；attempt 结果分类用。
+func isRetryableReject(err error) bool {
+	_, ok := retryableReject(err)
+	return ok
+}
+
+// isGatewayError 判断错误链里是否有 GatewayError（插件显式拒绝）。
+func isGatewayError(err error) bool {
+	var gw *GatewayError
+	return errors.As(err, &gw)
+}
+
+// gatewayFailureClass 失败分类：优先用插件显式给的 FailureClass，其次退回 Type。
+// 与 rejectedClass 同一口径，保证路由日志里同一类失败的分类可筛选。
+func gatewayFailureClass(gw *GatewayError) string {
+	if gw == nil {
+		return ""
+	}
+	if gw.FailureClass != "" {
+		return gw.FailureClass
+	}
+	return gw.Type
+}
+
 func statusOrDefault(code int, def int) int {
 	if code == 0 {
 		return def
@@ -1896,13 +1956,15 @@ func (s *Service) proxyRejectedLog(r *http.Request, pipe *ProxyPipeline, err err
 	}
 }
 
-// rejectedClass 从前置拒绝错误提取 failure_class：GatewayError（插件拒绝）用其
-// Type 作为分类（free_quota_exhausted / key_rate_limited 等），其余归 no_available。
-// 拦截发生在渠道解析之前，渠道归属未知，分类只用于日志筛选定位。
+// rejectedClass 从前置拒绝错误提取 failure_class：GatewayError（插件拒绝）优先用它
+// 显式声明的 FailureClass，其次用 Type（free_quota_exhausted / key_rate_limited 等），
+// 其余归 no_available。拦截发生在渠道解析之前，渠道归属未知，分类只用于日志筛选定位。
 func rejectedClass(err error) string {
 	var gw *GatewayError
-	if errors.As(err, &gw) && gw.Type != "" {
-		return gw.Type
+	if errors.As(err, &gw) {
+		if class := gatewayFailureClass(gw); class != "" {
+			return class
+		}
 	}
 	return "no_available"
 }

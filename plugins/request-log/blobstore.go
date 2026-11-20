@@ -27,7 +27,13 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
+
+// orphanGrace 待认领块的保护期：块已落盘、清单还没写时不能被当成垃圾删掉。
+// 正常请求在写块后几毫秒内写清单；这里给 10 分钟，覆盖长流式与磁盘抖动。
+// 只保护本进程登记过的 pending 块——上一进程中断遗留的孤儿块可以立即回收。
+var orphanGrace = 10 * time.Minute
 
 // blobStore 内容块 + 清单存储。写操作由单把互斥锁串行化。
 type blobStore struct {
@@ -36,6 +42,10 @@ type blobStore struct {
 	manifDir  string // manifests/
 	mu        sync.Mutex
 	knownBlob map[string]bool // 进程内块缓存：写前查重，避免反复 stat 同一文件
+	// pending 已落盘但清单还没引用的新块（hash → 写入时刻）。GC 必须跳过它们：
+	// 「写块」和「写清单」是两次独立加锁，中间插入的 GC 会把正在记录的正文
+	// 当成孤儿删掉。超过 orphanGrace 仍未引用视为放弃的写入，允许回收。
+	pending map[string]time.Time
 }
 
 // newBlobStore 打开（或初始化）块存储目录。
@@ -45,6 +55,7 @@ func newBlobStore(dir string) (*blobStore, error) {
 		blobsDir:  filepath.Join(dir, "blobs"),
 		manifDir:  filepath.Join(dir, "manifests"),
 		knownBlob: map[string]bool{},
+		pending:   map[string]time.Time{},
 	}
 	for _, d := range []string{bs.blobsDir, bs.manifDir} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
@@ -107,6 +118,7 @@ func (bs *blobStore) putBlob(data []byte) (string, error) {
 		return "", fmt.Errorf("request-log: rename blob: %w", err)
 	}
 	bs.knownBlob[hash] = true
+	bs.pending[hash] = time.Now()
 	return hash, nil
 }
 
@@ -129,7 +141,7 @@ func (bs *blobStore) writeManifest(id string, m requestManifest) error {
 	defer bs.mu.Unlock()
 	path := bs.manifestPath(id)
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	if err := writeFileSynced(tmp, data); err != nil {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("request-log: write manifest: %w", err)
 	}
@@ -138,6 +150,24 @@ func (bs *blobStore) writeManifest(id string, m requestManifest) error {
 		return fmt.Errorf("request-log: rename manifest: %w", err)
 	}
 	return nil
+}
+
+// writeFileSynced 写入并刷盘后再 rename。断电/磁盘写满时，普通 WriteFile 可能
+// 留下全零清单（真实事故：10 份清单变成 128~116KB 的 \x00），整轮 GC 因此停摆。
+func writeFileSynced(path string, data []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 // readManifest 读清单。
@@ -187,20 +217,37 @@ func (bs *blobStore) manifestIDs() ([]string, error) {
 }
 
 // collectGarbage 块回收：扫描全部 manifest，删除没有任何清单引用的块文件。
-// 返回删除的块数。纯文件操作，无锁无 VACUUM；悬空引用直接忽略。
-func (bs *blobStore) collectGarbage() (int, error) {
+// 返回删除的块数与损坏清单 id。纯文件操作，无锁无 VACUUM；悬空引用直接忽略。
+//
+// 不再因单份清单损坏而整轮放弃：损坏清单改名为 <id>.json.corrupt 隔离保留，
+// 同时把它从「有效引用」中剔除——否则一份写坏的文件会让所有孤儿块永久滞留，
+// 容量清理只能靠删好日志来「降占用」（真实事故根因）。
+// pending 中且未超过 orphanGrace 的块跳过：清单可能还没写完，删了会丢正在
+// 进行的请求正文。不按文件 mtime 判断——那样会把刚清理掉的历史块继续留在盘上，
+// 让占用看起来没降下来。
+func (bs *blobStore) collectGarbage() (removed int, corrupt []string, err error) {
+	return bs.collectGarbageGrace(orphanGrace)
+}
+
+// collectGarbageGrace 指定孤儿块保护期；grace<=0 表示回收全部无引用块
+// （清空日志库时用，新块也已没人要）。
+func (bs *blobStore) collectGarbageGrace(grace time.Duration) (removed int, corrupt []string, err error) {
+	// 扫描阶段不持锁（大目录可能要几十秒，持锁会卡住所有写日志）。
+	// 并发安全靠 pending：putBlob 在锁内登记「已落盘、尚未被清单引用」的块，
+	// 删除阶段在锁内复查；清单先于块不可能出现，因此不会误删正在写的正文。
 	ids, err := bs.manifestIDs()
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	refs := map[string]bool{}
 	for _, id := range ids {
 		m, err := bs.readManifest(id)
 		if err != nil {
-			// fail-safe：任何清单读不出来就整轮跳过 GC。引用计数来自全部清单，
-			// 少读一份就可能把仍被引用的块当「无引用」删掉（悬空引用 → 详情页
-			// body 永远拼不回来）。清单损坏是异常态，宁可留着块也不删错。
-			return 0, fmt.Errorf("request-log: gc skip: read manifest %s: %w", id[:8], err)
+			// 隔离损坏清单：文件保留（人工可恢复），但不再参与引用计数。
+			if qerr := bs.quarantineManifest(id); qerr == nil {
+				corrupt = append(corrupt, id)
+			}
+			continue
 		}
 		for _, h := range m.referencedHashes() {
 			refs[h] = true
@@ -208,10 +255,10 @@ func (bs *blobStore) collectGarbage() (int, error) {
 	}
 	bs.mu.Lock()
 	defer bs.mu.Unlock()
-	removed := 0
+	removed = 0
 	entries, err := os.ReadDir(bs.blobsDir)
 	if err != nil {
-		return 0, err
+		return 0, corrupt, err
 	}
 	for _, e := range entries {
 		if !e.IsDir() || len(e.Name()) != 2 {
@@ -228,7 +275,11 @@ func (bs *blobStore) collectGarbage() (int, error) {
 			}
 			hash := strings.TrimSuffix(f.Name(), ".gz")
 			if refs[hash] {
+				delete(bs.pending, hash) // 已被清单引用：不再需要保护
 				continue
+			}
+			if since, ok := bs.pending[hash]; ok && time.Since(since) < grace {
+				continue // 正在写的日志：块已落盘、清单还没写完
 			}
 			if os.Remove(filepath.Join(shard, f.Name())) == nil {
 				removed++
@@ -240,7 +291,17 @@ func (bs *blobStore) collectGarbage() (int, error) {
 			_ = os.Remove(shard)
 		}
 	}
-	return removed, nil
+	return removed, corrupt, nil
+}
+
+// quarantineManifest 把损坏清单改名隔离，避免每轮 GC 都重复读同一份坏文件。
+func (bs *blobStore) quarantineManifest(id string) error {
+	src := bs.manifestPath(id)
+	dst := src + ".corrupt"
+	if _, err := os.Stat(dst); err == nil {
+		dst = fmt.Sprintf("%s.corrupt.%d", src, time.Now().Unix())
+	}
+	return os.Rename(src, dst)
 }
 
 // writeGzip 压缩写入文件。

@@ -7,6 +7,7 @@ import {
   keyGroup,
   sortKeysByGroup,
   filterKeysByGroup,
+  filterKeysByName,
 } from '../src/lib/modelStatus.ts'
 import type { ChannelStatus, ModelStatus } from '../src/lib/types.ts'
 
@@ -209,4 +210,25 @@ test('filterKeysByGroup：列表显示与批量测试用同一份结果', () => 
   )
   // 没有该组时返回空数组（筛选后「N 项」归零，按钮要据此提示）
   assert.deepEqual(filterKeysByGroup([items[3]], 'bad'), [])
+})
+
+test('filterKeysByName：按 Key 名称过滤，忽略大小写与首尾空格，空词原样返回', () => {
+  const items = [
+    channel('13314030693', 'https://a/v1'),
+    channel('Abc-Key', 'https://a/v1'),
+    channel('acct-22', 'https://b/v1'),
+  ]
+  assert.deepEqual(
+    filterKeysByName(items, '').map((k) => k.channel.id),
+    ['13314030693', 'Abc-Key', 'acct-22'],
+  )
+  assert.deepEqual(
+    filterKeysByName(items, '  abc ').map((k) => k.channel.id),
+    ['Abc-Key'],
+  )
+  assert.deepEqual(
+    filterKeysByName(items, '1331').map((k) => k.channel.id),
+    ['13314030693'],
+  )
+  assert.deepEqual(filterKeysByName(items, 'nope'), [])
 })

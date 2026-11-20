@@ -40,6 +40,9 @@ type ChannelModel struct {
 	Model       string `json:"model"`
 	Source      string `json:"source"`
 	Enabled     bool   `json:"enabled"`
+	// Position 模型在渠道清单里的先后（编辑器里拖拽出来的顺序）。
+	// 读取时按「position, model」排序：老数据全为 0，退化成按名字排，行为不变。
+	Position    int    `json:"position"`
 	Context     int64  `json:"context,omitempty"` // /v1/models 返回的上下文窗口 token 数；0 = 未知
 	FirstSeenAt string `json:"first_seen_at"`
 	LastSeenAt  string `json:"last_seen_at"`
@@ -173,7 +176,9 @@ func (r *Repository) ListChannels(ctx context.Context) ([]Channel, error) {
 		return nil, fmt.Errorf("db: iterate channels: %w", err)
 	}
 
-	modelRows, err := r.database.QueryContext(ctx, `SELECT channel_id, model, source, enabled, context, first_seen_at, last_seen_at FROM channel_models ORDER BY channel_id, model`)
+	// 模型清单按 position 排（编辑器拖拽出来的顺序）；position 相同（老数据全是 0）
+	// 时退回按名字排，与迁移前的结果一致。
+	modelRows, err := r.database.QueryContext(ctx, `SELECT channel_id, model, source, enabled, position, context, first_seen_at, last_seen_at FROM channel_models ORDER BY channel_id, position, model`)
 	if err != nil {
 		return nil, fmt.Errorf("db: list channel models: %w", err)
 	}
@@ -181,7 +186,7 @@ func (r *Repository) ListChannels(ctx context.Context) ([]Channel, error) {
 	for modelRows.Next() {
 		var channelID string
 		var model ChannelModel
-		if err := modelRows.Scan(&channelID, &model.Model, &model.Source, &model.Enabled, &model.Context, &model.FirstSeenAt, &model.LastSeenAt); err != nil {
+		if err := modelRows.Scan(&channelID, &model.Model, &model.Source, &model.Enabled, &model.Position, &model.Context, &model.FirstSeenAt, &model.LastSeenAt); err != nil {
 			return nil, fmt.Errorf("db: scan channel model: %w", err)
 		}
 		channels[byID[channelID]].Models = append(channels[byID[channelID]].Models, model)
@@ -268,7 +273,7 @@ func (r *Repository) ReplaceChannels(ctx context.Context, channels []Channel) er
 
 // ListChannelModels returns a channel's catalog.
 func (r *Repository) ListChannelModels(ctx context.Context, channelID string) ([]ChannelModel, error) {
-	rows, err := r.database.QueryContext(ctx, `SELECT model, source, enabled, context, first_seen_at, last_seen_at FROM channel_models WHERE channel_id = ? ORDER BY model`, channelID)
+	rows, err := r.database.QueryContext(ctx, `SELECT model, source, enabled, position, context, first_seen_at, last_seen_at FROM channel_models WHERE channel_id = ? ORDER BY position, model`, channelID)
 	if err != nil {
 		return nil, fmt.Errorf("db: list channel models: %w", err)
 	}
@@ -276,7 +281,7 @@ func (r *Repository) ListChannelModels(ctx context.Context, channelID string) ([
 	models := []ChannelModel{}
 	for rows.Next() {
 		var model ChannelModel
-		if err := rows.Scan(&model.Model, &model.Source, &model.Enabled, &model.Context, &model.FirstSeenAt, &model.LastSeenAt); err != nil {
+		if err := rows.Scan(&model.Model, &model.Source, &model.Enabled, &model.Position, &model.Context, &model.FirstSeenAt, &model.LastSeenAt); err != nil {
 			return nil, fmt.Errorf("db: scan channel model: %w", err)
 		}
 		models = append(models, model)
@@ -305,7 +310,7 @@ func replaceChannelModels(ctx context.Context, tx *sql.Tx, channelID string, mod
 	}
 	// Prepared statement 复用：渠道模型可能上百个，逐条 Exec 会反复 prepare，
 	// 复用一个 statement 显著降低保存延迟。
-	stmt, err := tx.PrepareContext(ctx, `INSERT INTO channel_models (channel_id, model, source, enabled, context, first_seen_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+	stmt, err := tx.PrepareContext(ctx, `INSERT INTO channel_models (channel_id, model, source, enabled, position, context, first_seen_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("db: prepare channel model insert: %w", err)
 	}
@@ -330,7 +335,8 @@ func replaceChannelModels(ctx context.Context, tx *sql.Tx, channelID string, mod
 		if model.LastSeenAt == "" {
 			model.LastSeenAt = now
 		}
-		if _, err := stmt.ExecContext(ctx, channelID, model.Model, model.Source, model.Enabled, model.Context, model.FirstSeenAt, model.LastSeenAt); err != nil {
+		// 数组下标即清单顺序：调用方（编辑器 / 同步弹窗）提交什么顺序就存什么顺序。
+		if _, err := stmt.ExecContext(ctx, channelID, model.Model, model.Source, model.Enabled, i, model.Context, model.FirstSeenAt, model.LastSeenAt); err != nil {
 			return fmt.Errorf("db: replace channel %q model %q: %w", channelID, model.Model, err)
 		}
 	}

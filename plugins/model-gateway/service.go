@@ -860,9 +860,9 @@ func parseUsageLine(line string) contracts.TokenUsage {
 	}
 	var parsed struct {
 		Usage struct {
-			PromptTokens        int `json:"prompt_tokens"`
-			CompletionTokens    int `json:"completion_tokens"`
-			TotalTokens         int `json:"total_tokens"`
+			PromptTokens        int     `json:"prompt_tokens"`
+			CompletionTokens    int     `json:"completion_tokens"`
+			TotalTokens         int     `json:"total_tokens"`
 			Credit              float64 `json:"credit"`
 			PromptTokensDetails struct {
 				CachedTokens int `json:"cached_tokens"`
@@ -888,9 +888,9 @@ func parseUsageLine(line string) contracts.TokenUsage {
 func extractUsageNonStream(body []byte) contracts.TokenUsage {
 	var parsed struct {
 		Usage struct {
-			PromptTokens        int `json:"prompt_tokens"`
-			CompletionTokens    int `json:"completion_tokens"`
-			TotalTokens         int `json:"total_tokens"`
+			PromptTokens        int     `json:"prompt_tokens"`
+			CompletionTokens    int     `json:"completion_tokens"`
+			TotalTokens         int     `json:"total_tokens"`
 			Credit              float64 `json:"credit"`
 			PromptTokensDetails struct {
 				CachedTokens int `json:"cached_tokens"`
@@ -928,6 +928,19 @@ func writeOpenAIError(w http.ResponseWriter, status int, typ, msg string) {
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"error": map[string]string{"message": msg, "type": typ},
 	})
+}
+
+// openAIErrorBody 生成与 writeOpenAIError 字节一致的错误体（不写响应）。
+// 供「可重试拒绝」落进失败 attempt 的 error_body：日志里看到的就是客户端会收到的内容，
+// 避免两处各自拼 JSON 导致格式（或 Type 为空时的默认值）走样。
+func openAIErrorBody(typ, msg string) string {
+	body, err := json.Marshal(map[string]any{
+		"error": map[string]string{"message": msg, "type": typ},
+	})
+	if err != nil {
+		return ""
+	}
+	return string(body)
 }
 
 // writeGatewayError 把 waterfall 返回的错误按类型写回客户端。

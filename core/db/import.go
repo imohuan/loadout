@@ -158,8 +158,9 @@ func importChannels(ctx context.Context, tx *sql.Tx, values []types.Channel) err
 		if _, err := tx.ExecContext(ctx, `INSERT INTO channels(id, position, channel_position, key_position, name, base_url, api_key_cipher, manual_enabled, sync_billing, models_error, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, channel.ID, position, groupPos[base], kp, channel.Name, channel.BaseURL, channel.APIKeyCipher, manual, channel.SyncBilling, channel.ModelsError, now, now); err != nil {
 			return fmt.Errorf("db: import channel %q: %w", channel.ID, err)
 		}
-		for _, model := range channel.Models {
-			if _, err := tx.ExecContext(ctx, `INSERT INTO channel_models(channel_id, model, source, enabled, first_seen_at, last_seen_at) VALUES (?, ?, 'legacy', 1, ?, ?)`, channel.ID, model, now, now); err != nil {
+		// 数组下标即清单顺序（老 JSON 里模型的先后不应该被导入打乱）。
+		for pos, model := range channel.Models {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO channel_models(channel_id, model, source, enabled, position, first_seen_at, last_seen_at) VALUES (?, ?, 'legacy', 1, ?, ?, ?)`, channel.ID, model, pos, now, now); err != nil {
 				return fmt.Errorf("db: import channel model %q/%q: %w", channel.ID, model, err)
 			}
 		}

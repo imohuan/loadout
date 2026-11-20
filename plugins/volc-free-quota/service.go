@@ -19,13 +19,14 @@ import (
 	"loadout/core/config"
 	"loadout/core/store"
 	modelgateway "loadout/plugins/model-gateway"
+	"loadout/plugins/types"
 )
 
 // Service 火山引擎免费额度监控服务。
 //
 // 线程模型：bgRefresh 启动一个 goroutine 定时刷新；其他方法都是数据库读写，
-// SQLite 单连接池 + 时间短不会撞锁。HandleProxyUpstreamSucceeded 与 HandleProxyBeforeUpstream
-// 都在转发热路径上，必须保持 zero allocation 下完成（只有 SQL exec）。
+// SQLite 单连接池 + 时间短不会撞锁。HandleProxyUpstreamSucceeded 与 HandleProxyBeforeAttempt
+// 都在转发热路径上，必须保持轻量（只有 SQL 读写）。
 type Service struct {
 	db     *sql.DB
 	st     *store.Store
@@ -328,126 +329,76 @@ func (s *Service) accountIDForChannel(channelID string) string {
 	return accountID(ak)
 }
 
-// HandleProxyBeforeUpstream 在转发上游前检测：
+// HandleProxyBeforeAttempt 在**每次渠道尝试前**预测这一条「渠道 Key + 模型」会不会
+// 因免费额度用尽而失败。
 //
-// 只有当候选渠道中存在至少一个配置了「强制关停」（force_block=1）的账号时，才会执行拦截：
-//  1. 若请求的 model 对应的本地余额（聚合 SUM(local_remaining)）在所有候选账号上
-//     都已低于最低保留阈值（core/config.VolcQuotaMinRemaining，默认 0）
-//     → 返回 "模型免费额度用完" GatewayError
-//  2. 否则放行
+// 语义（重要）：这是「单点失败预测」，不是「整单拒绝」。返回的 GatewayError 带
+// Retryable=true，网关把它当成这次尝试的失败：落一条 failed attempt，然后继续
+// failover（聚合模型切下一个目标、多 Key 切下一个 Key）。因此：
+//   - 请求的其它模型、其它平台完全不受影响；
+//   - 当前模型切到下一个模型的行为与上游真返回 429 时完全一致；
+//   - 只有全部候选都失败时，客户端才会看到最后的错误。
 //
+// 判定只针对一个具体渠道：强制关停（force_block=1）+ 该渠道的本地余额已耗尽。
 // 判据唯一来源是本地 SQLite 余额（local_remaining）：远程 billing API 数据不准确
-// （经常 429），只作初始底数，不参与拦截判定。
+// （经常 429），只作初始底数，不参与判定。
 //
-// 未开启强制关停时，拦截逻辑不生效，由 model_states 冷却机制控制禁用。
-//
-// 返回的 GatewayError 会被 model-gateway 直接写出为
-// {"error":{"message":"模型免费额度用完","type":"free_quota_exhausted"}}。
-func (s *Service) HandleProxyBeforeUpstream(payload any) (any, error) {
+// 钉定渠道（模型状态页逐 Key「测试」按钮）**跳过预测**：那类请求的语义是「真的试一次」，
+// 必须拿到上游真实结果，不能被本地预测挡掉（与 key-rate-limit 的 isPinned 一致）。
+func (s *Service) HandleProxyBeforeAttempt(payload any) (any, error) {
 	p, ok := payload.(*modelgateway.ProxyPipeline)
 	if !ok || p == nil || p.Request == nil {
 		return payload, nil
 	}
-	// 子请求态度（显式声明）：子请求（vision_v2 视觉识别、multimodal-mcp 识别等经
-	// ForwardSubRequest 的内部调用）**同样参与额度检查**，不豁免。理由：额度按火山
-	// 账号归属，子请求打火山渠道同样消耗真实额度；若豁免，识别流量会绕过强制关停。
-	// 防误拦依赖 checkAllCandidatesExhausted 开头的「模型归属检查」：请求的模型不是
-	// 火山渠道提供的（channel_models 里没有），直接放行——即使火山账本里有同名/相近
-	// 包名（matchOne 模糊匹配）也不会误拦其他平台的请求。
+	// 子请求态度（显式声明）：子请求（vision_v2 视觉识别、multimodal-mcp 识别等）
+	// **同样参与预测**，不豁免：额度按火山账号归属，子请求打火山渠道同样消耗真实额度。
+	// 因为这里只判定「当前渠道 + 当前模型」，子请求命中的是它自己要用的那一条渠道，
+	// 不会误伤主请求；非火山渠道在归属检查处直接放行。
 	model := p.Request.Model
 	if model == "" {
 		return payload, nil
 	}
-	// 取候选渠道集合：先看 metadata（aggregate 注入），空则视为所有渠道。
-	candidateIDs := s.candidateChannelIDs(p)
-	if len(candidateIDs) == 0 {
-		// 没有任何渠道能处理该 model 时本来就会落到 "no_available_channel"，
-		// 在此不必再叠加 quota 错误。
+	// 当前尝试的目标渠道：由 proxyAttempt 在每次尝试前写入（aggregate 的 failover
+	// 也会先覆写）。没有具体渠道时无从预测单点失败，直接放行。
+	channelID, _ := p.Metadata[modelgateway.MetadataCurrentChannel].(string)
+	if channelID == "" {
 		return payload, nil
 	}
-	// 优先检查强制关停开关：任一候选渠道开启强制关停 → 执行拦截
-	if !s.hasForceBlockEnabled(candidateIDs) {
+	// 测试锁定：用户点了「测试」就是要真实打一次这个 Key，不预测失败、直接放行。
+	// 否则「额度用完」的 Key 永远测不到结果，用户无法确认是否真该换。
+	if pin, _ := p.Metadata[modelgateway.MetadataPinChannel].(string); pin != "" {
 		return payload, nil
 	}
-	// 看该 model 在所有候选账号里是否本地余额都已耗尽。
-	exhausted, allExhausted, err := s.checkAllCandidatesExhausted(candidateIDs, model)
+	// 该渠道没开"强制关停"→ 不由本插件预测（仍由 model_states 冷却控制）。
+	if !s.hasForceBlockEnabled([]string{channelID}) {
+		return payload, nil
+	}
+	// 只判定「这个渠道 + 这个模型」：不归火山额度管 / 不提供该模型 → 放行。
+	exhausted, err := s.checkExhausted([]string{channelID}, model)
 	if err != nil {
-		s.lg.Warn("volc-free-quota: 检查本地余额状态失败", "model", model, "err", err)
+		s.lg.Warn("volc-free-quota: 检查本地余额状态失败", "channel_id", channelID, "model", model, "err", err)
 		return payload, nil
 	}
 	if !exhausted {
 		return payload, nil
 	}
-	if !allExhausted {
-		// 至少一条候选渠道还有余量 → 放行，让路由选它。
-		return payload, nil
-	}
-	// 所有候选渠道本地余额都耗尽 → 阻断并报明确错误。
-	s.lg.Warn("volc-free-quota: 模型免费额度用完，已拦截请求",
-		"model", model, "candidate_channels", len(candidateIDs))
-	// 把拦截原因写入 pipe.Metadata，让 model-gateway.proxyRejectedLog 在写每个
-	// target 的 skipped attempt 时直接带上"模型免费额度用完"，不再依赖
-	// model_states（可能被"恢复全部异常"重置成 available + 空 last_error）。
-	if p.Metadata != nil {
-		p.Metadata["__unavailable_reason"] = "模型免费额度用完"
-		p.Metadata["__unavailable_failure_class"] = "free_quota_exhausted"
-	}
-	// 本地拦截发生 → 同步把候选渠道的 model_states 写冷却（status='cooling' +
-	// last_error='模型免费额度用完'，冷却到次日 0:00）。用户已通过请求触达本地余额
-	// 判定，此时写状态是事实来源，不等 15min debounce / runNow。
-	s.disableCandidatesForQuota(context.Background(), candidateIDs, model)
+	// 预测失败：直接返回可重试错误（等价于上游 429），不写 model_states。
+	// 这里只对「这一次尝试」下结论；跨请求的冷却仍由请求成功后的扣减/定时刷新负责，
+	// 避免一次预测就把后续请求一起改道。
+	s.lg.Info("volc-free-quota: 预测该渠道模型额度已用完，跳过本次尝试",
+		"channel_id", channelID, "model", model,
+		"virtual", types.VirtualModelFromMetadata(p.Metadata))
 	return nil, &modelgateway.GatewayError{
-		Status: http.StatusTooManyRequests,
-		Type:   "free_quota_exhausted",
-		Msg:    "模型免费额度用完",
+		Status:       http.StatusTooManyRequests,
+		Type:         "free_quota_exhausted",
+		Msg:          "模型免费额度用完",
+		FailureClass: "free_quota_exhausted",
+		Retryable:    true,
 	}
-}
-
-// disableCandidatesForQuota 把一批候选渠道的某 API 模型写 model_states 冷却。
-// 拦截路径（HandleProxyBeforeUpstream）调用：本地余额判定已耗尽时，状态立即落库。
-// 与 refreshOne 的 disableModelForFreeQuota 幂等（UPSERT，重复写同状态无副作用）。
-func (s *Service) disableCandidatesForQuota(ctx context.Context, channelIDs []string, model string) {
-	if len(channelIDs) == 0 || model == "" {
-		return
-	}
-	until := untilNextDayRecovery() // 次日 12:00 北京时间兜底（rev2 审计 G，与刷新路径一致）
-	for _, chID := range channelIDs {
-		if err := s.disableModelForFreeQuota(ctx, chID, model, until); err != nil {
-			s.lg.Warn("volc-free-quota: 拦截后同步 model_states 失败",
-				"channel_id", chID, "model", model, "err", err)
-		}
-	}
-}
-
-// candidateChannelIDs 从 pipe.Metadata 解析候选渠道 id 集合：
-//
-//   - aggregate 注入的 __channel_candidates（多 Key / 渠道级目标）。
-//   - aggregate 注入的 __current_channel（单 Key 目标）。
-//   - 都为空时回退到「所有火山引擎渠道」（即 base_url 含 ark.cn-beijing.volces.com）。
-func (s *Service) candidateChannelIDs(p *modelgateway.ProxyPipeline) []string {
-	// 测试锁定（逐 Key「测试」按钮）优先：请求已钉死在某个渠道上，就只查这个渠道。
-	// 兜底逻辑（回退全部火山渠道）只适用于「没钉渠道、也没有候选」的普通请求；
-	// 不加这道检查，测 workbuddy 的 glm-5.2 会被火山 glm-5-2 的空账本误拦
-	//（拦截发生在渠道解析之前，此时管线里还没有平台归属信息）。
-	if pin, ok := p.Metadata[modelgateway.MetadataPinChannel].(string); ok && pin != "" {
-		return []string{pin}
-	}
-	if p.Metadata == nil {
-		return s.allVolcChannelIDs()
-	}
-	if idsAny, ok := p.Metadata["__channel_candidates"]; ok {
-		if ids, ok := idsAny.([]string); ok && len(ids) > 0 {
-			return ids
-		}
-	}
-	if cur, ok := p.Metadata["__current_channel"].(string); ok && cur != "" {
-		return []string{cur}
-	}
-	return s.allVolcChannelIDs()
 }
 
 // hasForceBlockEnabled 检查候选渠道中是否存在已启用且开启强制关停的配额配置。
-// 只有存在这样的配置时，才会执行请求拦截（否则走 model_states 冷却逻辑）。
+// 只有存在这样的配置时，才会预测「这条渠道+模型会失败」；否则完全交给 model_states 冷却。
 func (s *Service) hasForceBlockEnabled(candidateIDs []string) bool {
 	if len(candidateIDs) == 0 {
 		return false
@@ -463,55 +414,43 @@ func (s *Service) hasForceBlockEnabled(candidateIDs []string) bool {
 	return err == nil && count > 0
 }
 
-// allVolcChannelIDs 列举所有 base_url 命中 ark.cn-beijing.volces.com 的渠道 id。
+// checkExhausted 检查这批候选渠道中此 model 的本地余额是否已耗尽（按账号对齐）：
 //
-// 用作"无候选"时的兜底：当 metadata 未设置（如纯转发未走 aggregate），凡是该平台的
-// 渠道都视为候选，确保免费额度提示对所有可能命中的渠道生效。
-func (s *Service) allVolcChannelIDs() []string {
-	rows, err := s.db.Query(`SELECT id FROM channels WHERE base_url LIKE '%ark.cn-beijing.volces.com%'`)
-	if err != nil {
-		return nil
-	}
-	defer rows.Close()
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err == nil {
-			ids = append(ids, id)
-		}
-	}
-	return ids
-}
-
-// checkAllCandidatesExhausted 检查候选渠道中此 model 的本地余额是否耗尽（按账号对齐）：
-//
-//   - 免费额度按火山账号（account_id）归属，因此先把候选渠道映射到它们各自的账号，
-//     再去重为「候选账号集合」。
+//   - 免费额度按火山账号（account_id）归属，因此先把候选渠道映射到它们各自的账号。
 //   - 耗尽判定唯一来源是本地余额：匹配该 API 模型的**所有资源包聚合剩余**
 //     SUM(local_remaining) <= core/config.VolcQuotaMinRemaining（默认 0 = 扣到 0；
 //     可配 10000 提前停）。按聚合判断而不是任一包，避免"一个包剩 5000 其余 200 万"
 //     时误拦整个模型。billing API 的 status='exhausted' 不参与——远程数据不准确。
-//   - exhausted=true 表示至少一个候选账号耗尽；allExhausted=true 表示所有候选账号都耗尽。
+//   - 未追踪渠道（其他平台 / 没配 AK/SK 的火山 Key）不参与判定，直接视为「没耗尽」：
+//     本插件无权对它们下结论，交给路由。
 //   - 采用与刷新时完全一致的 matchOne 模糊匹配逻辑，避免归一化名与 API 模型名脱节。
-func (s *Service) checkAllCandidatesExhausted(candidateIDs []string, requestModel string) (exhausted, allExhausted bool, err error) {
+func (s *Service) checkExhausted(candidateIDs []string, requestModel string) (bool, error) {
 	if len(candidateIDs) == 0 {
-		return false, false, nil
+		return false, nil
+	}
+	// 候选渠道里哪些归额度插件管（配了 AK/SK）。未追踪的渠道不参与额度判定，
+	// 它们的存在本身就说明「请求并非只能去火山」，因此不能据此判耗尽。
+	channelAccounts := s.channelAccountMap(candidateIDs)
+	if len(channelAccounts) == 0 {
+		return false, nil
+	}
+	trackedIDs := make([]string, 0, len(channelAccounts))
+	for chID := range channelAccounts {
+		trackedIDs = append(trackedIDs, chID)
 	}
 	// 先确认「请求的模型确实是这些火山渠道提供的」。
 	//
-	// 候选渠道兜底（candidateChannelIDs 回退 allVolcChannelIDs）会把火山渠道带进
-	// 非火山请求的判定里：比如模型测试页测 workbuddy 的 glm-5.2，火山只有
-	// 	glm-5-2-260617 这类带日期后缀的名字。若只按包名模糊匹配（matchOne 双向包含），
-	// glm-5-2 的空账本就会命中 glm-5.2 → 聚合 0 → 误拦，而请求根本不去火山。
-	// 用渠道自身提供的模型清单做归属检查：不在清单里的一律放行（fail-open）。
-	provided, err := s.channelsAPIModels(context.Background(), candidateIDs)
+	// 账本里的包名是模糊匹配（matchOne 双向包含 + 显著 token），「火山账本里有 glm-5-2
+	// 的空记录」不代表「workbuddy 请求的 glm-5.2 归火山管」。用渠道自身的模型清单
+	// （channel_models）做归属检查：不在清单里的一律放行（fail-open）。
+	provided, err := s.channelsAPIModels(context.Background(), trackedIDs)
 	if err != nil {
 		s.lg.Warn("volc-free-quota: 读取渠道模型清单失败，按放行处理", "err", err)
-		return false, false, nil
+		return false, nil
 	}
 	// 渠道还没有任何已配模型（首次同步前）：无从判断归属，按放行处理。
 	if len(provided) == 0 {
-		return false, false, nil
+		return false, nil
 	}
 	ownedByVolc := false
 	for _, m := range provided {
@@ -521,12 +460,16 @@ func (s *Service) checkAllCandidatesExhausted(candidateIDs []string, requestMode
 		}
 	}
 	if !ownedByVolc {
-		return false, false, nil
+		return false, nil
 	}
-	// 候选渠道 → 账号集合（一个渠道可能未配置 AK/SK，跳过；同账号多渠道去重）。
-	accountIDs := s.accountsForChannels(candidateIDs)
-	if len(accountIDs) == 0 {
-		return false, false, nil
+	// 候选账号集合（同账号多渠道去重）。
+	accountIDs := make([]string, 0, len(channelAccounts))
+	seenAccount := make(map[string]bool, len(channelAccounts))
+	for _, aid := range channelAccounts {
+		if !seenAccount[aid] {
+			seenAccount[aid] = true
+			accountIDs = append(accountIDs, aid)
+		}
 	}
 	// 全局最低保留阈值（core/config 程序级配置，非 per-渠道）。
 	minRemaining := int64(config.VolcQuotaMinRemaining)
@@ -541,7 +484,7 @@ func (s *Service) checkAllCandidatesExhausted(candidateIDs []string, requestMode
 	args = append(args, now)
 	rows, err := s.db.Query(`SELECT account_id, model, initial_total, local_remaining FROM volc_quota_packages WHERE account_id IN (`+placeholders+`) AND initial_total > 0`+activePackageCond, args...)
 	if err != nil {
-		return false, false, err
+		return false, err
 	}
 	defer rows.Close()
 	// map[account_id] -> 该账号匹配该 model 的聚合剩余（多个包求和）
@@ -559,7 +502,7 @@ func (s *Service) checkAllCandidatesExhausted(candidateIDs []string, requestMode
 	}
 	if len(accountRemaining) == 0 {
 		// 没有任何账号有匹配的资源包
-		return false, false, nil
+		return false, nil
 	}
 	// map[account_id] -> 该账号聚合剩余是否 ≤ 阈值
 	accountExhausted := make(map[string]bool)
@@ -570,19 +513,28 @@ func (s *Service) checkAllCandidatesExhausted(candidateIDs []string, requestMode
 	}
 	if len(accountExhausted) == 0 {
 		// 没有任何账号的聚合剩余低于阈值
-		return false, false, nil
+		return false, nil
 	}
-	exhausted = true
-	// allExhausted = 所有候选账号都有匹配的耗尽 model
-	allExhausted = len(accountExhausted) == len(accountIDs)
-	return exhausted, allExhausted, nil
+	// 判定口径：每个候选渠道都必须归本插件管，且其账号上这个模型确实已耗尽。
+	// 任一未追踪渠道都视为「还有可去之处」（fail-open）。
+	for _, chID := range candidateIDs {
+		if chID == "" {
+			continue
+		}
+		aid, tracked := channelAccounts[chID]
+		if !tracked || !accountExhausted[aid] {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
-// accountsForChannels 把一批渠道 ID 映射为去重后的账号集合（account_id）。
-// 未配置 AK/SK 的渠道（不在 volc_quota_config）自动跳过。
-func (s *Service) accountsForChannels(channelIDs []string) []string {
+// channelAccountMap 把渠道 ID 映射到它配置的账号指纹（未配置 AK/SK 的渠道不在结果里）。
+// 保留渠道级粒度（不是去重后的账号列表）：判定「未追踪渠道不算耗尽」时必须逐渠道确认。
+func (s *Service) channelAccountMap(channelIDs []string) map[string]string {
+	out := make(map[string]string, len(channelIDs))
 	if len(channelIDs) == 0 {
-		return nil
+		return out
 	}
 	placeholders := strings.Repeat("?,", len(channelIDs))
 	placeholders = strings.TrimSuffix(placeholders, ",")
@@ -590,16 +542,15 @@ func (s *Service) accountsForChannels(channelIDs []string) []string {
 	for i, id := range channelIDs {
 		args[i] = id
 	}
-	rows, err := s.db.Query(`SELECT DISTINCT account_id FROM volc_quota_config WHERE channel_id IN (`+placeholders+`) AND account_id != ''`, args...)
+	rows, err := s.db.Query(`SELECT channel_id, account_id FROM volc_quota_config WHERE channel_id IN (`+placeholders+`) AND account_id != ''`, args...)
 	if err != nil {
-		return nil
+		return out
 	}
 	defer rows.Close()
-	var out []string
 	for rows.Next() {
-		var aid string
-		if err := rows.Scan(&aid); err == nil && aid != "" {
-			out = append(out, aid)
+		var chID, aid string
+		if err := rows.Scan(&chID, &aid); err == nil && chID != "" && aid != "" {
+			out[chID] = aid
 		}
 	}
 	return out
@@ -1142,7 +1093,7 @@ const activePackageCond = ` AND status NOT IN ` + inactiveQuotaStatuses + ` AND 
 //
 // 一个模型可能挂多个资源包（billing 按 InstanceNo 逐条返回），判断必须按 model 聚合，
 // 不能看单个包（如 deepseek-v4-flash-0731 有 7 个包，5 个 UsedUp + 2 个活包，聚合 201 万）。
-// 口径与 decrementLocalRemaining 扣减、checkAllCandidatesExhausted 拦截一致：
+// 口径与 decrementLocalRemaining 扣减、checkExhausted 预测一致：
 //   - 只统计 initial_total > 0（有扣减基准的包）
 //   - 排除非活动状态（Expired 等）与已到期（expiry_time < now）的包
 func (s *Service) aggregateLocalRemaining(accountID string) map[string]int64 {

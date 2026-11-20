@@ -4,11 +4,12 @@
 // 顶部是平台下拉：点击展开平台菜单，再点一次收起；点选平台后菜单立即关闭，
 // 点外部或 Esc 也会收起。下面接状态筛选标签与 Key 列表，点一行就把右栏切到那个 Key。
 import { computed } from 'vue'
-import { RiArrowDownSLine } from '@remixicon/vue'
+import { RiArrowDownSLine, RiCloseLine, RiSearchLine } from '@remixicon/vue'
 import type { ChannelStatus } from '@/lib/types'
 import type { KeyTestState, PlatformSummary } from '@/lib/modelStatus'
 import {
   availableModelCount,
+  filterKeysByName,
   filterKeysByGroup,
   keyEnabledState,
   keyGroup,
@@ -37,12 +38,20 @@ const props = defineProps<{
    * 拿到同一个筛选值，否则会出现「界面写测试 10 项、实际跑了 17 个」。
    */
   groupFilter: 'all' | KeyGroup
+  /**
+   * 左栏 Key 名称搜索词（父组件持有）。
+   *
+   * 批量测试按「列表里实际显示的这些 Key」跑，父组件必须拿到同一个搜索词，
+   * 否则会出现「界面写测试 3 项、实际跑了 17 个」。
+   */
+  keyword: string
 }>()
 
 const emit = defineEmits<{
   selectPlatform: [baseUrl: string]
   selectKey: [key: ChannelStatus]
   'update:groupFilter': [value: 'all' | KeyGroup]
+  'update:keyword': [value: string]
 }>()
 
 const activePlatform = computed(
@@ -97,8 +106,19 @@ const filterTabs = computed(() => {
 })
 
 /** 列表最终渲染的 Key：可用 → 手动关闭 → 异常 → 不可用，再按标签过滤。 */
+/** 是否正在按名称搜索（决定要不要显示「没有匹配的 Key」提示）。 */
+const searching = computed(() => props.keyword.trim().length > 0)
+
+/**
+ * 列表最终渲染的 Key：可用 → 手动关闭 → 异常 → 不可用，再按标签过滤，最后按名字搜索。
+ * 搜索作用在这一份结果上，页面那边用同一个 visibleKeys 口径跑批量测试，
+ * 界面上写几项就测几项。
+ */
 const visibleKeys = computed(() =>
-  filterKeysByGroup(activePlatform.value?.keys || [], groupFilter.value),
+  filterKeysByName(
+    filterKeysByGroup(activePlatform.value?.keys || [], groupFilter.value),
+    props.keyword,
+  ),
 )
 
 /** 切换平台时重置筛选：上一个平台的「异常」标签在新平台可能一个 Key 都不剩。 */
@@ -233,13 +253,42 @@ function modelSummary(key: ChannelStatus) {
       要么得把结果换算回库序（跨组拖拽还会被分组弹回），要么就得放弃状态分组。
       排序统一在「渠道与模型」页做，两边共用同一份 channels.key_position。
     -->
+    <!-- 搜索框：固定在列表上方（不在滚动容器里），只按 Key 名称过滤。 -->
+    <div class="border-b border-border p-2">
+      <div class="relative">
+        <RiSearchLine
+          size="14"
+          class="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground"
+        />
+        <Input
+          :model-value="props.keyword"
+          class="h-8 pl-7 pr-7 text-sm"
+          placeholder="搜索 Key 名称"
+          aria-label="搜索 Key 名称"
+          @update:model-value="emit('update:keyword', String($event))"
+        />
+        <button
+          v-if="searching"
+          type="button"
+          class="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+          aria-label="清空搜索"
+          @click="emit('update:keyword', '')"
+        >
+          <RiCloseLine size="14" />
+        </button>
+      </div>
+    </div>
+
     <div class="max-h-72 min-h-0 flex-1 overflow-auto p-1.5 md:max-h-none!">
+      <!-- 未选中也给卡片底色：选中/未选中的行都有实体感，不会被看成浮空文字。 -->
       <button
         v-for="key in visibleKeys"
         :key="key.channel.id"
         type="button"
         class="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left transition-colors"
-        :class="key.channel.id === activeKeyId ? 'bg-muted' : 'hover:bg-muted/60'"
+        :class="
+          key.channel.id === activeKeyId ? 'bg-muted' : 'bg-background hover:bg-muted/60'
+        "
         @click="emit('selectKey', key)"
       >
         <span class="min-w-0 flex-1" :title="key.channel.name">
@@ -330,7 +379,13 @@ function modelSummary(key: ChannelStatus) {
         </span>
       </button>
       <p v-if="!visibleKeys.length" class="px-2 py-3 text-sm text-muted-foreground">
-        {{ activePlatform?.keys.length ? '该状态下没有 Key' : '该平台暂无 Key' }}
+        {{
+          !activePlatform?.keys.length
+            ? '该平台暂无 Key'
+            : searching
+              ? `没有名字包含「${props.keyword.trim()}」的 Key`
+              : '该状态下没有 Key'
+        }}
       </p>
     </div>
   </div>

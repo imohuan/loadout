@@ -40,15 +40,19 @@ v1 完全不动，v2 为新增能力（前缀路由）平行扩展。
 
 | 事件 | 时机 | 改写点 |
 |---|---|---|
-| `ProxyBeforeUpstream` | 入口一次（聚合改写/额度拦截） | Body / Path / Query / Header |
-| `ProxyBeforeAttempt` | **每次渠道尝试前** | 同上（安检类，渠道上下文已就绪） |
+| `ProxyBeforeUpstream` | 入口一次（聚合改写） | Body / Path / Query / Header |
+| `ProxyBeforeAttempt` | **每次渠道尝试前** | 同上（安检类、额度预测，渠道上下文已就绪） |
 | `ProxyAfterUpstream` | 非流式响应返回后 | 状态码 / Header / Body |
 | `ProxyStreamChunk` | 流式逐 chunk | 单 chunk 字节（返回 nil = 删除） |
 
 此外还有失败/成功通知事件：`ProxyUpstreamFailed` / `ProxyUpstreamSucceeded` / `ProxyAttemptFailed`（见 [05-聚合与健康检查](./05-aggregate-health.md)）。
 
-> 为什么有 `BeforeUpstream` 和 `BeforeAttempt` 两套？前者只在入口执行一次（如聚合改写、额度拦截），
-> 后者在**每次渠道尝试前**都执行，保证切换渠道/切换模型后安检仍然生效（见 [02](./02-plugin-system.md) 与 [03](./03-plugin-dev-guide.md) 的常见坑）。
+> 为什么有 `BeforeUpstream` 和 `BeforeAttempt` 两套？前者只在入口执行一次（如聚合改写），
+> 后者在**每次渠道尝试前**都执行，保证切换渠道/切换模型后安检与额度预测仍然生效（见 [02](./02-plugin-system.md) 与 [03](./03-plugin-dev-guide.md) 的常见坑）。
+>
+> 额度预测（volc-free-quota）挂在 `ProxyBeforeAttempt`：只预测「当前渠道 + 当前模型」会不会失败，
+> 返回 `GatewayError{Retryable: true}` 让 core 当成一次失败尝试继续 failover，而不是在入口拒绝整个请求。
+> 它不写 `model_states` 冷却（只影响这一次尝试），钉定渠道的「测试」请求也会跳过预测。
 
 ## 4. 视觉能力附加（vision_v2）
 

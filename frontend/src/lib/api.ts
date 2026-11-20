@@ -1,4 +1,4 @@
-import { emitter } from './emitter'
+import { reportUnauthorized } from './session'
 import type { McpInvocationPage, McpStats, ModelStats } from './types'
 
 const jsonHeaders = { 'Content-Type': 'application/json' }
@@ -20,7 +20,8 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
     ...options,
   })
   const body = await response.json().catch(() => ({}))
-  if (response.status === 401) emitter.emit('unauthorized')
+  // 401 先二次确认会话：代理接口可能把上游的 401 原样带回来，那不代表你被登出。
+  if (response.status === 401) void reportUnauthorized()
   if (!response.ok) {
     throw new ApiError(
       body.error?.message || body.message || `请求失败（${response.status}）`,

@@ -2,7 +2,10 @@ package requestlog
 
 import (
 	"encoding/json"
+	"fmt"
+	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	modelgateway "loadout/plugins/model-gateway"
@@ -50,6 +53,66 @@ func TestBlobStoreDedupRoundTrip(t *testing.T) {
 	}
 }
 
+// TestCollectGarbageConcurrentWritesKeepIntegrity 回归：GC 与写日志并发时，
+// 不能让「刚写入的块 + 清单」被当成孤儿删掉。旧实现先算引用集合再删文件，
+// 中间写入的新块不在集合里，删完日志就缺了一段正文。
+func TestCollectGarbageConcurrentWritesKeepIntegrity(t *testing.T) {
+	// 保留默认保护期：写到一半的日志（块已落盘、清单未写）必须被跳过。
+	bs, err := newBlobStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 3; i++ {
+			if _, _, err := bs.collectGarbage(); err != nil {
+				t.Errorf("gc: %v", err)
+				return
+			}
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 300; i++ {
+			payload := []byte(fmt.Sprintf("concurrent-%d", i))
+			h, err := bs.putBlob(payload)
+			if err != nil {
+				t.Errorf("put: %v", err)
+				return
+			}
+			id := fmt.Sprintf("m-%03d", i)
+			if err := bs.writeManifest(id, requestManifest{ID: id, Result: "success", Messages: []string{h}}); err != nil {
+				t.Errorf("manifest: %v", err)
+				return
+			}
+		}
+	}()
+	wg.Wait()
+
+	ids, err := bs.manifestIDs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	missing := 0
+	for _, id := range ids {
+		m, err := bs.readManifest(id)
+		if err != nil {
+			continue
+		}
+		for _, h := range m.referencedHashes() {
+			if _, err := os.Stat(bs.blobPath(h)); err != nil {
+				missing++
+			}
+		}
+	}
+	if missing != 0 {
+		t.Fatalf("missing referenced blobs = %d, want 0 (gc must not race with writers)", missing)
+	}
+}
+
 // TestBlobStorePutGetRoundTrip 块写入后读回内容一致；重复写幂等（同哈希不重复落盘）。
 func TestBlobStorePutGetRoundTrip(t *testing.T) {
 	bs, err := newBlobStore(t.TempDir())
@@ -79,6 +142,9 @@ func TestBlobStorePutGetRoundTrip(t *testing.T) {
 
 // TestBlobStoreGC 清单删除后，无引用块被 GC 回收；仍被引用的块保留。
 func TestBlobStoreGC(t *testing.T) {
+	oldGrace := orphanGrace
+	orphanGrace = 0
+	t.Cleanup(func() { orphanGrace = oldGrace })
 	dir := t.TempDir()
 	bs, err := newBlobStore(dir)
 	if err != nil {
@@ -94,9 +160,12 @@ func TestBlobStoreGC(t *testing.T) {
 	}
 	// 删 m1：only1 失去引用，shared 还被 m2 引用
 	bs.deleteManifest("m1")
-	removed, err := bs.collectGarbage()
+	removed, corrupt, err := bs.collectGarbage()
 	if err != nil {
 		t.Fatal(err)
+	}
+	if len(corrupt) != 0 {
+		t.Fatalf("corrupt manifests = %v, want none", corrupt)
 	}
 	if removed != 1 {
 		t.Fatalf("gc removed = %d, want 1", removed)

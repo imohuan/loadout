@@ -1,4 +1,4 @@
-import { emitter } from '@/lib/emitter'
+import { reportUnauthorized } from '@/lib/session'
 import { getSseToken, isDesktopShell, getLoadoutBase } from '@/lib/base'
 
 // 配置导入导出（设置页「导出配置 / 导入配置」）。
@@ -85,7 +85,7 @@ export async function exportConfig(sections: TransferSectionKey[]): Promise<void
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ sections }),
   })
-  if (response.status === 401) emitter.emit('unauthorized')
+  if (response.status === 401) void reportUnauthorized()
   if (!response.ok) {
     let message = `导出失败（${response.status}）`
     try {
@@ -120,7 +120,7 @@ export async function previewImport(file: File): Promise<ImportPreview> {
     body,
   })
   const data = await response.json().catch(() => ({}))
-  if (response.status === 401) emitter.emit('unauthorized')
+  if (response.status === 401) void reportUnauthorized()
   if (!response.ok) {
     throw new Error(data.error?.message || data.message || `解析失败（${response.status}）`)
   }
@@ -141,7 +141,7 @@ export async function importConfig(
     body,
   })
   const data = await response.json().catch(() => ({}))
-  if (response.status === 401) emitter.emit('unauthorized')
+  if (response.status === 401) void reportUnauthorized()
   if (!response.ok) {
     throw new Error(data.error?.message || data.message || `导入失败（${response.status}）`)
   }

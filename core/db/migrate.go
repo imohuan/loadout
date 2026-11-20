@@ -1089,6 +1089,15 @@ ALTER TABLE mcp_servers ADD COLUMN quick_tools_json TEXT NOT NULL DEFAULT '[]';
 -- 手动重新启用成功后会清空该列。
 ALTER TABLE mcp_servers ADD COLUMN last_error TEXT NOT NULL DEFAULT '';
 `,
+}, {
+	version: 56,
+	name:    "channel-models-position",
+	sql: `
+-- 模型清单顺序：编辑器 / 同步模型弹窗里拖拽出来的先后要能保存下来。
+-- 之前只按模型名排序（ORDER BY model），拖完一刷新就打回字母序。
+-- 默认 0：老数据没有顺序，读取时按「position, model」兜底，结果与迁移前一致。
+ALTER TABLE channel_models ADD COLUMN position INTEGER NOT NULL DEFAULT 0;
+`,
 }}
 
 // Migrate applies all pending schema migrations and rejects an incompatible

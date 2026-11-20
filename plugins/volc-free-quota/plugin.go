@@ -63,8 +63,11 @@ func (p *volcQuota) Apply(ctx plugin.Context) error {
 
 	// 订阅 model-gateway 请求结束事件：记录 (channel_id, model) 使用次数。
 	ctx.On(modelgateway.ProxyUpstreamSucceeded, svc.HandleProxyUpstreamSucceeded)
-	// 拦截前：当目标免费模型在所有候选渠道上本地余额都耗尽时，返回 "模型免费额度用完"。
-	ctx.On(modelgateway.ProxyBeforeUpstream, svc.HandleProxyBeforeUpstream)
+	// 每次渠道尝试前：只预测「这条渠道 Key + 这个模型」的免费额度是否已耗尽。
+	// 语义是「这次换来的大概率是上游 429」，因此返回可重试错误——网关把它当成
+	// 该渠道的一次失败尝试，继续 failover（聚合模型切下一个目标），
+	// 不终止整个请求、也不影响其他平台/其他模型。
+	ctx.On(modelgateway.ProxyBeforeAttempt, svc.HandleProxyBeforeAttempt)
 
 	// 注册管理后台路由（AuthSession 由 core/servercore 自动包装）。
 	ctx.RegisterRoute(plugin.RouteSpec{

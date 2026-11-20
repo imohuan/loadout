@@ -9,8 +9,9 @@
 //
 // 同步语义：全量替换 —— 目标 Key 的模型目录被写成这份清单（新模型统一启用），
 // 不改动目标 Key 的 API Key、开关与费用设置。
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, nextTick, reactive, ref, watch } from 'vue'
 import { RiAddLine, RiFileCopyLine, RiLoader4Line } from '@remixicon/vue'
+import { VueDraggable } from 'vue-draggable-plus'
 import type { Channel } from '@/lib/types'
 import { groupChannelsByBaseURL, normalizeBaseURL } from '@/composables/useChannels'
 import BulkSelectButtons from '@/components/BulkSelectButtons.vue'
@@ -52,19 +53,88 @@ const displayMode = ref<'list' | 'tag'>('list')
 // 注意：不载入任何底稿时（刚打开弹窗），这里只该展示「本平台 Key 已有」的模型；
 // 真正的「支持的模型全集」要靠「获取模型」按钮去探测，不能凭空铺出来。
 const channelGroups = computed(() => groupChannelsByBaseURL(props.channels || []))
-const poolModels = computed(() => {
+/** 本平台（同 Base URL）全部 Key 已配置的模型集合。 */
+const platformModels = computed(() => {
   const target = currentGroupUrl.value
-  const set = new Set<string>(form.candidates)
+  const set = new Set<string>()
   for (const ch of props.channels || []) {
     if (target && normalizeBaseURL(ch.base_url) !== target) continue
     for (const m of ch.models || []) set.add(m)
   }
-  return [...set].sort()
+  return set
 })
+const poolModels = computed(() => {
+  const set = new Set<string>(form.candidates)
+  for (const m of platformModels.value) set.add(m)
+  // 保序不排序：下面允许拖拽调整候选顺序，sort 一次就把拖出来的顺序抹平了。
+  return [...set]
+})
+/**
+ * 候选池的可拖拽副本（红框里那一块标签）。
+ *
+ * 之前候选池是 computed（只读的），标签只能点选、不能拖 —— 用户想调整的是
+ * 「这份清单里的先后」，而候选池正是他第一眼看到的清单。这里用一份可写副本，
+ * 拖完把顺序写回 form.candidates（载入底稿 / 自定义添加都会更新它）。
+ */
+const dragPool = ref<string[]>([])
+/** 是否正在拖拽：与官方示例一致，拖拽期间关掉 TransitionGroup 的 name。 */
+const poolDragging = ref(false)
+/** 松手后 nextTick 再复位（官方示例写法，避免与 Sortable 收尾抢 DOM）。 */
+function endPoolDrag() {
+  nextTick(() => {
+    poolDragging.value = false
+    // 拖拽期间跳过了候选池重建，这里补一次。
+    syncDragPool()
+  })
+}
+function syncDragPool() {
+  const set = new Set(form.candidates)
+  for (const m of platformModels.value) set.add(m)
+  // 保留用户拖出来的顺序，再补上本平台 Key 里出现的新模型。
+  const next = dragPool.value.filter((m) => set.has(m))
+  for (const m of poolModels.value) if (!next.includes(m)) next.push(m)
+  if (next.length !== dragPool.value.length || next.some((m, i) => m !== dragPool.value[i])) {
+    dragPool.value = next
+  }
+}
+function onPoolReorder(models: string[]) {
+  dragPool.value = models
+  // 候选顺序 = 用户拖出来的顺序：写回 candidates，保存/同步时按它落库。
+  form.candidates = models.slice()
+}
+/**
+ * 搜索时也能拖：把拖完的子集按原位置填回完整候选池。
+ *
+ * 搜索会把候选缩成一两条，如果直接拿子集覆盖整池，其它模型就被删掉了。
+ * 所以只替换「原本被过滤出来的那些位置」，其余保持不动。
+ */
+function onFilteredReorder(models: string[]) {
+  const q = modelSearch.value.trim().toLowerCase()
+  if (!q) return onPoolReorder(models)
+  const positions: number[] = []
+  dragPool.value.forEach((m, i) => {
+    if (m.toLowerCase().includes(q)) positions.push(i)
+  })
+  const next = dragPool.value.slice()
+  positions.forEach((pos, i) => {
+    if (models[i] !== undefined) next[pos] = models[i]
+  })
+  onPoolReorder(next)
+}
+watch(
+  () => [form.candidates.slice(), props.channels] as const,
+  () => {
+    // 拖拽期间不重建列表：否则 Vue 立刻按新顺序重排，Sortable 算出的位移恒为 0。
+    if (poolDragging.value) return
+    syncDragPool()
+  },
+  { immediate: true, deep: false },
+)
+
 const filteredModels = computed(() => {
   const q = modelSearch.value.trim().toLowerCase()
-  if (!q) return poolModels.value
-  return poolModels.value.filter((m) => m.toLowerCase().includes(q))
+  if (!q) return dragPool.value
+  return dragPool.value.filter((m) => m.toLowerCase().includes(q))
 })
 const selectedModelCount = computed(() => form.models.length)
 // 所有 Key 的模型并集，作为「从其他 Key 载入模型」的候选池（与 ChannelEditor 的导入入口一致）。
@@ -76,7 +146,7 @@ const allModels = computed(() => {
     if (target && normalizeBaseURL(ch.base_url) !== target) continue
     for (const m of ch.models || []) set.add(m)
   }
-  return [...set].sort()
+  return [...set]
 })
 // 载入源的候选 Key：只能从同一平台（同 Base URL）的其他 Key 载入。
 const sourceOptions = computed(() => {
@@ -132,6 +202,7 @@ function loadFromChannel(id: string) {
   const models = (channel?.models || []).slice()
   form.models = models
   form.candidates = models.slice()
+  dragPool.value = models.slice()
   modelSearch.value = ''
 }
 function reloadFromSource() {
@@ -143,6 +214,7 @@ function importAllModels() {
   sourceId.value = ALL_SOURCE_ID
   form.models = [...allModels.value]
   form.candidates = [...allModels.value]
+  dragPool.value = [...allModels.value]
   modelSearch.value = ''
 }
 
@@ -154,6 +226,40 @@ function sourcePreview(models?: string[]) {
   const list = models || []
   if (!list.length) return '尚未配置模型'
   return list.slice(0, 30).join('、') + (list.length > 30 ? '…' : '')
+}
+
+// ===== 已选模型的拖拽排序 =====
+/**
+ * 已选模型的可拖拽副本：拖拽组件需要可写数组承载内部移动，松手后写回 form.models。
+ *
+ * 这个顺序会随同步一起写进目标 Key 的模型清单（后端按数组下标存 position），
+ * 刷新后仍然是用户排好的先后。
+ */
+const dragModels = ref<string[]>([])
+/** 已选列表的拖拽状态（同上：拖拽时关掉 TransitionGroup 的过渡名）。 */
+const selectedDragging = ref(false)
+/** 松手后 nextTick 再复位（同上）。 */
+function endSelectedDrag() {
+  nextTick(() => {
+    selectedDragging.value = false
+    if (!sameModels(dragModels.value, form.models)) dragModels.value = form.models.slice()
+  })
+}
+function sameModels(a: string[], b: string[]) {
+  return a.length === b.length && a.every((m, i) => m === b[i])
+}
+watch(
+  () => form.models,
+  (models) => {
+    // 同上：已选列表拖拽中不同步，松手（endSelectedDrag）后再补。
+    if (selectedDragging.value) return
+    if (!sameModels(dragModels.value, models)) dragModels.value = models.slice()
+  },
+  { immediate: true },
+)
+function onModelReorder(models: string[]) {
+  dragModels.value = models
+  form.models = models.slice()
 }
 
 // ===== 目标 Key 多选 =====
@@ -216,6 +322,8 @@ watch(
     sourceId.value = ''
     form.models = []
     form.candidates = []
+    dragModels.value = []
+    dragPool.value = []
     modelSearch.value = ''
     displayMode.value = 'list'
     selectedIds.value = groupUrl
@@ -361,17 +469,40 @@ function submit() {
             </div>
             <div
               v-if="filteredModels.length"
-              class="flex max-h-56 flex-wrap gap-1.5 overflow-y-auto rounded-md border border-border p-2"
+              class="relative max-h-56 overflow-x-hidden overflow-y-auto rounded-md border border-border p-2"
             >
-              <Button
-                v-for="m in filteredModels"
-                :key="m"
-                type="button"
-                size="sm"
-                :variant="form.models.includes(m) ? 'default' : 'outline'"
-                @click="toggleModel(m)"
-                >{{ m }}</Button
+              <!--
+                候选标签：点一下 = 选中/取消，按住拖动 = 调整清单顺序。
+                这些都是 <button>，浏览器默认会吃掉拖动事件，所以用 @dragstart.prevent
+                关掉原生拖拽，交给 Sortable 的指针实现。
+              -->
+              <VueDraggable
+                :model-value="dragPool"
+                target=".sync-pool-list"
+                :animation="150"
+                @start="poolDragging = true"
+                @end="endPoolDrag"
+                @update:model-value="onFilteredReorder"
               >
+                <TransitionGroup
+                  type="transition"
+                  tag="div"
+                  :name="!poolDragging ? 'model-chip' : undefined"
+                  class="model-pool-list sync-pool-list model-chip-list flex flex-wrap gap-1.5"
+                >
+                  <Button
+                    v-for="m in filteredModels"
+                    :key="m"
+                    type="button"
+                    size="sm"
+                    draggable="false"
+                    class="model-chip cursor-grab select-none active:cursor-grabbing transition-none"
+                    :variant="form.models.includes(m) ? 'default' : 'outline'"
+                    @click="toggleModel(m)"
+                    >{{ m }}</Button
+                  >
+                </TransitionGroup>
+              </VueDraggable>
             </div>
             <!-- 还没载入任何底稿、本平台也没有可用模型：候选区保持空，等用户主动载入 -->
             <div
@@ -414,6 +545,40 @@ function submit() {
           <p class="text-xs text-muted-foreground">
             已选 {{ selectedModelCount }} 个模型；这些模型会被写入下面的目标 Key。
           </p>
+          <!--
+            已选模型：直接拖拽调整顺序，这个先后会一起写进目标 Key。
+            顺序同时决定 /v1/models 与模型状态页里看到的模型排列。
+          -->
+          <div
+            v-if="dragModels.length"
+            class="relative max-h-40 overflow-x-hidden overflow-y-auto rounded-md border border-border p-2"
+          >
+            <VueDraggable
+              :model-value="dragModels"
+              target=".sync-selected-list"
+              :animation="150"
+              @start="selectedDragging = true"
+              @end="endSelectedDrag"
+              @update:model-value="onModelReorder"
+            >
+              <TransitionGroup
+                type="transition"
+                tag="div"
+                :name="!selectedDragging ? 'model-chip' : undefined"
+                class="model-selected-list sync-selected-list model-chip-list flex flex-wrap gap-1.5"
+              >
+                <button
+                  v-for="m in dragModels"
+                  :key="m"
+                  type="button"
+                  class="model-chip flex cursor-grab select-none items-center gap-1 rounded-md border border-border bg-muted px-2 py-0.5 font-mono text-[11px] text-foreground active:cursor-grabbing"
+                  :title="`拖动排序：${m}`"
+                >
+                  {{ m }}
+                </button>
+              </TransitionGroup>
+            </VueDraggable>
+          </div>
         </div>
 
         <!-- 2. 目标 Key 多选 -->

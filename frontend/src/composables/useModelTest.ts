@@ -1,6 +1,6 @@
 import { ApiError, request } from '@/lib/api'
-import { emitter } from '@/lib/emitter'
-import { extractErrorSummary } from '@/lib/errorExtract'
+import { reportUnauthorized } from '@/lib/session'
+import { extractErrorSummary, summarizeUpstreamError } from '@/lib/errorExtract'
 import type { RouteLog } from '@/lib/types'
 
 // 模型测试目标：既可用 channel_id 复用已存渠道（后端解密密钥，不回传明文），
@@ -167,7 +167,9 @@ export function useModelTest() {
     const headerLog = response.headers.get('X-Test-Log')
     let summary: RouteLog | null = headerLog ? decodeTestLogSummary(headerLog) : null
     if (summary) onSummary?.(summary)
-    if (response.status === 401) emitter.emit('unauthorized')
+    // 这里的 401 多半是上游 Key 失效（会连 TestProbeResult 一起带回给用户看），
+    // 必须二次确认后才算登出，否则点一次「测试」就被踢到登录页。
+    if (response.status === 401) void reportUnauthorized()
     if (!response.ok) {
       const body = await response.json().catch(() => ({}))
       throw new ApiError(
@@ -295,15 +297,24 @@ export function useModelTest() {
         body: JSON.stringify({ ...target, stream: true, model, messages }),
         signal: controller.signal,
       })
-      if (response.status === 401) emitter.emit('unauthorized')
+      if (response.status === 401) void reportUnauthorized()
       if (!response.ok) {
-        const body = await response.json().catch(() => ({}))
+        // 先读原文再尝试解析：上游报错经常是 HTML（反代 / 网关的 401、502 页面），
+        // 直接 json() 会解析失败得到 {}，用户就只能看到一句没有信息量的
+        // 「请求失败（502）」，分不清是 Key 失效、地址写错还是网关挂了。
+        const raw = await response.text().catch(() => '')
+        let body: any = {}
+        try {
+          body = JSON.parse(raw)
+        } catch {
+          body = {}
+        }
         return {
           ok: false,
           status: response.status,
           error:
             extractErrorSummary(JSON.stringify(body), null, 300) ||
-            `请求失败（${response.status}）`,
+            summarizeUpstreamError(raw, response.status),
         }
       }
       const reader = response.body?.getReader()

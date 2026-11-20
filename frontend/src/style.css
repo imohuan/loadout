@@ -53,3 +53,47 @@
 ::-webkit-scrollbar-thumb:hover {
   background-color: var(--scrollbar-thumb-hover);
 }
+
+/*
+ * 拖拽排序 = vue-draggable-plus 官方「混合动画」写法（demo/transitions）：
+ *
+ *   <VueDraggable v-model=... :animation="150" target=".xxx" @start @end>
+ *     <TransitionGroup type="transition" :name="!drag ? 'fade' : undefined" class="xxx">
+ *
+ * 两段动画各管一段，缺一不可：
+ *   1) 拖拽过程中 —— Sortable 的 animation 属性，让其它项平滑让位；
+ *   2) 松手 / 还原后 —— TransitionGroup 的 `.名字-move` 过渡。
+ * 官方示例里 @end 用 nextTick 才把 drag 复位，否则两段动画会同时抢 DOM。
+ *
+ * 下面这段 CSS 就是官方示例里 `.fade-move` 那一组，只是换了名字。
+ */
+.model-chip-move,
+.model-chip-enter-active,
+.model-chip-leave-active,
+.key-sort-move,
+.key-sort-enter-active,
+.key-sort-leave-active {
+  transition: all 0.5s cubic-bezier(0.55, 0, 0.1, 1);
+}
+
+.model-chip-enter-from,
+.model-chip-leave-to,
+.key-sort-enter-from,
+.key-sort-leave-to {
+  opacity: 0;
+}
+
+/* 离场元素脱离文档流，其它项才能平滑补位（同官方示例 .fade-leave-active） */
+.model-chip-leave-active,
+.key-sort-leave-active {
+  position: absolute;
+}
+
+/* 拖拽时的占位与抬起观感（Sortable 只给类名，不给样式） */
+.sortable-ghost {
+  opacity: 0.4;
+}
+
+.sortable-chosen {
+  box-shadow: 0 6px 16px -8px rgb(0 0 0 / 0.35);
+}

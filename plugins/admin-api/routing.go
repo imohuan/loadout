@@ -271,7 +271,8 @@ func (s *Service) handleChannelUpdateDB(w http.ResponseWriter, r *http.Request) 
 			values = append(values, db.ChannelModel{Model: pm.Model, Source: "probe", Enabled: true, Context: pm.Context, FirstSeenAt: now, LastSeenAt: now})
 		}
 		// 合并保留手动配置的模型（探测结果只替换 probe 来源，manual 不丢）。
-		channel.Models = mergeManualModels(channel.Models, values, now)
+		// 再按用户排好的顺序重排：刷新模型不该把他拖出来的先后打乱。
+		channel.Models = orderModels(mergeManualModels(channel.Models, values, now), channel.Models)
 	}
 	if err := s.routing.ReplaceChannels(r.Context(), channels); err != nil {
 		s.writeServerError(w, err)
@@ -323,7 +324,7 @@ func (s *Service) handleChannelRefreshModelsDB(w http.ResponseWriter, r *http.Re
 		values = append(values, db.ChannelModel{Model: pm.Model, Source: "probe", Enabled: true, Context: pm.Context, FirstSeenAt: now, LastSeenAt: now})
 	}
 	// 合并保留手动配置的模型（探测结果只替换 probe 来源，manual 不丢）。
-	values = mergeManualModels(channel.Models, values, now)
+	values = orderModels(mergeManualModels(channel.Models, values, now), channel.Models)
 	if err := s.routing.ReplaceChannelModels(r.Context(), channel.ID, values); err != nil {
 		s.writeServerError(w, err)
 		return
@@ -335,6 +336,38 @@ func (s *Service) handleChannelRefreshModelsDB(w http.ResponseWriter, r *http.Re
 type channelModelInput struct {
 	Model   string `json:"model"`
 	Enabled *bool  `json:"enabled"`
+}
+
+// orderModels 把「启发式生成的模型清单」按已有目录顺序重排。
+//
+// 探测 / 合并 / 追加的代码不关心先后（历史上库里就是按名字排），但清单的 position
+// 现在是用户可见、可拖拽的顺序。若这些路径随手 append，一次「刷新模型」就会把用户
+// 排好的顺序打回探测顺序或字母序。
+//
+// 规则：原有模型保持原顺序；新出现的模型接在末尾（顺序 = 入参顺序）。
+func orderModels(models []db.ChannelModel, previous []db.ChannelModel) []db.ChannelModel {
+	if len(models) == 0 || len(previous) == 0 {
+		return models
+	}
+	byName := make(map[string]db.ChannelModel, len(models))
+	for _, m := range models {
+		byName[m.Model] = m
+	}
+	out := make([]db.ChannelModel, 0, len(models))
+	used := make(map[string]bool, len(models))
+	for _, prev := range previous {
+		if m, ok := byName[prev.Model]; ok && !used[prev.Model] {
+			out = append(out, m)
+			used[prev.Model] = true
+		}
+	}
+	for _, m := range models {
+		if !used[m.Model] {
+			out = append(out, m)
+			used[m.Model] = true
+		}
+	}
+	return out
 }
 
 // handleChannelModelsReplaceDB 全量编辑渠道模型清单（添加/删除/禁用/启用一接口搞定）。

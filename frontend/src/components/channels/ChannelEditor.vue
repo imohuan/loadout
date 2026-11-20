@@ -1,10 +1,19 @@
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue'
-import { RiCloseLine, RiRefreshLine, RiSearchLine } from '@remixicon/vue'
+import { computed, nextTick, reactive, ref, watch } from 'vue'
+import {
+  RiCloseLine,
+  RiFlaskLine,
+  RiLoader4Line,
+  RiRefreshLine,
+  RiSearchLine,
+} from '@remixicon/vue'
+import { VueDraggable } from 'vue-draggable-plus'
 import type { Channel } from '@/lib/types'
 import { useChannels, normalizeBaseURL, type ChannelInput } from '@/composables/useChannels'
+import { useModelTest } from '@/composables/useModelTest'
 
 const service = useChannels()
+const { probe } = useModelTest()
 const props = defineProps<{
   channel?: Channel
   pending?: boolean
@@ -42,6 +51,12 @@ const modelSearch = ref('')
 // "获取模型"按钮状态：探测中 / 探测错误。
 const fetchingModels = ref(false)
 const probeError = ref('')
+// 测试卡片的状态：选中的测试模型、是否正在测、最近一次结果。
+// 必须声明在 resetForm 之前：resetForm 会清结果，而它在 watch(immediate) 里
+// 于 setup 阶段就会跑，声明在后面的 const 此时还在 TDZ。
+const testModel = ref('')
+const testing = ref(false)
+const testResult = ref<{ model: string; ok: boolean; error?: string } | null>(null)
 
 function resetForm() {
   const channel = props.channel
@@ -61,6 +76,9 @@ function resetForm() {
   })
   modelSearch.value = ''
   probeError.value = ''
+  // 上一次的测试结果属于上一个 Key：换一个渠道/Key 打开时必须清掉，
+  // 否则会出现「新 Key 还没测，界面已经写着测试通过」。
+  testResult.value = null
 }
 // 每次打开时重置表单：连续两次"添加 Key"（editing 恒 undefined，channel 不变化）
 // 也必须清空残留，不能只 watch channel。
@@ -91,8 +109,10 @@ watch(
 
 // ===== 模型列表（候选 tag 网格 + 搜索 + 全选/反选 + 自定义）=====
 const modelsError = computed(() => props.channel?.models_error || '')
-// 候选池：已获取模型 ∪ 自定义模型，去重排序。
-const candidateModels = computed(() => [...new Set(form.model_candidates)].sort())
+// 候选池：已获取模型 ∪ 自定义模型，去重**保序**。
+// 这里不能排序：用户拖拽调出来的先后就是保存进库的顺序，排一次字母序等于
+// 把刚才的拖拽全抹掉。
+const candidateModels = computed(() => [...new Set(form.model_candidates)])
 const filteredModels = computed(() => {
   const q = modelSearch.value.trim().toLowerCase()
   if (!q) return candidateModels.value
@@ -166,6 +186,96 @@ async function fetchModels() {
   }
 }
 
+// ===== 模型清单拖拽排序 =====
+/**
+ * 已选模型的可拖拽副本。
+ *
+ * 拖拽组件需要可写数组承载内部移动，所以用一份本地副本，松手后按新顺序写回
+ * form.models。保存时这个顺序就是渠道模型清单的顺序（后端按数组下标落库）。
+ */
+const dragModels = ref<string[]>([])
+/** 是否正在拖拽（官方「混合动画」示例的 drag 标记）。 */
+const dragging = ref(false)
+/** 松手后 nextTick 复位，避免与 Sortable 收尾抢 DOM（官方示例写法）。 */
+function endDrag() {
+  nextTick(() => {
+    dragging.value = false
+    // 拖拽期间跳过了「form.models → dragModels」的同步，这里补一次，
+    // 保证后续在别处改模型清单时列表能跟上。
+    if (!sameModels(dragModels.value, form.models)) dragModels.value = form.models.slice()
+  })
+}
+function sameModels(a: string[], b: string[]) {
+  return a.length === b.length && a.every((m, i) => m === b[i])
+}
+watch(
+  () => form.models,
+  (models) => {
+    // 拖拽期间绝不同步：Sortable 正在做位移动画，此时给 dragModels 重新赋一个
+    // 新数组会让 Vue 立刻按新顺序重排 DOM，Sortable 抓到的「旧位置」就变成了新位置，
+    // 补间位移恒为 0 —— 表现就是「拖动时没有动画」。拖拽结束（endDrag）后再同步。
+    if (dragging.value) return
+    // 内容或顺序变了才同步；拖拽过程中父级刷新不该把列表弹回旧顺序。
+    if (!sameModels(dragModels.value, models)) dragModels.value = models.slice()
+  },
+  { immediate: true },
+)
+function onModelReorder(models: string[]) {
+  dragModels.value = models
+  form.models = models.slice()
+}
+
+// ===== 就地测试已选模型 =====
+/**
+ * 当前选中的测试模型 + 测试结果。
+ *
+ * 这里直接请求上游（不走本机 /v1）：这是「保存前先探一下这个模型能不能用」的
+ * 轻量检查，编辑中的 Key 可能还没落库，没必要也不应该影响渠道健康状态。
+ * 失败不抛异常，把上游原文带回来显示，用户才知道是限流、欠费还是名字写错。
+ */
+/** 默认测第一个已选模型：打开就能点「测试」，不用先在下拉里挑。 */
+watch(
+  () => form.models,
+  (models) => {
+    if (!models.length) {
+      testModel.value = ''
+      testResult.value = null
+      return
+    }
+    if (!models.includes(testModel.value)) testModel.value = models[0]
+  },
+  { immediate: true },
+)
+async function runModelTest() {
+  if (!testModel.value || testing.value) return
+  const baseUrl = form.base_url.trim()
+  if (!baseUrl) {
+    testResult.value = { model: testModel.value, ok: false, error: '请先填写 Base URL' }
+    return
+  }
+  testing.value = true
+  const model = testModel.value
+  try {
+    // 编辑已有 Key：优先用 channel_id 让后端解密已存密钥（Key 输入框留空时也能测）。
+    // 新建 / 添加 Key：用表单里刚填的 api_key。
+    const target = props.channel?.id
+      ? { channel_id: props.channel.id, api_key: form.api_key, base_url: baseUrl }
+      : { base_url: baseUrl, api_key: form.api_key }
+    const result = await probe(target, model, [{ role: 'user', content: 'ping' }])
+    testResult.value = result.ok
+      ? { model, ok: true }
+      : { model, ok: false, error: result.error || `请求失败（${result.status}）` }
+  } catch (err) {
+    testResult.value = {
+      model,
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+    }
+  } finally {
+    testing.value = false
+  }
+}
+
 // ===== 从同渠道其他 Key 导入模型（用于探测失败的渠道，参考同组兄弟 Key 的已知模型）=====
 // 拉取全量渠道；按当前 base_url normalize 过滤；编辑模式排除自己，添加模式不过滤（新 Key 无 id）。
 const allChannels = ref<Channel[]>([])
@@ -225,14 +335,23 @@ function submit() {
     // 添加 Key 模式：渠道名跟随所属组，交由后端继承，避免把组名当新值提交。
     channel_name: props.lockBaseUrl ? '' : form.channel_name,
     models: [...form.models],
-    model_candidates: [...candidateModels.value],
+    // 候选清单的顺序 = 用户拖出来的已选顺序优先，未选的接在后面。
+    // 直接提交原始候选顺序（探测顺序）会让拖拽白做：后端按数组下标存 position。
+    model_candidates: [
+      ...form.models,
+      ...candidateModels.value.filter((m) => !form.models.includes(m)),
+    ],
   })
 }
 </script>
 
 <template>
   <Dialog v-model:open="open">
-    <DialogContent class="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-2xl!">
+    <!-- overflow-x-hidden：拖拽排序时 Sortable 的克隆块会临时超出内容区，
+         不隐藏横向溢出的话，弹窗底部会多出一条横向滚动条。 -->
+    <DialogContent
+      class="max-h-[calc(100dvh-2rem)] overflow-x-hidden overflow-y-auto sm:max-w-2xl!"
+    >
       <DialogHeader>
         <DialogTitle>{{
           lockBaseUrl ? '添加 Key' : channel ? '编辑渠道' : '添加渠道'
@@ -466,21 +585,110 @@ function submit() {
               </div>
             </PopoverContent>
           </Popover>
+          <!--
+            已选模型：直接拖拽调整顺序。这个顺序会随保存写入渠道模型清单，
+            也是「模型状态」页、/v1/models 里看到的先后。
+            不设独立拖拽手柄：整块标签都可拖，点标签里的 × 仍是删除。
+          -->
           <div
             v-if="form.models.length"
-            class="flex max-h-40 flex-wrap gap-1.5 overflow-y-auto rounded-md border border-border p-2"
+            class="relative max-h-40 overflow-x-hidden overflow-y-auto rounded-md border border-border p-2"
           >
-            <Badge v-for="m in form.models" :key="m" variant="secondary" class="gap-1 py-0 pr-1">
-              {{ m }}
-              <button
-                type="button"
-                class="rounded-full p-0.5 hover:bg-muted hover:text-destructive"
-                aria-label="移除"
-                @click="toggleModel(m)"
+            <!--
+              官方写法：VueDraggable 负责排序行为，里面放 TransitionGroup 负责列表 DOM。
+              target 指向 TransitionGroup 渲染出的那个容器，animation 就是换位动画。
+            -->
+            <VueDraggable
+              :model-value="dragModels"
+              target=".channel-editor-model-list"
+              :animation="200"
+              @start="dragging = true"
+              @end="endDrag"
+              @update:model-value="onModelReorder"
+            >
+              <TransitionGroup
+                type="transition"
+                tag="div"
+                :name="!dragging ? 'model-chip' : undefined"
+                class="model-chip-list channel-editor-model-list flex flex-wrap gap-1.5"
               >
-                <RiCloseLine size="12" />
-              </button>
-            </Badge>
+                <!--
+                  每一项都是独立的 button（与 Key 列表同构）。
+                  之前直接渲染 Badge（span），Sortable 拖动时既要移动元素又要 Vue 重绘，
+                  位移量会算成 0，表现为「拖拽过程中没有换位动画」。
+                -->
+                <button
+                  v-for="m in dragModels"
+                  :key="m"
+                  type="button"
+                  class="model-chip flex cursor-grab select-none items-center gap-1 rounded-md border border-border bg-muted px-2 py-0.5 font-mono text-[11px] text-foreground active:cursor-grabbing"
+                  :title="`拖动排序：${m}`"
+                >
+                  <span>{{ m }}</span>
+                  <span
+                    class="rounded-full p-0.5 hover:bg-background hover:text-destructive"
+                    aria-label="移除"
+                    @click.stop="toggleModel(m)"
+                  >
+                    <RiCloseLine size="12" />
+                  </span>
+                </button>
+              </TransitionGroup>
+            </VueDraggable>
+          </div>
+
+          <!--
+            测试卡片：对当前选中的某个模型真的打一次上游，看它能不能出结果。
+            放在模型清单下面（不藏在下拉里），保存前就能确认这个名字上游认不认。
+          -->
+          <div class="space-y-2 rounded-md border border-border p-2">
+            <div class="flex flex-wrap items-center gap-2">
+              <Label for="model-test-pick" class="shrink-0 text-xs text-muted-foreground"
+                >测试模型</Label
+              >
+              <Select v-model="testModel">
+                <SelectTrigger
+                  id="model-test-pick"
+                  class="h-8 flex-1"
+                  :disabled="!form.models.length || testing"
+                >
+                  <SelectValue placeholder="先在上面选模型" />
+                </SelectTrigger>
+                <SelectContent position="popper" side="bottom" align="start" :side-offset="4">
+                  <SelectGroup>
+                    <SelectItem v-for="m in form.models" :key="m" :value="m">{{ m }}</SelectItem>
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                class="shrink-0"
+                :disabled="!testModel || testing"
+                :title="`向 ${form.base_url || 'Base URL'} 发一条 ping，看模型能不能出结果`"
+                @click="runModelTest"
+              >
+                <RiLoader4Line v-if="testing" class="animate-spin" size="14" />
+                <RiFlaskLine v-else size="14" />
+                {{ testing ? '测试中' : '测试' }}
+              </Button>
+            </div>
+            <p
+              v-if="testResult && testResult.ok"
+              class="rounded bg-emerald-500/15 px-2 py-1 text-xs text-emerald-700 dark:text-emerald-300"
+            >
+              「{{ testResult.model }}」测试通过
+            </p>
+            <p
+              v-else-if="testResult"
+              class="rounded bg-red-500/15 px-2 py-1 text-xs leading-snug text-red-700 dark:text-red-300"
+            >
+              「{{ testResult.model }}」测试失败：{{ testResult.error }}
+            </p>
+            <p v-else class="text-xs text-muted-foreground">
+              保存前可以先测一个模型；失败原因会显示上游原文。
+            </p>
           </div>
           <p v-if="probeError" class="text-xs text-destructive">获取模型失败：{{ probeError }}</p>
           <p v-else-if="modelsError" class="text-xs text-destructive">

@@ -150,7 +150,7 @@ func All() []plugin.Plugin {
 | `EventBeforeUpstream` | `chat:before-upstream` | chat 转发前（一次） | 改写 Messages/VisionText |
 | `EventUpstreamFailed` | `chat:upstream-failed` | chat 上游失败 | 切换目标（旧链路） |
 | `ProxyBeforeUpstream` | `proxy:before-upstream` | 透明代理转发前（入口一次） | 改写 Body/Path/Query/Header |
-| `ProxyBeforeAttempt` | `proxy:before-attempt` | **每次渠道尝试前** | 安检/改写（渠道上下文已就绪） |
+| `ProxyBeforeAttempt` | `proxy:before-attempt` | **每次渠道尝试前** | 安检/改写、额度预测（渠道上下文已就绪） |
 | `ProxyAfterUpstream` | `proxy:after-upstream` | 非流式响应返回后 | 改写状态码/Header/Body |
 | `ProxyStreamChunk` | `proxy:stream-chunk` | 流式逐 chunk | 改写/删除 chunk（返回 nil 删除） |
 | `ProxyUpstreamFailed` | `proxy:upstream-failed` | 上游失败（聚合路径） | failover |
@@ -158,6 +158,9 @@ func All() []plugin.Plugin {
 | `ProxyAttemptFailed` | `proxy:attempt-failed` | 每次尝试写失败行 | 日志收尾 |
 
 > **关键陷阱**：需要"渠道上下文"（当前渠道/BaseURL）的改写，**必须挂 `ProxyBeforeAttempt`**，而非 `ProxyBeforeUpstream`（`ProxyBeforeUpstream` 在入口阶段渠道上下文尚为空）。vision_v2 正是因此从 `ProxyBeforeUpstream` 改到 `ProxyBeforeAttempt`——见 [03](./03-plugin-dev-guide.md) 的常见坑。
+>
+> 同一道理也适用于「按渠道判定」的能力：volc-free-quota 的免费额度预测挂在 `ProxyBeforeAttempt`，
+> 返回 `GatewayError{Retryable: true}` 表示「这条渠道+模型这次会失败」，由 core 当成一次失败尝试继续 failover。
 
 ## 下一步
 

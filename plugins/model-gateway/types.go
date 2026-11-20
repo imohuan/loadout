@@ -74,6 +74,19 @@ type GatewayError struct {
 	Status int    // HTTP 状态码（0 表示默认 400）
 	Type   string // OpenAI 错误类型，如 vision_capability_error
 	Msg    string // 错误消息
+
+	// FailureClass 失败分类（可选，空 = 按 Type 归类）。
+	// 仅用于路由日志里的 failure_class 列，方便筛选「这次是额度预测还是上游真返回」。
+	FailureClass string
+	// Retryable 表示「这次拒绝只针对当前渠道 + 当前模型，请求换个渠道/模型还能继续」。
+	//
+	// 语义与普通拒绝严格区分：普通 GatewayError（内容违规、鉴权、无可用候选）
+	// 终止整个请求；Retryable=true 时网关把这次拒绝当成一次「该渠道的失败尝试」
+	// 落库并继续 failover（聚合模型会切下一个目标）。
+	//
+	// 典型使用者：volc-free-quota 的额度预测——它只说明「这个账号的这个模型
+	// 接下来大概率会失败」，不代表别的渠道/模型不能用。
+	Retryable bool
 }
 
 // Error 实现 error 接口，返回错误消息。
@@ -235,6 +248,14 @@ const MetadataForceStream = "__force_stream"
 // 与 __current_channel 分开是必要的：后者是聚合模型的渠道约束，语义是
 // 「指定渠道不可用则 failover 到其他目标」，不能顺带绕开熔断保护。
 const MetadataPinChannel = "__pin_channel"
+
+// MetadataCurrentChannel 本次尝试实际要用的渠道 Key ID（core 在每次尝试前写入，
+// aggregate 的 failover 会先重设它）。
+//
+// 能力插件要按「当前这一个渠道」做判定时（例如 volc-free-quota 的额度预测）用它，
+// 不要自己拼字符串：这个键在 aggregate / vision_v2 / request-log 等多处读写，
+// 拼错会静默失配（拿不到渠道 → 跳过判定 → 看起来像插件没生效）。
+const MetadataCurrentChannel = "__current_channel"
 
 // ProxyAttemptFailed 单次渠道尝试失败的纯通知事件（proxy:attempt-failed）。
 // 与 ProxyUpstreamFailed（聚合全败后 failover 专用，仅聚合路径触发）的区别：

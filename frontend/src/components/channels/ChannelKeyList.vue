@@ -5,8 +5,8 @@
 // 曾尝试用 shadcn Popover 的 Trigger 模式，但它的 click 会与 DismissableLayer 的
 // outside 判定相互干扰（关闭态下点不开），故沿用模型状态页验证过的手写定位方案：
 // 菜单挂在触发条容器内、top = 触发条底边 + 6px、宽 20rem 不跟随触发条等宽。
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { RiArrowDownSLine } from '@remixicon/vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { RiArrowDownSLine, RiCloseLine, RiSearchLine } from '@remixicon/vue'
 import { VueDraggable } from 'vue-draggable-plus'
 import type { Channel, ChannelStatus } from '@/lib/types'
 import { channelEnabled, channelModelLabel, type ChannelPlatform } from '@/lib/channels'
@@ -29,6 +29,21 @@ const emit = defineEmits<{
 const activePlatform = computed(
   () => props.platforms.find((p) => p.baseUrl === props.activeBaseUrl) || props.platforms[0],
 )
+
+/**
+ * Key 搜索词：只按名字过滤左栏列表。
+ *
+ * 搜索框固定在列表上方（不在滚动容器里），滚到列表底下也还能改搜索词。
+ * 过滤只影响「显示哪些行」，拖拽排序仍以整组为准：拖完把完整顺序回传给页面，
+ * 不会因为只显示了一半的 Key 就把没显示的那些挤出列表。
+ */
+const keyword = ref('')
+const searching = computed(() => keyword.value.trim().length > 0)
+function matchesKeyword(key: Channel) {
+  const q = keyword.value.trim().toLowerCase()
+  if (!q) return true
+  return [key.name, key.channel_name || ''].some((text) => text.toLowerCase().includes(q))
+}
 
 /** 左栏一行的状态：优先显示健康状态，没有状态数据时退回启用/禁用。 */
 function keyStatus(key: Channel) {
@@ -72,7 +87,33 @@ watch(
   },
   { immediate: true },
 )
-function onReorder(keys: Channel[]) {
+/**
+ * 交给拖拽组件渲染的列表。
+ *
+ * 搜索时传过滤后的**独立副本**：它只用来画，拖拽被禁用，任何回写都不落到
+ * dragKeys 上 —— 否则「只拖动了显示出来的一半」会把整组顺序改乱。
+ * 不搜索时两者同步指向同一份内容，拖拽照旧整组生效。
+ */
+const dragVisible = ref<Channel[]>([])
+/** 是否正在拖拽：与官方示例一致，拖拽期间关掉 TransitionGroup 的 name。 */
+const dragging = ref(false)
+/** 松手后 nextTick 再复位（官方示例写法，避免与 Sortable 收尾抢 DOM）。 */
+function endDrag() {
+  nextTick(() => {
+    dragging.value = false
+  })
+}
+watch(
+  [() => dragKeys.value, keyword],
+  () => {
+    dragVisible.value = searching.value ? dragKeys.value.filter(matchesKeyword) : dragKeys.value
+  },
+  { immediate: true },
+)
+
+/** 松手后把新顺序回传页面；搜索期间拖拽已禁用，这里只兜底不改顺序。 */
+function onDraggableUpdate(keys: Channel[]) {
+  if (searching.value) return
   dragKeys.value = keys
   const baseUrl = activePlatform.value?.baseUrl
   if (!baseUrl) return
@@ -170,6 +211,35 @@ onBeforeUnmount(() => {
     </div>
 
     <!--
+      Key 搜索框：固定在列表上方（不在滚动容器里），滚到列表底部也还能改关键词。
+      只按名字过滤；拖拽排序要按整组提交，所以搜索期间禁用拖拽，避免「只拖了
+      显示出来的一半」这种说不清的结果。
+    -->
+    <div class="border-b border-border p-2">
+      <div class="relative">
+        <RiSearchLine
+          size="14"
+          class="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground"
+        />
+        <Input
+          v-model="keyword"
+          class="h-8 pl-7 pr-7 text-sm"
+          placeholder="搜索 Key 名称"
+          aria-label="搜索 Key 名称"
+        />
+        <button
+          v-if="searching"
+          type="button"
+          class="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+          aria-label="清空搜索"
+          @click="keyword = ''"
+        >
+          <RiCloseLine size="14" />
+        </button>
+      </div>
+    </div>
+
+    <!--
       Key 列表：一行一个 Key，选中项高亮（选中配色与「模型状态」页左栏保持一致）。
       整张卡片任意位置可拖拽排序；没有移动的单击仍是选中。
     -->
@@ -177,44 +247,56 @@ onBeforeUnmount(() => {
       <VueDraggable
         v-if="dragKeys.length"
         :key="activePlatform?.baseUrl"
-        v-model="dragKeys"
-        tag="div"
-        :force-fallback="true"
+        :model-value="dragVisible"
+        target=".channel-key-list"
+        :disabled="searching"
         :animation="150"
-        ghost-class="opacity-40"
-        @update:model-value="onReorder"
+        @start="dragging = true"
+        @end="endDrag"
+        @update:model-value="onDraggableUpdate"
       >
-        <button
-          v-for="key in dragKeys"
-          :key="key.id"
-          type="button"
-          class="flex w-full cursor-grab touch-none items-center gap-2 rounded-md px-2 py-2 text-left transition-colors active:cursor-grabbing"
-          :class="key.id === activeKeyId ? 'bg-muted' : 'hover:bg-muted/60'"
-          @click="emit('selectKey', key)"
+        <!-- 官方写法：VueDraggable 管行为，TransitionGroup 管列表 DOM 与换位动画 -->
+        <TransitionGroup
+          type="transition"
+          tag="div"
+          :name="!dragging ? 'key-sort' : undefined"
+          class="key-sort-list channel-key-list"
         >
-          <span class="min-w-0 flex-1" :title="key.name">
-            <span
-              class="block truncate text-sm"
-              :class="
-                key.id === activeKeyId
-                  ? 'font-semibold text-foreground'
-                  : 'font-medium text-foreground'
-              "
-              >{{ key.name }}</span
-            >
-            <span class="mt-0.5 block truncate text-[11px] text-muted-foreground">{{
-              channelModelLabel(key)
-            }}</span>
-          </span>
-          <span
-            class="shrink-0 rounded px-1 py-0.5 text-[10px] font-medium"
-            :class="TONE_STYLE_SOFT[keyStatus(key).tone]"
+          <button
+            v-for="key in dragVisible"
+            :key="key.id"
+            type="button"
+            class="flex w-full cursor-grab touch-none select-none items-center gap-2 rounded-md px-2 py-2 text-left transition-colors active:cursor-grabbing"
+            :class="key.id === activeKeyId ? 'bg-muted' : 'bg-background hover:bg-muted/60'"
+            @click="emit('selectKey', key)"
           >
-            {{ keyStatus(key).label }}
-          </span>
-        </button>
+            <span class="min-w-0 flex-1" :title="key.name">
+              <span
+                class="block truncate text-sm"
+                :class="
+                  key.id === activeKeyId
+                    ? 'font-semibold text-foreground'
+                    : 'font-medium text-foreground'
+                "
+                >{{ key.name }}</span
+              >
+              <span class="mt-0.5 block truncate text-[11px] text-muted-foreground">{{
+                channelModelLabel(key)
+              }}</span>
+            </span>
+            <span
+              class="shrink-0 rounded px-1 py-0.5 text-[10px] font-medium"
+              :class="TONE_STYLE_SOFT[keyStatus(key).tone]"
+            >
+              {{ keyStatus(key).label }}
+            </span>
+          </button>
+        </TransitionGroup>
       </VueDraggable>
       <p v-if="!dragKeys.length" class="px-2 py-3 text-sm text-muted-foreground">该平台暂无 Key</p>
+      <p v-else-if="!dragVisible.length" class="px-2 py-3 text-sm text-muted-foreground">
+        没有名字包含「{{ keyword.trim() }}」的 Key
+      </p>
     </div>
   </div>
 </template>

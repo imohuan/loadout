@@ -104,3 +104,23 @@ export function extractErrorSummary(
   }
   return summary
 }
+
+/**
+ * 把上游错误响应收成一行能读的摘要（用于「测试」按钮的失败提示）。
+ *
+ * 上游出错时经常回一整个 HTML 页面（反代 / APISIX 的 401、502 页），直接原文
+ * 铺进界面会挤成一大块标签噪音。这里优先给 <title> 里那句话（通常就是
+ * 「401 Authorization Required」）；纯文本响应原样保留（压成一行、限长）。
+ */
+export function summarizeUpstreamError(raw: string, status: number): string {
+  const text = (raw || '').trim()
+  if (!text) return `请求失败（${status}）`
+  if (/^<(!doctype|html)/i.test(text)) {
+    const title = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(text)?.[1]?.trim()
+    const heading = /<h1[^>]*>([\s\S]*?)<\/h1>/i.exec(text)?.[1]?.trim()
+    const summary = title || heading
+    if (summary) return `${summary}（HTTP ${status}，上游返回网页而不是 JSON）`
+    return `请求失败（${status}，上游返回网页而不是 JSON）`
+  }
+  return extractErrorSummary('', text, 300)
+}

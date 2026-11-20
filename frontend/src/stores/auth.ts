@@ -1,8 +1,9 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
-import { api, request } from '@/lib/api'
+import { api, request, ApiError } from '@/lib/api'
 import type { Overview } from '@/lib/types'
 import { emitter } from '@/lib/emitter'
+import { resetSessionProbe } from '@/lib/session'
 
 export const useAuthStore = defineStore('auth', () => {
   const checked = ref(false)
@@ -15,14 +16,23 @@ export const useAuthStore = defineStore('auth', () => {
     overview.value = undefined
   })
 
-  async function check() {
+  /** 探测登录态：ok=已登录；unauthorized=后端明确说未登录；error=这次没问到（不该当作登出）。 */
+  async function check(): Promise<'ok' | 'unauthorized' | 'error'> {
     try {
       overview.value = await api<Overview>('/api/overview')
       authenticated.value = true
-    } catch {
-      authenticated.value = false
-    } finally {
       checked.value = true
+      return 'ok'
+    } catch (err) {
+      // 只有后端明确回 401 才清登录态。网络抖动、后端重启时 fetch 会直接抛错，
+      // 那种情况并非登出：不要让一次临时故障把用户甩到登录页。
+      if (err instanceof ApiError && err.status === 401) {
+        authenticated.value = false
+        overview.value = undefined
+        checked.value = true
+        return 'unauthorized'
+      }
+      return 'error'
     }
   }
 
@@ -43,17 +53,20 @@ export const useAuthStore = defineStore('auth', () => {
   async function setupKey(key: string) {
     await request('/api/setup-key', 'POST', { key })
     initialized.value = true
+    resetSessionProbe()
     await check()
   }
 
   async function login(key: string) {
     await request('/api/login', 'POST', { password: key })
+    resetSessionProbe()
     await check()
   }
 
   // ssoLogin 用桌面端签发的短时效 token 换取会话（托盘「打开网页」免登录入口）。
   async function ssoLogin(token: string) {
     await request('/api/sso/login', 'POST', { token })
+    resetSessionProbe()
     await check()
   }
 
@@ -61,6 +74,7 @@ export const useAuthStore = defineStore('auth', () => {
     await request('/api/logout', 'POST')
     overview.value = undefined
     authenticated.value = false
+    resetSessionProbe()
   }
 
   return {

@@ -29,8 +29,38 @@ volc-free-quota 对子请求**不豁免**（额度按账号归属，子请求也
 渠道**（用 `channel_models` 表核对），再看账本。账本里的记录名是模糊匹配
 （`matchOne` 双向包含 + token 相似），「火山账本里有 glm-5-2 的空记录」不代表
 「workbuddy 请求的 glm-5.2 归火山管」。volc-free-quota 曾因此把测 workbuddy 的
-glm-5.2 误拦成「免费额度用完」（已修，`checkAllCandidatesExhausted` 开头的
-归属检查 + 回归测试 `TestHandleProxyBeforeUpstreamSkipsForeignModels`）。
+glm-5.2 误拦成「免费额度用完」（已修，`checkExhausted` 开头的
+归属检查 + 回归测试 `TestHandleProxyBeforeAttemptIgnoresForeignModel`）。
+
+## 额度类拦截：预测「这一次尝试」会失败，别拒绝整个请求
+
+`ProxyBeforeUpstream` 只执行一次，返回 `error` 就等于**整个请求结束**：网关不会向上游
+发任何请求，也不会 emit `ProxyUpstreamFailed`，aggregate 的轮询 / failover 永远不触发。
+用户看到的就是「一句话报额度用完，其他模型一次都没试」。
+
+额度插件（volc-free-quota）的定位是**单点失败预测**，语义等价于上游返回 429：
+
+- 挂在 `ProxyBeforeAttempt`（每次渠道尝试前），只判定 `__current_channel` + 当前模型；
+- 返回 `GatewayError{Retryable: true}`：core 把它当成这次尝试的失败，落一条 failed
+  attempt（`failure_class=free_quota_exhausted`）后继续 failover / 切换聚合目标；
+- 只有当所有候选都失败时，客户端才会看到 429；
+- 其它模型、其它平台、同一账号的其它 Key 使用其它模型时都不受影响。
+
+两条边界（容易被「顺手改成更聪明」而破坏）：
+
+1. **预测只影响这一次尝试**：不要在预测路径里写 `model_states` 冷却。跨请求的冷却由
+   请求成功后的余额扣减 + 定时刷新负责；在这里写会让一次预测把后续请求一起改道。
+2. **钉定渠道（`X-Loadout-Pin-Channel`）跳过预测**：模型状态页逐 Key「测试」的语义是
+   「真的打一次」，必须拿到上游真实结果（与 key-rate-limit 的 `isPinned` 同态度）。
+
+判定入口统一走 core 的 `retryableReject`（等价 `errors.As` + `Retryable`）；日志分类统一走
+`gatewayFailureClass`（优先 `FailureClass`，其次 `Type`）。新增这类拒绝时不要自己另写一套判断。
+
+**红线**：能力插件不要用「整单拒绝」表达「某个渠道/模型这次会失败」。需要切换就标记
+`Retryable`，让 core 走失败切换；内容违规这类与渠道无关的拒绝才用默认（不可重试）。
+回归先例：`TestRetryableRejectFailsOverToNextChannel`、
+`TestHandleProxyBeforeAttemptPredictsOnlyThisChannelModel`、
+`TestAggregateFailoverWhenVolcQuotaExhausted`。
 
 ## 工具调用补全：能力路由开关，别在网关核心隐式改写
 
@@ -58,7 +88,7 @@ tool 结果、合并相邻 assistant。**默认不生效**：只有能力路由�
 
 若请求可能带 `X-Loadout-Pin-Channel`（模型状态页逐 Key 测试），渠道判定前先看
 这个标记——钉定的渠道优先于一切兜底推断（参考 volc-free-quota 的
-`candidateChannelIDs`）。
+`HandleProxyBeforeAttempt`：它直接读 `__current_channel`，钉定的渠道在尝试前已写入）。
 
 ## 日志写入：一律用与取消解耦的 ctx
 
@@ -86,5 +116,5 @@ tool 结果、合并相邻 assistant。**默认不生效**：只有能力路由�
 
 插件 handler 开头若有「某种请求跳过我」的逻辑（子请求、pin 钉定、native 豁免），
 用注释写清楚：哪些标记我会响应、为什么、谁负责防误伤。volc-free-quota 的
-`candidateChannelIDs` 与 `HandleProxyBeforeUpstream` 开头的注释是范本。审阅者
+`HandleProxyBeforeAttempt`（子请求态度 + 只判当前渠道）的注释是范本。审阅者
 核对子请求体系时，就是靠这些声明逐个确认的——没有声明，下一个改代码的人只能猜。

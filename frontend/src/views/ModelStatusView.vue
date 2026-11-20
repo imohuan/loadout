@@ -29,6 +29,7 @@ import type { ChannelStatus, ModelStatus } from '@/lib/types'
 import {
   filterPlatforms,
   availableModelCount,
+  filterKeysByName,
   filterKeysByGroup,
   keySwitchState,
   type KeyGroup,
@@ -76,6 +77,14 @@ const selectedKeyId = ref('')
  */
 const groupFilter = ref<'all' | KeyGroup>('all')
 
+/**
+ * 左栏 Key 名称搜索词。
+ *
+ * 放在页面里：批量测试的「测几项」必须与左栏显示的行数是同一份结果，
+ * 所以 visibleKeys 统一在这里算，左栏组件只负责画。
+ */
+const keyKeyword = ref('')
+
 const platforms = computed(() => filterPlatforms(rawData.value || [], applied.value))
 
 /** 当前平台：优先按选中 base_url 找，找不到（如筛选后消失）回落到第一个。 */
@@ -90,7 +99,10 @@ const activePlatform = computed(
  * 17 个，这种事迟早发生。
  */
 const visibleKeys = computed(() =>
-  filterKeysByGroup(activePlatform.value?.keys || [], groupFilter.value),
+  filterKeysByName(
+    filterKeysByGroup(activePlatform.value?.keys || [], groupFilter.value),
+    keyKeyword.value,
+  ),
 )
 
 /**
@@ -122,6 +134,14 @@ watch(activeKey, (k) => {
 // 切换状态标签等于换了一份列表：选中项落到新列表的第一条，右栏跟着一起切。
 watch(groupFilter, () => {
   selectedKeyId.value = visibleKeys.value[0]?.channel.id || ''
+})
+
+// 搜索改了列表内容：选中的 Key 被过滤掉时落到新列表第一条，右栏不会停在一个
+// 左栏已经看不见的 Key 上。
+watch(keyKeyword, () => {
+  if (!visibleKeys.value.some((k) => k.channel.id === selectedKeyId.value)) {
+    selectedKeyId.value = visibleKeys.value[0]?.channel.id || ''
+  }
 })
 
 function applyFilters() {
@@ -688,7 +708,9 @@ async function testModel(item: ChannelStatus, model: ModelStatus) {
             :active-key-id="activeKey?.channel.id"
             :is-pending="isPending"
             :test-states="batchTest.states.value"
+            :keyword="keyKeyword"
             v-model:group-filter="groupFilter"
+            @update:keyword="keyKeyword = $event"
             @select-platform="selectPlatform"
             @select-key="selectKey"
           />

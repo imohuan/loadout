@@ -140,8 +140,9 @@ func TestModelTestNoRouteLogWritten(t *testing.T) {
 		"base_url": errUp.URL + "/v1", "model": "m",
 		"messages": []map[string]any{{"role": "user", "content": "hi"}},
 	}, cookie)
-	if errResp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("期望透传 401，实际 %d: %s", errResp.StatusCode, errData)
+	// 上游 401 转成 502：401 在本机管理接口上只表示会话失效，不能混淆。
+	if errResp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("上游 401 期望 502，实际 %d: %s", errResp.StatusCode, errData)
 	}
 	if errResp.Header.Get("X-Test-Log") == "" {
 		t.Fatal("错误路径响应应携带 X-Test-Log 摘要")
@@ -207,8 +208,9 @@ func TestModelTestErrorPathSummaryHeader(t *testing.T) {
 		"base_url": upstream.URL + "/v1", "model": "m",
 		"messages": []map[string]any{{"role": "user", "content": "hi"}},
 	}, cookie)
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("期望透传 401，实际 %d: %s", resp.StatusCode, data)
+	// 上游 401 转 502（会话未失效）；摘要里仍记录上游真实状态码 401。
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("上游 401 期望 502，实际 %d: %s", resp.StatusCode, data)
 	}
 	header := resp.Header.Get("X-Test-Log")
 	if header == "" {
@@ -234,6 +236,24 @@ func TestModelTestErrorPathSummaryHeader(t *testing.T) {
 		summary.ErrorMessage == "" || len(summary.Attempts) == 0 || summary.Attempts[0].FailureClass != "auth" {
 		t.Fatalf("错误路径摘要字段不符: %+v", summary)
 	}
+}
+
+// extractHeaderSummary 从响应头 X-Test-Log 解码访问摘要（非流式与错误路径用）。
+func extractHeaderSummary(t *testing.T, resp *http.Response) testLogSummary {
+	t.Helper()
+	header := resp.Header.Get("X-Test-Log")
+	if header == "" {
+		t.Fatal("响应缺少 X-Test-Log 摘要")
+	}
+	raw, err := base64.StdEncoding.DecodeString(header)
+	if err != nil {
+		t.Fatalf("X-Test-Log 不是合法 base64: %v", err)
+	}
+	var summary testLogSummary
+	if err := json.Unmarshal(raw, &summary); err != nil {
+		t.Fatalf("X-Test-Log 不是合法 JSON: %v", err)
+	}
+	return summary
 }
 
 // extractStreamSummary 从 SSE 响应体中提取最后一个 route_log 事件的 data（base64 JSON）。

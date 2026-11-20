@@ -314,6 +314,18 @@ export function filterKeysByGroup(
 }
 
 /**
+ * 左栏 Key 名称搜索：空关键词原样返回，否则只留名字命中的那些。
+ *
+ * 抽成纯函数是因为「列表里显示哪些」和「批量测试测哪些」必须用同一份结果：
+ * 两处各写一遍，迟早出现「界面写测试 7 项、实际跑了 17 个」。
+ */
+export function filterKeysByName(keys: ChannelStatus[], keyword?: string): ChannelStatus[] {
+  const q = (keyword || '').trim().toLowerCase()
+  if (!q) return keys
+  return keys.filter((key) => key.channel.name.toLowerCase().includes(q))
+}
+
+/**
  * 单个 Key 的测试进度（左栏列表里那一行状态）。
  *
  * 三种取值都会留在列表上，测完不自动消失 —— 同一批里哪些通过、哪些没过，

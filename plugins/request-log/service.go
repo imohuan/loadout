@@ -33,6 +33,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"loadout/core/config"
@@ -80,6 +81,16 @@ type Service struct {
 	// dbPath 独立库文件路径：Stats 报「日志占用空间」要的是文件大小（含 WAL），
 	// 不能只算表大小（表和实际磁盘占用差得多）。空路径时 Stats 回落为 0。
 	dbPath string
+
+	// retentionMu 串行化自动清理，避免并发写日志时多个 GC 同时扫目录互相干扰。
+	retentionMu sync.Mutex
+	// lastRetention 上次自动清理时刻（写日志后最多每 5 分钟触发一次）。
+	lastRetention time.Time
+	// sizeMu/sizeAt/sizeValue 缓存正文目录占用：前端每 3 秒查一次统计，
+	// 不能每次都遍历几十万个块文件；写入/清理后主动失效。
+	sizeMu    sync.Mutex
+	sizeAt    time.Time
+	sizeValue int64
 }
 
 // NewService 创建完整请求日志适配器。database 为 loadout.db（写关联列用，
@@ -135,7 +146,12 @@ func (s *Service) Stats(ctx context.Context) RequestLogStats {
 	if s.reqDB == nil {
 		return stats
 	}
+	// 正文（manifests + blobs）才是日志占用的主体。旧实现只报 db 主文件，
+	// 用户看到 7.9MB/200MB 以为远没满，实际磁盘已堆了几百 MB。
 	stats.Size = s.diskSize()
+	if s.blobs != nil {
+		stats.Size += s.cachedBlobDirSize()
+	}
 	var oldest, newest sql.NullString
 	if err := s.reqDB.QueryRowContext(ctx, `SELECT COUNT(*), MIN(started_at), MAX(started_at) FROM request_logs`).
 		Scan(&stats.Count, &oldest, &newest); err != nil {
@@ -203,7 +219,7 @@ func (s *Service) Clear(ctx context.Context) (int64, error) {
 			removed++
 		}
 	}
-	if _, err := s.blobs.collectGarbage(); err != nil {
+	if _, _, err := s.blobs.collectGarbageGrace(0); err != nil {
 		s.lg.Warn("request-log: 清空后块回收失败", "err", err)
 	}
 	if _, err := s.reqDB.ExecContext(ctx, `DELETE FROM request_logs`); err != nil {
@@ -214,6 +230,7 @@ func (s *Service) Clear(ctx context.Context) (int64, error) {
 			s.lg.Warn("request-log: 清空关联列失败", "err", err)
 		}
 	}
+	s.invalidateSizeCache()
 	return removed, nil
 }
 
@@ -221,15 +238,21 @@ func (s *Service) Clear(ctx context.Context) (int64, error) {
 //
 // 双通道，任意一个开启即生效：
 //   - 时间：删除 started_at 早于 now-MaxAgeDays 的行；
-//   - 容量：request-logs 文件夹真实占用超过 MaxSizeMB 时，从最旧的清单开始删
-//     （文件夹大小 = 磁盘真相，去重后块共享与否都不影响判断）。
+//   - 容量：request-log.db + 正文块存储超过 MaxSizeMB 时，从最旧的清单开始删；
+//     每删一条按「清单 + 仅本轮失去引用的块」精确扣减，降到阈值以下立刻停。
 //
 // 调用点：写日志后（HandleBeforeAttempt 末尾，best-effort）、服务启动时一次、
 // 以及在设置页保存保留策略 / 点「立即清理」时手动触发（用户改完上限不必等下一个请求）。
 // 出错只记日志，绝不阻塞请求。
 func (s *Service) ApplyRetention(ctx context.Context, cfg RetentionConfig) {
-	if s.reqDB == nil || (cfg.MaxAgeDays <= 0 && cfg.MaxSizeMB <= 0) {
+	if s.reqDB == nil || s.blobs == nil {
 		return
+	}
+	s.retentionMu.Lock()
+	defer s.retentionMu.Unlock()
+	s.lastRetention = time.Now()
+	if cfg.MaxAgeDays <= 0 && cfg.MaxSizeMB <= 0 {
+		return // 未设限制 = 不清理（与设置页「0 表示不限」一致）
 	}
 	s.applyBlobRetention(ctx, cfg)
 }
@@ -238,16 +261,24 @@ func (s *Service) ApplyRetention(ctx context.Context, cfg RetentionConfig) {
 // 无 VACUUM、无库锁；清单删除后页面立刻不可见（ExistingIDs 走元数据表，
 // 元数据行同步删除）。
 func (s *Service) applyBlobRetention(ctx context.Context, cfg RetentionConfig) {
+	// 先回收没有清单引用的旧块。这一步必须在判断容量之前：旧版直接按目录大小
+	// 判断，孤儿块（删了清单但还没 GC、历史断电残留）永远算进占用，于是每轮都
+	// 「超限」，把好日志一路删到只剩零星几千条，却仍然降不到阈值以下。
+	s.collectOrphanBlobs("清理前", orphanGrace)
 	ids, err := s.blobs.manifestIDs()
 	if err != nil {
 		s.lg.Warn("request-log: 列出清单失败", "err", err)
 		return
 	}
 	type entry struct {
-		id      string
-		started time.Time
+		id           string
+		started      time.Time
+		manifestSize int64
 	}
 	entries := make([]entry, 0, len(ids))
+	refCount := make(map[string]int)
+	blobSize := make(map[string]int64)
+	var total int64
 	for _, id := range ids {
 		m, err := s.blobs.readManifest(id)
 		if err != nil {
@@ -257,17 +288,37 @@ func (s *Service) applyBlobRetention(ctx context.Context, cfg RetentionConfig) {
 		if err != nil {
 			continue
 		}
-		entries = append(entries, entry{id: id, started: started})
+		var manifestSize int64
+		if info, ierr := os.Stat(s.blobs.manifestPath(id)); ierr == nil {
+			manifestSize = info.Size()
+			total += manifestSize
+		}
+		for _, h := range m.referencedHashes() {
+			refCount[h]++
+		}
+		entries = append(entries, entry{id: id, started: started, manifestSize: manifestSize})
 	}
+	for h := range refCount {
+		if info, ierr := os.Stat(s.blobs.blobPath(h)); ierr == nil {
+			blobSize[h] = info.Size()
+			total += info.Size()
+		}
+	}
+	// db 主文件也占空间（元数据行 + WAL），与设置页显示的口径保持一致。
+	total += s.diskSize()
 	limit := int64(cfg.MaxSizeMB) * 1024 * 1024
-	used := s.blobDirSize()
 	removed := 0
-	// 从最旧开始删（entries 保持清单顺序即可，过期判断逐条；容量判断从最旧起删）
+	// 从最旧开始删。freed 按「清单本身 + 只被它引用的块」精确扣减：
+	// 共享块仍被更新的日志引用，不能算作已释放，否则会提前停止清理。
 	sort.Slice(entries, func(i, j int) bool { return entries[i].started.Before(entries[j].started) })
 	for _, e := range entries {
 		expired := cfg.MaxAgeDays > 0 && time.Since(e.started) > time.Duration(cfg.MaxAgeDays)*24*time.Hour
-		overSize := cfg.MaxSizeMB > 0 && used > limit
+		overSize := cfg.MaxSizeMB > 0 && total > limit
 		if !expired && !overSize {
+			continue
+		}
+		m, err := s.blobs.readManifest(e.id)
+		if err != nil {
 			continue
 		}
 		if s.blobs.deleteManifest(e.id) {
@@ -275,14 +326,51 @@ func (s *Service) applyBlobRetention(ctx context.Context, cfg RetentionConfig) {
 				s.lg.Warn("request-log: 删元数据行失败", "id", e.id, "err", err)
 			}
 			removed++
-			used = s.blobDirSize() // 删完重算（简单可靠；清理不频繁，开销可忽略）
+			total -= e.manifestSize
+			for _, h := range m.referencedHashes() {
+				refCount[h]--
+				if refCount[h] <= 0 {
+					total -= blobSize[h]
+				}
+			}
 		}
 	}
 	if removed > 0 {
-		if n, err := s.blobs.collectGarbage(); err == nil && n > 0 {
+		if n, _, err := s.blobs.collectGarbage(); err == nil && n > 0 {
 			s.lg.Info("request-log: 块回收完成", "manifests", removed, "blobs", n)
 		}
 	}
+}
+
+// collectOrphanBlobs 回收无引用块；损坏清单由 GC 隔离并计数。
+func (s *Service) collectOrphanBlobs(stage string, grace time.Duration) {
+	n, corrupt, err := s.blobs.collectGarbageGrace(grace)
+	if err != nil {
+		s.lg.Warn("request-log: 块回收失败", "stage", stage, "err", err)
+		return
+	}
+	if n > 0 || len(corrupt) > 0 {
+		s.lg.Info("request-log: 块回收完成", "stage", stage, "blobs", n, "corrupt_manifests", len(corrupt))
+	}
+}
+
+// maybeApplyRetention 写日志后顺带清理，最多 5 分钟一次。旧注释声称写后清理，
+// 但实现里没有调用点——上限 200MB 实际只在启动/点按钮时生效，日志会一路涨。
+func (s *Service) maybeApplyRetention() {
+	s.retentionMu.Lock()
+	due := time.Since(s.lastRetention) > 5*time.Minute
+	if due {
+		s.lastRetention = time.Now()
+	}
+	s.retentionMu.Unlock()
+	if !due {
+		return
+	}
+	cfg := s.currentRetention()
+	if cfg.MaxAgeDays <= 0 && cfg.MaxSizeMB <= 0 {
+		return
+	}
+	go s.ApplyRetention(context.Background(), cfg)
 }
 
 // blobDirSize 统计块存储目录的真实磁盘占用（blobs/ + manifests/ 全部文件）。
@@ -300,10 +388,30 @@ func (s *Service) blobDirSize() int64 {
 	return total
 }
 
+// cachedBlobDirSize 30 秒内复用上一次遍历结果：目录可能很大，而统计接口被
+// 前端每 3 秒轮询一次。写入与清理会立刻失效，数字不会滞后于真实变化。
+func (s *Service) cachedBlobDirSize() int64 {
+	s.sizeMu.Lock()
+	defer s.sizeMu.Unlock()
+	if !s.sizeAt.IsZero() && time.Since(s.sizeAt) < 30*time.Second {
+		return s.sizeValue
+	}
+	s.sizeValue = s.blobDirSize()
+	s.sizeAt = time.Now()
+	return s.sizeValue
+}
+
+func (s *Service) invalidateSizeCache() {
+	s.sizeMu.Lock()
+	s.sizeAt = time.Time{}
+	s.sizeMu.Unlock()
+}
+
 // ApplyCurrentRetention 按当前设置里的策略清理一次，返回执行后的统计。
 // 供 HTTP 手动触发（设置页「立即清理」/ 保存设置后立刻见效）与启动时调用。
 func (s *Service) ApplyCurrentRetention(ctx context.Context) RequestLogStats {
 	s.ApplyRetention(ctx, s.currentRetention())
+	s.invalidateSizeCache()
 	return s.Stats(ctx)
 }
 
@@ -567,6 +675,9 @@ func (s *Service) beginBlobLog(pipe *modelgateway.ProxyPipeline, model, uuid, ch
 		s.lg.Warn("request-log: 写清单失败", "request_id", pipe.RequestID, "err", err)
 		return nil
 	}
+	s.invalidateSizeCache() // 正文变了，设置页的占用数字要跟着变
+	// 写入后顺带按配置清理（最多 5 分钟一次，后台执行，不阻塞请求）。
+	defer s.maybeApplyRetention()
 	// 清单快照留在 metadata：收尾事件直接复用（不必重读文件），也供流式缓冲定位。
 	pipe.Metadata[manifestKey] = &m
 	// 元数据行：只有小字段，正文全部在块存储（详情走块组装）。
@@ -724,6 +835,7 @@ func (s *Service) finishRequestLog(uuid string, status int, respJSON, channel, r
 	if err := s.blobs.writeManifest(uuid, m); err != nil {
 		s.lg.Warn("request-log: 收尾写清单失败", "id", uuid, "err", err)
 	}
+	s.invalidateSizeCache()
 	if _, err := s.reqDB.Exec(`UPDATE request_logs SET http_status = ?, finished_at = ?, duration_ms = ?, result = ?, channel = CASE WHEN ? = '' THEN channel ELSE ? END WHERE id = ?`,
 		status, m.FinishedAt, m.DurationMS, result, channel, channel, uuid); err != nil {
 		s.lg.Warn("request-log: 收尾写元数据行失败", "id", uuid, "err", err)

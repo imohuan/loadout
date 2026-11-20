@@ -105,7 +105,11 @@ const usageText = computed(() => {
   const s = stats.value
   if (!s) return '正在读取日志占用…'
   const range = s.oldest_started_at ? `，最早一条 ${formatDate(s.oldest_started_at)}` : ''
-  return `当前占用 ${formatBytes(s.size)}，共 ${s.count} 条${range}`
+  const pct =
+    s.max_size_mb > 0
+      ? `，占上限 ${Math.round((s.size / (s.max_size_mb * 1024 * 1024)) * 100)}%`
+      : ''
+  return `当前占用 ${formatBytes(s.size)}${pct}，共 ${s.count} 条${range}`
 })
 
 /** 是否已配置限制：两个阈值都为 0 时提示用户日志会无限增长。 */

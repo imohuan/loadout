@@ -138,7 +138,18 @@ router.beforeEach(async (to) => {
       // token 过期/无效则静默忽略，走正常登录页
     }
   }
-  if (!auth.checked) await auth.check()
+
+  // 登录态探测要区分「后端说未登录」和「这次没问到」。后者的常见来源是后端
+  // 恰好重启、代理层 502、网线断了 —— 一律重试两次，两次都问不到才按未登录
+  // 处理。此前只要一次网络抖动就把人赶去登录页，刷新一下又好了，用户会以为
+  // 账号被踢下线。
+  if (!auth.checked) {
+    let verdict: 'ok' | 'unauthorized' | 'error' = await auth.check()
+    for (let i = 0; verdict === 'error' && i < 2; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 400))
+      verdict = await auth.check()
+    }
+  }
   if (!to.meta.public && !auth.authenticated) return { name: 'login' }
   if (to.meta.public && auth.authenticated) return { name: 'overview' }
 })

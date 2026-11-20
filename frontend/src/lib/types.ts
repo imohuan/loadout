@@ -230,7 +230,7 @@ export interface RequestLogDetail extends RequestLogItem {
 
 /** request-log 插件：日志库占用统计（转发日志页「日志大小」按钮） */
 export interface RequestLogStats {
-  /** 独立库文件占用字节数（request-log.db + WAL/SHM） */
+  /** 日志真实占用字节数：request-log.db 主文件 + 正文块存储（manifests/blobs） */
   size: number
   /** request_logs 行数 */
   count: number

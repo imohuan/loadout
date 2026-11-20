@@ -762,19 +762,22 @@ type catalogEntry struct {
 }
 
 func (s *Service) listModelCatalog(ctx context.Context) (map[string][]catalogEntry, error) {
+	// 排序按渠道模型清单的 position（编辑器里拖拽出来的顺序），与「渠道与模型」页
+	// 看到的先后一致；position 相同（老数据全 0）时退回按名字排。
+	// 只有历史状态、没有目录行的模型排在最后（pos 给一个极大值）。
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT channel_id, model, MAX(source) AS source FROM (
 			-- 渠道目录里启用（对外暴露）的模型：模型状态以「模型渠道」为准。
-			SELECT channel_id, model, source FROM channel_models WHERE enabled = 1
+			SELECT channel_id, model, source, position AS pos FROM channel_models WHERE enabled = 1
 			UNION ALL
 			-- 仅当渠道从未探测过（channel_models 整个为空）时，历史状态才有展示意义；
 			-- 已探测渠道的目录外状态由编辑/CheckNow 清理，不得混进模型状态。
-			SELECT ms.channel_id, ms.model, '' AS source
+			SELECT ms.channel_id, ms.model, '' AS source, 2147483647 AS pos
 			FROM model_states ms
 			WHERE NOT EXISTS (
 				SELECT 1 FROM channel_models cm WHERE cm.channel_id = ms.channel_id
 			)
-		) GROUP BY channel_id, model ORDER BY channel_id, model`)
+		) GROUP BY channel_id, model ORDER BY channel_id, MIN(pos), model`)
 	if err != nil {
 		return nil, err
 	}
