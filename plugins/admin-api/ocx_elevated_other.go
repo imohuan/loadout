@@ -16,6 +16,14 @@ func buildElevatedBatch(exe string, args []string, logPath string) string {
 	return strings.Join(append([]string{exe}, args...), " ")
 }
 
+// cmdQuote 与 windows 版语义一致：含空格加双引号，供跨平台测试使用。
+func cmdQuote(s string) string {
+	if strings.ContainsAny(s, " \t") {
+		return `"` + s + `"`
+	}
+	return s
+}
+
 func startElevated(batchPath string) (uintptr, error) {
 	return 0, fmt.Errorf("当前平台不支持 UAC 提权（batch=%s）", batchPath)
 }
