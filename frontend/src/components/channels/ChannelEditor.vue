@@ -220,6 +220,18 @@ watch(
   },
   { immediate: true },
 )
+// 补一个深度监听：上面的 getter 写法在 form.models 被整体替换成新数组时
+// 不会触发（reactive 解引用 getter 不标脏），表现为勾选/取消/导入模型后
+// 已选列表不动、出现「已选 N 个但列表空了/少一截」的错位。深度监听按内
+// 容比对，只有真的变了才重置拖拽副本。
+watch(
+  form.models,
+  (models) => {
+    if (dragging.value) return
+    if (!sameModels(dragModels.value, models)) dragModels.value = models.slice()
+  },
+  { deep: true, immediate: true },
+)
 function onModelReorder(models: string[]) {
   dragModels.value = models
   form.models = models.slice()

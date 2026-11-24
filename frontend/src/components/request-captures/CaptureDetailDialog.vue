@@ -10,6 +10,7 @@ import {
 import { toast } from 'vue-sonner'
 import { useRequestCaptures } from '@/composables/useRequestCaptures'
 import { useConfirm } from '@/composables/useConfirm'
+import { reportUnauthorized } from '@/lib/session'
 import { formatBytes, formatDate } from '@/lib/format'
 import type { CaptureDetail } from '@/lib/types'
 import AxJsonViewer from '@/components/ui/AxJsonViewer.vue'
@@ -110,12 +111,35 @@ async function copyReplayPath() {
 }
 
 /** 打开原始捕获文件（浏览器直接下载 gzip，不经过任何改写）。 */
-function download() {
-  if (!detail.value) return
-  window.open(
-    '/api/request-captures/' + encodeURIComponent(detail.value.id) + '/download',
-    '_blank',
-  )
+// 下载走 fetch + Blob，不能用 window.open 直接开相对地址：桌面壳的页面跑在
+// 伪 host（wails.localhost）上，新开的浏览器窗口解析不了这个 host，会报
+// ERR_CONNECTION_REFUSED。fetch 在当前页面内发起，走壳内代理并带上登录
+// Cookie，云端 / 桌面壳都可用；拿到二进制后转本地 Blob 触发浏览器保存。
+const downloading = ref(false)
+async function download() {
+  if (!detail.value || downloading.value) return
+  downloading.value = true
+  try {
+    const resp = await fetch(
+      '/api/request-captures/' + encodeURIComponent(detail.value.id) + '/download',
+      { credentials: 'same-origin' },
+    )
+    if (resp.status === 401) void reportUnauthorized()
+    if (!resp.ok) throw new Error('下载失败（' + resp.status + '）')
+    const blob = await resp.blob()
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = detail.value.id + '.cap.json.gz'
+    document.body.appendChild(anchor)
+    anchor.click()
+    anchor.remove()
+    URL.revokeObjectURL(url)
+  } catch (e) {
+    toast.error(e instanceof Error ? e.message : '下载失败')
+  } finally {
+    downloading.value = false
+  }
 }
 
 async function remove() {

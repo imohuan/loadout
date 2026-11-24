@@ -28,7 +28,9 @@ type StreamAccumulator struct {
 	nonVision bool
 }
 
-// IsNonVision 报告当前累积轮是否混入/全为非本插件工具调用。
+// IsNonVision 报告当前累积轮是否出现过非本插件工具调用（如 web_search）。
+// 混合轮（同时有 look_at_image 和其他工具）也为 true，但 look_at_image 调用
+// 仍会正常收集，由调用方按「拦视觉、放行其他」分粒度处理。
 func (a *StreamAccumulator) IsNonVision() bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -43,6 +45,18 @@ func (a *StreamAccumulator) Reset() {
 	a.order = nil
 	a.lastEv = ""
 	a.nonVision = false
+}
+
+// CallNameByKey 返回指定累积键对应的工具名：
+// chat/claude 的键是 index 数字字符串，responses 的键是 item id。
+// 键不存在返回空串。供 chunk 分粒度过滤判断该增量属于视觉还是其他工具。
+func (a *StreamAccumulator) CallNameByKey(key string) string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if ca, ok := a.byKey[key]; ok {
+		return ca.name
+	}
+	return ""
 }
 
 type callAcc struct {
@@ -80,13 +94,8 @@ func stripDataPrefix(line string) string {
 }
 
 // closeAndAppend 将累积参数解析为 ToolCall 并追加，标记已关闭防止重复。
-// 非本插件工具不追加，置 nonVision 标记（整轮透传由调用方决策）；
-// 一旦本轮已标记 nonVision，后续（含 vision 的）调用也不追加。
 func (a *StreamAccumulator) closeAndAppend(ca *callAcc, calls *[]ToolCall) {
 	ca.closed = true
-	if a.nonVision {
-		return
-	}
 	if ca.name != "" && ca.name != lookAtImageToolName {
 		a.nonVision = true
 		return

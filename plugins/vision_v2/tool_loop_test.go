@@ -238,6 +238,7 @@ func TestToolLoopStreamChat(t *testing.T) {
 	origResp.Body.Close()
 
 	body := rr.Body.String()
+
 	if !strings.Contains(body, "最终回答") {
 		t.Errorf("最终 body 缺少「最终回答」: %q", body)
 	}
@@ -572,9 +573,166 @@ func (m *mockVisionRouteLog) SelfHeal(ctx context.Context, id string, threshold 
 
 // TestDescribeWithFailoverOrder 验证 failover 顺序：路由 3 个候选，第 1 个渠道 500、第 2 个成功，
 // 只调用到第 2 个、返回第 2 个结果及第 2 个渠道 id（route-log 已改由调用方写，本方法不再内部写 attempt）。
-func TestDescribeWithFailoverOrder(t *testing.T) {
+// TestStreamMixedVisionAndNonVisionToolE2E 混合轮端到端：模型同轮流调用 web_search +
+// look_at_image → look_at_image 被拦截并识别，web_search 原样透传给客户端，
+// 续流消息里两者 tool 结果都在。
+func TestStreamMixedVisionAndNonVisionToolE2E(t *testing.T) {
 	setVisionConfig(t)
 
+	svc := NewService(nil, nil, slog.Default())
+	svc.cacheDir = t.TempDir()
+	imgID, err := svc.SaveImageDataURI(tinyPNGDataURI)
+	if err != nil {
+		t.Fatalf("SaveImageDataURI: %v", err)
+	}
+	argsJSON := fmt.Sprintf(`{"image_id":%q,"prompt":%q}`, imgID, "看颜色")
+
+	// 主上游：第 1 次（原始流）返回 web_search + look_at_image 两个 tool_calls；
+	// 第 2 次（续流）返回正常文本流，并回传收到的请求体供断言。
+	var mainCalls atomic.Int32
+	var continuationBody atomic.Value
+	main := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := mainCalls.Add(1)
+		if body, berr := io.ReadAll(r.Body); berr == nil && n >= 2 {
+			continuationBody.Store(string(body))
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		if n == 1 {
+
+			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"我先搜一下再看看图\"}}]}\n")
+
+			fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_w\",\"type\":\"function\",\"function\":{\"name\":\"web_search\",\"arguments\":\"{\\\"query\\\":\\\"天气\\\"}\"}}]}}]}\n")
+
+			fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":1,\"id\":\"call_v\",\"type\":\"function\",\"function\":{\"name\":\"look_at_image\",\"arguments\":%q}}]}}]}\n", argsJSON)
+
+			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n")
+
+			fmt.Fprint(w, "data: [DONE]\n\n")
+			return
+		}
+
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"最终回答\"}}]}\n")
+
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer main.Close()
+
+	// 视觉模型 server：SSE 输出「图片描述」。
+	var visionCalls atomic.Int32
+	vision := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		visionCalls.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"图片描述\"}}]}\n")
+
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer vision.Close()
+
+	database, err := db.OpenMemory()
+	if err != nil {
+		t.Fatalf("db.OpenMemory: %v", err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	repo, err := db.NewRepository(database)
+	if err != nil {
+		t.Fatalf("db.NewRepository: %v", err)
+	}
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	svc.repo = repo
+	svc.st = st
+	svc.SetGateway(newMockForwarder(map[string]string{"bailian": vision.URL, "main": main.URL}))
+	rl := &mockVisionRouteLog{}
+	svc.SetRouteLog(rl)
+	if err := repo.ReplaceChannels(context.Background(), []db.Channel{
+		{ID: "bailian", Name: "百炼", BaseURL: vision.URL, ManualEnabled: true},
+		{ID: "main", Name: "主模型", BaseURL: main.URL, ManualEnabled: true},
+	}); err != nil {
+		t.Fatalf("ReplaceChannels: %v", err)
+	}
+
+	rr := httptest.NewRecorder()
+	httpReq := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	pipe := &modelgateway.ProxyPipeline{
+		RequestID: "req-mixed-1",
+		Request: &modelgateway.ProxyRequest{
+			Method: "POST", Path: "chat/completions",
+			Body:   []byte(`{"model":"gpt-4o","stream":true,"messages":[{"role":"user","content":"这图里有啥"}]}`),
+			Model:  "gpt-4o",
+			Stream: true,
+		},
+		ResponseWriter: rr,
+		HTTPRequest:    httpReq,
+		Metadata: map[string]any{
+			"__route_step":       1,
+			"__main_step":        1,
+			"__current_channel":  "main",
+			"__vision_v2_active": true,
+			"__vision_v2_route": &types.CapabilityRoute{ViaOptions: []types.ViaOption{
+				{ChannelIDs: []string{"bailian"}, ViaModel: "qwen3-vl-flash-2026-01-22"},
+			}},
+		},
+	}
+
+	// 原始流：真实请求主上游，逐行喂给 HandleProxyStreamChunk（模拟网关转发）。
+	origResp, err := http.Post(main.URL+"/chat/completions", "application/json", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatalf("主上游原始流请求失败: %v", err)
+	}
+	reader := bufio.NewReader(origResp.Body)
+	for {
+		line, rerr := reader.ReadString(0x0A)
+		if len(line) > 0 {
+			out, _ := svc.HandleProxyStreamChunk(&modelgateway.StreamChunkPayload{Pipe: pipe, Data: []byte(line)})
+			if sp, ok := out.(*modelgateway.StreamChunkPayload); ok && sp != nil && sp.Data != nil {
+				rr.Write(sp.Data)
+			}
+		}
+		if rerr != nil {
+			break
+		}
+	}
+	origResp.Body.Close()
+
+	body := rr.Body.String()
+
+	if !strings.Contains(body, "call_w") {
+		t.Errorf("客户端 body 应含 web_search 的 tool_call id call_w（原样透传）: %q", body)
+	}
+	if strings.Contains(body, "call_v") {
+		t.Errorf("客户端 body 不应含 look_at_image 的 tool_call id call_v: %q", body)
+	}
+	if !strings.Contains(body, "图片理解") || !strings.Contains(body, "图片描述") {
+		t.Errorf("客户端 body 应含视觉识别输出（图片理解/图片描述）: %q", body)
+	}
+	if !strings.Contains(body, "最终回答") {
+		t.Errorf("客户端 body 应含续流最终回答: %q", body)
+	}
+	if visionCalls.Load() == 0 {
+		t.Error("视觉模型 server 应被调用")
+	}
+	if mainCalls.Load() != 2 {
+		t.Errorf("主上游应被调 2 次（原始流+续流），实际 %d", mainCalls.Load())
+	}
+	// 续流请求体：look_at_image 的 tool_calls 与 tool 结果必须在（web_search
+	// 已透传给客户端，网关续流不携带它）。
+	cb, _ := continuationBody.Load().(string)
+	if cb == "" {
+		t.Fatal("未捕获到续流请求体")
+	}
+	if !strings.Contains(cb, "call_v") {
+		t.Errorf("续流 body 应含 look_at_image 的 tool_call id（call_v）: %q", cb)
+	}
+	if !strings.Contains(cb, "图片描述") {
+		t.Errorf("续流 body 应含 look_at_image 的 tool 结果（图片描述）: %q", cb)
+	}
+}
+
+func TestDescribeWithFailoverOrder(t *testing.T) {
+	setVisionConfig(t)
 	var srv1Calls atomic.Int32
 	srv1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		srv1Calls.Add(1)

@@ -157,18 +157,49 @@ func TestStreamNonVisionToolPassthrough(t *testing.T) {
 	if !acc.IsNonVision() {
 		t.Error("IsNonVision() 应为 true")
 	}
-	// 混合轮（look_at_image + web_search）同样标记透传且 vision 调用不追加。
+	// 混合轮（look_at_image + web_search）：vision 调用仍收集，非 vision 调用不收集。
 	mixed := NewStreamAccumulator(formatChat)
 	var mixedCalls []ToolCall
 	feedLines(mixed, &mixedCalls,
 		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"look_at_image","arguments":""}}]}}]}`,
 		`data: {"choices":[{"delta":{"tool_calls":[{"index":1,"id":"call_2","type":"function","function":{"name":"web_search","arguments":""}}]}}]}`,
+		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"image_id\":\"aaa111\",\"prompt\":\"p1\"}"}}]}}]}`,
 		`data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}`,
 	)
-	if len(mixedCalls) != 0 {
-		t.Fatalf("混合轮工具不应收集，got %d 条", len(mixedCalls))
+	if len(mixedCalls) != 1 {
+		t.Fatalf("混合轮应收集 look_at_image 调用，got %d 条", len(mixedCalls))
+	}
+	if mixedCalls[0].ID != "call_1" || mixedCalls[0].Name != "look_at_image" || mixedCalls[0].ImageID != "aaa111" {
+		t.Errorf("混合轮收集的 vision 调用 = %+v", mixedCalls[0])
 	}
 	if !mixed.IsNonVision() {
 		t.Error("混合轮 IsNonVision() 应为 true")
+	}
+}
+
+// TestStreamMixedVisionAndNonVisionClaude claude 格式混合轮：vision 调用仍收集。
+func TestStreamMixedVisionAndNonVisionClaude(t *testing.T) {
+	acc := NewStreamAccumulator(formatClaude)
+	var calls []ToolCall
+	feedLines(acc, &calls,
+		`event: content_block_start`,
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"look_at_image","input":{}}}`,
+		`event: content_block_start`,
+		`data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_2","name":"web_search","input":{}}}`,
+		`event: content_block_delta`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"image_id\":\"aaa111\",\"prompt\":\"p1\"}"}}`,
+		`event: content_block_stop`,
+		`data: {"type":"content_block_stop","index":0}`,
+		`event: content_block_stop`,
+		`data: {"type":"content_block_stop","index":1}`,
+	)
+	if len(calls) != 1 {
+		t.Fatalf("claude 混合轮应收集 look_at_image 调用，got %d 条", len(calls))
+	}
+	if calls[0].ID != "toolu_1" || calls[0].Name != "look_at_image" || calls[0].ImageID != "aaa111" {
+		t.Errorf("claude 混合轮收集的 vision 调用 = %+v", calls[0])
+	}
+	if !acc.IsNonVision() {
+		t.Error("claude 混合轮 IsNonVision() 应为 true")
 	}
 }

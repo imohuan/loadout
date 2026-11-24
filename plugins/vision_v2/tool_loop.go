@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -35,9 +36,11 @@ func (s *Service) isVisionRequest(pipe *modelgateway.ProxyPipeline) bool {
 //   - 非视觉请求直接透传（不建 state）；
 //   - 透传 content（经占位符过滤）；
 //   - 工具调用相关 chunk 置 nil（不转发）；
-//   - 本轮混入/全为非本插件工具（web_search 等）→ 完全透传、不拦截；
+//   - 本轮有工具调用时：look_at_image 的 chunk 拦截（收齐后执行视觉识别 + 续流）；
+//     非本插件工具（web_search 等）的 chunk 原样透传给客户端（由客户端执行并回结果）；
 //   - 流结束（chat: [DONE]；claude: message_stop；responses: response.completed 或 EOF）
-//     且本轮流有工具调用 → 在此次 hook 调用内同步执行 executeToolLoop（主循环阻塞在此 hook 上）。
+//     且本轮流有 look_at_image 调用 → 在此次 hook 调用内同步执行 executeToolLoop
+//     （主循环阻塞在此 hook 上）。
 func (s *Service) HandleProxyStreamChunk(payload any) (any, error) {
 	sp, ok := payload.(*modelgateway.StreamChunkPayload)
 	if !ok || sp == nil || sp.Data == nil || sp.Pipe == nil {
@@ -54,13 +57,6 @@ func (s *Service) HandleProxyStreamChunk(payload any) (any, error) {
 	}
 	reqID := sp.Pipe.RequestID
 	st := s.state(reqID)
-	if st.passthrough {
-		// 已进入透传：剩余流不拦截，流结束释放 state。
-		if isStreamEnd(string(sp.Data), st.format) {
-			s.dropState(reqID)
-		}
-		return sp, nil
-	}
 	// 首次 chunk 时按路径确定格式（state(id) 创建的空状态没有 format）。
 	if st.format == formatUnknown {
 		if f, ok := visionFormatByPath(sp.Pipe.Request.Path); ok {
@@ -79,36 +75,41 @@ func (s *Service) HandleProxyStreamChunk(payload any) (any, error) {
 		st.acc = NewStreamAccumulator(st.format)
 	}
 	st.acc.Feed(line, &st.calls)
-	if st.acc.IsNonVision() {
-		// 模型调用了非本插件工具（混合或全为非视觉）：本轮完全透传，不拦截。
-		// 注意 sp.Data 尚未被置 nil。
-		st.passthrough = true
-		st.acc.Reset()
-		st.calls = nil
-		st.pending = false
-		return sp, nil
-	}
 	if len(st.calls) > 0 {
 		st.pending = true
 	}
-	if st.pending {
+	// 分粒度拦截：携带 look_at_image 增量的行置 nil（不下发客户端），
+	// 其他工具（web_search 等）的 chunk 原样透传。
+	// chat 格式的 finish_reason=tool_calls 行含 "tool_calls" 字样，纯视觉轮也不应
+	// 下发（客户端看到会以为要自己执行工具）。混合轮该行已由上面的其他工具分支放行，
+	// 这里只拦「本行只有视觉工具增量或 finish_reason 且本轮无其他工具」的情况。
+	if keys := visionToolKeysFromLine(line, st.format); len(keys) > 0 {
+		visionOnly := true
+		for k, name := range keys {
+			if name == "" {
+				name = st.acc.CallNameByKey(k)
+			}
+			if name != "" && name != lookAtImageToolName {
+				visionOnly = false
+				break
+			}
+		}
+		if visionOnly {
+			sp.Data = nil
+		}
+	} else if isToolChunkLine(line, st.format) && !st.acc.IsNonVision() {
+		// finish_reason=tool_calls / message_stop 等无键工具行：本轮全部是
+		// 视觉调用时拦截（避免客户端看到 tool_calls 字样后自行执行）。
 		sp.Data = nil
-		if isStreamEnd(line, st.format) {
+	}
+	// 流结束且有视觉调用待处理：同步执行工具循环（拦截视觉调用、续流）。
+	if isStreamEnd(line, st.format) {
+		if st.pending {
 			if _, err := s.executeToolLoop(sp.Pipe, st); err != nil {
 				s.lg.Warn("vision_v2: 工具循环失败", "req", reqID, "err", err)
 				writeSSEErrorChunk(sp.Pipe.ResponseWriter, err.Error(), st.format)
 			}
-			s.dropState(reqID)
 		}
-		return sp, nil
-	}
-	// 工具调用收齐前（pending 尚未置位）的增量 chunk 也要拦截：chat 的 tool_calls delta、
-	// claude 的 tool_use / input_json_delta、responses 的 function_call item。
-	if isToolChunkLine(line, st.format) {
-		sp.Data = nil
-	}
-	// 无工具调用（普通文本流）流结束：释放 state，避免泄漏。
-	if isStreamEnd(line, st.format) {
 		s.dropState(reqID)
 	}
 	return sp, nil
@@ -128,7 +129,6 @@ func isStreamEnd(line string, format visionProxyFormat) bool {
 	}
 }
 
-// isToolChunkLine 判断该行是否携带工具调用增量（流结束前就需拦截，避免客户端看到 tool_calls 字样）。
 func isToolChunkLine(line string, format visionProxyFormat) bool {
 	switch format {
 	case formatClaude:
@@ -138,6 +138,67 @@ func isToolChunkLine(line string, format visionProxyFormat) bool {
 	default: // formatChat
 		return strings.Contains(line, "tool_calls")
 	}
+}
+
+// visionToolKeysFromLine 提取一行 chunk 里涉及的工具调用累积键及工具名：
+// chat 按 tool_calls index；claude 按 content block index（content_block_start/delta/stop）；
+// responses 按 item id。无工具增量时返回空。
+func visionToolKeysFromLine(line string, format visionProxyFormat) map[string]string {
+	keys := map[string]string{}
+	switch format {
+	case formatClaude:
+		s := strings.TrimSpace(line)
+		if !strings.HasPrefix(s, "data:") {
+			return keys
+		}
+		var ev claudeChunk
+		if err := json.Unmarshal([]byte(stripDataPrefix(s)), &ev); err != nil {
+			return keys
+		}
+		switch ev.Type {
+		case "content_block_start":
+			if ev.ContentBlock.Type == "tool_use" && ev.ContentBlock.Name != "" {
+				keys[strconv.Itoa(ev.Index)] = ev.ContentBlock.Name
+			}
+		case "content_block_delta", "content_block_stop":
+		}
+	case formatResponses:
+		s := stripDataPrefix(line)
+		if s == "" {
+			return keys
+		}
+		var ev responsesChunk
+		if err := json.Unmarshal([]byte(s), &ev); err != nil {
+			return keys
+		}
+		switch ev.Type {
+		case "response.output_item.added":
+			if ev.Item != nil && ev.Item.Type == "function_call" && ev.Item.Name != "" {
+				keys[ev.Item.ID] = ev.Item.Name
+			}
+		case "response.function_call_arguments.delta", "response.output_item.done":
+			keys[ev.ItemID] = ""
+		}
+	default: // formatChat
+		s := stripDataPrefix(line)
+		if s == "" || s == "[DONE]" {
+			return keys
+		}
+		var ch chatChunk
+		if err := json.Unmarshal([]byte(s), &ch); err != nil {
+			return keys
+		}
+		for _, c := range ch.Choices {
+			for _, tc := range c.Delta.ToolCalls {
+				name := ""
+				if tc.Function.Name != "" {
+					name = tc.Function.Name
+				}
+				keys[strconv.Itoa(tc.Index)] = name
+			}
+		}
+	}
+	return keys
 }
 
 // writeSSEErrorChunk 按格式写错误块（工具循环失败时），前缀"视觉识别失败"。

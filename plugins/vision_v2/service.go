@@ -15,14 +15,12 @@ import (
 
 // toolLoopState 单个请求的工具循环状态（Service 单例按 requestID 隔离）。
 type toolLoopState struct {
-	format  visionProxyFormat  // chat / claude / responses
-	acc     *StreamAccumulator // 流式解析状态机（后续任务定义）
-	pending bool
+	format  visionProxyFormat // chat / claude / responses
+	filter  *PlaceholderFilter
+	acc     *StreamAccumulator // 流式解析状态机
 	calls   []ToolCall
 	round   int
-	filter  *PlaceholderFilter
-	// passthrough 本轮出现非本插件工具（web_search 等）：剩余流完全透传、不拦截。
-	passthrough bool
+	pending bool
 }
 
 // Service 视觉能力 v2 服务。
